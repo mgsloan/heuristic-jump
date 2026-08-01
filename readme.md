@@ -24,6 +24,10 @@ needed by the LSP protocol.
 For recently queried and/or recently edited files, it will have an
 in-memory tree-sitter parse (that is incrementally updated)
 
+The grammars are the exact same tree-sitter language definitions Zed
+uses - the same crates at the same pinned revisions, taken from Zed's
+workspace Cargo.toml.
+
 There is no index. Lookups are done on demand with dumb-jump style
 search. This keeps the tool lightweight, and avoids competing with the
 proper LSP for CPU during its startup - which is exactly the window
@@ -145,8 +149,13 @@ too, and the tool is net negative.
 Wrong answers are not interchangeable. Tracked separately, as a
 fraction of committed answers:
 
-* Near miss - right file, wrong line or symbol. Cheap to recover from,
-  the user is already looking at the right place. Absorbs whatever
+Landing within 3 lines of the proper LSP's answer counts as a match, not
+an error. At that distance the right definition is on screen and the
+user is already looking at it, so calling it wrong would measure
+something nobody experiences as wrong.
+
+* Same file, further off than 3 lines. Recoverable - the user is at
+  least in the right place - but they have to hunt. Absorbs whatever
   remains of the error budget.
 
 * Wrong file, same module tree. Moderate cost. Budget <= 1%.
@@ -160,9 +169,18 @@ The heuristic answer has to land inside the LSP request without the
 editor noticing. Budgets, measured cold on the largest repo in the
 corpus:
 
-* p50 <= 20ms
-* p99 <= 150ms
-* hard cap of 250ms - past that, abstain
+* p50 <= 50ms
+* p99 <= 400ms
+* hard cap of 750ms - past that, abstain
+
+These are looser than they first look, and deliberately so. With no index,
+whole-project search is an on-demand walk plus content scan, which lands
+in the low hundreds of milliseconds on a mid-size repo. A tighter budget
+would not make that faster; it would just convert every whole-project
+query into an abstention and quietly delete a whole stratum from
+coverage. Meanwhile the thing being raced is a language server that is
+seconds to minutes from answering, so several hundred milliseconds is
+still a large win. Revisit once there are real measurements.
 
 The hard cap ties the metrics together: blowing the latency budget
 degrades to an abstention, so it costs coverage but never precision.
@@ -223,7 +241,24 @@ possibly as an extension if Zed's extension API is greatly expanded.
 1. When it's whole project search, how to choose the better module when
   it's heuristic ? Maybe something like repomap's pagerank?
 
-2. Should the shim supervise and restart the proper LSP when it dies,
+2. Does the editor actually send a second go-to-definition request while
+the first is still pending? It might instead cancel the first and send a
+new one, or dedupe and send nothing at all. The entire retry-triggered
+design assumes the first of these. This needs a trace from Zed and from
+VS Code, pressing go-to-definition twice against a deliberately slow
+server, before much is built on top of it.
+
+3. Disk-file parse caches key on (path, mtime, len). Second-granularity
+mtime on some filesystems means a same-second rewrite of the same length
+serves a stale tree. Is a content hash worth the read, or is this rare
+enough to accept?
+
+4. What should the shim do when the editor misbehaves - didOpen for a
+document already open, didChange for one never opened, didClose for one
+that isn't? Ignoring is probably right, but silently ignoring hides
+editor bugs the user would want reported.
+
+5. Should the shim supervise and restart the proper LSP when it dies,
   instead of just exiting and letting the editor deal with it? The shim
   already holds authoritative text for every open document, so replaying
   state into a fresh server is nearly free, and it could serve heuristics

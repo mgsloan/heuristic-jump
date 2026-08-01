@@ -15,7 +15,7 @@ only part of them this document commits to.
 
 See `readme.md` for the product rationale and the success metrics. The
 metrics constrain this design in three concrete ways, noted where they bite:
-the latency budget (p50 <= 20ms, p99 <= 150ms, hard cap 250ms), the >=97%
+the latency budget (p50 <= 50ms, p99 <= 400ms, hard cap 750ms), the >=97%
 precision floor and its abstention path, and the per-stratum reporting
 requirement.
 
@@ -32,8 +32,8 @@ mysterious and the natural suspicion falls on the language server.
 
 Concretely this means:
 
-* The forwarding path never depends on heuristic state. Handler panics,
-  poisoned locks, blown deadlines, and unparseable documents all resolve to
+* The forwarding path never depends on heuristic state. Handler panics, blown
+  deadlines, a wedged `core`, and unparseable documents all resolve to
   "forward and get out of the way."
 * Anything the shim does not specifically understand is forwarded byte-for-byte
   without being deserialized into a typed struct and re-serialized. Round-trip
@@ -74,36 +74,154 @@ predictable pipe.
 
 ### Task layout
 
-Five long-lived tasks, communicating over channels:
+Five long-lived tasks plus a worker pool, communicating only over channels.
+There is no shared mutable state and no lock anywhere in the design.
 
 ```
-  editor stdin  --> [reader:editor] --+--> [to-child tx] --> [writer:child]
-                                      |
-                                      +--> [core]  (owns all state)
-                                                |
-  child stdout  --> [reader:child]  --+---------+
-                                      |
-                                      +--> [to-editor tx] --> [writer:editor]
+  editor stdin --> [reader:editor] --+--> (to-child) --> [writer:child]
+                                     |
+                                     +--> [core] -- owns ALL state
+                                            ^  |
+  child stdout --> [reader:child] ----------+  |
+                          |                    v
+                          |              [worker pool]
+                          |                    |
+                          +--> (to-editor) <---+--> [writer:editor]
 ```
 
-* **`reader:editor`** parses frames from the editor. For each frame it does the
-  minimum classification needed to decide "intercept or forward" (see
-  [Message routing](#3-message-routing)), then pushes the raw bytes to
-  `to-child` and a classified event to `core`.
+* **`reader:editor`** parses frames from the editor. For each frame it pushes
+  the raw bytes to `to-child` **first**, then sends a classified event to
+  `core`. Forwarding never waits on `core`.
 * **`reader:child`** the same in the other direction.
-* **`writer:editor`** and **`writer:child`** each own one pipe exclusively.
-  This is not optional: frames must not interleave, so exactly one task may
-  ever write to a given fd, and everything else reaches it through an mpsc
-  channel.
-* **`core`** owns all mutable state (documents, in-flight requests, server
-  health). It is a single-threaded actor processing an ordered event stream.
-  It never blocks: heuristic work is handed to a worker pool with a snapshot.
+* **`writer:editor`** / **`writer:child`** each own one pipe exclusively.
+  Not optional: frames must not interleave, so exactly one task may ever write
+  to a given fd and everything else reaches it through an mpsc channel.
+* **`core`** is a single-threaded actor owning documents, the parse cache,
+  pending queries, and health. It processes one ordered event stream and
+  performs **only O(1) state transitions**. It never parses, never searches,
+  never touches the filesystem.
+* **Worker pool** runs handlers against immutable snapshots handed to them at
+  dispatch. Workers own nothing shared; results return to `core` as events.
 
-The actor model is chosen specifically because **LSP message order defines
-document state**. A `textDocument/definition` must be evaluated against the
-document as of every `didChange` that preceded it and none that followed. A
-lock-based design makes that ordering accidental; a single ordered event queue
-makes it structural.
+All channels are unbounded. A bounded channel would eventually make a reader
+wait, and a stalled reader stops forwarding — the one thing
+[section 1](#1-the-prime-invariant) forbids. Memory is bounded instead by the
+shed-load rule in
+[section 13](#13-parallel-dispatch-and-resource-limits), which drops heuristic
+work rather than protocol traffic.
+
+### Why an actor
+
+**LSP message order defines document state.** A `textDocument/definition` must
+be evaluated against the document as of every `didChange` that preceded it and
+none that followed. A single ordered event queue makes that structural; a
+lock-based design makes it accidental, and the resulting bugs are timing
+dependent and unreproducible.
+
+The decisive property is **snapshot-on-dispatch**. When `core` processes a
+definition event it clones the document state *at that instant* and hands the
+clone to a worker. The worker is then immune to everything that happens next:
+a `didChange` arriving a microsecond later cannot change what it sees. With
+shared state the snapshot would instead be taken whenever the worker happened
+to acquire the lock, so a query could silently end up answering about text the
+user had already edited — resolving whatever moved into the requested offset
+rather than what was there when they asked.
+
+### Which version a query runs against
+
+**LSP requests do not carry a document version.** `textDocument/definition`
+takes a `TextDocumentIdentifier`, which is a bare URI —
+`VersionedTextDocumentIdentifier` appears only on `didChange`. The version a
+query means is implicit: it is the state after every notification the client
+sent before it, guaranteed by LSP's in-order processing.
+
+That implicit version is exactly what the ordered event queue makes explicit.
+When `core` reaches a definition event, `documents[uri].version` *is* the
+version the user was looking at when they pressed the key — no inference, no
+staleness check, no window. This is the concrete payoff of the actor, and it
+is why "which version?" has an answer at all.
+
+### Snapshots are O(1)
+
+Snapshot-on-dispatch is only viable because nothing is copied:
+
+```rust
+pub struct DocumentSnapshot {
+    pub text: Rope,                  // structural sharing; O(1)
+    pub version: DocumentVersion,    // the version above
+    pub language_id: LanguageId,
+    /// Cached tree at some older version, plus the edits that bring it
+    /// up to `version`. Never handed to handlers directly.
+    base: Option<(Tree, Arc<[InputEdit]>)>,
+    grammar: tree_sitter::Language,
+    parsed: OnceCell<Tree>,
+}
+
+impl DocumentSnapshot {
+    /// A tree for exactly `self.version`. Reparses incrementally from
+    /// `base` on first call, or parses from scratch if there is none.
+    pub fn tree(&self) -> Result<&Tree, ParseError>;
+}
+```
+
+* `Rope::clone` shares structure through the sum tree.
+* `Tree::clone` is `ts_tree_copy`, which is `ts_subtree_retain` plus a small
+  wrapper allocation (`tree-sitter/src/tree.c:22`) — a refcount increment, not
+  a node copy. The refcount uses `atomic_inc` (`src/subtree.c:561`), so
+  handing a clone to another thread is exactly what the API is designed for.
+
+So a snapshot is two refcount bumps and a struct move, regardless of file size.
+
+### Text and tree can never disagree
+
+The cached tree is usually *older* than the text: `core` caches a tree at v3,
+the user types, and a query dispatches at v5. Handing a handler both the v5
+text and the v3 tree would be a trap — every offset in that tree is wrong for
+that text, and the mismatch is invisible until it produces a confidently
+wrong answer.
+
+So the stale tree is private. `base` holds it together with the edits that
+reconcile it, and `tree()` is the only way to get one:
+
+1. First call applies `edits_since_parse` to a **private clone** of the base
+   tree via `Tree::edit`, then reparses against the v5 text with the edited
+   tree as the starting point — a normal tree-sitter incremental parse.
+2. With no base, it is a full parse.
+3. The result is memoised, so a handler that asks repeatedly pays once.
+
+**The handler cannot obtain a tree that does not match `text`.** The parse is
+paid inside the worker and inside the deadline, never in `core`. When the
+worker finishes, a filled `parsed` cell is returned to `core` as a
+`Parsed { uri, version, tree }` event, so the next query starts warm.
+
+### `core` never mutates a shared tree
+
+Cached trees are **immutable once inserted**. On `didChange`, `core` applies
+the edit to the `Rope` and appends the `InputEdit` to the document's
+`edits_since_parse`; it does *not* call `Tree::edit` on the cached tree. A
+worker doing an incremental reparse applies those edits to **its own private
+clone**, then reparses against it and sends the new tree back to `core` to
+cache.
+
+`ts_subtree_edit` does copy-on-write via `ts_subtree_make_mut`
+(`src/subtree.c:688`), so editing a shared tree would in fact be safe. This
+design avoids doing it anyway, for two reasons: correctness stops depending on
+a C library internal that could change, and `core` avoids paying copy-on-write
+along the edit path on every keystroke for a tree shared with N workers.
+
+### Cache misses do not block `core`
+
+`core` never parses, so a definition event that misses the parse cache is
+dispatched with `tree: None`. Two consequences, both benign:
+
+* The `Spot` for that query cannot be widened to a token, so it falls back to
+  exact-offset identity ([section 8](#8-go-to-definition-lifecycle)).
+* The worker parses for its own use, then returns the tree to `core` as a
+  `Parsed { uri, version, tree }` event to be cached.
+
+This gives the retry protocol exactly what it needs: the first query at a spot
+warms the cache, so by the time a user retries, the tree is present and the
+retry's `Spot` *can* be widened.
 
 ## 3. Message routing
 
@@ -120,6 +238,7 @@ responses.
 | `textDocument/definition` | Tee to `core`, forward. May be answered by the shim |
 | `$/cancelRequest` | Tee to `core`, forward |
 | `shutdown` / `exit` | Tee to `core`, forward |
+| **Response to a child-originated request** | **Forward verbatim** — see below |
 | everything else | Forward verbatim |
 
 **Child to editor:**
@@ -128,8 +247,9 @@ responses.
 |---|---|
 | Response to an id the shim already answered | **Swallow**, hand to `core` for divergence check |
 | Response to any other id | Record latency in `core`, forward |
-| `$/progress` | Tee to `core` (health), forward |
+| `$/progress` | Tee to `core` (adapters), forward |
 | `InitializeResult` | Inspect (sync kind, encoding, capabilities), forward |
+| **Server-originated request** (`workspace/configuration`, `client/registerCapability`, `window/workDoneProgress/create`, `workspace/applyEdit`, …) | **Forward verbatim** — see below |
 | everything else | Forward verbatim |
 
 The swallow case is the one that must not be got wrong. Once the shim has
@@ -138,14 +258,52 @@ response to `id` **must not** reach the editor, or the editor sees two
 responses to one request. That is a protocol violation, and clients react to
 it badly, ranging from a log warning to a stuck request slot.
 
+### Server-originated requests are load-bearing
+
+LSP is bidirectional: the server sends requests *to* the client and waits for
+answers. `workspace/configuration` is how rust-analyzer fetches its settings;
+`client/registerCapability` is how it registers file watching; there is also
+`workspace/applyEdit` and the various `refresh` requests. These flow
+child → editor, and the editor's responses flow back editor → child.
+
+Both directions are pure passthrough here, and they are called out explicitly
+rather than left to "everything else" because this is the documented way a
+comparable proxy broke. `lspmux` — a multiplexer letting several editors share
+one server — remaps ids to route responses, and its README states that because
+not all messages can be tracked that way it "drops some, notably it drops any
+requests from the server," warning users to report "issues which are
+definitely not present in the language server alone."
+
+That is precisely the class of failure
+[section 1](#1-the-prime-invariant) exists to prevent: a proxy-induced bug
+that presents as the language server misbehaving. The shim avoids it by having
+no reason to touch these messages at all — see the id namespacing below — but
+"we never had a reason to break it" is not a guarantee, so it is a test
+([section 15](#15-testing)) rather than an assumption.
+
 ### Request id namespacing
 
 The shim may need to originate its own requests to the editor
 (`window/showMessageRequest`, `window/showDocument`). LSP permits string ids,
-so all shim-originated requests use `"hj-<counter>"`. This avoids a
-bidirectional id remapping table entirely: any numeric id came from the
-editor, any `hj-` prefixed id is the shim's own. The shim originates no
-requests to the child, so the child's id space is untouched.
+so all shim-originated requests use `"hj-<random>-<counter>"`, the random
+component fixed per process so an editor that happens to use string ids
+cannot collide. The shim originates no requests to the child, so the child's
+id space is untouched entirely.
+
+**No id remapping table.** Ids pass through in both directions unchanged; the
+shim only needs to *recognise* the small set it has answered itself, and its
+own outgoing ids are self-identifying. This is affordable only because the
+shim is strictly 1:1 — one editor, one child. `lspmux` multiplexes several
+clients onto one server and therefore has no choice but to rewrite ids, which
+is where its dropped-message limitation comes from: once you are rewriting,
+every message shape has to be understood, and the ones you cannot track get
+discarded.
+
+Two future changes would forfeit this. Supervising and restarting the child
+(future question 3 in `readme.md`) means the editor's ids outlive the child's
+id space, so post-restart ids need remapping. Multiplexing would mean it too.
+Neither is planned; both should be understood as giving up a property, not
+just adding a feature.
 
 ## 4. Initialize and capability negotiation
 
@@ -216,21 +374,21 @@ interface.
 
 ## 5. Document state
 
-The shim keeps a `HashMap<DocumentUri, Document>`:
+`core` owns a `HashMap<DocumentUri, Document>`. No lock: it is actor-internal
+state, reached only through the event queue.
 
 ```rust
 struct Document {
-    text: Rope,                        // vendored zed rope, utf16-aware
-    version: DocumentVersion,          // from didChange; ordering and staleness
-    language_id: LanguageId,           // from didOpen
-    tree: Option<Tree>,                // tree-sitter; incrementally updated
-    parsed_at: Option<DocumentVersion>,
+    text: Rope,                   // vendored zed rope, utf16-aware
+    version: DocumentVersion,     // from didChange
+    language_id: LanguageId,      // from didOpen
+    /// Edits applied since the cached tree was parsed. Handed to workers
+    /// for incremental reparse; cleared when a fresh tree comes back.
+    edits_since_parse: Vec<InputEdit>,
 }
 ```
 
-`parsed_at` is an `Option<DocumentVersion>` rather than a sentinel version,
-so "never parsed" and "parsed at some version" are distinguishable without a
-magic number. The vocabulary types are defined in
+The vocabulary types are defined in
 [section 12](#12-handler-interface).
 
 **Open documents** are authoritative from the editor. `didOpen` inserts,
@@ -254,22 +412,47 @@ what the editor has open.
 
 ### Parse cache
 
-Tree-sitter trees are kept for recently queried or recently edited documents,
-as an LRU bounded by both entry count and total bytes (a single generated file
-can be enormous). Entries:
+Also owned by `core`: an LRU of tree-sitter trees, bounded by both entry count
+and total bytes (a single generated file can be enormous). Keys:
 
-* For open documents, keyed by `(url, version)`; a stale `parsed_at_version`
-  triggers an incremental reparse via `Tree::edit` plus `Parser::parse` with
-  the old tree.
-* For disk files, keyed by `(path, mtime, len)`. `didSave` invalidates the
-  open-document entry and lets the disk entry take over.
+* Open documents: `(uri, version_parsed_at)`.
+* Disk files: `(path, mtime, len)`. `didSave` lets the disk entry take over.
 
-Incremental reparse needs `InputEdit` in byte offsets *and* tree-sitter
-`Point`s (row, byte-column). Both come from the same conversion module as
-positions.
+Because `core` only ever *gets* and *puts* refcounted handles, holding the
+cache costs it nothing — the expensive half, parsing, happens in workers, and
+the results arrive as `Parsed` events.
 
-The parse cache is a cache, not an index: cold misses are correct, just
-slower. Nothing may depend on an entry being present.
+**Entries are immutable once inserted**, per
+[section 2](#core-never-mutates-a-shared-tree). A tree cached at v3 stays a v3
+tree forever; it is superseded, never edited in place.
+
+**Staleness is explicit, not invalidation.** A `didChange` bumps the document
+version but leaves the v3 tree cached and appends to `edits_since_parse`. A
+dispatch at v5 therefore carries the v3 tree plus two edits, which is exactly
+the input an incremental reparse needs. Nothing is ever invalidated, and there
+is no window in which a stale tree is mistaken for a fresh one — the version
+travels with it.
+
+**Returned trees consume a prefix of the edit log, never all of it.** A worker
+that was handed the v3 tree plus edits `[e4, e5]` returns a tree for v5. By
+then the log may hold `[e4, e5, e6, e7]`, because the user kept typing while
+the worker ran. `core` must drop only the edits the returned tree already
+accounts for — the prefix up to v5 — and keep `[e6, e7]` for the next
+reparse. Clearing the whole log here would silently lose two edits and every
+subsequent incremental reparse would be built on a wrong base, producing a
+tree that disagrees with the text in ways no test of a single edit would
+catch.
+
+Concretely: the log is stored alongside the version it starts from, a
+returned tree carries the version it was parsed at, and consuming the prefix
+is a comparison of the two. A tree returned for a version *older* than the
+cache's current entry is simply dropped — a slow worker lost the race, and
+its result is stale rather than wrong.
+
+The cache is a cache, not an index: cold misses are correct, just slower.
+Nothing may depend on an entry being present — which is exactly why
+[section 8](#8-go-to-definition-lifecycle) treats a missing tree as "no token
+widening available" rather than as a reason to parse.
 
 ## 6. Project file enumeration
 
@@ -280,7 +463,7 @@ There is no *symbol* index — no persisted map from name to definition sites,
 which is the thing the readme rules out and the thing that would cost
 startup CPU and invalidation complexity. But a cold directory walk of a large
 repository can take hundreds of milliseconds on its own, which would consume
-the entire 250ms budget before a single file is read. So:
+the entire budget before a single file is read. So:
 
 **The driver caches a file list. It does not cache anything about file
 contents beyond the parse LRU.**
@@ -289,7 +472,7 @@ contents beyond the parse LRU.**
   is respected for free. This directly implements the readme's decision that
   gitignored files are out of scope.
 * Built in-process rather than by shelling out to ripgrep: subprocess spawn
-  plus pipe overhead is a meaningful fraction of a 20ms p50 target, and
+  plus pipe overhead is a meaningful fraction of a 50ms p50 target, and
   in-process gives direct control over cancellation at the deadline.
 * Built lazily on first need, then refreshed in the background. A stale list
   is acceptable — it costs recall on files created in the last few seconds,
@@ -328,30 +511,80 @@ enum ServerHealth {
     Ready,          // responsive, no outstanding long work
     Slow,           // responsive, but latency well above its own baseline
     Unresponsive,   // requests outstanding beyond threshold, no traffic
-    Dead,           // process exited
 }
 ```
 
 Signals, in order of reliability:
 
-1. **Process liveness.** Unambiguous. Child exit moves to `Dead`.
-2. **`InitializeResult` received.** `Starting` to `Warming`.
-3. **`$/progress`** begin/end pairs with outstanding work tokens. This is the
-   generic, cross-server signal for `Warming`. rust-analyzer reports indexing
-   this way.
-4. **Response latency**, tracked as a rolling distribution over *all*
+1. **`InitializeResult` received.** `Starting` to `Warming`.
+2. **Response latency**, tracked as a rolling distribution over *all*
    request kinds, not just definitions. `Slow` is defined relative to the
    server's own recent baseline rather than an absolute threshold, because
    the absolute numbers differ by orders of magnitude between language
    servers and between repository sizes.
-5. **Silence with work outstanding.** Requests pending beyond a threshold with
+3. **Silence with work outstanding.** Requests pending beyond a threshold with
    no frames of any kind arriving moves to `Unresponsive`.
 
-Server-specific signals (rust-analyzer's `experimental/serverStatus`, for
-instance) go behind a small optional adapter keyed by the child's advertised
-`serverInfo.name`. This is a driver concern, not a language concern — it is
-about the *server process*, not about the language's syntax — so it lives
-here and not behind the handler interface.
+Note what is *not* on that list: `$/progress`. It looks like the obvious
+generic signal for `Warming`, and it is a trap. rust-analyzer emits progress
+for indexing but also for every `cargo check` and flycheck run, so "any
+outstanding progress token means warming" marks the server as warming
+more or less continuously during ordinary editing. That would make eager
+answering — meant for cold start — fire all day, inverting the tool's whole
+risk profile. Nothing generic can distinguish "still starting up" from
+"running a background check," because the distinction lives entirely in the
+work-done title and token, which are server-specific strings.
+
+### Per-server adapters
+
+So interpreting progress, and any other server-specific signal, is the job of
+an adapter:
+
+```rust
+pub trait ServerAdapter: Send + Sync {
+    /// Matched against `serverInfo.name` from InitializeResult.
+    fn server_name(&self) -> &'static str;
+
+    /// Interpret a server-specific notification. Returning None means
+    /// "no opinion" and leaves health to the generic signals.
+    fn observe(&self, msg: &IncomingMessage) -> Option<HealthSignal>;
+}
+```
+
+Implementations live in `hj-core` beside the driver, one per language server —
+`rust_analyzer.rs` reading `experimental/serverStatus` and recognising the
+indexing progress title, `pyright.rs`, `gopls.rs`, and so on. This is a driver
+concern rather than a language concern: it is about a specific *server
+process*, not about a language's syntax, so it stays here rather than behind
+the handler interface. Two servers for the same language can want different
+adapters.
+
+### The generic warming signal
+
+Adapters are for precision, but the tool cannot depend on one existing — an
+unrecognised server would otherwise never reach `Warming`, and eager
+answering, the main payoff of modelling health at all, would be dark by
+default.
+
+So there is one generic rule, and it needs no server knowledge:
+
+> **The child is `Warming` until it has successfully answered its first
+> `textDocument/definition` request.**
+
+If a language server has not yet answered a single go-to-definition, it is
+plausibly still indexing. The moment it answers one, health becomes `Ready`
+and the retry rule takes over for the rest of the session.
+
+This calibrates itself across every server, repository size, and machine,
+with no timer to tune and nothing to configure. It also fails in the safe
+direction: a server that is genuinely fast answers its first definition in
+milliseconds, so the eager window closes almost immediately and costs at most
+a handful of early queries — which are cheap, because the child's answer
+still arrives and any divergence is still reported.
+
+Note this makes `Starting` a state that exists for logging and never gates
+policy: no definition request can arrive before `InitializeResult`, because
+the editor waits for the `initialize` response before sending anything else.
 
 ### What health is for
 
@@ -362,7 +595,7 @@ Health selects the answering policy:
 | `Starting`, `Warming` | **Eager.** Answer heuristically on the first request. |
 | `Ready` | **Retry-triggered.** Wait; answer only on a repeat query. |
 | `Slow` | **Retry-triggered.** |
-| `Unresponsive`, `Dead` | **Eager**, and answer `null` rather than abstaining. |
+| `Unresponsive` | **Eager**, and answer an error rather than abstaining. |
 
 The eager rows follow directly from modelling health rather than just
 request-pendency, and they are most of the practical value of doing so. If the
@@ -371,8 +604,12 @@ twice to discover what the shim already knows is pure friction. Conversely
 when the server is `Ready`, waiting costs almost nothing and the proper answer
 arrives; the readme's retry rule handles the occasional slow query.
 
-The `Dead`/`Unresponsive` row differs in its abstention behaviour and is
-explained in [section 9](#9-deadlines-and-abstention).
+The `Unresponsive` row differs in its abstention behaviour and is explained
+in [section 9](#9-deadlines-and-abstention).
+
+There is no `Dead` state. Child exit means the shim exits too (see below), so
+there is no interval worth modelling in which the child is gone and the shim
+is still answering.
 
 ### Child death
 
@@ -408,39 +645,94 @@ struct PendingQuery {
     answered_by_shim: Option<Vec<Location>>,
 }
 
-/// Query identity. Two requests are a repeat of each other exactly when
-/// their `Spot`s are equal, so the rule in the flow below is a derived
-/// `PartialEq` rather than a comparison open-coded at the call site.
-#[derive(PartialEq, Eq, Hash, Clone)]
-enum Spot {
-    /// Normal case: the position resolved to an identifier token, and any
-    /// position inside that token is the same query.
-    Token { uri: DocumentUri, span: ByteRange, version: DocumentVersion },
-    /// Fallback when no parse is available and there is no token to widen to.
-    Offset { uri: DocumentUri, at: ByteOffset, version: DocumentVersion },
+/// Query identity for the repeat check.
+#[derive(Clone)]
+struct Spot {
+    uri: DocumentUri,
+    at: ByteOffset,
+    /// Present once a parse is available to widen the offset to a token.
+    token: Option<ByteRange>,
+}
+
+impl Spot {
+    /// Deliberately NOT `PartialEq`. Repeat-ness is not equality: it is
+    /// asymmetric in what it ignores, and the rules below are all cases
+    /// where a derived comparison would give the wrong answer.
+    fn is_repeat_of(&self, prior: &Spot) -> bool {
+        if self.uri != prior.uri {
+            return false;
+        }
+        match (self.token, prior.token) {
+            // Anywhere in the same token is the same question. A user
+            // re-triggering may land a character off.
+            (Some(a), Some(b)) => a.overlaps(b),
+            // One side was recorded before a parse existed. Widen using
+            // whichever token we do have.
+            (Some(a), None) => a.contains(prior.at),
+            (None, Some(b)) => b.contains(self.at),
+            // No parse on either side; exact offset is all there is.
+            (None, None) => self.at == prior.at,
+        }
+    }
 }
 ```
 
-`core` holds these keyed by `editor_id`, plus a secondary index by `Spot`
-for the repeat check.
+`core` holds these keyed by `editor_id`, plus a list scanned by
+`is_repeat_of`. The list is short — only queries still pending — so a linear
+scan beats indexing on something that has no equality relation. When more
+than one pending query matches, the **most recent** wins, so the result never
+depends on scan order.
 
-Making `Spot` an enum rather than a struct with an optional span is what lets
-the repeat rule be `==`. A struct carrying both a position and an optional
-token span cannot derive the right equality: two requests a character apart in
-the same token must compare equal, and a derived comparison over the position
-field would say otherwise.
+### Spots are anchors, not stored offsets
+
+`is_repeat_of` ignores versions, which is what makes a retry survive a
+formatter or a stray keystroke between the two presses. But byte offsets are
+meaningless across versions — offset 100 in v3 and offset 100 in v5 are
+different positions — so comparing a stored offset against a later one would
+be comparing coordinates from two different documents.
+
+The fix is to keep pending spots in *current* coordinates. On every
+`didChange`, `core` walks its pending queries and translates each `Spot`
+through the edit:
+
+* Edit entirely after the spot — unchanged.
+* Edit entirely before it — shift `at` and `token` by the length delta.
+* **Edit overlapping the token — invalidate the spot.** If the identifier
+  itself changed, the user is no longer asking the same question, and a
+  later press there is a new query rather than a retry.
+
+This is the anchor pattern editors use for markers, and it is `core`'s kind
+of work: a short loop of arithmetic per edit. With it, every `Spot` in the
+pending list is expressed against the current document, and `is_repeat_of`
+compares like with like.
+
+### Widening only when the tree is current
+
+`core` widens an offset to its enclosing token using the cached tree — but
+that tree may be older than the document, and its node boundaries would then
+be wrong for the current text.
+
+So the rule is: **widen only when `edits_since_parse` is empty**, meaning the
+cached tree matches the current text exactly. Otherwise the `Spot` keeps
+`token: None` and relies on offset identity, which the anchoring above keeps
+valid. `core` never reparses to widen — that would be expensive work in the
+one place this design forbids it.
+
+In practice the tree is current whenever the user is not mid-keystroke, which
+is when they are pressing go-to-definition. The `(Some, None)` arm of
+`is_repeat_of` covers the rest: the first request at a spot often arrives
+before any parse exists, and the worker's parse lands before the retry comes
+in, so a widened retry is compared against an un-widened original.
 
 ### Flow
 
 1. **Request arrives.** Forward to the child immediately (never gate
    forwarding on shim work). Record a `PendingQuery`.
-2. **Determine the spot.** Two requests are at the same spot when they share a
-   URI and their positions fall within the same identifier token span, with
-   the document unchanged between them. Token span comes from the parse
-   cache; when there is no parse available, fall back to exact position
-   equality. Deliberately not exact-position-only: a user re-triggering
-   go-to-definition may land a character off, and treating that as a new
-   query silently defeats the whole retry protocol.
+2. **Determine the spot.** Build a `Spot`, widening the offset to its
+   enclosing identifier token if the parse cache already holds a tree for
+   this document — a lookup only, never a parse (see
+   [section 5](#5-document-state)). Compare against pending queries with
+   `is_repeat_of`.
 3. **Check the policy.** If health says eager, or this is a repeat of a spot
    with a still-pending query, dispatch to the handler. Otherwise do nothing
    and let the child answer.
@@ -450,7 +742,7 @@ field would say otherwise.
 5. **Child responds later.** The response is swallowed. If the query was
    `answered_by_shim`, compare and possibly report divergence
    ([section 10](#10-divergence-reporting)). Either way, log the pair for the
-   metrics ([section 11](#11-observability-and-scan-mode)).
+   metrics ([section 11](#11-observability-and-the-corpus-scan)).
 
 ### Cancellation
 
@@ -464,10 +756,10 @@ answered; this is harmless and must not be treated as an error.
 
 ## 9. Deadlines and abstention
 
-The 250ms hard cap is enforced by the driver, not trusted to the handler.
+The 750ms hard cap is enforced by the driver, not trusted to the handler.
 
 **The deadline is absolute and starts at request arrival**, not at handler
-entry. Queueing time counts. A handler that gets 250ms of wall clock but
+entry. Queueing time counts. A handler that gets 750ms of wall clock but
 started 200ms late has already blown the budget from the user's point of view,
 and the metric in the readme measures the user's point of view.
 
@@ -499,16 +791,62 @@ send anything at all.** The original request is still pending with the child,
 so abstaining means letting the child answer it, which is exactly the
 status quo the metric compares against. No null response, no special case.
 
-The exception is `Unresponsive` and `Dead`, where nothing is coming. There the
-shim must answer explicitly with `null` so the request does not hang forever.
-This is the only place the shim manufactures an empty answer.
+The exception is `Unresponsive`, where nothing is coming and the request would
+otherwise hang forever. There the shim answers with a `RequestFailed` error
+rather than `null`.
+
+The distinction matters to the user. `null` is a definite statement — "this
+symbol has no definition" — which editors render as a flat "no definition
+found", and it is a claim the shim has no basis for making. An error says the
+request could not be served, which is both true and something clients surface
+as a transient failure rather than an answer.
 
 ## 10. Divergence reporting
 
-When the shim answered heuristically and the child's later answer differs, the
-readme calls for notifying the user. Base LSP has no server-initiated
-navigation, but LSP 3.16's `window/showDocument` is exactly the right tool:
-it asks the client to display a location, with an optional selection range.
+### The agreement predicate
+
+Before anything can be reported — or measured — "different" needs a
+definition, and it cannot be range equality. The proper LSP points at the
+identifier in a definition; a dumb-jump style match may point at the start of
+the line, at the `fn` keyword, or at a whole item. Exact comparison would
+report a divergence on nearly every *correct* answer.
+
+This predicate is not a reporting detail. It *is* the precision metric in
+`readme.md`, so getting it wrong makes the headline number meaningless.
+
+Both sides are first normalized: `textDocument/definition` may answer with
+`Location`, `Location[]`, `LocationLink[]`, or null, and which one depends on
+whether the client advertised `linkSupport`. All shapes collapse to a set of
+`(uri, range)` before comparison, taking `targetSelectionRange` for links.
+
+Then, comparing the shim's answer against the child's:
+
+| Relation | Classification |
+|---|---|
+| Same file, ranges overlap | **Match** |
+| Same file, within 3 lines | **Match** |
+| Same file, more than 3 lines apart | Error, recoverable tier |
+| Different file, same module tree | Error, moderate tier |
+| Different file, unrelated | Error, trust-destroying tier |
+| Child answered null or empty, shim committed | Error, treated as unrelated |
+| Both empty | Match |
+
+The 3-line tolerance is deliberate: at that distance the correct definition is
+on screen and the user is already reading it, so scoring it as wrong would
+measure something nobody experiences as wrong. The tiers below it map onto the
+error severity budgets in `readme.md`.
+
+When the child returns multiple locations, agreement means the shim's answer
+matches *any* of them — the LSP itself is expressing ambiguity there, so
+picking one of its candidates is not an error.
+
+### Reporting
+
+When the shim answered heuristically and the child's later answer does not
+match, the readme calls for notifying the user. Base LSP has no
+server-initiated navigation, but LSP 3.16's `window/showDocument` is exactly
+the right tool: it asks the client to display a location, with an optional
+selection range.
 
 Sequence, when the client advertised `window.showDocument`:
 
@@ -520,7 +858,35 @@ Sequence, when the client advertised `window.showDocument`:
 When `showDocument` is unavailable, degrade to a plain `window/showMessage`
 naming the correct location. When `showMessage` is also unavailable, log only.
 
-Two rules keep this from becoming an irritant:
+### Rate limiting
+
+Reports fire on any non-`Match` classification, and eager answering means
+divergences arrive in bursts — a cold start is exactly when the shim answers
+most and is least accurate. One prompt per divergence would be unusable.
+
+So reports are batched rather than emitted per divergence:
+
+* A short window collects divergences. The first one opens it.
+* Entries are the **identifiers queried**, not locations — the user thinks in
+  terms of "I looked up `parse_config`", not in terms of ranges.
+* Duplicates collapse. Looking up the same symbol three times during a cold
+  start is one entry.
+* The window closes and emits a single message listing the identifiers, up to
+  a character budget. Past that it truncates with a count: `parse_config,
+  Resolver, TokenKind and 4 more were resolved incorrectly`.
+* While a report is outstanding, the window stays open, so a slow user
+  response cannot be overtaken by a second prompt.
+
+The batched form loses the ability to offer `window/showDocument` navigation,
+since there is no single correct location to jump to. That is the right
+trade: a batch means several answers were wrong, and at that point the useful
+message is "distrust what you were shown," not "here is one correction." A
+single divergence still gets the full prompt-and-navigate treatment.
+
+Every divergence is recorded for the metrics whether or not it appears in a
+report — rate limiting is a UI concern and must not reach the numbers.
+
+One further rule:
 
 * **Report even when the user has moved on.** Late arrival is not a reason to
   suppress. The point of the report is not just to offer a correction to
@@ -535,14 +901,9 @@ Two rules keep this from becoming an irritant:
   refers to: the symbol queried and the location the shim sent them to, not
   just the corrected location. "Heuristic jump was wrong" is meaningless two
   minutes and several files later.
-* **Do not report near-misses that are visually identical.** If the two
-  locations are in the same file within a line or two, the user is already
-  looking at the right place. This maps directly onto the error severity
-  split in the readme: the near-miss tier is the tier not worth interrupting
-  anyone about, and it should still be *recorded* for the metrics even when
-  it is not *reported*.
 
-## 11. Observability and scan mode
+
+## 11. Observability and the corpus scan
 
 The driver is the only component that sees both the heuristic answer and the
 proper answer, so it owns the measurement of every metric in the readme.
@@ -572,26 +933,42 @@ LSP-latency value weighting. `stratum` and `confidence` are reported *by the
 handler*, since only it knows which resolution path produced the answer; the
 driver classifies `agreement` and `severity`, since only it has both answers.
 
-### Scan mode
+### The corpus scan is a separate program
 
-The corpus scan in the readme's development plan is the same driver in a
-different skin: it needs to drive go-to-definition over every identifier in a
-repository, against both the proper LSP and the handler, and write these same
-records.
+The scan in the readme's development plan is **not** a mode of the shim. It is
+its own binary, `hj-scan`, and `hj-core` has no batch path, no transport
+abstraction, and no awareness that it exists.
 
-The architectural consequence is worth taking seriously up front: **the
-"editor side" must be an interface, not hardcoded stdio.** Two
-implementations, an LSP stdio transport and a batch harness that enumerates
-identifiers and synthesises requests. If this is retrofitted later it means
-untangling the core actor from the transport, which is exactly the kind of
-surgery that gets skipped and leaves the eval harness as a divergent
-reimplementation that no longer measures the real thing.
+The requirements are opposed at nearly every point:
 
-Scan mode also needs to *wait* for the proper LSP rather than race it —
-ground truth requires the real answer, however long it takes — so the health
-policy table must be overridable per-run.
+| | `hj-core` | `hj-scan` |
+|---|---|---|
+| The proper LSP | raced against | waited for — it *is* ground truth |
+| Optimises for | latency | throughput |
+| Deadlines | hard, abstain past them | none |
+| Position in the stream | proxy between editor and server | plain LSP client, no editor |
+| Documents | whatever the editor opened | drives `didOpen` across a repo |
 
-A new underlying LSP server is used for each repo.
+Building one program that does both means a transport abstraction and a
+policy-override switch that exist for a single caller, threaded through the
+part of the system with the strictest correctness requirements.
+
+The reason to hesitate is that a separate harness could drift into measuring a
+reimplementation rather than the real thing. That concern turns out to be
+weaker than it looks: **what the scan measures is the handler, not the
+driver.** The proxy, the health model, and the retry protocol are not under
+test — resolution accuracy is. So as long as `hj-scan` builds its `Query` and
+`DocumentSnapshot` the same way, the code under test is genuinely identical.
+Snapshot construction therefore lives in `hj-shared`, which makes that
+structural rather than a matter of discipline.
+
+`hj-scan` spawns a fresh language server per repository, opens documents,
+enumerates identifiers with the handler's own grammar, asks both sides, and
+writes the records above. The one thing it shares with the shim beyond
+`hj-shared` is the agreement predicate from
+[section 10](#10-divergence-reporting) — the definition of "match" must not
+fork, or the shipped metric and the measured metric stop being the same
+number.
 
 ## 12. Handler interface
 
@@ -701,8 +1078,8 @@ Notes on the shape:
   to resolve at the boundary rather than travelling inward as a string that
   matches nothing, and lookup becomes pointer comparison.
 * **Handlers get a snapshot, not a lock.** `DocumentSnapshot` holds cloned
-  `Rope` and `Tree` handles, both O(1) via structural sharing, so the core
-  actor is never blocked by a running handler.
+  `Rope` and `Tree` handles, both O(1), taken at dispatch — so a handler is
+  immune to edits that arrive while it runs, and `core` is never blocked.
 * **Handlers do their own disk reads through `ProjectView`**, so the driver can
   enforce the scope rules (workspace only, gitignore respected), cache reads
   within a query, and account I/O against the deadline.
@@ -744,11 +1121,12 @@ Additional limits:
 
 * **Max in-flight heuristic queries** (start at 4). Beyond that, new queries
   abstain immediately rather than queueing. Queueing cannot help under a
-  250ms wall-clock deadline; it only guarantees the queued queries blow it.
+  750ms wall-clock deadline; it only guarantees the queued queries blow it.
 * **Per-query byte budget** on files read, so one query over a pathological
   repository cannot monopolise the pool.
 * **No heuristic work while `core` is behind.** If the event queue is backed
-  up, forwarding takes priority. The prime invariant again.
+  up, forwarding and state transitions take priority. The prime invariant
+  again.
 
 ## 14. Failure handling
 
@@ -773,7 +1151,20 @@ shim is responsible for something.
 * **Transparency golden tests.** Record real editor/server sessions as frame
   traces, replay them, assert every non-intercepted frame is forwarded
   byte-identically. This is the primary defence for the prime invariant and
-  should run against traces from more than one editor.
+  should run against traces from more than one editor. The only frames
+  exempted are the ones [section 4](#4-initialize-and-capability-negotiation)
+  deliberately rewrites — `initialize`, where `positionEncodings` may be
+  reordered — and the definition responses the shim answers itself. Everything
+  else, including `initialized` and `InitializeResult`, must match byte for
+  byte.
+* **Server-originated request round-trips.** A dedicated case: the scripted
+  child sends `workspace/configuration`, `client/registerCapability`,
+  `window/workDoneProgress/create`, and `workspace/applyEdit`; the test
+  asserts each reaches the editor unchanged and each editor response reaches
+  the child unchanged. This is the failure `lspmux` shipped with
+  ([section 3](#3-message-routing)), and it is invisible in any test that only
+  exercises client-initiated traffic — which is what most LSP test harnesses
+  do.
 * **Protocol race tests** with an injected clock and a scripted fake child, so
   the retry/answer/swallow/divergence sequences are deterministic. The
   interesting cases are all orderings: child answers between the two editor
@@ -807,7 +1198,8 @@ crates/
   hj-lang-python/
   hj-lang-typescript/
   hj-core/              the LSP driver
-  hj-cli/               the binary
+  hj-cli/               the shim binary
+  hj-scan/              the corpus scan binary (see section 11)
 ```
 
 ### The dependency graph
@@ -872,6 +1264,10 @@ It is split anyway, for two reasons:
   one import away. With `hj-shared` at the bottom and `hj-core` a sibling, the
   layering violation does not typecheck.
 
+* **`hj-scan` depends on `hj-shared` and every `hj-lang-*`** — but *not* on
+  `hj-core`. It is an LSP client, not a proxy, so none of the driver applies
+  to it.
+
 ### Adding a language
 
 New `crates/hj-lang-<x>/` depending on `hj-shared` + `hj-resolve` + its grammar,
@@ -887,10 +1283,14 @@ crates/hj-core/src/
   codec.rs          Content-Length framing, raw frame type
   router.rs         classification, forwarding, id namespacing
   actor/
-    mod.rs          the event loop, state ownership
-    pending.rs      PendingQuery table, spot index, cancellation
-    health.rs       ServerHealth, signals, policy table
-    adapters.rs     optional per-server signal hooks
+    mod.rs          the event loop, state ownership, snapshot-on-dispatch
+    documents.rs    Document map, didOpen/didChange application
+    pending.rs      PendingQuery table, is_repeat_of scan, cancellation
+    health.rs       ServerHealth, generic signals, policy table
+    adapters/
+      mod.rs        ServerAdapter trait, name -> adapter lookup
+      rust_analyzer.rs
+      pyright.rs
   docs/
     store.rs        Document map, didOpen/didChange application
     parse.rs        tree-sitter LRU, incremental reparse
@@ -905,9 +1305,7 @@ crates/hj-core/src/
     diverge.rs      showMessageRequest / showDocument reporting
     trace.rs        JSONL metric records
   transport/
-    mod.rs          editor-side interface
-    stdio.rs        real LSP transport
-    batch.rs        scan-mode harness
+    stdio.rs        LSP framing over stdin/stdout
 ```
 
 ### Vendoring the Zed crates
