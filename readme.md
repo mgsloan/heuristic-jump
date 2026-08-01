@@ -97,11 +97,6 @@ Steps:
   a wrong jump costs much less trust, and the floor can be looser for
   results that are clearly marked.
 
-## Future questions
-
-1. When it's whole project search, how to choose the better module when
-it's heuristic ? Maybe something like repomap's pagerank?
-
 ## Development plan
 
 The plan is to have ~10 opensource repos per language, and
@@ -222,3 +217,30 @@ language will have its own analysis implementation in rust.
 Generally this should reference the zed code (../zed) and how it does
 LSP. It's conceivable this could be integrated back into Zed or
 possibly as an extension if Zed's extension API is greatly expanded.
+
+## Future questions
+
+1. When it's whole project search, how to choose the better module when
+  it's heuristic ? Maybe something like repomap's pagerank?
+
+2. Should the shim supervise and restart the proper LSP when it dies,
+  instead of just exiting and letting the editor deal with it? The shim
+  already holds authoritative text for every open document, so replaying
+  state into a fresh server is nearly free, and it could serve heuristics
+  through the whole gap. rust-analyzer restarts on Cargo.toml edits often
+  enough that this might be the most noticeable feature. The cost is
+  owning restart policy and backoff, which is real machinery.
+
+3. **Should eager answering extend to `Slow`?** The health model can
+   distinguish "slow" from "warming," but whether a slow-but-alive server
+   should be pre-empted depends on how well `Slow` can be detected without
+   false positives. Starting conservative.
+
+4. **How should multi-root workspaces order search scope?** Requesting
+   folder first is the obvious default, but a monorepo with many roots may
+   need the pagerank-style ranking already noted in the readme's future
+   questions.
+
+5. **Does the parse LRU need a memory ceiling separate from its entry
+   ceiling?** Probably, but the right number depends on measurements that do
+   not exist yet.

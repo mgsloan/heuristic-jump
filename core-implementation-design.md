@@ -10,7 +10,7 @@ This covers the core driver only:
 
 Out of scope for this document: the resolution logic itself, and the shared
 utilities that resolution logic is built from. Those sit behind the handler
-interface described in [Handler interface](#handler-interface), which is the
+interface described in [Handler interface](#12-handler-interface), which is the
 only part of them this document commits to.
 
 See `readme.md` for the product rationale and the success metrics. The
@@ -44,7 +44,7 @@ Concretely this means:
 
 A useful implication: the shim should be tested by recording a real editor
 session, replaying it, and asserting that every forwarded frame is identical
-except the ones deliberately intercepted. See [Testing](#testing).
+except the ones deliberately intercepted. See [Testing](#15-testing).
 
 ## 2. Process and transport model
 
@@ -66,9 +66,11 @@ reusable as a dependency: it is coupled to `gpui`, and its client model
 assumes it owns both ends of the connection.
 
 **Dependencies.** `tokio` for the runtime, `lsp-types` for the messages the
-shim actually inspects, `serde_json` for the rest, `ropey` for document text,
-`tree-sitter` for parses, `ignore` for file walking. Deliberately not a
-framework: the shim's whole job is to be a thin, predictable pipe.
+shim actually inspects, `serde_json` for the rest, Zed's `rope` (vendored, see
+[section 16](#16-workspace-layout)) for document text, `tree-sitter` for
+parses, `ignore` for file walking, `notify` for the optional watcher.
+Deliberately not a framework: the shim's whole job is to be a thin,
+predictable pipe.
 
 ### Task layout
 
@@ -178,11 +180,19 @@ has no root, no sync kind, and no encoding, so it cannot be correct.
 
 This is the highest-risk correctness detail in the whole driver.
 
-LSP positions are UTF-16 code unit offsets by default. Tree-sitter and ropey
-work in bytes. Every position crossing the boundary needs conversion, and the
-bugs it produces are the worst kind: invisible on ASCII, wrong by a few
-columns on any line containing a non-ASCII character, and therefore wrong
-mainly in comments, string literals, and non-English codebases.
+LSP positions are UTF-16 code unit offsets by default. Tree-sitter works in
+bytes. Every position crossing the boundary needs conversion, and the bugs it
+produces are the worst kind: invisible on ASCII, wrong by a few columns on any
+line containing a non-ASCII character, and therefore wrong mainly in comments,
+string literals, and non-English codebases.
+
+The vendored rope makes this materially safer than it would otherwise be:
+`OffsetUtf16` and `PointUtf16` are first-class dimensions of its `TextSummary`
+alongside bytes and `Point`, so a conversion is one sum-tree cursor seek
+rather than a hand-rolled index. Below that, each 128-byte chunk carries a
+`u128` bitmap of UTF-16 boundaries resolved by popcount, so in-chunk
+conversion is nearly free. This was the main reason to vendor it — see
+[section 16](#16-workspace-layout).
 
 LSP 3.17 added negotiation: the client advertises `general.positionEncodings`
 and the server picks one in `InitializeResult.positionEncoding`. Zed currently
@@ -206,17 +216,22 @@ interface.
 
 ## 5. Document state
 
-The shim keeps a `HashMap<Url, Document>`:
+The shim keeps a `HashMap<DocumentUri, Document>`:
 
 ```rust
 struct Document {
-    text: Rope,              // ropey; O(1) clone via structural sharing
-    version: i32,            // from didChange, for ordering and staleness
-    language_id: LanguageId, // from didOpen
-    tree: Option<Tree>,      // tree-sitter; incrementally updated
-    parsed_at_version: i32,
+    text: Rope,                        // vendored zed rope, utf16-aware
+    version: DocumentVersion,          // from didChange; ordering and staleness
+    language_id: LanguageId,           // from didOpen
+    tree: Option<Tree>,                // tree-sitter; incrementally updated
+    parsed_at: Option<DocumentVersion>,
 }
 ```
+
+`parsed_at` is an `Option<DocumentVersion>` rather than a sentinel version,
+so "never parsed" and "parsed at some version" are distinguishable without a
+magic number. The vocabulary types are defined in
+[section 12](#12-handler-interface).
 
 **Open documents** are authoritative from the editor. `didOpen` inserts,
 `didChange` applies (full or incremental per the negotiated sync kind),
@@ -280,8 +295,21 @@ contents beyond the parse LRU.**
   is acceptable — it costs recall on files created in the last few seconds,
   which is a miss, not a wrong answer, and misses are cheap under the
   precision-floored metric.
-* Invalidated by a filesystem watcher (`notify`) where available, falling back
-  to a periodic rebuild. The watcher is best-effort and never blocks a query.
+* Invalidated by a filesystem watcher (`notify`) **only where watching is
+  cheap** — a workspace small enough, on a platform with a real recursive
+  watch API. Watching a large tree costs descriptors and memory and wakes the
+  shim on every build artifact write, which is the exact opposite of staying
+  out of the proper LSP's way during its startup.
+* Otherwise invalidated on demand: when a query finishes without a good
+  candidate, that is itself the signal the file list may be stale, so a
+  rescan is kicked off in the background. The query that triggered it still
+  abstains, since it cannot wait for a rescan inside the deadline, but the
+  next query on that spot sees a fresh list.
+
+  This pairs neatly with the retry protocol: a second query on the same spot
+  is already the expected path, so the rescan usually lands exactly when it
+  is needed. Rescans are debounced, so a burst of misses triggers at most one.
+* The watcher, where enabled, is best-effort and never blocks a query.
 
 Search scope is the workspace folders only. External dependency sources
 (`~/.cargo/registry` and equivalents) are excluded per the readme; this is
@@ -352,18 +380,18 @@ The shim has hidden the child's crash from the editor: the editor's server
 process (the shim) is still alive, so the editor will not restart anything.
 The shim has therefore inherited responsibility for the child's lifecycle.
 
-**v1: propagate.** On unexpected child exit, the shim logs, reports via
-`window/showMessage`, and exits with the child's status. The editor sees its
-server die and applies its own restart policy. This is the honest behaviour
-and it is much less machinery than the alternative.
+**The shim propagates child death.** On unexpected child exit it logs, reports
+via `window/showMessage`, and exits with the child's status. The editor sees
+its server die and applies whatever restart policy the user already has
+configured and understands.
 
-**v2: supervise.** The shim restarts the child, replays `initialize` and a
-synthetic `didOpen` for every open document, and serves heuristics during the
-gap. This is worth flagging now because the architecture already makes it
-nearly free: the shim holds full authoritative text for every open document,
-which is exactly the state a restarted server needs. rust-analyzer restarts on
-`Cargo.toml` edits often enough that this could end up being the feature
-users notice most.
+Supervising the child instead — restarting it, replaying state, and serving
+heuristics through the gap — is deliberately not done here; it is tracked as
+a future question in `readme.md`. The part that matters for this document is
+that nothing in the architecture forecloses it. The shim already holds full
+authoritative text for every open document, which is exactly the state a
+restarted child would need replayed into it, so the decision can be revisited
+without disturbing anything above.
 
 ## 8. Go-to-definition lifecycle
 
@@ -373,18 +401,34 @@ The protocol from the readme, stated precisely.
 
 ```rust
 struct PendingQuery {
-    editor_id: RequestId,
-    uri: Url,
-    position: BytePosition,   // already converted
-    token_span: Option<Range<usize>>,
-    doc_version: i32,
+    editor_id: EditorRequestId,
+    position: ByteOffset,     // where to actually run the query
+    spot: Spot,               // identity, for the repeat check
     arrived: Instant,
     answered_by_shim: Option<Vec<Location>>,
 }
+
+/// Query identity. Two requests are a repeat of each other exactly when
+/// their `Spot`s are equal, so the rule in the flow below is a derived
+/// `PartialEq` rather than a comparison open-coded at the call site.
+#[derive(PartialEq, Eq, Hash, Clone)]
+enum Spot {
+    /// Normal case: the position resolved to an identifier token, and any
+    /// position inside that token is the same query.
+    Token { uri: DocumentUri, span: ByteRange, version: DocumentVersion },
+    /// Fallback when no parse is available and there is no token to widen to.
+    Offset { uri: DocumentUri, at: ByteOffset, version: DocumentVersion },
+}
 ```
 
-`core` holds these keyed by `editor_id`, plus a secondary index by
-"spot" for the repeat check.
+`core` holds these keyed by `editor_id`, plus a secondary index by `Spot`
+for the repeat check.
+
+Making `Spot` an enum rather than a struct with an optional span is what lets
+the repeat rule be `==`. A struct carrying both a position and an optional
+token span cannot derive the right equality: two requests a character apart in
+the same token must compare equal, and a derived comparison over the position
+field would say otherwise.
 
 ### Flow
 
@@ -478,10 +522,19 @@ naming the correct location. When `showMessage` is also unavailable, log only.
 
 Two rules keep this from becoming an irritant:
 
-* **Do not report when the user has moved on.** If the divergent answer
-  arrives more than a few seconds after the jump, or the user has since
-  issued another definition query, suppress it. A prompt about a jump the
-  user has already recovered from is worse than silence.
+* **Report even when the user has moved on.** Late arrival is not a reason to
+  suppress. The point of the report is not just to offer a correction to
+  navigate to — it is to tell the user that something they were shown was
+  wrong. By the time the proper answer arrives they may have read the wrong
+  function, reasoned about it, or edited based on it, and staying silent
+  leaves that false belief in place. Since the proper LSP is slow exactly
+  when the shim is most active, suppressing late reports would also suppress
+  most of them.
+
+  Because a report can arrive long after the jump, it must name the jump it
+  refers to: the symbol queried and the location the shim sent them to, not
+  just the corrected location. "Heuristic jump was wrong" is meaningless two
+  minutes and several files later.
 * **Do not report near-misses that are visually identical.** If the two
   locations are in the same file within a line or two, the user is already
   looking at the right place. This maps directly onto the error severity
@@ -538,30 +591,89 @@ Scan mode also needs to *wait* for the proper LSP rather than race it —
 ground truth requires the real answer, however long it takes — so the health
 policy table must be overridable per-run.
 
+A new underlying LSP server is used for each repo.
+
 ## 12. Handler interface
 
 The seam this document commits to; everything behind it is out of scope here.
 Per the readme, dispatch is direct — no framework, no config format that
 languages must be expressed in.
 
+This trait lives in `hj-shared`, which is deliberately *not* `hj-core`. See
+[section 16](#16-workspace-layout) for why that separation matters.
+
+### Vocabulary types
+
+`hj-shared` newtypes the primitives rather than passing bare integers and
+strings across the seam. Almost every value here is an offset, an index, or an
+identifier, and those are exactly the things that silently substitute for each
+other.
+
+```rust
+/// Byte offset into a document. Never a UTF-16 offset — those are
+/// converted at the edge and this type is the proof.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ByteOffset(pub usize);
+
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+pub struct ByteRange { pub start: ByteOffset, pub end: ByteOffset }
+
+/// LSP document version, from didOpen/didChange.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DocumentVersion(pub i32);
+
+/// Interned LSP `languageId`. Only ids some registered handler declared
+/// exist, so an unknown language cannot be constructed at all.
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+pub struct LanguageId(&'static str);
+
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+pub struct FileExtension(&'static str);
+
+/// Normalized document URI, so URI comparison is not string comparison
+/// with percent-encoding and case rules smuggled in.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct DocumentUri(Url);
+
+/// Request id as it arrived from the editor. Distinct from the shim's own
+/// outgoing ids, which cannot be confused with it.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct EditorRequestId(NumberOrString);
+
+/// Invariant: 0.0..=1.0, enforced by the constructor.
+#[derive(Copy, Clone, PartialEq, PartialOrd)]
+pub struct Confidence(f32);
+```
+
+### The trait
+
 ```rust
 pub trait LanguageHandler: Send + Sync {
-    fn language_ids(&self) -> &'static [&'static str];
+    /// LSP `languageId` values, for open documents.
+    fn language_ids(&self) -> &'static [LanguageId];
+
+    /// File extensions, for candidate files found by search. Closed files
+    /// arrive as a bare path with no languageId attached.
+    fn file_extensions(&self) -> &'static [FileExtension];
+
+    /// The tree-sitter grammar, supplied at runtime so that `hj-core` can
+    /// maintain its parse cache without depending on any grammar crate.
+    fn grammar(&self) -> tree_sitter::Language;
 
     fn goto_definition(&self, q: &Query<'_>) -> Outcome;
 }
 
 pub struct Query<'a> {
-    pub doc: &'a DocumentSnapshot,   // rope + tree, immutable
-    pub position: BytePosition,
-    pub project: &'a ProjectView<'a>, // file list, workspace roots, disk reads
+    pub doc: &'a DocumentSnapshot,       // rope + tree, immutable
+    pub position: ByteOffset,
+    pub project: &'a dyn ProjectView,    // file list, roots, scoped reads
     pub deadline: &'a Deadline,
 }
 
 pub enum Outcome {
     Committed {
         locations: Vec<Location>,
-        confidence: f32,
+        confidence: Confidence,
         stratum: Stratum,
     },
     Abstain { reason: AbstainReason, stratum: Stratum },
@@ -575,10 +687,19 @@ Notes on the shape:
   it should not share a type with "something went wrong."
 * **`Stratum` is reported on both arms**, because coverage per stratum is
   meaningless without knowing which stratum the abstentions belonged to.
-* **`confidence` exists now** even though only logged in v1, because the
+* **`Confidence` exists now** even though only logged in v1, because the
   readme's future work item on marking heuristic results with a probability
   estimate needs it, and retrofitting a confidence notion into handlers that
-  were written without one means revisiting every resolution path.
+  were written without one means revisiting every resolution path. It is a
+  newtype rather than a bare `f32` so the 0.0..=1.0 invariant is checked once
+  in the constructor instead of assumed at every comparison — and so that a
+  confidence can never be silently swapped with a score, a threshold, or a
+  latency.
+* **`LanguageId` and `FileExtension` are interned, not strings.** A handler
+  declares its ids as consts; the driver resolves an incoming LSP `languageId`
+  against the registry and gets `Option<LanguageId>`. Unknown languages fail
+  to resolve at the boundary rather than travelling inward as a string that
+  matches nothing, and lookup becomes pointer comparison.
 * **Handlers get a snapshot, not a lock.** `DocumentSnapshot` holds cloned
   `Rope` and `Tree` handles, both O(1) via structural sharing, so the core
   actor is never blocked by a running handler.
@@ -587,6 +708,15 @@ Notes on the shape:
   within a query, and account I/O against the deadline.
 * **Handlers are `Send + Sync` and re-entrant.** The same handler serves
   concurrent queries; per-query mutable state lives in locals.
+* **`grammar()` is what keeps `hj-core` language-free.** The driver needs to
+  parse — for the parse cache in [section 5](#5-document-state) and the
+  token-span check in [section 8](#8-go-to-definition-lifecycle) — but
+  `tree_sitter::Language` is a runtime value, so the grammar arrives through
+  the registry rather than through a `tree-sitter-<lang>` build dependency.
+  Without this, `hj-core` would have to depend on every language crate, which
+  is exactly the edge the workspace layout forbids.
+* **`ProjectView` is a trait, not a struct.** Handlers consume it; `hj-core`
+  implements it, because the file list cache and scope rules live there.
 
 ## 13. Parallel dispatch and resource limits
 
@@ -659,15 +789,105 @@ shim is responsible for something.
 * **Fuzz the frame codec**, including split reads, oversized headers, and
   bogus `Content-Length`.
 
-## 16. Module layout
+## 16. Workspace layout
+
+A cargo workspace with `crates/` for our code and `vendor/` for copied-in Zed
+crates, kept separate so provenance and licensing stay obvious.
 
 ```
-src/
-  main.rs           argv parsing, child spawn, task wiring
+Cargo.toml              workspace root
+vendor/
+  rope/                 copied from zed, GPL-3.0-or-later
+  sum_tree/             copied from zed, Apache-2.0
+  util/                 cut down to only what rope needs
+crates/
+  hj-shared/            handler trait + query/outcome types
+  hj-resolve/           shared resolution utilities
+  hj-lang-rust/         one crate per language
+  hj-lang-python/
+  hj-lang-typescript/
+  hj-core/              the LSP driver
+  hj-cli/               the binary
+```
+
+### The dependency graph
+
+The shape is dictated by one rule from the outset: **`hj-core` must not depend
+on any language crate.** Wiring happens in `hj-cli`.
+
+```
+             hj-shared  <-- rope, tree-sitter, lsp-types
+            /    |    \
+           /     |     \
+  hj-resolve     |      hj-core  <-- tokio, ignore, notify, serde_json
+           \     |          |
+       hj-lang-* /          |
+             \              |
+              \             |
+               +--> hj-cli <+
+```
+
+Every edge, and why:
+
+* **`hj-shared` depends on nothing of ours.** The shared vocabulary: it holds
+  `LanguageHandler`, `Query`, `Outcome`, `Stratum`, `Deadline`,
+  `DocumentSnapshot`, and the `ProjectView` trait — types every other crate
+  needs to talk about, and no behaviour. Its own dependencies are just `rope`,
+  `tree-sitter`, and `lsp-types` for `Location`/`Url`.
+* **`hj-resolve` depends on `hj-shared`.** The shared *resolution* utilities —
+  search, candidate filtering, and so on. Distinct from `hj-shared` in that
+  this is code languages call, not types they are described in. Out of scope
+  for this document beyond its position in the graph.
+* **`hj-lang-*` depend on `hj-shared` and `hj-resolve`**, plus their own
+  `tree-sitter-<lang>` grammar crate. Nothing depends on them except
+  `hj-cli`.
+* **`hj-core` depends on `hj-shared` only.** Everything in sections 1 through 15
+  lives here. It is generic over the handler set.
+* **`hj-cli` depends on `hj-core` and every `hj-lang-*`.** It is the single
+  place where the language list is enumerated:
+
+```rust
+fn main() -> anyhow::Result<()> {
+    let registry = HandlerRegistry::new(vec![
+        Arc::new(hj_lang_rust::Handler::new()),
+        Arc::new(hj_lang_python::Handler::new()),
+        Arc::new(hj_lang_typescript::Handler::new()),
+    ]);
+    hj_core::run(registry, std::env::args_os().skip(1))
+}
+```
+
+### Why `hj-shared` is separate from `hj-core`
+
+The trait could have lived in `hj-core` — languages would depend on `hj-core`,
+`hj-core` would depend on no language, and the stated rule would still hold.
+It is split anyway, for two reasons:
+
+* **Compile times.** Otherwise every language crate transitively pulls in
+  tokio, the codec, and the whole proxy just to implement one trait, and every
+  edit to the proxy rebuilds every language crate. With ten languages that
+  dominates the edit-test loop.
+* **It keeps the rule honest.** With `hj-core` at the bottom of the graph,
+  "handlers may as well reach into the driver for this one thing" is always
+  one import away. With `hj-shared` at the bottom and `hj-core` a sibling, the
+  layering violation does not typecheck.
+
+### Adding a language
+
+New `crates/hj-lang-<x>/` depending on `hj-shared` + `hj-resolve` + its grammar,
+implementing `LanguageHandler`; then one line in `hj-cli`. Nothing else in the
+workspace changes. That is the whole cost, and keeping it at that is the point
+of the graph above.
+
+### Module layout inside `hj-core`
+
+```
+crates/hj-core/src/
+  lib.rs            run(), task wiring, child spawn
   codec.rs          Content-Length framing, raw frame type
   router.rs         classification, forwarding, id namespacing
-  core/
-    mod.rs          the actor: event loop, state ownership
+  actor/
+    mod.rs          the event loop, state ownership
     pending.rs      PendingQuery table, spot index, cancellation
     health.rs       ServerHealth, signals, policy table
     adapters.rs     optional per-server signal hooks
@@ -677,10 +897,10 @@ src/
     encoding.rs     UTF-16 / UTF-8 / byte offset conversion
   project/
     files.rs        ignore-crate walk, file list cache, watcher
-    view.rs         ProjectView: scoped disk reads, per-query cache
+    view.rs         ProjectView impl: scoped disk reads, per-query cache
   dispatch/
     pool.rs         bounded worker pool, deadline enforcement
-    handler.rs      LanguageHandler trait, Query, Outcome, Stratum
+    registry.rs     languageId / extension -> handler, grammar lookup
   report/
     diverge.rs      showMessageRequest / showDocument reporting
     trace.rs        JSONL metric records
@@ -690,31 +910,46 @@ src/
     batch.rs        scan-mode harness
 ```
 
-Language handlers live outside this tree entirely, depending only on
-`dispatch::handler`.
+### Vendoring the Zed crates
 
-## 17. Open questions
+`vendor/rope` and `vendor/sum_tree` are copied, not git-depended: the workspace
+sets `publish = false`, so they are not on crates.io, and pinning a rev of a
+monorepo crate with no semver guarantee is worse than owning a copy.
 
-1. **Is "same identifier token" the right definition of a repeat?** It is more
-   forgiving than exact position and less forgiving than same-line. A user
-   who triggers go-to-definition twice on adjacent identifiers gets two
-   independent queries, which seems right, but this is worth checking against
-   real usage traces.
+The coupling to the rest of Zed is far smaller than `rope/Cargo.toml`
+suggests. It lists `util` and `ztracing`, but uses exactly three items:
 
-2. **Should eager answering extend to `Slow`?** The health model can
-   distinguish "slow" from "warming," but whether a slow-but-alive server
-   should be pre-empted depends on how well `Slow` can be detected without
-   false positives. Starting conservative.
+* `util::is_utf8_char_boundary` — a one-line `pub const fn`
+  (`crates/util/src/util.rs:55`)
+* `util::debug_panic` — a small macro
+* `ztracing::instrument` — an attribute macro
+* plus `util::RandomCharIter` in tests
 
-3. **How should multi-root workspaces order search scope?** Requesting
-   folder first is the obvious default, but a monorepo with many roots may
-   need the pagerank-style ranking already noted in the readme's future
-   questions.
+Vendoring `util` whole would drag in `async_zip`, `rust-embed`, `schemars`,
+`regex`, and `gpui_util` to support a text data structure. So **`vendor/util`
+is cut down to only those items** — on the order of sixty lines.
 
-4. **Does the parse LRU need a memory ceiling separate from its entry
-   ceiling?** Probably, but the right number depends on measurements that do
-   not exist yet.
+The important part is that it keeps the crate name `util` and the same paths.
+That way `rope`'s `use util::...` lines are untouched and **`rope` needs no
+patching at all for this**, which keeps re-syncing against upstream a clean
+diff rather than a merge. Trimming the dependency is strictly better than
+rewriting the dependent.
 
-5. **Should scan mode reuse one long-lived child, or restart per repository?**
-   Reuse is far faster; restart is more reproducible. Ground truth arguably
-   wants reproducibility.
+`ztracing` is not vendored. Its `instrument` is either `tracing::instrument`
+or a no-op passthrough depending on a cfg, and `rope` already depends on
+`tracing`, so the one import is redirected there. That is a single-line patch
+to `rope`, recorded as such.
+
+`sum_tree` needs no patching. Its `tree_map.rs` is unused here and can be
+dropped; a whole-file deletion still leaves a clean diff.
+
+`vendor/README.md` records, per crate, the upstream revision it was taken at,
+the exact patches applied, and — for `util` — the list of items kept, so that
+a future re-sync can tell at a glance whether upstream changed anything that
+matters.
+
+**Licensing consequence, stated plainly:** `rope` is GPL-3.0-or-later, so the
+resulting binary is GPL-3.0-or-later. `sum_tree` is Apache-2.0. This is a
+project-level commitment that follows from vendoring, not a detail — it means
+no part of this workspace can later be offered as a permissively licensed
+library.
