@@ -7,6 +7,8 @@ Build out only the parts of core needed for implementing `measure_core` and
 
 This should also define an instantiable template for the language crates. The default handler should just return definition not found.
 
+This phase also does rope-modifications.md
+
 # 1: Repo collection
 
 Collect repos for the following languages: C, CPP, Go, Javascript, Typescript/TSX, Rust, Python

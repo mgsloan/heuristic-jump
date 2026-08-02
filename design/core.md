@@ -21,12 +21,12 @@ utilities that resolution logic is built from. Those sit behind the handler
 interface described in [Handler interface](#12-handler-interface), which is the
 only part of them this document commits to.
 
-See `readme.md` for the product rationale and the success metrics. The
+See `high-level.md` for the product rationale and the success metrics. The
 metrics constrain this design in three concrete ways, noted where they bite:
 the latency budget (p50 <= 50ms, p99 <= 400ms, hard cap 750ms), the abstention
 path, and the per-stratum reporting requirement.
 
-**On precision.** `readme.md` places its >=97% precision floor in future work.
+**On precision.** `high-level.md` places its >=97% precision floor in future work.
 v1 answers whenever the handler has a candidate and **measures** precision
 rather than gating on it; the headline number is plain coverage. The
 difference shows up in three places — abstention exists for *latency and emptiness*, not for low
@@ -86,7 +86,7 @@ and a different one takes its place. See
 the command line of the proper server. The separator is **required**: it is
 POSIX's own stop-parsing marker, so the child's arguments — `--help` and
 `--version` among them — reach it byte-for-byte with no argument parser
-guessing where our flags end and its begin. `dependency-plan.md` §11 has the
+guessing where our flags end and its begin. `deps.md` §11 has the
 flag list and the verification that this holds. The shim:
 
 * Speaks LSP over its own stdin/stdout. From the editor's point of view the
@@ -110,7 +110,7 @@ pool, `serde` and `serde_json` for the messages the shim actually inspects
 [section 16](#16-workspace-layout)) for document text, `tree-sitter` for
 parses, `ignore` for file walking, `notify` for the optional watcher.
 Deliberately not a framework: the shim's whole job is to be a thin,
-predictable pipe. `dependency-plan.md` settles each of these and records what
+predictable pipe. `deps.md` settles each of these and records what
 was rejected.
 
 **No async runtime.** Every thread below is either a blocking read or write on
@@ -119,7 +119,7 @@ improves. Deadlines are already cooperative rather than timer-driven
 ([section 9](#9-deadlines-and-abstention)), the file walker and the watcher are
 thread-based, and a scheduler between our bytes and the pipe is the opposite of
 the prime invariant. The structure below maps onto async tasks mechanically if
-child supervision (`readme.md` future question 7) ever makes one worthwhile.
+child supervision (`open-questions.md` question 7) ever makes one worthwhile.
 
 ### Thread layout
 
@@ -639,7 +639,7 @@ every message shape has to be understood, and the ones you cannot track get
 discarded.
 
 Two future changes would forfeit this. Supervising and restarting the child
-(future question 3 in `readme.md`) means the editor's ids outlive the child's
+(future question 3 in `high-level.md`) means the editor's ids outlive the child's
 id space, so post-restart ids need remapping. Multiplexing would mean it too.
 Neither is planned; both should be understood as giving up a property, not
 just adding a feature.
@@ -816,7 +816,7 @@ Whole-project search needs a file list, and this is the one place where "no
 index" needs a stated boundary.
 
 There is no *symbol* index — no persisted map from name to definition sites,
-which is the thing the readme rules out and the thing that would cost
+which is the thing `high-level.md` rules out and the thing that would cost
 startup CPU and invalidation complexity. But a cold directory walk of a large
 repository can take hundreds of milliseconds on its own, which would consume
 the entire budget before a single file is read. So:
@@ -825,7 +825,7 @@ the entire budget before a single file is read. So:
 contents beyond the parse LRU.**
 
 * Built with the `ignore` crate, the same walker ripgrep uses, so `.gitignore`
-  is respected for free. This directly implements the readme's decision that
+  is respected for free. This directly implements `high-level.md`'s decision that
   gitignored files are out of scope.
 * Built in-process rather than by shelling out to ripgrep: subprocess spawn
   plus pipe overhead is a meaningful fraction of a 50ms p50 target, and
@@ -851,13 +851,13 @@ contents beyond the parse LRU.**
 * The watcher, where enabled, is best-effort and never blocks a query.
 
 Search scope is the workspace folders only. External dependency sources
-(`~/.cargo/registry` and equivalents) are excluded per the readme; this is
+(`~/.cargo/registry` and equivalents) are excluded per `high-level.md`; this is
 also what keeps the walk small enough for the no-index approach to be viable
 at all.
 
 ## 7. Server health model
 
-The readme calls for modelling availability from whatever information is on
+`high-level.md` calls for modelling availability from whatever information is on
 hand, rather than only tracking whether a request is outstanding. The state:
 
 ```rust
@@ -1001,7 +1001,7 @@ request-pendency, and they are most of the practical value of doing so. If the
 server is provably still indexing, making the user press go-to-definition
 twice to discover what the shim already knows is pure friction. Conversely
 when the server is `Ready`, waiting costs almost nothing and the proper answer
-arrives; the readme's retry rule handles the occasional slow query.
+arrives; `high-level.md`'s retry rule handles the occasional slow query.
 
 The `Unresponsive` row differs in its abstention behaviour and is explained
 in [section 9](#9-deadlines-and-abstention).
@@ -1010,7 +1010,7 @@ There is no `Dead` state: child exit means the shim exits too (see below), so
 there is no interval worth modelling in which the child is gone and the shim
 is still answering. There is likewise no `Slow` state — a state that selects
 the same policy as `Ready` is weight without effect. Whether a slow-but-alive
-server should be pre-empted is a future question in `readme.md`; the state
+server should be pre-empted is a future question in `high-level.md`; the state
 can come back if that answer is yes.
 
 ### Child death
@@ -1026,7 +1026,7 @@ configured and understands.
 
 Supervising the child instead — restarting it, replaying state, and serving
 heuristics through the gap — is deliberately not done here; it is tracked as
-a future question in `readme.md`. The part that matters for this document is
+a future question in `high-level.md`. The part that matters for this document is
 that nothing in the architecture forecloses it. The shim already holds full
 authoritative text for every open document, which is exactly the state a
 restarted child would need replayed into it, so the decision can be revisited
@@ -1034,7 +1034,7 @@ without disturbing anything above.
 
 ## 8. Go-to-definition lifecycle
 
-The protocol from the readme, stated precisely.
+The protocol from `high-level.md`, stated precisely.
 
 ### State
 
@@ -1141,7 +1141,7 @@ in, so a widened retry is compared against an un-widened original.
    with a still-pending query, dispatch to the handler. Otherwise do nothing
    and let the child answer.
 4. **Handler returns.** On `Committed`, answer *every* pending query at that
-   spot — the repeat and the original — as the readme specifies, and mark
+   spot — the repeat and the original — as `high-level.md` specifies, and mark
    each `answered_by_shim`. On `Abstain`, see [section 9](#9-deadlines-and-abstention).
 5. **Child responds later.** `writer:editor` drops it, since it has already
    emitted a response for that id, and tells `core` which answer actually
@@ -1166,8 +1166,8 @@ answered; this is harmless and must not be treated as an error.
 
 The hard cap is enforced by the driver, not trusted to the handler.
 
-**The cap is configurable**, via `--deadline-ms` (`dependency-plan.md` §11).
-It defaults to **750ms proxying** — the readme's number — and **2000ms in
+**The cap is configurable**, via `--deadline-ms` (`deps.md` §11).
+It defaults to **750ms proxying** — `high-level.md`'s number — and **2000ms in
 standalone**, where an abstention costs the user the answer entirely rather
 than a wait they were already having
 ([section 17.6](#176-the-budgets-change-because-what-they-are-traded-against-changed)).
@@ -1177,7 +1177,7 @@ in effect.
 **The deadline is absolute and starts at request arrival**, not at handler
 entry. Queueing time counts. A handler that gets the full budget of wall clock
 but started 200ms late has already blown it from the user's point of view, and
-the metric in the readme measures the user's point of view.
+the metric in `high-level.md` measures the user's point of view.
 
 **Cancellation must be cooperative.** Wrapping CPU-bound work in a timeout
 does not stop the work; it only stops waiting for it, leaving a thread burning
@@ -1276,7 +1276,7 @@ number that gets measured stop being the same number.
 The 3-line tolerance is deliberate: at that distance the correct definition is
 on screen and the user is already reading it, so scoring it as wrong would
 measure something nobody experiences as wrong. The tiers below it are the
-error severity classes `readme.md` reports, and are what a future budget would
+error severity classes `high-level.md` reports, and are what a future budget would
 be attached to.
 
 ### Both sides are sets
@@ -1287,10 +1287,10 @@ one location.
 The child's side never was: when it returns several, agreement means matching
 *any* of them, because the LSP is itself expressing ambiguity and picking one
 of its own candidates is not an error. The shim's side is now a set too —
-`readme.md` decides that indistinguishable candidates are all returned, ranked
+`high-level.md` decides that indistinguishable candidates are all returned, ranked
 — so the predicate needs a rule for set against set, and the obvious one is
 wrong. "Any of ours matches any of theirs" is a predicate that improves
-monotonically as the shim returns more, which is the flaw `readme.md` rejects
+monotonically as the shim returns more, which is the flaw `high-level.md` rejects
 plain match rate for, reappearing inside the classifier.
 
 So the pairwise table is applied twice, against the child's whole set:
@@ -1329,7 +1329,7 @@ secondary nicety; here it is load-bearing, and it should be built and tested
 as such rather than left until last.
 
 When the shim answered heuristically and the child's later answer does not
-match, the readme calls for notifying the user. Base LSP has no
+match, `high-level.md` calls for notifying the user. Base LSP has no
 server-initiated navigation, but LSP 3.16's `window/showDocument` is exactly
 the right tool: it asks the client to display a location, with an optional
 selection range.
@@ -1411,7 +1411,7 @@ One further rule:
 ## 11. Observability and the corpus scan
 
 The driver is the only component that sees both the heuristic answer and the
-proper answer, so it owns the measurement of every metric in the readme.
+proper answer, so it owns the measurement of every metric in `high-level.md`.
 
 Each query emits one JSONL record once both answers are known (or the query is
 resolved as abstained):
@@ -1443,7 +1443,7 @@ driver classifies `agreement` and `severity`, since only it has both answers.
 
 `heuristic_locations` is **ordered**, and `returned` is its length —
 redundant, and worth carrying anyway, because the result-count distribution is
-one of the three numbers `readme.md` requires and computing it by measuring an
+one of the three numbers `high-level.md` requires and computing it by measuring an
 array length in every consumer is how a metric acquires two definitions.
 `truncated_list` says the ranked list hit the cap, which is the difference
 between "this is everything" and "this is the best of more than we will show"
@@ -1459,7 +1459,7 @@ could never have had an `agreement`.
 
 ### The corpus scan is a separate program
 
-The scan in the readme's development plan is **not** a mode of the shim. It is
+The scan in `high-level.md`'s development plan is **not** a mode of the shim. It is
 its own crate — `measure_core`, plus a four-line `measure_<lang>` binary per
 language, below. `driver` has no batch path, no transport abstraction, and no
 awareness that any of it exists.
@@ -1528,7 +1528,7 @@ things go wrong with that, and the third is the one that matters:
 * **Fault coupling.** A language crate that does not compile takes every other
   language's metrics down with it, including languages nobody has touched.
 * **It defeats the isolation the parallel-tuning plan depends on.**
-  `implementation-loop-design.md` runs one session per language, each confined
+  `implementation-loop.md` runs one session per language, each confined
   to its own crate. Confinement that still requires the other crates to build
   is not confinement; it just moves the coupling into the build graph where it
   is harder to see. A language must be measurable entirely on its own.
@@ -1596,7 +1596,7 @@ Constraints that make a replay trustworthy:
   parse counts that go with it. Same abstention behaviour, same truncation
   points, same answer, every time, on any machine. Choosing the surrogate
   budget that corresponds to a given wall-clock deadline is a calibration —
-  `resolution-design.md` open question 13 is exactly this question — and it
+  `resolution.md` open question 13 is exactly this question — and it
   is measured once rather than re-derived per run.
 * **Only the heuristic side is re-measured, and its timing is an observation,
   not a control input.** `heuristic_latency_us` is recorded during replay
@@ -1604,7 +1604,7 @@ Constraints that make a replay trustworthy:
   the run branches on it. It is therefore the one field in the record that a
   replay does not reproduce exactly, and the one that needs a quiet machine
   to mean anything. `lsp_latency_us` comes from `collect` and is a property
-  of the frozen truth — which is exactly what the readme's value weighting
+  of the frozen truth — which is exactly what `high-level.md`'s value weighting
   wants, since it is a fact about how slow the real server was, not about
   this run.
 * **Replay measures the handler, not the driver**, same as `collect` — the
@@ -1633,7 +1633,7 @@ Two consequences.
 
 **Every metric is per (language, server).** There is no aggregate across
 servers, in the same way and for the same reason that
-[the readme](readme.md#stratification) refuses a single rolled-up number
+[`high-level.md`](high-level.md#stratification) refuses a single rolled-up number
 across strata: the mix is not a fact about the tool. `heuristic-jump --
 pyright` and `heuristic-jump -- pylsp` are different products with different
 scores, and reporting their average would describe neither.
@@ -1654,11 +1654,11 @@ separately optimisable — a profile change cannot affect another server's
 numbers, and a shared-logic change is evaluated where the servers do not
 disagree about the answer. It also produces a free finding: the set of
 positions where servers differ is, in practice, a map of where re-export and
-alias chains matter, which `resolution-design.md` open question 9 says it
+alias chains matter, which `resolution.md` open question 9 says it
 needs data on before deciding whether to follow them.
 
 **The profile must not become a per-language configuration format.**
-`resolution-design.md` §1.2 and §9 rule that out, and a struct of behaviour
+`resolution.md` §1.2 and §9 rule that out, and a struct of behaviour
 knobs is precisely the shape it would take. The rule is the same one §9
 applies to sharing generally: it starts empty, and a knob is added only when the
 corpus shows a systematic divergence that a knob would fix. Nothing is
@@ -1705,11 +1705,11 @@ Three reasons for the split, in ascending order of importance:
   corpus on every iteration, the held-out corpus rarely — so they have no
   reason to share a directory.
 * **Separate roots make held-out isolation a path check rather than a
-  convention.** The readme's development plan holds repositories back
+  convention.** The `high-level.md`'s development plan holds repositories back
   precisely because tuning sessions will otherwise learn them, and a rule that
   says "do not look at these subdirectories" is enforced by whoever remembers
   it. A rule that says "this session is given one path and never the other" is
-  enforced by not having the path. `implementation-loop-design.md` §12 relies
+  enforced by not having the path. `implementation-loop.md` §12 relies
   on this being a filesystem boundary.
 
 `--corpus <dir>` on both subcommands; no default, because a defaulted corpus
@@ -1718,7 +1718,7 @@ path is one that eventually points at the wrong one.
 ## 12. Handler interface
 
 The seam this document commits to; everything behind it is out of scope here.
-Per the readme, dispatch is direct — no framework, no config format that
+Per `high-level.md`, dispatch is direct — no framework, no config format that
 languages must be expressed in.
 
 This trait lives in `shared`, which is deliberately *not* `driver`. See
@@ -1866,7 +1866,7 @@ Notes on the shape:
   meaningless without knowing which stratum the abstentions belonged to.
 * **`Confidence` exists now** even though nothing compares it against a
   threshold in v1. It is recorded on every answer and never gates one. Two
-  reasons it is not deferred along with the floor: the readme's future work
+  reasons it is not deferred along with the floor: `high-level.md`'s future work
   item on marking heuristic results with a probability estimate needs it, and
   — more importantly — a floor can only be *derived* from
   `(stratum, confidence, agreed?)` triples that were collected while nothing
@@ -1919,12 +1919,12 @@ Notes on the shape:
   inspection: an in-memory one for tests is ruled out by `CLAUDE.md`'s
   no-unit-tests rule, since fixtures are real directories on disk; standalone
   and proxy share scope rules exactly; and multi-root ordering
-  ([readme](readme.md) question 8) is configuration, not polymorphism. A trait
+  ([`open-questions.md`](open-questions.md) question 8) is configuration, not polymorphism. A trait
   with one impl on a per-file-read hot path is a vtable and an indirection
   bought with a guess about the future.
 
   Its dependency on `ignore` moves to `shared` with it — see
-  `dependency-plan.md` §7.
+  `deps.md` §7.
 * **`ServerProfile` is data, not a trait, and it is distinct from
   `ServerAdapter`.** Two different things are keyed by the same server
   identity and it is worth keeping them apart: `ServerAdapter`
@@ -2155,7 +2155,7 @@ Every edge, and why:
   precisely because it spans crates: a handler's failures and the driver's are
   variants of the same enum, which is what lets
   [section 14](#14-failure-handling)'s response table be an exhaustive match
-  rather than a set of string comparisons. `dependency-plan.md` section 10
+  rather than a set of string comparisons. `deps.md` section 10
   gives the shape and the rules that keep it closed — no `Other(String)`, no
   boxed variant, foreign `io`/`serde_json` errors only as `#[source]` beside
   our own typed context. Abstention is emphatically not in it: `Outcome` and
@@ -2163,13 +2163,13 @@ Every edge, and why:
   [section 12](#12-handler-interface).
 * **`similarity` depends on `shared`, and is frozen.** It holds only what is
   ported from the prior implementation — `Occurrences`, `IdentifierParts`, and
-  path–namespace scoring (`resolution-design.md` §5). Nothing is added to it
+  path–namespace scoring (`resolution.md` §5). Nothing is added to it
   during phase 2. It is a body of known-good code that exists before any
   language does, which is why it can be shared without creating the churn that
   a growing shared library would.
 * **There is no other shared resolution code until phase 3.** Two languages
   that need the same helper each write their own, and the duplication is left
-  standing. This is the rule `resolution-design.md` §9 argues for — sharing
+  standing. This is the rule `resolution.md` §9 argues for — sharing
   derived from working handlers rather than predicted — carried to its
   conclusion: with per-language loops running concurrently, a shared
   resolution crate is not merely premature, it is a surface two writers would
@@ -2274,7 +2274,7 @@ instead of `usize` and `Range<usize>`, and `LineIndex` / `ByteColumn` /
 `PointUtf16`, and `TextSummary` — so the
 vocabulary survives contact with the text rather than being unwrapped at the
 boundary. It is a design decision with its own re-sync cost and its own
-document: **`vendored-rope-design.md`**. Read it before touching `vendor/`.
+document: **`rope-modifications.md`**. Read it before touching `vendor/`.
 
 Three things stated here because they change this section's own claims:
 
@@ -2318,7 +2318,7 @@ or a no-op passthrough depending on a cfg, and `rope` already depends on
 to `rope`, recorded as such.
 
 `sum_tree` needs no patching, and the newtype work in
-`vendored-rope-design.md` does not change that: `sum_tree::Dimension` is
+`rope-modifications.md` does not change that: `sum_tree::Dimension` is
 generic over the summary type, so `ByteOffset`'s impls live in `rope`. Its
 `tree_map.rs` is unused here and can be dropped; a whole-file deletion still
 leaves a clean diff.
@@ -2330,7 +2330,7 @@ matters.
 
 **Licensing consequence, stated plainly:** `rope` is GPL-3.0-or-later, so the
 shipped binary is GPL-3.0-or-later. That is a project-level commitment
-following from vendoring, not a detail, and the readme should say so.
+following from vendoring, not a detail, and `high-level.md` should say so.
 
 It does **not** follow that our own crates are GPL. `crates/*` are `MIT`:
 vendoring GPL code does not transfer copyright in code we wrote, and MIT is
@@ -2341,9 +2341,9 @@ imposes on the *combination* only.
 The point of keeping them MIT is that `rope` is the sole GPL input —
 `sum_tree` and the cut-down `util` are Apache-2.0, which is one-way compatible
 into GPL-3.0. So if `ropey` ever wins the argument in
-`dependency-plan.md` §5, the whole workspace becomes permissively licensable
+`deps.md` §5, the whole workspace becomes permissively licensable
 without relicensing a line. Relicensing later requires every contributor's
-agreement; declaring MIT now costs nothing. `dependency-plan.md` §5 has the
+agreement; declaring MIT now costs nothing. `deps.md` §5 has the
 per-crate table and the caveats.
 
 ## 17. Standalone mode
@@ -2569,8 +2569,8 @@ not.
 of this section used "ambiguous, 7 candidates" as its example, which is no
 longer a reason the shim can give: ambiguity now returns all the candidates
 rather than declining ([section 12](#the-trait),
-`resolution-design.md` §6.4). What remains is a shorter and much less
-interesting list — `resolution-design.md` §8 has it — and it is dominated by
+`resolution.md` §6.4). What remains is a shorter and much less
+interesting list — `resolution.md` §8 has it — and it is dominated by
 `NotAnIdentifier`, which fires whenever the user presses go-to-definition on a
 keyword or in whitespace. An error response for *that* is noise, and unlike the
 ambiguity case it teaches the user nothing.
@@ -2584,7 +2584,7 @@ on what editors actually render for each, which is unmeasured.
 
 ### 17.6 The budgets change, because what they are traded against changed
 
-Two of the numbers in `readme.md` are justified by the existence of a proper
+Two of the numbers in `high-level.md` are justified by the existence of a proper
 LSP, and both justifications evaporate here. Neither should be silently
 carried over.
 
@@ -2619,7 +2619,7 @@ looser, and it is the opposite of the intuitive conclusion — which is why it
 is written down now rather than rediscovered later.
 
 The mechanism for either is already in place: the commit policy is a table
-(`resolution-design.md` section 7), so a per-mode table is a data change
+(`resolution.md` section 7), so a per-mode table is a data change
 rather than a code change.
 
 ### 17.7 What this does to measurement
@@ -2653,7 +2653,7 @@ heuristic-jump [OPTIONS]                                 # standalone
 
 **There is no `--standalone` flag.** The mode is whether a server was given,
 and nothing else. `--` is required before the child command
-(`dependency-plan.md` §11), so the two forms cannot be confused.
+(`deps.md` §11), so the two forms cannot be confused.
 
 The obvious alternative is an explicit `--standalone` flag, so that a user who
 lost `-- rust-analyzer` to a shell quoting accident gets a usage error rather
@@ -2684,7 +2684,7 @@ One residual case does get a usage error: **a bare `--` with nothing after
 it.** `heuristic-jump --` is the likeliest remaining shell accident
 (`heuristic-jump -- $SERVER` with `$SERVER` unset), and unlike a bare
 `heuristic-jump` it carries positive evidence that a server was intended. It
-is rejected with "`--` given with no server command." `dependency-plan.md` §11
+is rejected with "`--` given with no server command." `deps.md` §11
 notes that clap does not catch this and it is a three-line check.
 
 ### 17.9 Testing
@@ -3034,7 +3034,7 @@ not the plan. **The consequence has to be safe.**
 This is the mechanism that makes hand-rolled types an acceptable risk, and it
 is more general than anything in 18.5: it does not care *which* modelling
 mistake occurred. It converts the entire class from "confidently wrong" to
-"abstain" — the axis the whole tool is built on, since `readme.md` prices an
+"abstain" — the axis the whole tool is built on, since `high-level.md` prices an
 abstention at approximately nothing and a wrong answer at the tool's
 credibility.
 
@@ -3060,7 +3060,7 @@ permanent one, and all three are `core`-side O(1):
   is known. It costs a read, so it belongs in a worker, off the critical path,
   and a mismatch marks the document untrusted rather than raising an error.
 
-`readme.md`'s future question 6 asks what the shim should do when the editor
+`high-level.md`'s future question 6 asks what the shim should do when the editor
 misbehaves — `didOpen` for an already-open document, `didChange` for one never
 opened. This is the answer to the half of that question that matters: not
 "ignore," but "stop trusting the document, keep proxying perfectly, and say so

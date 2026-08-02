@@ -68,7 +68,7 @@ is not itself loopable in any interesting sense, because there is
 nothing to measure yet.
 
 More consequentially: there is no shared resolution crate, and per
-`resolution-design.md` §9 there must not be one until working handlers
+`resolution.md` §9 there must not be one until working handlers
 exist to extract it from. Carried to its conclusion — see
 [section 13](#13-shared-code-and-when-it-may-exist) — that removes the
 shared-library coordination problem from phase 2 entirely, rather than
@@ -103,7 +103,7 @@ extracting the design documents into a machine-readable ledger.
 [[item]]
 id      = "core-3.2"
 title   = "Swallow decision belongs to writer:editor"
-doc     = "core-implementation-design.md#32-the-swallow-decision-belongs-to-writereditor"
+doc     = "core.md#32-the-swallow-decision-belongs-to-writereditor"
 owner   = "driver"
 phase   = 1
 priority = "p0"
@@ -304,7 +304,7 @@ something off. Specifically, always escalate when the change touches:
 * a metric target or budget (the latency numbers, the 97% floor, the
   error severity budgets)
 * the `LanguageHandler` seam or any vocabulary type
-* the dependency set, or anything in `dependency-plan.md` §13
+* the dependency set, or anything in `deps.md` §13
 * licensing, or `vendor/`
 * one of the numbered open questions in any document
 
@@ -324,7 +324,7 @@ report, and its count is a health metric: rising steadily means the
 loop is running ahead of its decisions and the work is getting
 speculative.
 
-**Seed the queue from what already exists.** The readme, the resolution
+**Seed the queue from what already exists.** `high-level.md`, the resolution
 design, and the vendored-rope design each end in numbered open
 questions, and those are already Class B items in everything but format.
 Converting them to decision files before the first loop runs means the
@@ -400,7 +400,7 @@ means for the loops and what its gate is.
 
 **Phase 1a — core needed for measurement.** Only the parts of core that
 `measure_core` and `measure_<lang>` require: `vendor/rope`, `sum_tree`,
-cut-down `util`, the newtype work in `vendored-rope-design.md`, `shared`
+cut-down `util`, the newtype work in `rope-modifications.md`, `shared`
 (seam, vocabulary, `ProjectView`, the client-side subset of `proto`), the
 framing codec, and `measure_core` itself. Explicitly **not** the router,
 the health model, the actor, dispatch, standalone, or divergence
@@ -421,10 +421,16 @@ select / final split decided and physically separated**
 not later: once a repository has been in the tuning corpus, moving it to
 held-out does not un-teach it.
 
+**Phase 1c — LSP installation**, concurrently. Every trustworthy server
+Zed supports for these languages, installed, pinned, and documented in
+`external-dependencies.md`. Human intervention expected; several of
+these are not a package-manager one-liner.
+
 **Phase 1.5 — ground truth collection.** Every language server on every
-repository. Depends on 1a (for `measure collect`) and 1b (for the
-repositories), which is what makes it a distinct phase rather than a
-task inside either.
+repository. Depends on all three of 1a (for `measure collect`), 1b (for
+the repositories), and 1c (for the servers), which is what makes it a
+distinct phase rather than a task inside any of them.
+[`data-collection.md`](data-collection.md) is the design.
 Gate: a `truth.jsonl` per (repository, server) with a valid provenance
 header, and `measure replay` reproducing the recorded positions.
 
@@ -436,8 +442,10 @@ under-scope: it is invisible to every other kind of accounting
 ([section 15](#15-cost-and-timing)).
 
 **Phase 2a — per-language quality loops**, one per (language, server),
-in parallel. Precision and recall only; cost metrics recorded, never
-gated.
+in parallel. Each starts by instantiating the language-crate template
+from phase 1a — whose default handler resolves nothing, so the first
+measurable point is a real zero rather than a build error. Top-1
+agreement and coverage only; cost metrics recorded, never gated.
 Gate: the frontier stops advancing, candidates are re-measured on the
 held-out corpus, and **a human picks the point**
 ([section 10](#selecting-a-version-at-a-phase-gate)).
@@ -455,6 +463,25 @@ of shared resolution code finally happens
 ([section 13](#13-shared-code-and-when-it-may-exist)), and it runs under
 an equality constraint
 ([section 10](#phase-3-is-a-refactor-under-an-exact-oracle)).
+
+**Phases 4 through 7 — the same shape, at Zed's full language set.**
+Repo collection and LSP installation (4), ground truth (5), per-language
+loops (6), whole-repository optimisation (7). Two differences in phase 6
+that matter to this document:
+
+* **The shared library now exists and is read-only.** Phase 3 created
+  it; phase 6 loops may call into it and may not change it. That
+  generalises the rule in [section 13](#13-shared-code-and-when-it-may-exist)
+  rather than contradicting it — shared resolution code is *writable*
+  only during whole-repository phases, and *readable* always. A phase 6
+  language that needs something different still writes it locally and
+  leaves the duplication for phase 7.
+* **Parallelism has to be bounded.** Seven languages in parallel is one
+  thing; Zed's full set is another, and the limit is the machine rather
+  than the design. The scheduler runs a fixed pool of concurrent loops
+  and rotates languages through it, which changes nothing about
+  isolation and everything about wall-clock estimates
+  ([section 15](#15-cost-and-timing)).
 
 ### Why 2a and 2b in parallel is safe
 
@@ -568,7 +595,7 @@ judgment at all: replay the corpus before and after, compare outcomes
 byte for byte, and the answer is yes or no.
 
 It is implementable precisely because of two earlier decisions.
-`resolution-design.md` §11 requires the handler to be deterministic, and
+`resolution.md` §11 requires the handler to be deterministic, and
 [section 9](#determinism-is-a-precondition-not-a-description) requires
 replay to enforce budgets by work rather than wall clock. Without the
 second, "the outputs did not change" would be a statistical claim about
@@ -584,7 +611,7 @@ So the gate is:
   report for approval rather than blocking.
 
 The record already carries a `truncated` flag
-(`resolution-design.md` §11), so this is mechanical rather than a
+(`resolution.md` §11), so this is mechanical rather than a
 judgment call about which differences are the good kind.
 
 **What this does to the frontier.** It mostly retires it. If quality
@@ -605,7 +632,8 @@ Every iteration appends one row to `state/metrics/<language>.jsonl`, in
 both regimes:
 
 ```
-commit, phase, per-stratum {coverage, precision, n},
+commit, phase, per-stratum {coverage, top1, contained, result-count
+distribution, n},
 work counters (bytes read, files parsed, nodes visited),
 measure_<lang> stripped size, lang_<lang> crate contribution,
 LOC per crate, test count
@@ -708,10 +736,28 @@ The discipline that makes it useful is **keeping it to two axes**. With
 four or more objectives, non-domination becomes nearly free — almost
 every point is on the frontier and the concept stops selecting anything.
 
-**The frontier is a phase 2a object: precision × recall.** The classic
-pair, and the right one — the readme is explicit that coverage alone can
-be improved by guessing more, so recall without precision on the other
-axis is a metric with a trivial exploit.
+**The frontier is a phase 2a object: top-1 agreement × coverage.**
+
+Which of the three quality numbers goes on the axis is decided by the
+same criterion that rejected plain match rate: **it must not be
+improvable by answering more.** `high-level.md` now returns every
+plausible candidate as a ranked list, which gives three numbers instead
+of one, and only one of them survives that test.
+
+* **Top-1 agreement** — the first location matches. Returning more
+  candidates cannot improve it. This is the axis.
+* **Containment** — the answer is somewhere in the list. Rises
+  monotonically with list length, so as an objective it is the old flaw
+  wearing new clothes.
+* **Result count** — the price of containment.
+
+So containment and result count are *reported beside* the frontier and
+never on it, the same treatment latency and LOC get for the same kind of
+reason. A point that raises containment by lengthening lists is not a
+frontier advance and must not read as one.
+
+The list cap (`open-questions.md` question 13) is a constraint, like the
+latency budget: enforced, reported, not optimised.
 
 Phase 3 has no frontier of its own, because it may not move quality at
 all ([above](#phase-3-is-a-refactor-under-an-exact-oracle)). It has one
@@ -724,7 +770,7 @@ Two things stay off the axes deliberately:
   converts it: past the hard cap a query abstains, so blown latency
   *spends itself as lost recall* and is already visible on the quality
   axis. Putting it on a third axis double-counts it. Gate it against
-  the readme's budgets, report the percentiles, and leave it there.
+  `high-level.md`'s budgets, report the percentiles, and leave it there.
 * **LOC is not on the frontier.** It correlates with binary size, it is
   gameable by formatting, and what it is really a proxy for —
   maintainability — is not something a frontier can see. Report it;
@@ -844,7 +890,7 @@ ignored.
 
 ## 12. Held-out integrity
 
-The readme's development plan holds out 2-3 repositories per language
+The `high-level.md`'s development plan holds out 2-3 repositories per language
 and calls the tuned/held-out gap the overfitting signal. Under
 autonomous loops this needs teeth, because "learning a particular
 repo's conventions is the default outcome rather than a risk" is
@@ -900,7 +946,7 @@ is a seam that erodes.
 
 **`similarity` is ported and frozen.** Only what comes across from the
 prior implementation — `Occurrences`, `IdentifierParts`, path–namespace
-scoring (`resolution-design.md` §5). It can be shared during phase 2
+scoring (`resolution.md` §5). It can be shared during phase 2
 precisely because it is *not* being written during phase 2: it is a
 known-good body of code that predates every language crate, so it
 generates no churn and no cross-language coupling. Nothing is added to
@@ -910,9 +956,15 @@ it.
 Two languages that need the same helper each write their own. No
 promotion, no shared utility crate, no proposals acted on.
 
+Stated as one rule that covers every phase: **shared resolution code is
+writable only during whole-repository phases, and readable always.**
+Before phase 3 there is none to read; after it, phase 6 languages call
+into it and still may not change it. The writable window is always a
+phase with one writer and nothing running alongside.
+
 ### Why no shared resolution code during phase 2
 
-`resolution-design.md` §9 already argues that a shared-utility layer
+`resolution.md` §9 already argues that a shared-utility layer
 designed before any language exists is "a framework wearing a different
 hat," and that sharing should be derived from working handlers. Running
 the language loops concurrently sharpens that from a design preference
@@ -1486,7 +1538,7 @@ retention rule would do.
 
 Most of this harness is reinventable from off-the-shelf parts, and most
 of those parts are not worth taking. The rule applied below is the same
-one `dependency-plan.md` applies to crates: a tool has to solve a
+one `deps.md` applies to crates: a tool has to solve a
 problem we actually have, not a problem adjacent to it.
 
 | Need | Verdict |
@@ -1519,7 +1571,7 @@ and fails CI on regression, which sounds exactly like the ratchets in
 value is *statistical* regression detection — seven threshold models
 deriving variance from a metric's history — and **our measurements are
 deterministic**. `measure replay` runs a deterministic handler
-(`resolution-design.md` §11 requires the property) against frozen
+(`resolution.md` §11 requires the property) against frozen
 answers; binary size is deterministic given a toolchain. A number that
 moves has a cause in the diff. The only threshold model that fits is
 the static one, which is `if new > baseline { fail }` with a server, a
@@ -1587,7 +1639,7 @@ the countermeasures are the weakest part of this document.
 * **The loop rewrites the spec toward what it built.** Class A/B is a
   judgement call made by the entity with the incentive. The changelog
   makes it auditable after the fact, not preventable.
-* **Overfitting.** Expected, per the readme. Held-out isolation catches
+* **Overfitting.** Expected, per `high-level.md`. Held-out isolation catches
   the gross version; a loop that finds a genuinely general improvement
   and a repo-specific hack in the same iteration will ship both.
 * **The quality phase climbs to an incompressible peak.** Coverage
@@ -1676,7 +1728,7 @@ the countermeasures are the weakest part of this document.
    inside them, are needed before the first frontier is selected from.
 
 9. **Does the binary-size ratchet fight the vendored-rope work?**
-   `vendored-rope-design.md` adds newtypes throughout `rope`; that is
+   `rope-modifications.md` adds newtypes throughout `rope`; that is
    monomorphisation-neutral in principle and probably free, but "in
    principle" and a hard gate are different things. The baseline is
    taken after phase 0, not before.

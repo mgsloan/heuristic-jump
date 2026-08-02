@@ -1,7 +1,7 @@
 # Dependency plan
 
 Decided before any code, because two of these choices (the runtime and the
-rope) are load-bearing for the architecture in `core-implementation-design.md`
+rope) are load-bearing for the architecture in `core.md`
 and expensive to reverse.
 
 Scope: the core driver only — `shared`, `driver`, `heuristic_jump`, plus the
@@ -10,7 +10,7 @@ where they are already implied, but not settled here.
 
 Versions are what crates.io resolves to as of 2026-08-02, against
 `rustc 1.95.0`. Zed's pins (`../zed/Cargo.toml` at `90d024b8`) are listed
-where they differ, since the readme commits to matching Zed's grammars and
+where they differ, since `high-level.md` commits to matching Zed's grammars and
 it is worth knowing when we are ahead of them.
 
 ## 0. Summary table
@@ -79,7 +79,7 @@ at startup, all long-lived.
 Alternatives considered:
 
 * **`tokio` 1.53.1** — the design's choice. Genuinely better if we later
-  supervise and restart the child (readme future question 7), because process
+  supervise and restart the child (`open-questions.md` 7), because process
   supervision, backoff timers, and racing a restart against in-flight requests
   are all things `tokio::select!` expresses well. Not v1. Reversible: the
   channel-and-thread structure maps onto tokio tasks nearly mechanically,
@@ -257,14 +257,14 @@ Four patches, each recorded in `vendor/README.md`:
    deleted outright, taking the `zlog` and `ctor` dev-dependencies with them.
 
    Keeping them is not sentimentality about someone else's tests.
-   `vendored-rope-design.md` puts a 51-function signature sweep and six
+   `rope-modifications.md` puts a 51-function signature sweep and six
    hand-edited lines through this crate, and upstream's tests are the only
    independent check that the edit changed nothing. Several are randomised
    differential tests against a `String` oracle, which is exactly what nobody
    writes from scratch.
 4. **Keep `benches/rope_benchmark.rs`.** It answers directly whether the
    newtype wrappers and the `*_raw` indirection cost anything, which is an
-   open question in `vendored-rope-design.md`. This is the justification for
+   open question in `rope-modifications.md`. This is the justification for
    `criterion` that §12 previously lacked.
 
 Alternatives considered:
@@ -290,7 +290,7 @@ nothing.
 **The binary is GPL-3.0-or-later, unavoidably.** `rope` is
 GPL-3.0-or-later, everything links it transitively through
 `DocumentSnapshot`, and a distributed binary is a combined work. That is a
-project-level commitment and it should be stated plainly in the readme, with
+project-level commitment and it should be stated plainly in `high-level.md`, with
 `rope`'s license text shipped alongside. `../heuristic_jump_old` is already
 GPL-3.0-or-later, so nothing about the project's position changes.
 
@@ -337,7 +337,7 @@ keeps the exit open.
 ## 6. Tree-sitter
 
 `tree-sitter = "0.26.11"`. Zed pins 0.26.9; semver-compatible, and the
-readme's requirement is that the *grammars* match Zed's pinned revisions, not
+`high-level.md`'s requirement is that the *grammars* match Zed's pinned revisions, not
 that the runtime version does. Grammar crates are `lang_*` business and
 out of scope here, except to note that the old repo's pins
 (`../heuristic_jump_old/Cargo.toml`) are the starting list, including the two
@@ -356,7 +356,7 @@ latency observation made while developing.
 
 **`ignore = "0.4.31"`** — chosen, no real alternative. It is ripgrep's walker,
 so `.gitignore` semantics are correct for free, which is directly what the
-readme's "gitignored files are out of scope" needs. `walkdir` plus a
+`high-level.md`'s "gitignored files are out of scope" needs. `walkdir` plus a
 hand-rolled ignore implementation would be reimplementing the hard part.
 
 **It is a dependency of `shared`, not `driver`.** `ProjectView` is a concrete
@@ -466,7 +466,7 @@ would make the schema a formatting concern.
 
 Alternative: `log` + `env_logger`. Simpler, but `tracing` is already in the
 graph and its spans are the natural way to attribute the per-stratum latency
-the readme asks for.
+`high-level.md` asks for.
 
 ## 10. Errors: one enumerated type, no `anyhow`
 

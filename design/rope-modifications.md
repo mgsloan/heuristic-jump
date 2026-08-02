@@ -1,7 +1,7 @@
 # Changes to the vendored rope
 
-`vendor/rope` is a copy of Zed's `crates/rope`. `core-implementation-design.md`
-[section 16](core-implementation-design.md#vendoring-the-zed-crates) covers why
+`vendor/rope` is a copy of Zed's `crates/rope`. `core.md`
+[section 16](core.md#vendoring-the-zed-crates) covers why
 it is vendored and what patches the copy needs to compile. This document covers
 one further change, which is larger than those and is a design decision rather
 than a mechanical fix-up:
@@ -13,10 +13,10 @@ than a mechanical fix-up:
 > operators against bare integers, and positions and lengths are distinct.**
 
 `claude.md` asks for newtypes on primitive fields, and the driver's correctness
-rests on byte offsets more than on anything else — `core-implementation-design.md`
-[section 4](core-implementation-design.md#position-encoding) calls position
+rests on byte offsets more than on anything else — `core.md`
+[section 4](core.md#position-encoding) calls position
 handling the highest-risk detail in the whole driver, and
-[section 18](core-implementation-design.md#18-protocol-types) drops `lsp-types`
+[section 18](core.md#18-protocol-types) drops `lsp-types`
 specifically so that `ByteOffset` is what deserialization *produces* rather than
 what a conversion layer produces afterwards.
 
@@ -45,7 +45,7 @@ Both are reasonable upstream. The byte offset is the default dimension, the one
 you reach for without thinking; and a row is a row. They are the wrong defaults
 here for exactly that reason: `PointUtf16.column` and `Point.column` are both
 `u32` and mean different things, and mixing them is the failure
-[section 4](core-implementation-design.md#position-encoding) of the core
+[section 4](core.md#position-encoding) of the core
 design calls the highest-risk in the driver — invisible on ASCII, wrong by a
 few columns on any line that is not.
 
@@ -55,7 +55,7 @@ family** than as patching it.
 ## 2. Where the types live is forced
 
 `shared` depends on `rope`
-([section 16](core-implementation-design.md#the-dependency-graph)), so rope
+([section 16](core.md#the-dependency-graph)), so rope
 cannot depend on `shared`. `ByteOffset` therefore **lives in `rope`**, and
 `shared` re-exports it:
 
@@ -83,11 +83,11 @@ well.
 
 `shared` re-exports both, so every other crate says `shared::ByteOffset` and
 never knows or cares that the definition sits in the vendored crate. That
-keeps [section 12](core-implementation-design.md#vocabulary-types)'s claim —
+keeps [section 12](core.md#vocabulary-types)'s claim —
 that these are the shared vocabulary — true from the outside.
 
 There is one method this placement cannot accommodate.
-[Section 12](core-implementation-design.md#vocabulary-types) gives `ByteRange`
+[Section 12](core.md#vocabulary-types) gives `ByteRange`
 a `shifted_by(&InputEdit)` for spot anchoring, and `InputEdit` is
 tree-sitter's. rope must not grow a tree-sitter dependency for one method, so:
 
@@ -213,7 +213,7 @@ impls, with the bodies edited to unwrap. This is a compromise and it is flagged
 as such: `Point + Point` treats one operand as absolute and the other as
 relative, which is the same conflation being rejected for `LineIndex` one
 paragraph up. It is kept because rope's internals rely on it throughout, and it
-is recorded as future question 12 in `readme.md` — the fix is a distinct
+is recorded as question 12 in `open-questions.md` — the fix is a distinct
 `PointDelta`, and it is a bigger change than this one.
 
 ### The constructors take newtypes
@@ -306,7 +306,7 @@ impl TextDimension for ByteOffset { … }
 **`sum_tree` needs no changes at all.** `Dimension` is generic over the
 summary type, so the impls live in rope. That matters:
 `sum_tree` stays a pristine copy, and
-[section 16](core-implementation-design.md#vendoring-the-zed-crates)'s claim
+[section 16](core.md#vendoring-the-zed-crates)'s claim
 that it needs no patching survives.
 
 ### Offsets and lengths are separate types, and `ByteLen` is shared
@@ -331,7 +331,7 @@ There is deliberately **no `From<ByteLen> for ByteOffset`**. Turning a length
 into a position means measuring from somewhere, so it is spelled
 `ByteOffset::ZERO + len`, which names the origin.
 
-**`ByteLen` is one type, shared with `resolve`.** `resolution-design.md` needs
+**`ByteLen` is one type, shared with `resolve`.** `resolution.md` needs
 a byte quantity for its per-query budget — bytes read across candidate files —
 and that is this type, not a parallel one. The two uses look different (a
 document's length; a running total across files) but they are the same
@@ -359,7 +359,7 @@ directly.
 ### `LineIndex` is rope's, and `shared` re-exports it
 
 `Location` carries a `LineIndex`
-([section 18.4](core-implementation-design.md#184-location-is-byte-based-and-this-fixes-a-real-inconsistency)).
+([section 18.4](core.md#184-location-is-byte-based-and-this-fixes-a-real-inconsistency)).
 Since `Point.row` is now a `LineIndex`, the type has to live in rope for the
 same dependency reason as `ByteOffset`, and `shared` re-exports it. The
 row-taking APIs — `slice_rows(Range<LineIndex>)`, `line_len(row: LineIndex)` —
@@ -368,7 +368,7 @@ the rope.
 
 ## 6. Consequences for re-syncing
 
-[Section 16](core-implementation-design.md#vendoring-the-zed-crates) argues
+[Section 16](core.md#vendoring-the-zed-crates) argues
 that the patches to `rope` should stay small enough for a re-sync to be a clean
 diff rather than a merge. **This change makes that less true, and the claim
 should be read as weakened rather than intact.**
@@ -412,8 +412,8 @@ section 16.
 
 ### All of upstream's tests are kept
 
-`core-implementation-design.md`
-[section 16](core-implementation-design.md#vendoring-the-zed-crates) proposes
+`core.md`
+[section 16](core.md#vendoring-the-zed-crates) proposes
 deleting rope's `#[cfg(test)]` modules because they reach for `gpui`, `zlog`,
 and `ctor`. **That is reversed: every test is preserved.** Once we are editing
 the crate, deleting its tests is exactly backwards — they are the only
@@ -455,7 +455,7 @@ about it. Deleted, which drops the `ctor` and `zlog` dev-dependencies
 entirely.
 
 **`util::RandomCharIter`.** Already on
-[section 16](core-implementation-design.md#vendoring-the-zed-crates)'s list of
+[section 16](core.md#vendoring-the-zed-crates)'s list of
 items the cut-down `vendor/util` keeps. It needs `rand`.
 
 ### Consequences for the dependency plan
@@ -476,13 +476,13 @@ items the cut-down `vendor/util` keeps. It needs `rand`.
   *why*, which is what makes the change reviewable rather than merely passing.
 * **Round-trip property tests** over `ByteOffset` ↔ `Point` ↔ `PointUtf16` ↔
   `OffsetUtf16` on random text with astral-plane characters. Already required
-  by [section 15](core-implementation-design.md#15-testing) for the encoding
+  by [section 15](core.md#15-testing) for the encoding
   layer; running them against the rope directly puts them one level lower,
   where a conversion bug originates.
 * **Keep `benches/rope_benchmark.rs` too.** It is not a test, but it is the
   direct answer to open question 2 below — whether the wrapper indirection
   costs anything — and it is already written. This means taking `criterion` as
-  a dev-dependency, which `dependency-plan.md` §12 previously declined; the
+  a dev-dependency, which `deps.md` §12 previously declined; the
   justification now exists.
 
 ## 8. Decided, and what remains
@@ -505,7 +505,7 @@ One asymmetry is left open, and it follows directly from that last decision.
 **Why bytes and not UTF-16?** `OffsetUtf16` is used as both a position and a
 length — `TextSummary.len_utf16` is a length — so the same argument would give
 it a `Utf16Len`. It does not get one, because UTF-16 quantities exist only at
-the wire edge ([section 18.3](core-implementation-design.md#183-the-wire-position-type-is-inert))
+the wire edge ([section 18.3](core.md#183-the-wire-position-type-is-inert))
 and never accumulate anywhere in our code, so the split would buy nothing but
 would still cost the edits. That is a judgement about where the value is, not a
 principle, and it should be revisited if UTF-16 arithmetic ever appears outside
