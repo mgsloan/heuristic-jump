@@ -67,8 +67,12 @@ and a different one takes its place. See
 
 ## 2. Process and transport model
 
-`heuristic-jump rust-analyzer --some-flag` treats `argv[1..]` as the command
-line of the proper server. The shim:
+`heuristic-jump -- rust-analyzer --some-flag` treats everything after `--` as
+the command line of the proper server. The separator is **required**: it is
+POSIX's own stop-parsing marker, so the child's arguments — `--help` and
+`--version` among them — reach it byte-for-byte with no argument parser
+guessing where our flags end and its begin. `dependency-plan.md` §11 has the
+flag list and the verification that this holds. The shim:
 
 * Speaks LSP over its own stdin/stdout. From the editor's point of view the
   shim *is* the language server.
@@ -439,15 +443,74 @@ correct fallback, never a parser:
   correct.
 * Method names are compared as raw ASCII bytes against the small known set. No
   unescaping, no `str` validation, no allocation.
-* A counter records how often the fallback fires, and it is logged. If some
-  client does put `params` first, that shows up as a number rather than as an
-  unexplained latency profile.
+* A counter records how often the fallback fires, **per direction**, and it is
+  logged. If some peer does put `params` first, that shows up as a number
+  rather than as an unexplained latency profile. That counter is not just
+  diagnostics — it is the trigger condition for
+  [the suffix variant](#the-suffix-variant-is-not-built-yet) below.
 
 **This is a hand-written scanner over input from another process, so it is
 only acceptable with a differential fuzz target**: for every input, either the
 scanner declined, or its answer equals `serde_json`'s. That property is what
 makes the fast path safe, and it is cheap to state and cheap to run.
 [Section 15](#15-testing) carries it.
+
+#### Whether to scan at all is a per-server property
+
+Field order is a property of the peer's **JSON serializer**, not of the
+language it analyzes. That distinction is load-bearing: a language routinely
+has several servers — Rust has rust-analyzer today and could have others,
+TypeScript has `tsserver` and `vtsls`, Python has pyright, pylsp, and
+jedi-language-server — and they share nothing about how they serialize. So the
+setting is attached to the *server*, and the natural home is the
+`ServerAdapter` of [section 7](#per-server-adapters), which is already keyed on
+`serverInfo.name` for exactly this reason.
+
+```rust
+pub enum PeekMode {
+    /// Bounded prefix scan, fall back on anything uncertain. The default:
+    /// every serializer observed so far emits `id`/`method` before `params`.
+    Prefix,
+    /// Never scan; go straight to `FramePeek`. For a server known to defeat
+    /// the prefix scan, so it does not pay for a scan that always declines.
+    Off,
+}
+```
+
+This mirrors the structure [section 7](#the-generic-warming-signal) already
+uses for health, and for the same reason: **an adapter is for precision, but
+nothing may depend on one existing.** So there is also a generic backstop that
+needs no server knowledge — if a direction's fallback rate stays high over a
+window, that direction stops scanning for the rest of the session. It
+self-corrects for unrecognised servers, and it fails in the cheap direction,
+since a wrong guess costs a scan of at most 1 KiB.
+
+**The editor direction has no adapter at all.** There is no client-adapter
+registry and there should not be one; `clientInfo.name` would be a second
+registry serving one setting. Editor → child relies purely on the generic
+backstop above.
+
+#### The suffix variant is not built yet
+
+If a server did put `method` after `params`, the symmetric fix would be to
+scan backward from the end of the frame. It is **deliberately not
+implemented**, and the reason is not only that no such server has been
+observed.
+
+A backward scan cannot establish string context locally. Whether a given `"`
+opens or closes a string depends on the parity of unescaped quotes from the
+*start* of the frame, so a scanner arriving from the end does not know whether
+it is inside a string literal, and therefore cannot know whether a `"method"`
+it finds is a member name or the contents of some value. Escapes make it
+worse: `\"` is an escaped quote and `\\"` is a real one, so even locally the
+answer needs a backward run over the preceding backslashes.
+
+That does not make it impossible — a restrictive tail pattern (a known method
+name immediately before the closing brace) plus the same differential fuzz
+target would be sound enough. It makes it *strictly weaker* than the prefix
+scan, for a case that does not exist. Build it when the per-direction fallback
+counter says some real server needs it, and not before; the counter exists so
+that this is a measurement rather than a guess.
 
 **Sequencing.** The zero-inspection forwarding structure above is a design
 property and should be built that way from the start — retrofitting it means
@@ -825,7 +888,14 @@ indexing progress title, `pyright.rs`, `gopls.rs`, and so on. This is a driver
 concern rather than a language concern: it is about a specific *server
 process*, not about a language's syntax, so it stays here rather than behind
 the handler interface. Two servers for the same language can want different
-adapters.
+adapters, and routinely will — TypeScript has `tsserver` and `vtsls`, Python
+has pyright, pylsp, and jedi-language-server, and nothing about one predicts
+the other.
+
+`peek_mode` ([section 3.1](#whether-to-scan-at-all-is-a-per-server-property))
+is the clearest case of why the key is the server rather than the language:
+frame field order is a property of the server's JSON serializer and has no
+relationship whatsoever to the language being analyzed.
 
 ### The generic warming signal
 
@@ -862,6 +932,11 @@ pub trait ServerAdapter: Send + Sync {
     fn definition_indicates_ready(&self, resp: &DefinitionResponse) -> bool {
         !resp.is_empty()
     }
+
+    /// How to classify this server's frames. A property of the server's
+    /// JSON serializer, not of the language -- one language commonly has
+    /// several servers. See section 3.1.
+    fn peek_mode(&self) -> PeekMode { PeekMode::Prefix }
 }
 ```
 
@@ -1681,7 +1756,7 @@ of the graph above.
 ```
 crates/hj-core/src/
   lib.rs            run(), thread wiring, child spawn, mode selection
-  config.rs         argv split, --hj-* flags, Mode, deadline and pool sizing
+  config.rs         Mode, deadline and pool sizing (clap lives in hj-cli)
   codec.rs          Content-Length framing, raw frame type
   peek.rs           bounded prefix scan for method/id, serde_json fallback
   router.rs         classification, forwarding, id namespacing
@@ -1769,8 +1844,8 @@ per-crate table and the caveats.
 
 ## 17. Standalone mode
 
-`heuristic-jump --hj-standalone` runs with no proper language server. The shim
-is the whole language server: it answers `initialize` itself, serves
+`heuristic-jump` with no `-- <server>` after it runs with no proper language
+server. The shim is the whole language server: it answers `initialize` itself, serves
 go-to-definition from the heuristic alone, and there is nothing to race, swallow,
 or diverge from.
 
@@ -1879,6 +1954,26 @@ Three things follow, each a change from proxy mode:
 [section 4](#4-initialize-and-capability-negotiation) — that part is unchanged,
 and it is most of why standalone is a policy variation rather than a fork.
 
+**Standalone announces itself.** Immediately after answering `initialize`, the
+shim emits one `window/showMessage` and one log line:
+
+> heuristic-jump: standalone mode — no language server was given, so
+> go-to-definition is heuristic-only and no other language features are
+> available.
+
+This is what replaces the `--standalone` flag
+([section 17.8](#178-invocation)). It is not suppressible. Standalone behaves
+materially differently — every abstention becomes an error response
+([17.5](#175-abstention-must-say-something)), the deadline is longer
+([17.6](#176-the-budgets-change-because-what-they-are-traded-against-changed)),
+and there is no ground truth ([17.7](#177-what-this-does-to-measurement)) — so
+a user in this mode should know they are in it, whether they chose it or
+arrived by accident. One line at session start, in the log panel rather than a
+modal, is a small price for that.
+
+LSP permits this: `window/showMessage` is one of the few notifications a
+server may send before receiving `initialized`.
+
 **Unsupported languages are reported once.** A `didOpen` whose `languageId`
 resolves to no handler means every query in that file will abstain. In proxy
 mode that is invisible and correct — the child serves the file. In standalone
@@ -1974,7 +2069,7 @@ carried over.
   to an abstention, and an abstention costs the user a wait they were already
   having. In standalone an abstention costs them the answer entirely. So the
   cap is raised — 2000ms is the starting number — and made configurable via
-  `--hj-deadline-ms`. It is not removed: a wedged handler must still be
+  `--deadline-ms`. It is not removed: a wedged handler must still be
   bounded, and an editor that has been spinning for five seconds is its own
   kind of broken.
 * **The pool size.** [Section 13](#13-parallel-dispatch-and-resource-limits)
@@ -2024,19 +2119,48 @@ thresholds from the one that has it.
 
 ### 17.8 Invocation
 
-Standalone requires the explicit `--hj-standalone` flag. A bare
-`heuristic-jump` with no arguments is a usage error, not an implicit
-standalone.
+```
+heuristic-jump [OPTIONS] -- <SERVER> [SERVER ARGS...]    # proxy
+heuristic-jump [OPTIONS]                                 # standalone
+```
 
-The reason is that the failure it prevents is a bad one: a user who meant to
-type `heuristic-jump rust-analyzer` and lost the argument to a shell quoting
-mistake would otherwise get a language server that starts cleanly, reports
-healthy, and serves nothing but heuristic guesses — with no diagnostics, no
-completion, and no indication anywhere that rust-analyzer was never launched.
-An explicit flag costs one word and makes that state unreachable by accident.
+**There is no `--standalone` flag.** The mode is whether a server was given,
+and nothing else. `--` is required before the child command
+(`dependency-plan.md` §11), so the two forms cannot be confused.
 
-`--hj-standalone` and a child command line are mutually exclusive, and
-supplying both is a usage error rather than a precedence rule.
+An earlier version of this section required an explicit flag, on the grounds
+that a user who lost `-- rust-analyzer` to a shell quoting accident would
+otherwise get a server that starts cleanly, reports healthy, and serves
+nothing but guesses — "with no indication anywhere that rust-analyzer was
+never launched." That last clause was simply wrong. The indication is
+overwhelming: no diagnostics, no completion, no hover, no inlay hints, no
+formatting. The user will not diagnose the *cause*, but they will know within
+seconds that something is badly wrong.
+
+So the flag was preventing an accident that announces itself anyway, at the
+cost of a redundant input that can contradict the rest of the command line —
+which then needs a conflict rule, and a hand-written check for the
+neither-flag-nor-server case that clap cannot express. Dropping it removes all
+three.
+
+**The accident is instead handled by making the mode announce itself**, which
+is strictly better than preventing it:
+
+* It reaches the user in the editor, where they are, rather than in a shell
+  they never see — this tool is normally launched from an editor config.
+* It *explains* rather than merely forbids, so the user who hits it by
+  accident learns the cause instead of only being blocked.
+* It also serves the user who chose standalone deliberately and forgot, which
+  a flag cannot.
+
+See [section 17.3](#173-initialize-is-ours-now) for what is emitted.
+
+One residual case does get a usage error: **a bare `--` with nothing after
+it.** `heuristic-jump --` is the likeliest remaining shell accident
+(`heuristic-jump -- $SERVER` with `$SERVER` unset), and unlike a bare
+`heuristic-jump` it carries positive evidence that a server was intended. It
+is rejected with "`--` given with no server command." `dependency-plan.md` §11
+notes that clap does not catch this and it is a three-line check.
 
 ### 17.9 Testing
 

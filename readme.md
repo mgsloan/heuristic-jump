@@ -7,13 +7,14 @@ isn't ready.
 It can simply be run like this:
 
 ```sh
-$ heuristic-jump rust-analyzer
+$ heuristic-jump -- rust-analyzer
 ```
 
-It also runs with no language server behind it at all:
+It also runs with no language server behind it at all - just
+leave off the `-- rust-analyzer` part:
 
 ```sh
-$ heuristic-jump --hj-standalone
+$ heuristic-jump
 ```
 
 In that mode it is the whole language server - it answers `initialize`

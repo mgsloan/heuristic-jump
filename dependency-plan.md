@@ -39,7 +39,7 @@ it is worth knowing when we are ahead of them.
 | `proptest` | 1.11.0 | dev | chosen |
 | `tempfile` | 3.x | dev | chosen |
 | `anyhow` | — | — | **rejected** |
-| `clap` | — | — | **rejected** — see §11 |
+| `clap` | 4.6.5 (no default features) | hj-cli | **chosen** — see §11 |
 | `num_cpus` | — | — | **rejected**, `available_parallelism` |
 | `tokio` | — | — | **rejected** — see §1 |
 
@@ -337,9 +337,9 @@ that must stay as git revs: `tree-sitter-typescript` (zed-industries fork) and
 rule design §16 exists to enforce, and `LanguageHandler::grammar()` returning
 a runtime `tree_sitter::Language` is what makes it possible.
 
-Add `[profile.dev.package.tree-sitter] opt-level = 3` (Zed does this). Parsing
-in a debug build is slow enough to distort every latency observation we make
-while developing.
+`[profile.dev.package.tree-sitter] opt-level = 3`, per the profile conventions
+in §14. Parsing in a debug build is otherwise slow enough to distort every
+latency observation made while developing.
 
 ## 7. File enumeration and watching
 
@@ -479,30 +479,127 @@ alternative and is pure transcription.
 `hj-cli::main` returns `Result<(), hj_shared::Error>` (or exits with the
 child's status), so the top-level match is exhaustive.
 
-## 11. CLI parsing: none
+## 11. CLI parsing: `clap`
 
-`clap` is rejected. The command line is `heuristic-jump <child> [child args…]`,
-where the child args must reach the child byte-for-byte — including things
-like `--version` and `--help` that clap would intercept. `trailing_var_arg`
-plus `allow_hyphen_values` can be made to work, but it is a lot of
-configuration to make an argument parser stop parsing.
+**Chosen: `clap` 4.6.5, `default-features = false`, features
+`derive, std, help, usage, error-context, suggestions`.**
 
-Manual: our own flags are recognized only before the child command, all
-`hj`-prefixed so they cannot collide, and everything from the first
-non-`--hj-` argument onward is the child's. A bare `--` also ends our flags.
+This reverses an earlier decision, and the thing that changed is the usage
+form. The command line is now:
+
+```
+heuristic-jump [OPTIONS] -- <SERVER> [SERVER ARGS...]    # proxy
+heuristic-jump [OPTIONS]                                 # standalone
+```
+
+with the `--` **required** before the child command, and **no
+`--standalone` flag** — the mode is whether a server was given. Design §17.8
+has the argument for dropping the flag.
+
+The previous rejection was specifically that the child's arguments must reach
+it byte-for-byte, `--version` and `--help` included, and that making an
+argument parser stop parsing was more configuration than it was worth. A
+mandatory `--` deletes that objection: it is POSIX's own "stop parsing" marker,
+and in clap it is one attribute.
+
+```rust
+#[derive(Parser)]
+#[command(name = "heuristic-jump", version)]
+struct Cli {
+    /// Never answer heuristically; pure proxy. Meaningless without a server.
+    #[arg(long, requires = "server")]   proxy_only: bool,
+    #[arg(long, value_name = "MS")]     deadline_ms: Option<u64>,
+    #[arg(long, value_name = "PATH")]   trace: Option<PathBuf>,
+    #[arg(long, value_name = "FILTER")] log: Option<String>,
+
+    /// The proper language server's command line, after `--`.
+    /// Omitted entirely means standalone mode.
+    #[arg(last = true, allow_hyphen_values = true, num_args = 1..,
+          value_name = "SERVER")]
+    server: Vec<OsString>,
+}
+```
+
+`server.is_empty()` *is* the mode. There is no second source of truth to
+contradict it, so there is no conflict rule to write, and `--proxy-only`
+without a server — pure-proxy mode with nothing to proxy — is caught by
+`requires` rather than by hand.
+
+Verified against clap 4.6.5 rather than assumed, since the whole decision rests
+on it:
+
+| Invocation | Result |
+|---|---|
+| `-- rust-analyzer --some-ra-flag` | `server = ["rust-analyzer", "--some-ra-flag"]` |
+| `-- rust-analyzer --help` | passes through; clap does **not** intercept |
+| `-- rust-analyzer --version -Ctarget-cpu=native` | passes through verbatim |
+| `-- rust-analyzer -- --nested` | inner `--` passes through as a value |
+| *(no args)* | `server = []` → standalone |
+| `--deadline-ms=2000` | standalone, deadline overridden |
+| `--proxy-only` | error: required argument not provided |
+| `--proxy-only -- rust-analyzer` | proxy, heuristics disabled |
+| `--deadlin-ms=2000` | error, with `tip: a similar argument exists` |
+
+What clap buys that hand-rolling would not:
+
+* **A real `--help` and `--version`.** This tool is configured inside an
+  editor's settings file, where the user cannot see how it was invoked. A
+  usage string that documents the flags and the `--` convention is worth more
+  here than for a tool run interactively.
+* **Typo suggestions.** `--standalon` producing "a similar argument exists"
+  matters because of design §17.8: the failure being guarded against is a user
+  who meant to proxy and silently ends up somewhere else. clap turns that into
+  a named error for free.
+* **Dependencies as declarations.** `--proxy-only` needing a server is
+  `requires = "server"`, not hand-written validation.
+
+**Flags lose the `hj-` prefix.** It existed only to keep our flags from
+colliding with the child's when they shared an argv. With `--` they cannot
+share one, so `--proxy-only` beats `--hj-proxy-only` and nothing is ambiguous.
 
 | Flag | Meaning |
 |---|---|
-| `--hj-standalone` | No child at all; design §17. Mutually exclusive with a child command line, and required — a bare `heuristic-jump` is a usage error, per §17.8 |
-| `--hj-proxy-only` | Design §14's permanent pure-proxy degraded mode, which the design specifically asks to be a real, tested path. Mutually exclusive with `--hj-standalone`, since together they describe a process that does nothing |
-| `--hj-deadline-ms=<n>` | Overrides the hard cap. Defaults to 750 in proxy mode and 2000 in standalone, per §17.6 |
-| `--hj-trace=<path>` | JSONL metric records, design §11 |
-| `--hj-log=<filter>` | `tracing-subscriber` env-filter string |
+| `--proxy-only` | Design §14's permanent pure-proxy degraded mode, which the design asks to be a real, tested path. `requires` a server |
+| `--deadline-ms=<n>` | Overrides the hard cap. Defaults to 750 proxying, 2000 standalone, per design §17.6 |
+| `--trace=<path>` | JSONL metric records, design §11 |
+| `--log=<filter>` | `tracing-subscriber` env-filter string |
 
-The mutual-exclusion rules are the reason this stays hand-written rather than
-becoming a clap `ArgGroup`: they are three lines of validation against a
-usage error, and clap's version of the same thing still would not solve the
-trailing-args problem that rejected clap in the first place.
+**One check clap will not do for us**, and it is worth writing down because it
+is the only one left. A trailing `--` with nothing after it —
+`heuristic-jump --` — parses as `server = []`, i.e. standalone. `num_args =
+1..` does not catch it; clap treats a `--` with no following values as the
+argument simply being absent. That case matters because it is the likeliest
+remaining shell accident: `heuristic-jump -- $SERVER` with `$SERVER` unset.
+
+A bare `--` is positive evidence that the user meant to name a server, so it
+gets a precise error — "`--` given with no server command" — from a
+three-line check of `env::args_os()` after `parse()`. Contrast the bare
+`heuristic-jump` case, which carries no such evidence and is a legitimate
+standalone invocation.
+
+**Cost: seven crates.** With default features off it is `clap`,
+`clap_builder`, `clap_derive`, `clap_lex`, `anstyle`, `heck`, `strsim` —
+measured, not estimated. The `proc-macro2`/`quote`/`syn` trio that dominates
+the compile-time cost of `clap_derive` is already in the graph via
+`thiserror`, so the marginal build cost is much smaller than the crate count
+suggests. Disabling default features is what drops the six-crate
+`anstream`/`colorchoice`/`is_terminal_polyfill` terminal-colour stack, which
+a process that talks JSON-RPC over stdio has no use for.
+
+Alternatives considered:
+
+* **Hand-rolled, as previously chosen.** Still perfectly viable — with a
+  mandatory `--` it is `args.split(|a| a == "--")` and a small match. Rejected
+  because `--help`, `--version`, and typo suggestions are the parts users
+  actually touch, and reimplementing those well is more code than the parser.
+* **`lexopt`, `pico-args`, `argh`.** Smaller, and all would work here. None
+  generate a help text of the quality that matters for a tool nobody invokes
+  by hand, which is the specific reason this reversed.
+* **Keeping `--` optional.** Rejected: it reintroduces the ambiguity the
+  mandatory form removes, and the ambiguity is exactly what made clap awkward
+  the first time. It would also make the absent-server rule unworkable, since
+  `heuristic-jump rust-analyzer` and `heuristic-jump --some-flag-of-ours`
+  could not be told apart without knowing every flag the child accepts.
 
 ## 12. Testing
 
@@ -557,14 +654,65 @@ with a `TestClock` impl in `hj-shared`, not a dependency.
 
 ## 14. Workspace `Cargo.toml` shape
 
-Edition 2024, `rust-version = "1.95"`, `resolver = "3"`. All versions in
-`[workspace.dependencies]` so the vendored crates and ours cannot drift.
-`publish = false` workspace-wide, which is what makes vendoring `rope` and
-`sum_tree` (both `publish = false` upstream) legitimate.
+**The workspace `Cargo.toml` follows Zed's conventions**, checked against
+`../zed/Cargo.toml` at `90d024b8`. Not out of deference — the vendored crates
+arrive written in that style, and having `vendor/rope/Cargo.toml` obey one set
+of conventions while `crates/*` obey another makes every re-sync diff noisier
+than it needs to be. The conventions, stated explicitly so they are followed
+deliberately rather than by imitation:
 
-`license` is set **per crate**, not inherited from the workspace, because the
-two answers differ — see §5. Ours are `MIT`; the vendored crates keep the
-license they arrived with.
+* **Every dependency version lives in `[workspace.dependencies]`.** Member
+  crates never name a version. This is what stops the vendored crates and ours
+  from resolving two copies of `heapless` or `rayon`.
+* **Members reference deps as `foo.workspace = true`**, the dotted form, not
+  `foo = { workspace = true }`. The braced form appears only when the member
+  adds something — `util = { workspace = true, features = ["test-support"] }`.
+* **`[workspace.package]` carries only what is genuinely uniform.** For Zed
+  that is `publish` and `edition`; members write `edition.workspace = true`
+  and `publish.workspace = true`. We add `rust-version` and keep `license`
+  out, since ours differs per crate (§5).
+* **`[lints] workspace = true` in every member**, with the rules in
+  `[workspace.lints.rust]` and `[workspace.lints.clippy]` — one place, no
+  `#![deny(...)]` scattered in `lib.rs` files.
+* **Clippy: deny a short list of real hazards, allow the style group
+  wholesale.** Zed denies `dbg_macro`, `todo`, `redundant_clone`,
+  `disallowed_methods`, `declare_interior_mutable_const`, and sets
+  `style = { level = "allow", priority = -1 }`. The reasoning in their comment
+  is that style nits slow down shipping and are discovered late; it applies
+  here too. `redundant_clone` is worth keeping given how much of this design
+  turns on `Rope`/`Tree` clones being cheap — it is the lint that would catch
+  one that is not.
+* **Each `allow` carries a comment saying why.** Zed does this consistently
+  and it is the difference between a lint config and a pile of silenced
+  warnings.
+* **Explicit `[lib] path`.** Zed writes `path = "src/rope.rs"` rather than
+  relying on `src/lib.rs`. We keep this for the vendored crates because it is
+  how they arrive; our own crates use plain `src/lib.rs`, since adopting a
+  convention that exists to support Zed's crate-named-file layout would be
+  imitation rather than consistency.
+* **`doctest = false`** on crates with no doctests, which is most of them.
+* **`[profile.dev.package]` opt-level bumps for the crates that dominate debug
+  runtime.** Zed sets `tree-sitter` and `serde_json` to `opt-level = 3`, plus
+  the proc-macro crates. We take exactly those: debug-build parsing is
+  otherwise slow enough to distort every latency observation made while
+  developing, which for this project would mean tuning against a fiction.
+* **`[profile.release]`**: `lto = "thin"`, `codegen-units = 1`,
+  `debug = "limited"` — Zed's values, and the right ones for a binary whose
+  headline metric is latency but which still needs usable backtraces from user
+  reports.
+* **`[workspace.metadata.cargo-machete] ignored`** for deps that are used but
+  invisible to static analysis. `rope` already needs `tracing` listed this way
+  upstream, and our patched copy still will.
+
+Two places we deliberately differ:
+
+* `resolver = "3"`, not Zed's `"2"`. Edition 2024 defaults to resolver 3 and
+  Zed's is legacy; there is no reason to inherit it.
+* `license` is set **per crate** rather than in `[workspace.package]`, because
+  the two answers differ — see §5. Ours are `MIT`; the vendored crates keep
+  the license they arrived with. Note Zed does the same thing for the same
+  kind of reason: `rope` is GPL-3.0-or-later while `sum_tree` is Apache-2.0,
+  both inside one workspace.
 
 ```
 Cargo.toml
