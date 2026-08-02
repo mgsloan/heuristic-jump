@@ -26,11 +26,10 @@ metrics constrain this design in three concrete ways, noted where they bite:
 the latency budget (p50 <= 50ms, p99 <= 400ms, hard cap 750ms), the abstention
 path, and the per-stratum reporting requirement.
 
-**On precision.** `readme.md` moved its >=97% precision floor to future work.
+**On precision.** `readme.md` places its >=97% precision floor in future work.
 v1 answers whenever the handler has a candidate and **measures** precision
-rather than gating on it; the headline number is plain coverage. This
-document is written against that, and the difference shows up in three
-places — abstention exists for *latency and emptiness*, not for low
+rather than gating on it; the headline number is plain coverage. The
+difference shows up in three places — abstention exists for *latency and emptiness*, not for low
 confidence ([section 9](#9-deadlines-and-abstention)); divergence reporting
 ([section 10](#10-divergence-reporting)) is the only thing protecting the
 user, so it carries more weight here than it would under a floor; and
@@ -124,10 +123,10 @@ child supervision (`readme.md` future question 7) ever makes one worthwhile.
 
 ### Thread layout
 
-Five long-lived threads plus a worker pool, communicating only over channels.
-There is no shared mutable state and no lock anywhere in the design. In
-standalone mode two of the five are absent
-([section 17](#17-standalone-mode)).
+Six long-lived threads plus a worker pool, communicating only over channels.
+There is no shared mutable state and no lock anywhere in the design. Three of
+the six are absent in standalone mode, where there is no child
+([section 17.4](#174-health-policy-and-what-disappears)).
 
 ```
   editor stdin --> [reader:editor] --+--> (to-child) --> [writer:child]
@@ -175,6 +174,9 @@ standalone mode two of the five are absent
   and a timer, the latter driving the report window
   ([section 10](#10-divergence-reporting)) and the rescan debounce
   ([section 6](#6-project-file-enumeration)).
+* **`stderr:child`** copies the child's stderr to ours, unmodified. It appears
+  in none of the diagrams because it touches nothing else in the system — no
+  channel, no state — but it is a thread and it is the sixth.
 * **Worker pool** runs handlers against immutable snapshots handed to them at
   dispatch. Workers own nothing shared; results return to `core` as events.
 
@@ -278,9 +280,14 @@ reconcile it, and `tree()` is the only way to get one:
 3. The result is memoised, so a handler that asks repeatedly pays once.
 
 **The handler cannot obtain a tree that does not match `text`.** The parse is
-paid inside the worker and inside the deadline, never in `core`. When the
-worker finishes, a filled `parsed` cell is returned to `core` as a
-`Parsed { uri, version, tree }` event, so the next query starts warm.
+paid inside the worker and inside the deadline, never in `core`.
+
+Getting the result back to `core` is explicit rather than implicit: the worker
+owns the `DocumentSnapshot` for the duration of the query and hands it back at
+the end, and the dispatch wrapper — not the handler — checks whether `parsed`
+was filled and, if so, sends `Parsed { uri, version, tree }` to `core`. The
+handler is not involved and cannot forget. `core` caches it, so the next query
+on that document starts warm.
 
 ### `core` never mutates a shared tree
 
@@ -368,11 +375,9 @@ answered**, which
 [section 3.2](#32-the-swallow-decision-belongs-to-writereditor) relocates to
 the one component that can make it race-free.
 
-That is the whole list. It used to have a second entry — rewriting
-`initialize` to reorder `general.positionEncodings` — and
-[section 4](#position-encoding) withdrew it, which is what reduces the
-editor -> child direction to no pre-forward decisions at all. Every other
-classification — which document changed,
+That is the whole list; the editor -> child direction has no pre-forward
+decision at all, because the shim modifies nothing it forwards
+([section 4](#position-encoding)). Every other classification — which document changed,
 which health signal arrived, what latency to record — exists to update `core`,
 and `core` is downstream of the wire. It can be done after the frame is on its
 way, on the same buffer, with no effect on what the editor or the child
@@ -698,26 +703,24 @@ does not get a vote on the outcome.
 **The shim modifies nothing.** In proxy mode every frame in the
 editor -> child direction is forwarded byte-identical, `initialize` included.
 
-An earlier version of this design allowed one exception: reordering
-`general.positionEncodings` when forwarding `initialize`, so the child might
-pick UTF-8 and the shim could skip conversion entirely. It is withdrawn, for
-three reasons that compound:
+It is tempting to reorder `general.positionEncodings` when forwarding
+`initialize`, putting `utf-8` first so the child picks it and conversion is
+skipped entirely. The shim does not do this, for three reasons that compound:
 
-* **It was hazardous in a way that version understated.** Reordering means
-  modifying the one message whose fidelity matters most. A typed round-trip
-  would drop any client capability the shim did not model, and Zed sends
-  custom ones; doing it safely needs a `serde_json::Value` round-trip or raw
-  byte splicing, both fiddly.
-* **Its value collapsed.** The rewrite existed to avoid the conversion path.
-  With `WirePosition` ([section 18.3](#183-the-wire-position-type-is-inert))
-  that path is a rope cursor seek behind a type that cannot be misused, so
-  avoiding it buys microseconds against a risk that no longer exists.
-* **Dropping it removes the last pre-forward decision in that direction** —
-  zero per session, not one.
-  [Section 3.1](#31-how-little-inspection-the-forwarding-path-needs) gets
-  simpler, [section 15](#15-testing)'s byte-identity assertion loses its only
-  exemption there, and the prime invariant becomes unconditional rather than
-  asserted with a footnote.
+* **It means modifying the one message whose fidelity matters most.** A typed
+  round-trip would drop any client capability the shim did not model, and Zed
+  sends custom ones; doing it safely needs a `serde_json::Value` round-trip or
+  raw byte splicing, both fiddly.
+* **There is little to gain.** With `WirePosition`
+  ([section 18.3](#183-the-wire-position-type-is-inert)) the conversion path is
+  a rope cursor seek behind a type that cannot be misused, so avoiding it buys
+  microseconds against a risk that does not exist.
+* **Declining keeps the editor -> child direction free of pre-forward
+  decisions** — zero per session, not one.
+  [Section 3.1](#31-how-little-inspection-the-forwarding-path-needs) stays
+  simple, [section 15](#15-testing)'s byte-identity assertion has no exemption
+  there, and the prime invariant is unconditional rather than asserted with a
+  footnote.
 
 The shim still *reads* `positionEncodings`, since it must know what was
 negotiated. In standalone mode it does pick UTF-8 when offered
@@ -898,7 +901,7 @@ pub trait ServerAdapter: Send + Sync {
 }
 ```
 
-Implementations live in `driver` beside the driver, one per language server —
+Implementations live in `driver`, one per language server —
 `rust_analyzer.rs` reading `experimental/serverStatus` and recognising the
 indexing progress title, `pyright.rs`, `gopls.rs`, and so on. This is a driver
 concern rather than a language concern: it is about a specific *server
@@ -956,9 +959,12 @@ pub trait ServerAdapter: Send + Sync {
 }
 ```
 
-The default errs toward staying `Warming`, which errs toward eager — the
-direction that costs coverage rather than precision, and the direction a
-single real lookup corrects immediately.
+The default errs toward staying `Warming`, and therefore toward eager. That
+trades precision for coverage: the shim answers more queries with its own
+guess instead of waiting for the child's. That is the direction this version
+of the tool wants ([intro](#core-implementation-design)) — and it is
+self-limiting, because a single real answer from the child ends the eager
+window for the rest of the session.
 
 If a language server has not yet answered a single go-to-definition, it is
 plausibly still indexing. The moment it answers one, health becomes `Ready`
@@ -1135,10 +1141,14 @@ in, so a widened retry is compared against an un-widened original.
 4. **Handler returns.** On `Committed`, answer *every* pending query at that
    spot — the repeat and the original — as the readme specifies, and mark
    each `answered_by_shim`. On `Abstain`, see [section 9](#9-deadlines-and-abstention).
-5. **Child responds later.** The response is swallowed. If the query was
-   `answered_by_shim`, compare and possibly report divergence
-   ([section 10](#10-divergence-reporting)). Either way, log the pair for the
-   metrics ([section 11](#11-observability-and-the-corpus-scan)).
+5. **Child responds later.** `writer:editor` drops it, since it has already
+   emitted a response for that id, and tells `core` which answer actually
+   reached the editor
+   ([section 3.2](#32-the-swallow-decision-belongs-to-writereditor)). If the
+   shim's answer was the one that won, `core` compares the two and possibly
+   reports divergence ([section 10](#10-divergence-reporting)). Either way it
+   logs the pair for the metrics
+   ([section 11](#11-observability-and-the-corpus-scan)).
 
 ### Cancellation
 
@@ -1152,12 +1162,20 @@ answered; this is harmless and must not be treated as an error.
 
 ## 9. Deadlines and abstention
 
-The 750ms hard cap is enforced by the driver, not trusted to the handler.
+The hard cap is enforced by the driver, not trusted to the handler.
+
+**The cap is configurable**, via `--deadline-ms` (`dependency-plan.md` §11).
+It defaults to **750ms proxying** — the readme's number — and **2000ms in
+standalone**, where an abstention costs the user the answer entirely rather
+than a wait they were already having
+([section 17.6](#176-the-budgets-change-because-what-they-are-traded-against-changed)).
+Nothing below depends on the specific value; "the deadline" means whichever is
+in effect.
 
 **The deadline is absolute and starts at request arrival**, not at handler
-entry. Queueing time counts. A handler that gets 750ms of wall clock but
-started 200ms late has already blown the budget from the user's point of view,
-and the metric in the readme measures the user's point of view.
+entry. Queueing time counts. A handler that gets the full budget of wall clock
+but started 200ms late has already blown it from the user's point of view, and
+the metric in the readme measures the user's point of view.
 
 **Cancellation must be cooperative.** Wrapping CPU-bound work in a timeout
 does not stop the work; it only stops waiting for it, leaving a thread burning
@@ -1189,9 +1207,12 @@ send anything at all.** The original request is still pending with the child,
 so abstaining means letting the child answer it, which is exactly the
 status quo the metric compares against. No null response, no special case.
 
-The exception is `Unresponsive`, where nothing is coming and the request would
-otherwise hang forever. There the shim answers with a `RequestFailed` error
-rather than `null`.
+There are two exceptions, and they are the same case: **nothing else is going
+to answer.** `Unresponsive` ([section 7](#what-health-is-for)), where the child
+has stopped responding, and standalone
+([section 17.5](#175-abstention-must-say-something)), where there is no child
+at all. In both the request would otherwise hang forever, so the shim answers
+with a `RequestFailed` error rather than `null`.
 
 The distinction matters to the user. `null` is a definite statement — "this
 symbol has no definition" — which editors render as a flat "no definition
@@ -1219,10 +1240,9 @@ Both sides are first normalized: `textDocument/definition` may answer with
 whether the client advertised `linkSupport`. All shapes collapse to a set of
 `(uri, range)` before comparison, taking `targetSelectionRange` for links.
 
-Then, comparing the shim's answer against the child's:
-
-These are the exact strings written to the `agreement` and `severity` fields
-in [section 11](#11-observability-and-the-corpus-scan). The classifier and the
+Then, comparing the shim's answer against the child's. The `agreement` and
+`severity` values below are the exact strings written to those fields in
+[section 11](#11-observability-and-the-corpus-scan) — the classifier and the
 metric must not have separate vocabularies, or the number that ships and the
 number that gets measured stop being the same number.
 
@@ -1238,8 +1258,9 @@ number that gets measured stop being the same number.
 
 The 3-line tolerance is deliberate: at that distance the correct definition is
 on screen and the user is already reading it, so scoring it as wrong would
-measure something nobody experiences as wrong. The tiers below it map onto the
-error severity budgets in `readme.md`.
+measure something nobody experiences as wrong. The tiers below it are the
+error severity classes `readme.md` reports, and are what a future budget would
+be attached to.
 
 When the child returns multiple locations, agreement means the shim's answer
 matches *any* of them — the LSP itself is expressing ambiguity there, so
@@ -1272,7 +1293,7 @@ naming the correct location. When `showMessage` is also unavailable, log only.
 
 ### Rate limiting
 
-Reports fire on any non-`Match` classification, and eager answering means
+Reports fire on any `mismatch` classification, and eager answering means
 divergences arrive in bursts — a cold start is exactly when the shim answers
 most and is least accurate. One prompt per divergence would be unusable.
 
@@ -1328,6 +1349,7 @@ resolved as abstained):
 ```json
 {
   "uri": "...", "position": [12, 30], "language": "rust",
+  "mode": "proxy",
   "server_health": "Warming",
   "decision": "committed",
   "stratum": "explicitly_imported",
@@ -1347,11 +1369,18 @@ LSP-latency value weighting. `stratum` and `confidence` are reported *by the
 handler*, since only it knows which resolution path produced the answer; the
 driver classifies `agreement` and `severity`, since only it has both answers.
 
+`mode` is `"proxy"` or `"standalone"`. In standalone, `server_health`,
+`lsp_latency_us`, `lsp_locations`, `agreement`, and `severity` are all `null`,
+because there is no second answer to compare against
+([section 17.7](#177-what-this-does-to-measurement)). Without the `mode`
+field a mixed log silently pollutes the precision numerator with rows that
+could never have had an `agreement`.
+
 ### The corpus scan is a separate program
 
 The scan in the readme's development plan is **not** a mode of the shim. It is
-its own binary, `scan`, and `driver` has no batch path, no transport
-abstraction, and no awareness that it exists.
+its own crate, `scan`, building the binary `heuristic-jump-lsp-scan`. `driver`
+has no batch path, no transport abstraction, and no awareness that it exists.
 
 The requirements are opposed at nearly every point:
 
@@ -1553,7 +1582,8 @@ Three kinds of concurrency, deliberately distinguished:
 3. **Within a single query.** Fanning out across candidate files is the
    handler's business, using the pool the driver provides.
 
-All three draw from **one bounded pool**, sized `max(1, num_cpus - 2)`.
+All three draw from **one bounded pool**, sized
+`max(1, available_parallelism() - 2)` when proxying.
 
 The sizing is the point. The entire justification for having no index is not
 competing with the proper LSP for CPU during its startup — and startup is
@@ -1562,11 +1592,17 @@ scheduling pressure everything the no-index decision was supposed to save,
 and would do it precisely in the window that matters. Rayon is a reasonable
 fit since handlers want data-parallel fan-out over candidate files.
 
+In standalone there is no proper LSP to leave headroom for, so the pool is
+sized at `available_parallelism()`
+([section 17.6](#176-the-budgets-change-because-what-they-are-traded-against-changed)).
+The `- 2` exists for a reason that does not apply there, and keeping it would
+be cargo-culting.
+
 Additional limits:
 
 * **Max in-flight heuristic queries** (start at 4). Beyond that, new queries
   abstain immediately rather than queueing. Queueing cannot help under a
-  750ms wall-clock deadline; it only guarantees the queued queries blow it.
+  wall-clock deadline; it only guarantees the queued queries blow it.
 * **Per-query byte budget** on files read, so one query over a pathological
   repository cannot monopolise the pool.
 * **No heuristic work while `core` is behind.** If the event queue is backed
@@ -1692,7 +1728,7 @@ crates/
   lang_typescript/
   driver/           the LSP driver
   heuristic_jump/   the shim binary -- `heuristic-jump`
-  scan/             the corpus scan binary -- `hj-scan`, section 11
+  scan/             corpus scan -- `heuristic-jump-lsp-scan`, section 11
 ```
 
 Crate names carry no project prefix, matching the vendored Zed crates
@@ -1911,8 +1947,8 @@ Four reasons, in descending order of how much they should influence the design:
   do, and both merge definition results. Running standalone alongside
   rust-analyzer is a lower-effort deployment than proxying. It is a genuinely
   worse one — the editor shows a picker instead of jumping, the retry protocol
-  cannot exist, and divergence goes undetected, so the precision metric loses
-  its only ground truth — but it is the fallback when proxying is not
+  cannot exist, and divergence goes undetected, so precision loses its only
+  ground truth — but it is the fallback when proxying is not
   practical, and it should work rather than be blocked.
 * **Servers with weak navigation.** Section 4 defers the case of a child that
   declares no `definitionProvider`. Standalone answers most of that question
@@ -2063,8 +2099,9 @@ absent rather than conditionally skipped:
   to compare against. The agreement predicate is unused; the batching window
   and its rate limiter never open.
 * **Server adapters** ([section 7](#per-server-adapters)). No server.
-* **`reader:child` and `writer:child`** ([section 2](#thread-layout)), and the
-  stderr forwarder. Three threads that are not spawned.
+* **`reader:child`, `writer:child`, and `stderr:child`**
+  ([section 2](#thread-layout)). Three of the six threads are simply not
+  spawned.
 * **Child death handling** ([section 7](#child-death)).
 
 Everything else — documents, the parse cache, spot anchoring, file
@@ -2128,8 +2165,8 @@ carried over.
 **Precision does not differ by mode, because in v1 it is not enforced in
 either.** Both modes answer whenever the handler has a candidate.
 
-The question does not disappear, though — it moves, and it gets sharper. When
-the floor arrives it will be tempting to set a *looser* one for standalone, on
+The question still needs an answer eventually, and it is sharper than it
+looks. When the floor arrives it will be tempting to set a *looser* one for standalone, on
 the grounds that a wrong answer there competes against no answer rather than
 against a correct one. The counter is that standalone is the mode with **no
 proper LSP to correct the record**: divergence reporting, which
@@ -2177,23 +2214,21 @@ heuristic-jump [OPTIONS]                                 # standalone
 and nothing else. `--` is required before the child command
 (`dependency-plan.md` §11), so the two forms cannot be confused.
 
-An earlier version of this section required an explicit flag, on the grounds
-that a user who lost `-- rust-analyzer` to a shell quoting accident would
-otherwise get a server that starts cleanly, reports healthy, and serves
-nothing but guesses — "with no indication anywhere that rust-analyzer was
-never launched." That last clause was simply wrong. The indication is
-overwhelming: no diagnostics, no completion, no hover, no inlay hints, no
-formatting. The user will not diagnose the *cause*, but they will know within
-seconds that something is badly wrong.
+The obvious alternative is an explicit `--standalone` flag, so that a user who
+lost `-- rust-analyzer` to a shell quoting accident gets a usage error rather
+than a server that starts cleanly, reports healthy, and serves nothing but
+guesses.
 
-So the flag was preventing an accident that announces itself anyway, at the
-cost of a redundant input that can contradict the rest of the command line —
-which then needs a conflict rule, and a hand-written check for the
-neither-flag-nor-server case that clap cannot express. Dropping it removes all
-three.
+It is not worth it. That accident announces itself overwhelmingly — no
+diagnostics, no completion, no hover, no inlay hints, no formatting. The user
+will not diagnose the *cause*, but they will know within seconds that
+something is badly wrong. Against that, a flag is a redundant input that can
+contradict the rest of the command line, so it needs a conflict rule and a
+hand-written check for the neither-flag-nor-server case that clap cannot
+express.
 
-**The accident is instead handled by making the mode announce itself**, which
-is strictly better than preventing it:
+**The accident is handled instead by making the mode announce itself**, which
+is better than preventing it:
 
 * It reaches the user in the editor, where they are, rather than in a shell
   they never see — this tool is normally launched from an editor config.
@@ -2362,10 +2397,9 @@ The driver converts one to the other on the way out, in the same one place
 that owns `PositionEncoding`. Handlers never see a `WireLocation` and cannot
 construct one.
 
-This inconsistency existed before this change and would have been resolved by
-someone, silently, while implementing — most likely by handing handlers the
-encoding, which is how the rule erodes. Naming our own types is what surfaced
-it.
+Keeping them as separate types is what makes the rule survive implementation.
+With one shared type the pressure is always to hand handlers the encoding
+"just for this one case," and that is how the rule erodes.
 
 ### 18.5 The untagged unions are the actual risk
 

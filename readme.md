@@ -21,9 +21,10 @@ In that mode it is the whole language server - it answers `initialize`
 itself and serves nothing but heuristic go-to-definition. That is
 for languages with no usable server, for debugging the heuristic
 without a server's variability in the picture, and for editors that
-can run several servers per language. It has no ground truth, so it
-borrows its calibration from the proxy mode that does. See
-`core-implementation-design.md` section 17.
+can run several servers per language. There is no proper LSP to
+compare against, so precision cannot be measured there and no
+divergence is ever reported. See `core-implementation-design.md`
+section 17.
 
 Each language implements its own resolution logic. Dispatch is simple -
 the go-to-definition call is handed directly to the language's
@@ -189,12 +190,14 @@ corpus run, and a floor can then be set from measurements instead of
 from intuition. See "Coverage at a precision floor" under Future work
 for what that would look like.
 
-Two things still cause the tool to decline. Neither is about
-confidence:
+Two things cause the tool to decline. Neither is about confidence:
 
 * There is no candidate at all - the cursor is on a keyword, or nothing
   matched.
 * The latency budget ran out. See below.
+
+A third case is undecided: several candidates that nothing distinguishes.
+Future question 12 sets out the options.
 
 What keeps this honest in the meantime is divergence reporting: when
 the proper LSP disagrees with an answer the user was already shown,
@@ -269,10 +272,10 @@ The per-class table is the artifact that drives decisions, not any
 single rolled-up number.
 
 That last class is the one a heuristic fundamentally cannot compete on,
-and in Rust it's a large share of real go-to-definition invocations. It
-may turn out to be a permanent abstain class. Keeping it as its own row
-rather than dissolving it into an average is most of what makes these
-numbers honest.
+and in Rust it's a large share of real go-to-definition invocations.
+Whether it abstains or returns a ranked guess is undecided - see future
+question 12. Keeping it as its own row rather than dissolving it into an
+average is most of what makes these numbers honest.
 
 ### Value weighting
 
@@ -344,8 +347,10 @@ section 5.
 
 6. What should the shim do when the editor misbehaves - didOpen for a document
    already open, didChange for one never opened, didClose for one that isn't?
-   Ignoring is probably right, but silently ignoring hides editor bugs the user
-   would want reported.
+   `core-implementation-design.md` section 18.6 answers the part that affects
+   correctness: mark the document untrusted, keep proxying, log it. What
+   remains open is whether the user should be told, since silently ignoring
+   hides editor bugs they would want reported.
 
 7. Should the shim supervise and restart the proper LSP when it dies,
    instead of just exiting and letting the editor deal with it? The shim
@@ -376,7 +381,32 @@ section 5.
     permanent failure reported as a transient one is its own small lie. Needs a
     look at what Zed and VS Code actually render for each.
 
-12. **When the precision floor arrives, should it differ by mode?**
+12. **What should happen when several candidates are equally plausible?**
+    This is the hole left by deferring the precision floor, and it is the
+    single biggest undecided behaviour. Success metrics above says the only
+    two reasons to decline are "no candidate at all" and "the deadline ran
+    out" - so an ambiguous name, where eleven files define `new`, is by that
+    rule answered with the top-ranked guess. That may well be right: the
+    ranking exists, a guess is what this version promises, and the divergence
+    report catches it when wrong.
+
+    But it is not obviously right, and two things in this document still
+    assume otherwise. Stratification below describes the type-inference class
+    as one that "may turn out to be a permanent abstain class", and the
+    `AmbiguousName` stratum exists precisely to name the case where nothing
+    distinguishes the candidates. Returning the best of eleven indistinguishable
+    options is a coin flip dressed as an answer, and it is also the case most
+    likely to land in a completely unrelated crate - the error class with the
+    lowest tolerance once budgets exist.
+
+    Options, roughly: always answer the top-ranked candidate; answer only when
+    the ranking has a clear margin, abstaining otherwise (the margin test
+    already exists in the resolution design); or answer but attach a low
+    confidence and rely on the future work item that marks guesses as guesses.
+    The corpus scan can settle it - measure how often the top-ranked candidate
+    among N is right, per stratum, and how bad the misses are.
+
+13. **When the precision floor arrives, should it differ by mode?**
     `core-implementation-design.md` section 17.6 argues the counter-intuitive
     direction: *tighter* in standalone, not looser. A wrong answer in proxy
     mode is contradicted by the real LSP seconds later; in standalone there is

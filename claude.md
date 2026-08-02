@@ -22,6 +22,12 @@
   complex. Think relying on the external md files (and referencing
   those), and/or having a few central spots with more lengthy prose.
 
+# General rust coding hygiene
+
+* Do not use wildcard imports
+
+* Use `cargo fmt`
+
 # Rust coding guidelines (from Zed)
 
 * Prioritize code correctness and clarity. Speed and efficiency are secondary priorities unless otherwise specified.

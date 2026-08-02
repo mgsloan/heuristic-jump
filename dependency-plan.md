@@ -47,14 +47,10 @@ it is worth knowing when we are ahead of them.
 
 **Chosen: `std::thread` + `crossbeam-channel` + `rayon`. No async runtime.**
 
-`core-implementation-design.md` §2 used to list `tokio`. It has been amended;
-this section records why.
+The design is six long-lived threads that never finish, plus a CPU-bound
+worker pool, communicating only over channels. Nothing in it is async-shaped:
 
-That design's task diagram was five long-lived tasks that never finish, plus
-a CPU-bound worker pool, communicating only over channels. Nothing in it is
-async-shaped:
-
-* The four pipe tasks each do a blocking read or write on one fd forever. A
+* The five pipe threads each do a blocking read or write on one fd forever. A
   dedicated OS thread is the natural expression of that; `async` buys nothing
   when a task never yields for any reason other than the one fd it owns.
 * `core` is a single thread in a `recv` loop. Its whole point is that it is
@@ -64,8 +60,9 @@ async-shaped:
 * `ignore`'s parallel walker is thread-based.
 * `notify` is sync-native.
 * Deadlines are `Instant` + `AtomicBool` polled cooperatively — the design
-  already rejects `tokio::time::timeout` in §9 on the grounds that it does not
-  actually stop CPU-bound work. So even the timer story does not want tokio.
+  rules out a timer-driven deadline in §9, on the grounds that a timeout does
+  not actually stop CPU-bound work. So even the timer story does not want
+  tokio.
 * The remaining timers (divergence-report batching window, file-list rescan
   debounce) are `crossbeam::select!` with `after(dur)` inside the `core` loop.
 
@@ -74,8 +71,8 @@ and the pipe, and a class of "why is this 3ms late" question that a blocking
 read on a dedicated thread does not have. Under a prime invariant whose whole
 content is "be a thin, predictable pipe," that is the wrong trade.
 
-Total thread count is ~5 + `max(1, cpus - 2)`, all created at startup, all
-long-lived.
+Total thread count is 6 + `max(1, available_parallelism() - 2)`, all created
+at startup, all long-lived.
 
 Alternatives considered:
 
@@ -94,10 +91,6 @@ Alternatives considered:
   has no select. Also crossbeam gives `Receiver::len()`, which §13's "no
   heuristic work while `core` is behind" rule needs to be able to read.
 
-**Consequence:** `core-implementation-design.md` §2 has been amended
-accordingly — tasks to threads, the tokio dependency removed, and the
-no-async-runtime argument recorded there rather than only here.
-
 ## 2. Channels
 
 `crossbeam-channel` 0.5.16, `unbounded()` everywhere, per design §2.
@@ -112,9 +105,8 @@ log and watch, not just assert about.
 **Chosen: hand-written wire types in `shared::proto`. `lsp-types` 0.95.1
 stays as a dev-dependency oracle only.**
 
-This reverses an earlier decision in this document, on grounds that are not
-about dependency count. Design section 18 has the full argument; the
-dependency-relevant part:
+The grounds are not dependency count. Design section 18 has the full
+argument; the dependency-relevant part:
 
 * **The motive is the newtypes.** `claude.md` asks for newtypes on primitive
   fields, and the driver's correctness rests on several of them —
@@ -152,15 +144,17 @@ not worth hand-rolling.
 
 Alternatives considered:
 
-* **Keeping `lsp-types` 0.95.1 at runtime.** What this document previously
-  chose. The argument was that `InitializeParams` is large and deeply
-  optional, and a hand-rolled struct would silently miss a nested field like
-  `general.positionEncodings`. That argument is weaker than it looked: a field
-  we fail to read is a `None` we can test for against a golden corpus, whereas
-  a field we fail to *write* would be data loss — and we never write one,
-  because we never round-trip.
-* **Zed's fork, `async-lsp`, `tower-lsp-server`.** Rejected for the reasons
-  previously given, all of which still apply and now apply more strongly.
+* **Keeping `lsp-types` 0.95.1 at runtime.** The case for it is that
+  `InitializeParams` is large and deeply optional, so a hand-rolled struct
+  could silently miss a nested field like `general.positionEncodings`. That is
+  weaker than it looks: a field we fail to read is a `None` we can test for
+  against a golden corpus, whereas a field we fail to *write* would be data
+  loss — and we never write one, because we never round-trip.
+* **Zed's fork** (`zed-industries/lsp-types`, also 0.95.1) — a git dependency
+  on a fork of a fork, existing for Zed-specific extension types we do not
+  use. **`async-lsp` / `tower-lsp-server`** — full client/server frameworks
+  that own the connection and deserialize everything, which is exactly what
+  the prime invariant forbids.
 * **Generating types from the LSP metamodel JSON.** Microsoft publishes a
   machine-readable spec, and a build script could emit exactly the subset we
   name. Rejected as more machinery than thirty structs deserve, and it would
@@ -484,8 +478,7 @@ child's status), so the top-level match is exhaustive.
 **Chosen: `clap` 4.6.5, `default-features = false`, features
 `derive, std, help, usage, error-context, suggestions`.**
 
-This reverses an earlier decision, and the thing that changed is the usage
-form. The command line is now:
+The usage form is what makes this work:
 
 ```
 heuristic-jump [OPTIONS] -- <SERVER> [SERVER ARGS...]    # proxy
@@ -496,11 +489,11 @@ with the `--` **required** before the child command, and **no
 `--standalone` flag** — the mode is whether a server was given. Design §17.8
 has the argument for dropping the flag.
 
-The previous rejection was specifically that the child's arguments must reach
-it byte-for-byte, `--version` and `--help` included, and that making an
-argument parser stop parsing was more configuration than it was worth. A
-mandatory `--` deletes that objection: it is POSIX's own "stop parsing" marker,
-and in clap it is one attribute.
+The objection to any argument parser here is that the child's arguments must
+reach it byte-for-byte, `--version` and `--help` included, and making a parser
+stop parsing is normally more configuration than it is worth. A mandatory `--`
+answers that: it is POSIX's own "stop parsing" marker, and in clap it is one
+attribute.
 
 ```rust
 #[derive(Parser)]
@@ -588,10 +581,10 @@ a process that talks JSON-RPC over stdio has no use for.
 
 Alternatives considered:
 
-* **Hand-rolled, as previously chosen.** Still perfectly viable — with a
-  mandatory `--` it is `args.split(|a| a == "--")` and a small match. Rejected
-  because `--help`, `--version`, and typo suggestions are the parts users
-  actually touch, and reimplementing those well is more code than the parser.
+* **Hand-rolled.** Perfectly viable — with a mandatory `--` it is
+  `args.split(|a| a == "--")` and a small match. Rejected because `--help`,
+  `--version`, and typo suggestions are the parts users actually touch, and
+  reimplementing those well is more code than the dependency.
 * **`lexopt`, `pico-args`, `argh`.** Smaller, and all would work here. None
   generate a help text of the quality that matters for a tool nobody invokes
   by hand, which is the specific reason this reversed.
