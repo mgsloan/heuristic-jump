@@ -1469,6 +1469,12 @@ other.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ByteOffset(pub usize);
 
+/// A quantity of bytes, distinct from a position. `offset + len` advances,
+/// `offset - offset` measures, `offset + offset` does not typecheck.
+/// Also what `resolve` counts a query's byte budget in.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ByteLen(pub usize);
+
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct ByteRange { pub start: ByteOffset, pub end: ByteOffset }
 
@@ -1914,18 +1920,21 @@ crates/driver/src/
 ### Vendoring the Zed crates
 
 Beyond the mechanical patches below, `vendor/rope` gets one substantive change:
-its public API speaks in newtypes — `ByteOffset` and `ByteRange` instead of
-`usize` and `Range<usize>`, and `LineIndex` / `ByteColumn` / `Utf16Column`
-instead of the bare `u32` fields of `Point` and `PointUtf16` — so the
+its public API speaks in newtypes — `ByteOffset`, `ByteLen`, and `ByteRange`
+instead of `usize` and `Range<usize>`, and `LineIndex` / `ByteColumn` /
+`Utf16Column` / `CharCount` instead of the bare `u32`s in `Point`,
+`PointUtf16`, and `TextSummary` — so the
 vocabulary survives contact with the text rather than being unwrapped at the
 boundary. It is a design decision with its own re-sync cost and its own
 document: **`vendored-rope-design.md`**. Read it before touching `vendor/`.
 
 Three things stated here because they change this section's own claims:
 
-* `ByteOffset`, `LineIndex`, `ByteColumn`, and `Utf16Column` are *defined in*
-  `rope` and re-exported by `shared`, since the dependency direction forbids
-  the reverse.
+* `ByteOffset`, `ByteLen`, `ByteRange`, `LineIndex`, `ByteColumn`,
+  `Utf16Column`, and `CharCount` are *defined in* `rope` and re-exported by
+  `shared`, since the dependency direction forbids the reverse. `ByteLen` is
+  also what `resolve` uses for its per-query byte budget — one byte quantity,
+  not two.
 * The "re-sync is a clean diff" claim is weakened, in the ways that document
   sets out.
 * **Upstream's tests and benchmark are kept, not deleted.** We are editing this

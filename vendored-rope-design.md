@@ -6,11 +6,11 @@ it is vendored and what patches the copy needs to compile. This document covers
 one further change, which is larger than those and is a design decision rather
 than a mechanical fix-up:
 
-> **The rope's public API speaks in newtypes: `ByteOffset` and `ByteRange`
-> instead of bare `usize` and `Range<usize>`, and `LineIndex`, `ByteColumn`,
-> `Utf16Column`, and `CharCount` instead of the bare `u32`s in `Point`,
-> `PointUtf16`, and `TextSummary`. The newtypes are opaque — no operators
-> against bare integers.**
+> **The rope's public API speaks in newtypes: `ByteOffset`, `ByteLen`, and
+> `ByteRange` instead of bare `usize` and `Range<usize>`, and `LineIndex`,
+> `ByteColumn`, `Utf16Column`, and `CharCount` instead of the bare `u32`s in
+> `Point`, `PointUtf16`, and `TextSummary`. The newtypes are opaque — no
+> operators against bare integers, and positions and lengths are distinct.**
 
 `claude.md` asks for newtypes on primitive fields, and the driver's correctness
 rests on byte offsets more than on anything else — `core-implementation-design.md`
@@ -61,7 +61,8 @@ cannot depend on `shared`. `ByteOffset` therefore **lives in `rope`**, and
 
 ```rust
 // vendor/rope/src/byte_offset.rs
-pub struct ByteOffset(pub usize);
+pub struct ByteOffset(pub usize);   // a position in a document
+pub struct ByteLen(pub usize);      // a quantity of bytes
 pub struct ByteRange { pub start: ByteOffset, pub end: ByteOffset }
 
 // vendor/rope/src/point.rs, point_utf16.rs
@@ -186,13 +187,20 @@ What each newtype gets:
   `write!(f, "Point({}:{})", self.row, self.column)` (`point.rs:16`) keeps its
   output.
 
-And no arithmetic operators at all, with one exception.
+And no arithmetic operators at all, except for the byte pair, which gets
+exactly the operations that make sense between a position and a quantity:
 
-**`ByteOffset` gets `Add`, `Sub`, `AddAssign`, `SubAssign` against `Self`** —
-never against `usize`. That is consistent rather than special: this crate
-deliberately treats an offset and a length as the same type
-([below](#offsets-and-lengths-are-one-type-deliberately)), so adding two of
-them is meaningful.
+| Expression | Result | Meaning |
+|---|---|---|
+| `ByteOffset + ByteLen` | `ByteOffset` | advance a position |
+| `ByteOffset - ByteLen` | `ByteOffset` | retreat a position |
+| `ByteOffset - ByteOffset` | `ByteLen` | distance between positions |
+| `ByteLen ± ByteLen` | `ByteLen` | accumulate |
+| `ByteOffset + ByteOffset` | — | **not implemented**; meaningless |
+
+Plus the matching `AddAssign`/`SubAssign`, and `ByteRange::len() -> ByteLen`.
+This is the ordinary point-and-vector split, and the row above that has no
+result type is the one that catches real mistakes.
 
 **`LineIndex`, `ByteColumn`, `Utf16Column`, and `CharCount` get none.** Adding
 two line numbers is meaningless; there is no length interpretation to rescue
@@ -240,7 +248,7 @@ Converted:
 | Slicing and ranges | `slice`, `replace`, `chunks_in_range`, `bytes_in_range`, and the `reversed_*` variants |
 | Conversions | `offset_to_point`, `offset_to_point_utf16`, `offset_to_offset_utf16`, `point_to_offset`, `point_utf16_to_offset`, `unclipped_point_utf16_to_offset`, `offset_utf16_to_offset` |
 | Clipping and boundaries | `clip_offset`, `is_char_boundary`, `assert_char_boundary`, `floor_char_boundary`, `ceil_char_boundary` |
-| Length | `Rope::len`, `ChunkSlice::len` |
+| Length | `Rope::len`, `ChunkSlice::len` — both return `ByteLen` |
 | Cursors and iterators | `Cursor::{new, seek_forward, slice, summary, offset}`, `Chunks::{new, seek, set_range, offset}`, `Bytes::new`, `Lines::{seek, offset}`, `chars_at`, `reversed_chars_at` |
 | Rows | `slice_rows(Range<LineIndex>)`, `line_len(row: LineIndex) -> ByteColumn` |
 | `ChunkSlice` | All 17 of its public functions. It is low-level and handlers have little reason to touch it, but a bare-`usize` island inside an otherwise converted crate is exactly the escape hatch the change is meant to close |
@@ -270,7 +278,7 @@ be the worst of both.
 
 ```rust
 pub struct TextSummary {
-    pub len: ByteOffset,
+    pub len: ByteLen,
     pub chars: CharCount,
     pub len_utf16: OffsetUtf16,
     pub lines: Point,                    // typed already, via Point
@@ -301,23 +309,37 @@ summary type, so the impls live in rope. That matters:
 [section 16](core-implementation-design.md#vendoring-the-zed-crates)'s claim
 that it needs no patching survives.
 
-### Offsets and lengths are one type, deliberately
+### Offsets and lengths are separate types, and `ByteLen` is shared
 
-`Rope::len()` returns a length, not a position, and the pedantic version of
-this change would give it a separate `ByteLen`. It does not.
+`Rope::len()` and `ChunkSlice::len()` return `ByteLen`, not `ByteOffset`.
 
-The original reason — that separating them would force conversions inside
-bodies — no longer applies, since bodies are editable. The reason that remains
-is semantic and is the better one anyway: in this crate a length genuinely *is*
-an offset. `TextSummary.len` is fed straight to cursor seeks, summaries add
-lengths to produce positions, and a separate type would mean a conversion at
-every one of those, each of which is a place to get the direction wrong. One
-type is worth more than the distinction, and it is what makes `Add<Self>` on
-`ByteOffset` coherent.
+An earlier draft merged them, on the grounds that in this crate a length *is*
+an offset — `TextSummary.len` is fed straight to cursor seeks, and summaries
+add lengths to produce positions. That is true, and it is exactly the reason to
+keep them apart: those are two different operations that a single type spells
+identically. With the operator table above, "advance a position by a length"
+and "how far apart are these positions" have different signatures, and
+"add two positions" does not typecheck at all.
 
-`resolution-design.md` names a `ByteLen` for its byte-budget accounting. That
-is a different quantity — bytes read, not a position in a document — and it
-stays where it is.
+The practical objection to splitting — that it forces conversions inside
+function bodies — no longer applies, since bodies are editable
+([section 3](#3-what-keeps-this-safe)). The conversions it forces are the point:
+each one is a place where the direction could have been wrong and now has to be
+written down.
+
+There is deliberately **no `From<ByteLen> for ByteOffset`**. Turning a length
+into a position means measuring from somewhere, so it is spelled
+`ByteOffset::ZERO + len`, which names the origin.
+
+**`ByteLen` is one type, shared with `resolve`.** `resolution-design.md` needs
+a byte quantity for its per-query budget — bytes read across candidate files —
+and that is this type, not a parallel one. The two uses look different (a
+document's length; a running total across files) but they are the same
+quantity with the same arithmetic, and the one place they meet is charging a
+file's length against a budget. A separate `ScannedBytes` would put a
+conversion at exactly that point, which is the one place a unit error would be
+invisible anyway. So `shared` re-exports `ByteLen` and `resolve` uses it
+directly.
 
 ## 5. What deliberately does not change
 
@@ -463,25 +485,28 @@ items the cut-down `vendor/util` keeps. It needs `rand`.
   a dev-dependency, which `dependency-plan.md` §12 previously declined; the
   justification now exists.
 
-## 8. Open questions
+## 8. Decided, and what remains
 
-1. **Should the conversion be generated rather than hand-written?** Fifty-one
-   near-identical wrappers is the kind of thing a macro or a small codegen
-   script does more reliably than a person, and it would make a re-sync a
-   re-run instead of a re-edit. Against: a macro over function signatures is
-   hard to read, and the whole point of the invariant in
-   [section 3](#3-what-keeps-this-safe) is that the patch be
-   obvious on inspection.
+The three questions this document opened are settled:
 
-2. **Does the `*_raw` indirection cost anything measurable?** It should inline
-   away completely, and so should every newtype operator. Worth confirming once
-   rather than assuming, since these are the hottest functions in the system —
-   and upstream's `rope_benchmark.rs`, kept per
-   [section 7](#beyond-upstreams-tests), answers it directly.
+* **Hand-convert; do not generate.** Fifty-one near-identical wrappers is the
+  kind of thing a macro could produce, and a macro over function signatures is
+  unreadable in exactly the code where readability is the only safety argument
+  we have ([section 3](#3-what-keeps-this-safe)). Hand-written it is.
+* **The wrapper indirection is not a performance question.** `*_raw` calls and
+  newtype operators are the canonical case for inlining; there is nothing here
+  for a benchmark to find. `rope_benchmark.rs` is still kept
+  ([section 7](#beyond-upstreams-tests)) because it guards against a real
+  regression in the rope, not because this change is suspected of causing one.
+* **`ByteLen` is separate and shared** —
+  [section 4](#offsets-and-lengths-are-separate-types-and-bytelen-is-shared).
 
-3. **Should `ByteLen` be separate after all?**
-   [Section 4](#offsets-and-lengths-are-one-type-deliberately) keeps one type,
-   and the argument is now semantic rather than forced — allowing body edits
-   removed the practical objection. Worth revisiting once there is code using
-   the API in anger, since the answer depends on whether length-versus-position
-   mistakes actually show up.
+One asymmetry is left open, and it follows directly from that last decision.
+**Why bytes and not UTF-16?** `OffsetUtf16` is used as both a position and a
+length — `TextSummary.len_utf16` is a length — so the same argument would give
+it a `Utf16Len`. It does not get one, because UTF-16 quantities exist only at
+the wire edge ([section 18.3](core-implementation-design.md#183-the-wire-position-type-is-inert))
+and never accumulate anywhere in our code, so the split would buy nothing but
+would still cost the edits. That is a judgement about where the value is, not a
+principle, and it should be revisited if UTF-16 arithmetic ever appears outside
+the conversion functions.
