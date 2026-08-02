@@ -116,6 +116,41 @@ Steps:
   a wrong jump costs much less trust, and the floor can be looser for
   results that are clearly marked.
 
+### Coverage at a precision floor
+
+Not v1. v1 answers whenever it has a guess and measures what that
+costs; this is the shape the metric would take once there is enough
+data to set thresholds that mean something.
+
+There are three outcomes per query: correct, wrong, or abstain.
+Abstaining is cheap - the user just waits for the proper LSP, which is
+the status quo. So precision is fixed first, and coverage maximized
+underneath it:
+
+> Of queries where the tool commits to an answer, >=97% must match the
+> LSP. Subject to that, maximize the fraction of queries it commits on.
+
+That committed fraction becomes the headline number. Plain "match rate"
+is not used, because it can be improved by guessing more.
+
+Every heuristic then needs a confidence notion and an explicit "not
+confident enough" path. 97% is a floor and not a target - a stratum
+that can't clear it should abstain rather than drag precision down for
+everything else.
+
+The reasoning: the user's alternative is waiting a few seconds. A wrong
+jump costs the jump, the realization, and the trip back - but mostly it
+costs trust. Once the tool is wrong often enough to warrant checking
+every result, that verification cost is paid on the correct answers
+too, and the tool is net negative.
+
+Error severity gets budgets at the same time - roughly <= 1% for a
+wrong file in the same module tree, <= 0.5% for an unrelated one, with
+same-file misses absorbing the remainder.
+
+The prerequisite is the per-stratum table with real numbers in it,
+which is exactly what v1's measure-everything posture produces.
+
 ## Development plan
 
 The plan is to have ~10 opensource repos per language, and
@@ -135,34 +170,41 @@ metrics below.
 
 ## Success metrics
 
-### Coverage at a precision floor
+### Coverage
 
-There are three outcomes per query: correct, wrong, or abstain.
-Abstaining is cheap - the user just waits for the proper LSP, which is
-the status quo. So precision is fixed first, and coverage maximized
-underneath it:
+> Maximize the fraction of queries the tool answers at all.
 
-> Of queries where the tool commits to an answer, >=97% must match the
-> LSP. Subject to that, maximize the fraction of queries it commits on.
+That fraction is the headline number, and for now it is the only one
+with a target attached. **Precision is measured, not enforced.** If the
+heuristic has a guess, it returns the guess; the cost of a wrong answer
+is not something this version tries to manage.
 
-That committed fraction is the headline number. Plain "match rate" is
-not used, because it can be improved by guessing more.
+That is a deliberate starting point rather than an oversight, and it
+reverses the obvious ordering. A confidence model cannot be calibrated
+without data, and a stratum that always declines to answer produces no
+data about itself - so starting strict means the per-stratum table
+below is mostly empty rows, and the thresholds that would fill it have
+to be guessed. Starting permissive fills every row from the first
+corpus run, and a floor can then be set from measurements instead of
+from intuition. See "Coverage at a precision floor" under Future work
+for what that would look like.
 
-Every heuristic therefore needs a confidence notion and an explicit
-"not confident enough" path. 97% is a floor and not a target - a
-stratum that can't clear it should abstain rather than drag precision
-down for everything else.
+Two things still cause the tool to decline. Neither is about
+confidence:
 
-The reasoning: the user's alternative is waiting a few seconds. A wrong
-jump costs the jump, the realization, and the trip back - but mostly it
-costs trust. Once the tool is wrong often enough to warrant checking
-every result, that verification cost is paid on the correct answers
-too, and the tool is net negative.
+* There is no candidate at all - the cursor is on a keyword, or nothing
+  matched.
+* The latency budget ran out. See below.
+
+What keeps this honest in the meantime is divergence reporting: when
+the proper LSP disagrees with an answer the user was already shown,
+they are told. That is the whole safety mechanism right now, so it
+matters more in this version than it would under a floor.
 
 ### Error severity
 
-Wrong answers are not interchangeable. Tracked separately, as a
-fraction of committed answers:
+Wrong answers are not interchangeable, so they are measured
+separately - reported, with no budget attached yet:
 
 Landing within 3 lines of the proper LSP's answer counts as a match, not
 an error. At that distance the right definition is on screen and the
@@ -170,13 +212,16 @@ user is already looking at it, so calling it wrong would measure
 something nobody experiences as wrong.
 
 * Same file, further off than 3 lines. Recoverable - the user is at
-  least in the right place - but they have to hunt. Absorbs whatever
-  remains of the error budget.
+  least in the right place - but they have to hunt.
 
-* Wrong file, same module tree. Moderate cost. Budget <= 1%.
+* Wrong file, same module tree. Moderate cost.
 
 * Wrong file, unrelated module or crate. This is the trust-destroying
-  one. Budget <= 0.5%.
+  one.
+
+The point of tracking these now, with nothing enforced, is that the
+budgets in Future work have to come from somewhere. These three numbers
+are what would set them.
 
 ### Latency
 
@@ -331,11 +376,9 @@ section 5.
     permanent failure reported as a transient one is its own small lie. Needs a
     look at what Zed and VS Code actually render for each.
 
-12. **Revisit precision floor** - actually seems useful to return questionable
-results.
-
-13. **Should the precision floor differ by mode?**
-    `core-implementation-design.md` section 17.6 says no, for v1, on trust
-    grounds. It is the change most likely to be worth
-    making later and the one most likely to be made for bad reasons, so it
-    should require a measurement rather than an argument.
+12. **When the precision floor arrives, should it differ by mode?**
+    `core-implementation-design.md` section 17.6 argues the counter-intuitive
+    direction: *tighter* in standalone, not looser. A wrong answer in proxy
+    mode is contradicted by the real LSP seconds later; in standalone there is
+    no divergence report and it stands forever. Needs a measurement rather
+    than an argument.

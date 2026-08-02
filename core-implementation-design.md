@@ -23,9 +23,25 @@ only part of them this document commits to.
 
 See `readme.md` for the product rationale and the success metrics. The
 metrics constrain this design in three concrete ways, noted where they bite:
-the latency budget (p50 <= 50ms, p99 <= 400ms, hard cap 750ms), the >=97%
-precision floor and its abstention path, and the per-stratum reporting
-requirement.
+the latency budget (p50 <= 50ms, p99 <= 400ms, hard cap 750ms), the abstention
+path, and the per-stratum reporting requirement.
+
+**On precision.** `readme.md` moved its >=97% precision floor to future work.
+v1 answers whenever the handler has a candidate and **measures** precision
+rather than gating on it; the headline number is plain coverage. This
+document is written against that, and the difference shows up in three
+places — abstention exists for *latency and emptiness*, not for low
+confidence ([section 9](#9-deadlines-and-abstention)); divergence reporting
+([section 10](#10-divergence-reporting)) is the only thing protecting the
+user, so it carries more weight here than it would under a floor; and
+`Confidence` is recorded but never compared against a threshold
+([section 12](#12-handler-interface)).
+
+Nothing in the architecture assumes the floor is absent. Reinstating it is a
+policy change at the commit decision plus a threshold table, both of which sit
+behind the handler seam. The plumbing that would feed it — per-stratum
+records, the agreement predicate, confidence on every answer — is built now
+precisely so the floor can later be set from measurements instead of guesses.
 
 ## 1. The prime invariant
 
@@ -814,7 +830,7 @@ contents beyond the parse LRU.**
 * Built lazily on first need, then refreshed in the background. A stale list
   is acceptable — it costs recall on files created in the last few seconds,
   which is a miss, not a wrong answer, and misses are cheap under the
-  precision-floored metric.
+  measured-precision posture.
 * Invalidated by a filesystem watcher (`notify`) **only where watching is
   cheap** — a workspace small enough, on a platform with a real recursive
   watch API. Watching a large tree costs descriptors and memory and wakes the
@@ -1193,8 +1209,10 @@ identifier in a definition; a dumb-jump style match may point at the start of
 the line, at the `fn` keyword, or at a whole item. Exact comparison would
 report a divergence on nearly every *correct* answer.
 
-This predicate is not a reporting detail. It *is* the precision metric in
-`readme.md`, so getting it wrong makes the headline number meaningless.
+This predicate is not a reporting detail. It *is* how precision is measured,
+so getting it wrong corrupts the numbers that a future precision floor would
+be derived from — and, right now, decides whether the user gets told they were
+sent to the wrong place.
 
 Both sides are first normalized: `textDocument/definition` may answer with
 `Location`, `Location[]`, `LocationLink[]`, or null, and which one depends on
@@ -1228,6 +1246,13 @@ matches *any* of them — the LSP itself is expressing ambiguity there, so
 picking one of its candidates is not an error.
 
 ### Reporting
+
+**This is the safety mechanism.** With the precision floor deferred
+([intro](#core-implementation-design)), nothing stops the shim answering a
+query it has only a weak guess at, so telling the user when that guess was
+wrong is the entire protection they have. Under a floor this would be a
+secondary nicety; here it is load-bearing, and it should be built and tested
+as such rather than left until last.
 
 When the shim answered heuristically and the child's later answer does not
 match, the readme calls for notifying the user. Base LSP has no
@@ -1472,14 +1497,22 @@ pub enum Outcome {
 Notes on the shape:
 
 * **`Outcome` is not `Result`.** Abstention is a normal, expected, frequently
-  correct outcome — it is the mechanism that holds the precision floor — and
-  it should not share a type with "something went wrong."
+  correct outcome — the query genuinely had nothing to return, or the deadline
+  expired — and it should not share a type with "something went wrong." Under
+  the future precision floor it also becomes the mechanism that holds the
+  floor, which is a further reason not to model it as an error.
 * **`Stratum` is reported on both arms**, because coverage per stratum is
   meaningless without knowing which stratum the abstentions belonged to.
-* **`Confidence` exists now** even though only logged in v1, because the
-  readme's future work item on marking heuristic results with a probability
-  estimate needs it, and retrofitting a confidence notion into handlers that
-  were written without one means revisiting every resolution path. It is a
+* **`Confidence` exists now** even though nothing compares it against a
+  threshold in v1. It is recorded on every answer and never gates one. Two
+  reasons it is not deferred along with the floor: the readme's future work
+  item on marking heuristic results with a probability estimate needs it, and
+  — more importantly — a floor can only be *derived* from
+  `(stratum, confidence, agreed?)` triples that were collected while nothing
+  was being gated. Retrofitting a confidence notion into handlers written
+  without one means revisiting every resolution path, and doing it after the
+  fact means the first calibration is computed from answers the old code
+  chose to give, which is not the same distribution. It is a
   newtype rather than a bare `f32` so the 0.0..=1.0 invariant is checked once
   in the constructor instead of assumed at every comparison — and so that a
   confidence can never be silently swapped with a score, a threshold, or a
@@ -2092,20 +2125,24 @@ carried over.
   keeping `num_cpus - 2` here would be cargo-culting a constraint that no
   longer applies.
 
-The **precision floor is a harder question and is deliberately not changed.**
-The readme's 97% is argued from "the user's alternative is waiting a few
-seconds." In standalone the alternative is nothing, which is a real argument
-for committing more freely — a wrong answer competes against no answer rather
-than against a correct one. But the trust argument the readme actually rests
-on is unchanged: a tool wrong often enough to warrant checking every result is
-net negative regardless of what the fallback is, and it is *more* damaging
-here, because there is no proper LSP to correct the record. So v1 uses the
-same calibration table and the same thresholds in both modes.
+**Precision does not differ by mode, because in v1 it is not enforced in
+either.** Both modes answer whenever the handler has a candidate.
 
-The mechanism for changing this later already exists: the commit policy is a
-table (`resolution-design.md` section 7), so a standalone-specific table is a
-data change, not a code change. It should be made only against measurements,
-and there are none.
+The question does not disappear, though — it moves, and it gets sharper. When
+the floor arrives it will be tempting to set a *looser* one for standalone, on
+the grounds that a wrong answer there competes against no answer rather than
+against a correct one. The counter is that standalone is the mode with **no
+proper LSP to correct the record**: divergence reporting, which
+[section 10](#reporting) identifies as the entire safety mechanism, is dark
+here ([17.4](#174-health-policy-and-what-disappears)). A wrong answer in proxy
+mode gets contradicted a few seconds later; a wrong answer in standalone
+stands forever. That argues for the floor being *tighter* in standalone, not
+looser, and it is the opposite of the intuitive conclusion — which is why it
+is written down now rather than rediscovered later.
+
+The mechanism for either is already in place: the commit policy is a table
+(`resolution-design.md` section 7), so a per-mode table is a data change
+rather than a code change.
 
 ### 17.7 What this does to measurement
 
