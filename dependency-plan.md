@@ -703,6 +703,28 @@ deliberately rather than by imitation:
 * **`[workspace.metadata.cargo-machete] ignored`** for deps that are used but
   invisible to static analysis. `rope` already needs `tracing` listed this way
   upstream, and our patched copy still will.
+* **License texts live once at the workspace root and are symlinked into each
+  crate.** Zed does this without exception — 245 symlinks and not one regular
+  copy — and it is the right call: a crate directory that declares
+  `license = "MIT"` should carry the text, but N copies of the same file drift,
+  and a stale one is a licensing problem rather than a formatting one.
+
+  ```
+  LICENSE-MIT                       real file
+  LICENSE-GPL                       real file
+  LICENSE-APACHE                    real file
+  crates/shared/LICENSE-MIT      -> ../../LICENSE-MIT
+  vendor/rope/LICENSE-GPL        -> ../../LICENSE-GPL
+  vendor/sum_tree/LICENSE-APACHE -> ../../LICENSE-APACHE
+  ```
+
+  A practical consequence for the vendoring in §5: the Zed crates **arrive**
+  with exactly these symlinks, and `../../LICENSE-GPL` resolves correctly
+  after the copy because `vendor/rope/` sits at the same depth as
+  `crates/rope/` did. So the symlinks need no fixing up — provided the copy
+  preserves them. Use `cp -a` (or `rsync -a`); plain `cp -r` dereferences,
+  which silently turns each one into a 34 KB duplicate and loses the property
+  on the first re-sync.
 
 Two places we deliberately differ:
 
@@ -719,6 +741,8 @@ Cargo.toml
 rust-toolchain.toml     pin 1.95.0, so grammar/rope behaviour is reproducible
 LICENSE-MIT             covers crates/*
 LICENSE-GPL             covers the combined binary, via vendor/rope
+LICENSE-APACHE          covers vendor/sum_tree and vendor/util
+                        -- all three symlinked into each crate, see above
 vendor/
   README.md             upstream rev, patches applied, items kept
   rope/                 GPL-3.0-or-later
