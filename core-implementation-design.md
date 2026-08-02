@@ -1044,6 +1044,8 @@ struct PendingQuery {
     position: ByteOffset,     // where to actually run the query
     spot: Spot,               // identity, for the repeat check
     arrived: Instant,
+    /// Byte-space, as the handler returned it. The wire form is built when
+    /// the response is sent and is not retained -- see section 10.
     answered_by_shim: Option<Vec<Location>>,
 }
 
@@ -1238,7 +1240,22 @@ sent to the wrong place.
 Both sides are first normalized: `textDocument/definition` may answer with
 `Location`, `Location[]`, `LocationLink[]`, or null, and which one depends on
 whether the client advertised `linkSupport`. All shapes collapse to a set of
-`(uri, range)` before comparison, taking `targetSelectionRange` for links.
+`Location` — `(DocumentUri, ByteRange)` — taking `targetSelectionRange` for
+links.
+
+**The predicate reads nothing.** Both sides carry a line: the shim's answer
+because `Location` does
+([section 18.4](#184-location-is-byte-based-and-this-fixes-a-real-inconsistency)),
+and the child's because that is what came off the wire. So the comparison is
+URI, then line, then range, with no file text needed — which matters because
+divergence is classified when the child responds, seconds after the answer,
+when the per-query read cache is long gone and the target document may never
+have been open.
+
+Ranges themselves are compared in byte space when both sides refer to the same
+line, like everything else inside the shim
+([section 18](#18-protocol-types)); the child's columns are converted at the
+edge, using the one line rather than the file.
 
 Then, comparing the shim's answer against the child's. The `agreement` and
 `severity` values below are the exact strings written to those fields in
@@ -1291,35 +1308,52 @@ Sequence, when the client advertised `window.showDocument`:
 When `showDocument` is unavailable, degrade to a plain `window/showMessage`
 naming the correct location. When `showMessage` is also unavailable, log only.
 
-### Rate limiting
+### How much to report
 
-Reports fire on any `mismatch` classification, and eager answering means
-divergences arrive in bursts — a cold start is exactly when the shim answers
-most and is least accurate. One prompt per divergence would be unusable.
+Every divergence is reported. **This is a tool that is sometimes wrong and
+tells you so**, and the telling is not optional — with no precision floor
+([intro](#core-implementation-design)) it is the only thing standing between a
+wrong jump and a false belief the user acts on. Suppressing reports to be
+polite would remove the one property that makes answering-on-a-guess
+defensible.
 
-So reports are batched rather than emitted per divergence:
+So there is no batching window and no politeness cooldown. One
+`window/showMessage` per divergence, naming the symbol and where the user was
+sent.
 
-* A short window collects divergences. The first one opens it.
-* Entries are the **identifiers queried**, not locations — the user thinks in
-  terms of "I looked up `parse_config`", not in terms of ranges.
-* Duplicates collapse. Looking up the same symbol three times during a cold
-  start is one entry.
-* The window closes and emits a single message listing the identifiers, up to
-  a character budget. Past that it truncates with a count: `parse_config,
-  Resolver, TokenKind and 4 more were resolved incorrectly`.
-* While a `showMessageRequest` is outstanding the window stays open, so a
-  slow user response cannot be overtaken by a second prompt. The
-  `showMessage` fallback is a notification with no response, so there is
-  nothing to be outstanding — that path uses a fixed cooldown instead.
+Two things follow that are easy to get wrong.
 
-The batched form loses the ability to offer `window/showDocument` navigation,
-since there is no single correct location to jump to. That is the right
-trade: a batch means several answers were wrong, and at that point the useful
-message is "distrust what you were shown," not "here is one correction." A
-single divergence still gets the full prompt-and-navigate treatment.
+**A notification and a prompt dismiss differently, and that is the whole
+reason to distinguish them.** It is tempting to assume `window/showMessage`
+lands somewhere passive like a log panel. In Zed it does not: both
+`showMessage` and `showMessageRequest` become the same notification card in
+the workspace stack (`crates/project/src/lsp_store.rs:1177` and `:1227`). The
+difference is dismissal — a message with no actions auto-dismisses after
+`dismiss_timeout_ms`, defaulting to 5000
+(`crates/project/src/project_settings.rs:174`), while one with actions never
+auto-dismisses and sits until clicked.
 
-Every divergence is recorded for the metrics whether or not it appears in a
-report — rate limiting is a UI concern and must not reach the numbers.
+That is what makes unbatched reporting workable. A stream of `showMessage`
+notifications ages out on its own; a stream of `showMessageRequest` prompts
+would accumulate permanently. So:
+
+* Every divergence emits a `window/showMessage`.
+* The interactive prompt-and-navigate sequence above runs **only when no other
+  prompt is outstanding**, so at most one sticky card exists at a time.
+
+Nothing is dropped in either case — this is a choice between two LSP
+mechanisms, not a rate limiter.
+
+**There is no flood guard, deliberately.** Nothing in this system produces
+bursts of go-to-definition: unlike completion or diagnostics it is
+user-initiated, one keypress at a time. A cold start realistically produces a
+handful of divergences, not hundreds. A rate limiter here would be machinery
+for an imagined problem, and the kind that reveals itself as wrong only by
+silently hiding the reports this version depends on. If measurement ever shows
+a burst, add one then.
+
+Every divergence is recorded for the metrics whether or not the user sees a
+notification — display policy is a UI concern and must not reach the numbers.
 
 One further rule:
 
@@ -1477,8 +1511,18 @@ pub struct LineIndex(pub u32);
 
 /// A definition site, as handlers speak of it: byte offsets, always.
 /// The wire form is `proto::WireLocation` and only the driver builds it.
+///
+/// `line` is redundant with `range` but is not encoding: it is row plus
+/// byte-range, still entirely byte-space. It is carried because a handler
+/// gets it for free from the tree-sitter node it already verified, and it
+/// saves the driver a whole-file line index later -- see section 18.4.
+/// Constructed only via `Location::at_node`, so the two cannot disagree.
 #[derive(Clone, PartialEq, Eq)]
-pub struct Location { pub uri: DocumentUri, pub range: ByteRange }
+pub struct Location {
+    pub uri: DocumentUri,
+    pub range: ByteRange,
+    pub line: LineIndex,
+}
 
 /// Invariant: 0.0..=1.0, enforced by the constructor.
 #[derive(Copy, Clone, PartialEq, PartialOrd)]
@@ -1869,6 +1913,25 @@ crates/driver/src/
 
 ### Vendoring the Zed crates
 
+Beyond the mechanical patches below, `vendor/rope` gets one substantive change:
+its public API speaks in newtypes — `ByteOffset` and `ByteRange` instead of
+`usize` and `Range<usize>`, and `LineIndex` / `ByteColumn` / `Utf16Column`
+instead of the bare `u32` fields of `Point` and `PointUtf16` — so the
+vocabulary survives contact with the text rather than being unwrapped at the
+boundary. It is a design decision with its own re-sync cost and its own
+document: **`vendored-rope-design.md`**. Read it before touching `vendor/`.
+
+Three things stated here because they change this section's own claims:
+
+* `ByteOffset`, `LineIndex`, `ByteColumn`, and `Utf16Column` are *defined in*
+  `rope` and re-exported by `shared`, since the dependency direction forbids
+  the reverse.
+* The "re-sync is a clean diff" claim is weakened, in the ways that document
+  sets out.
+* **Upstream's tests and benchmark are kept, not deleted.** We are editing this
+  crate, so its own tests are the only independent check that the edit changed
+  nothing.
+
 `vendor/rope` and `vendor/sum_tree` are copied, not git-depended: the workspace
 sets `publish = false`, so they are not on crates.io, and pinning a rev of a
 monorepo crate with no semver guarantee is worse than owning a copy.
@@ -1897,8 +1960,11 @@ or a no-op passthrough depending on a cfg, and `rope` already depends on
 `tracing`, so the one import is redirected there. That is a single-line patch
 to `rope`, recorded as such.
 
-`sum_tree` needs no patching. Its `tree_map.rs` is unused here and can be
-dropped; a whole-file deletion still leaves a clean diff.
+`sum_tree` needs no patching, and the newtype work in
+`vendored-rope-design.md` does not change that: `sum_tree::Dimension` is
+generic over the summary type, so `ByteOffset`'s impls live in `rope`. Its
+`tree_map.rs` is unused here and can be dropped; a whole-file deletion still
+leaves a clean diff.
 
 `vendor/README.md` records, per crate, the upstream revision it was taken at,
 the exact patches applied, and — for `util` — the list of items kept, so that
@@ -2096,8 +2162,14 @@ absent rather than conditionally skipped:
   [17.2](#172-the-standalone-invariant), which the same test harness assertion
   covers.
 * **Divergence reporting** ([section 10](#10-divergence-reporting)). Nothing
-  to compare against. The agreement predicate is unused; the batching window
-  and its rate limiter never open.
+  to compare against, so the agreement predicate is unused and **no mismatch
+  message is ever sent.** That is correct rather than a gap. In proxy mode the
+  reports exist because the user believes they are talking to a real language
+  server and needs telling when they were not. A standalone user was told at
+  startup that this is heuristic-only ([17.3](#173-initialize-is-ours-now)) and
+  has no reason to expect otherwise, so there is nothing to correct them about.
+  "Sometimes wrong and tells you so" is a proxy-mode property; standalone is
+  "sometimes wrong, and you already know."
 * **Server adapters** ([section 7](#per-server-adapters)). No server.
 * **`reader:child`, `writer:child`, and `stderr:child`**
   ([section 2](#thread-layout)). Three of the six threads are simply not
@@ -2386,8 +2458,13 @@ forbids.
 So there are two types, and the distinction is load-bearing:
 
 ```rust
-/// What a handler returns. Byte offsets, always.
-pub struct Location { pub uri: DocumentUri, pub range: ByteRange }
+/// What a handler returns. Byte offsets, always -- plus the row, which
+/// is also byte-space and which the handler gets for free.
+pub struct Location {
+    pub uri: DocumentUri,
+    pub range: ByteRange,
+    pub line: LineIndex,
+}
 
 /// What goes on the wire. Constructed only by the driver, at the edge.
 pub struct WireLocation { uri: DocumentUri, range: WireRange }
@@ -2396,6 +2473,30 @@ pub struct WireLocation { uri: DocumentUri, range: WireRange }
 The driver converts one to the other on the way out, in the same one place
 that owns `PositionEncoding`. Handlers never see a `WireLocation` and cannot
 construct one.
+
+**Why `Location` carries a line.** It looks redundant with `range`, and
+strictly it is. It is there because the alternative is worse in two places:
+
+* To put an answer on the wire the driver needs line and character in the
+  *target* file, which without a line means building a whole-file line index
+  for a file the handler may only have literal-scanned. With the line
+  supplied, only that one line's text is needed, and only to resolve the
+  UTF-16 column.
+* The agreement predicate ([section 10](#the-agreement-predicate)) is
+  line-based by definition — every severity tier is "within 3 lines" or
+  "further than 3 lines". With the line in hand it compares URI, then line,
+  then range, and **reads nothing at all**, including in the same-file case
+  where the document is closed and the divergence arrives seconds later with
+  no per-query cache left.
+
+A handler pays nothing for it: it verified the candidate by parsing, so
+`node.start_position()` already has the row. And it is not an encoding leak —
+row plus byte-column is byte-space, and `PositionEncoding` still exists in
+exactly one place.
+
+The risk is a `line` that disagrees with `range`. `Location` is therefore
+constructed only through `Location::at_node(uri, node)`, which derives both
+from the same node, so the two cannot drift apart by hand.
 
 Keeping them as separate types is what makes the rule survive implementation.
 With one shared type the pressure is always to hand handlers the encoding

@@ -36,6 +36,8 @@ it is worth knowing when we are ahead of them.
 | `log` | 0.4.x | vendored rope/sum_tree/util | forced by rope |
 | `memchr` | 2.8.3 | resolve (not yet) | noted, out of scope |
 | `insta` | 1.48.0 | dev | chosen |
+| `rand` | 0.9 (Zed's pin) | dev | chosen — see §5, §12 |
+| `criterion` | 0.5 | dev | vendored rope's benchmark only — §5 |
 | `proptest` | 1.11.0 | dev | chosen |
 | `tempfile` | 3.x | dev | chosen |
 | `anyhow` | — | — | **rejected** |
@@ -230,9 +232,9 @@ What vendoring actually costs, measured rather than assumed:
 * Non-Zed deps that come with it: `heapless` 0.9.3, `unicode-segmentation`
   1.13.3, `rayon`, `log`, `tracing`. All ordinary.
 * Zed deps that do not: `util`, `ztracing`, and — in **dev**-dependencies —
-  `gpui`, `zlog`, `ctor`, `criterion`.
+  `gpui`, `zlog`, `ctor`.
 
-Three patches, each recorded in `vendor/README.md`:
+Four patches, each recorded in `vendor/README.md`:
 
 1. **`vendor/util`, cut down.** Confirmed by grep: `rope` and `sum_tree`
    together use exactly `util::is_utf8_char_boundary` (a 4-line `const fn`),
@@ -244,12 +246,26 @@ Three patches, each recorded in `vendor/README.md`:
 2. **`ztracing::instrument` → `tracing::instrument`.** Three call sites
    (`rope.rs:15`, `sum_tree.rs:13`, `cursor.rs:4`). One-line patch each; both
    crates already depend on `tracing`.
-3. **Delete the `#[cfg(test)]` modules.** This is a bigger deletion than the
-   design anticipated: `rope`'s tests use `#[gpui::test]` (9 sites) and
-   `zlog::init_test()`, so keeping them means vendoring `gpui`, which is
-   absurd. Deleting whole `mod tests` blocks keeps the re-sync diff clean and
-   costs us nothing we can maintain anyway — these are Zed's tests of Zed's
-   code. Our own invariants get tested at our own seam (design §15).
+3. **Keep the `#[cfg(test)]` modules, substituting two things.** `rope`'s
+   tests use `#[gpui::test]` (9 sites), `zlog::init_test()`, and
+   `#[ctor::ctor]`, which looks like a reason to delete them. It is not.
+   Those randomised tests take `mut rng: StdRng` and nothing else — no
+   `TestAppContext`, no async — so the attribute is doing one job: run the
+   body N times with deterministic seeds. That becomes a twenty-line
+   `util::seeded` helper and two changed lines per test, bodies verbatim.
+   `zlog::init_test()` and its `#[ctor::ctor]` only initialise logging and are
+   deleted outright, taking the `zlog` and `ctor` dev-dependencies with them.
+
+   Keeping them is not sentimentality about someone else's tests.
+   `vendored-rope-design.md` puts a 51-function signature sweep and six
+   hand-edited lines through this crate, and upstream's tests are the only
+   independent check that the edit changed nothing. Several are randomised
+   differential tests against a `String` oracle, which is exactly what nobody
+   writes from scratch.
+4. **Keep `benches/rope_benchmark.rs`.** It answers directly whether the
+   newtype wrappers and the `*_raw` indirection cost anything, which is an
+   open question in `vendored-rope-design.md`. This is the justification for
+   `criterion` that §12 previously lacked.
 
 Alternatives considered:
 
@@ -310,6 +326,7 @@ Summary of the per-crate `license` fields:
 | `vendor/rope` | `GPL-3.0-or-later` (Zed's, unchanged) |
 | `vendor/sum_tree` | `Apache-2.0` (Zed's, unchanged) |
 | `vendor/util` | `Apache-2.0`, matching upstream |
+
 | the shipped binary | GPL-3.0-or-later |
 
 `sum_tree` and `util` being Apache-2.0 is worth noting: Apache-2.0 is one-way
@@ -632,13 +649,18 @@ Alternatives considered:
 | `insta` | 1.48.0 | Frame-trace golden tests (design §15). Snapshot review is the right workflow for "assert every forwarded frame is byte-identical" |
 | `proptest` | 1.11.0 | Position-encoding property tests; edit-log prefix consumption; spot anchoring |
 | `tempfile` | 3.x | Fixture repositories for `ProjectView` scope tests |
+| `rand` | **0.9** | Upstream rope/sum_tree tests, kept per §5, plus `util::RandomCharIter`. Pinned to Zed's 0.9 rather than crates.io's 0.10: the tests are kept verbatim and are written against `rng.random_range(..)`. Taking 0.10 would mean editing test bodies, which defeats keeping them |
+| `criterion` | 0.5 | `vendor/rope`'s benchmark only, per §5 |
 | `lsp-types` | 0.95.1 | Differential oracle for `shared::proto`, per §3 and design §18.5. Dev only — it must never appear in a non-dev dependency table, and that is worth a CI check, since the whole point of §3 is defeated the moment a runtime `use lsp_types::` appears |
 
 Deliberately not adding:
 
-* **`criterion`** — no benchmarks yet, and the latency numbers that matter are
-  end-to-end against a real repo, which is `scan`'s job, not a
-  microbenchmark's.
+* **`criterion` 0.5** — *was* declined on the grounds that the latency numbers
+  that matter are end-to-end against a real repo, which is `scan`'s job. It is
+  now a dev-dependency of `vendor/rope` only, because upstream's
+  `rope_benchmark.rs` is kept (§5) and answers whether the newtype wrappers
+  inline away. Pinned to Zed's 0.5, since the benchmark is kept verbatim. No
+  benchmark of our own code is planned.
 * **`arbitrary` / `cargo-fuzz`** — design §15 asks for codec fuzzing. `proptest`
   covers the split-read / bogus-`Content-Length` cases well enough to start;
   add `cargo-fuzz` as a separate non-workspace target if the codec ever gets
@@ -796,7 +818,7 @@ not created by this piece of work.
 
 ## 15. Clippy in workspace toml
 
-```
+```toml
 [workspace.lints.clippy]
 disallowed_methods = "deny"
 disallowed_types = "deny"

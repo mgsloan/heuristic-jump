@@ -173,12 +173,33 @@ metrics below.
 
 ### Coverage
 
-> Maximize the fraction of queries the tool answers at all.
+> Maximize **handler coverage**: of all the go-to-definition queries in
+> the corpus, the fraction the resolution logic answers at all.
 
 That fraction is the headline number, and for now it is the only one
 with a target attached. **Precision is measured, not enforced.** If the
 heuristic has a guess, it returns the guess; the cost of a wrong answer
 is not something this version tries to manage.
+
+Handler coverage is measured by the corpus scan, not by watching a live
+session, and the distinction matters because the two differ by an order
+of magnitude. In a live session against a healthy server the retry rule
+means the shim answers almost nothing - the user has to press twice - so
+what a session measures is mostly how often people double-press, which
+is a fact about habits rather than about resolution.
+
+**Delivered coverage** - the fraction of live queries where a heuristic
+answer actually reached the user - is the second number, and it is kept
+because it is the only thing that judges the health model and the retry
+protocol. Those are real design choices and without it they have no
+feedback at all. It is reconstructible after the fact from the trace
+records, which carry `server_health` and `decision` per query, so it
+needs no separate instrumentation.
+
+Only handler coverage is being optimized. Delivered coverage is a
+diagnostic for a different part of the system, and treating it as the
+target would make a change to the retry rule look like a resolution
+regression.
 
 That is a deliberate starting point rather than an oversight, and it
 reverses the obvious ordering. A confidence model cannot be calibrated
@@ -197,12 +218,18 @@ Two things cause the tool to decline. Neither is about confidence:
 * The latency budget ran out. See below.
 
 A third case is undecided: several candidates that nothing distinguishes.
-Future question 12 sets out the options.
+Future question 13 sets out the options.
 
 What keeps this honest in the meantime is divergence reporting: when
 the proper LSP disagrees with an answer the user was already shown,
-they are told. That is the whole safety mechanism right now, so it
-matters more in this version than it would under a floor.
+they are told, every time and without rate limiting. That is the whole
+safety mechanism right now, so it matters more in this version than it
+would under a floor.
+
+It is also a *proxy-mode* property. Standalone has no second answer to
+disagree with, so it never reports anything - which is right, because a
+standalone user was told at startup that the tool is heuristic-only and
+has no reason to expect otherwise.
 
 ### Error severity
 
@@ -274,7 +301,7 @@ single rolled-up number.
 That last class is the one a heuristic fundamentally cannot compete on,
 and in Rust it's a large share of real go-to-definition invocations.
 Whether it abstains or returns a ranked guess is undecided - see future
-question 12. Keeping it as its own row rather than dissolving it into an
+question 13. Keeping it as its own row rather than dissolving it into an
 average is most of what makes these numbers honest.
 
 ### Value weighting
@@ -381,7 +408,19 @@ section 5.
     permanent failure reported as a transient one is its own small lie. Needs a
     look at what Zed and VS Code actually render for each.
 
-12. **What should happen when several candidates are equally plausible?**
+12. **Should `Point + Point` become `Point + PointDelta`?**
+    `vendored-rope-design.md` gives the vendored rope's `LineIndex`,
+    `ByteColumn`, and `Utf16Column` no arithmetic operators at all, on the
+    grounds that adding two line numbers is meaningless. But `Point` and
+    `PointUtf16` keep their `Add`/`Sub`/`AddAssign` impls, which do exactly
+    that one level up - treating one operand as absolute and the other as
+    relative. It is kept because rope's internals rely on it throughout, so
+    removing it is a much larger change than the one that document describes.
+    The fix is a distinct `PointDelta` type. Worth doing if position
+    arithmetic turns out to be a source of bugs; not worth widening the
+    vendoring patch for pre-emptively.
+
+13. **What should happen when several candidates are equally plausible?**
     This is the hole left by deferring the precision floor, and it is the
     single biggest undecided behaviour. Success metrics above says the only
     two reasons to decline are "no candidate at all" and "the deadline ran
@@ -406,7 +445,7 @@ section 5.
     The corpus scan can settle it - measure how often the top-ranked candidate
     among N is right, per stratum, and how bad the misses are.
 
-13. **When the precision floor arrives, should it differ by mode?**
+14. **When the precision floor arrives, should it differ by mode?**
     `core-implementation-design.md` section 17.6 argues the counter-intuitive
     direction: *tighter* in standalone, not looser. A wrong answer in proxy
     mode is contradicted by the real LSP seconds later; in standalone there is
