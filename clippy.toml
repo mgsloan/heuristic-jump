@@ -1,0 +1,79 @@
+# clippy.toml — heuristic-jump workspace root
+# Applies to crates/* AND (unless shadowed) vendor/*. See "Workspace scoping".
+msrv = "1.95.0"
+avoid-breaking-exported-api = false          # all crates are internal
+
+# Test ergonomics for the plain lints denied in [workspace.lints.clippy]
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-dbg-in-tests = true
+allow-print-in-tests = true
+allow-indexing-slicing-in-tests = true
+
+disallowed-methods = [
+  # ── GROUP 1: blocking on a thread that owes an answer (latency budget) ──────
+  # p50<=50ms, p99<=400ms, hard caps 750/2000ms; deadlines are Instant+AtomicBool
+  # polled cooperatively. Unbounded blocking defeats abstention.
+  { path = "crossbeam_channel::Receiver::recv", reason = "Unbounded blocking recv() defeats the deadline; a thread that owes an answer must never block without a bound.", replacement = "crossbeam_channel::Receiver::recv_timeout / recv_deadline, or crossbeam_channel::Select" },
+  { path = "std::thread::sleep", reason = "Sleeps a thread that may owe an answer; use a channel timeout so a wakeup can preempt the wait.", replacement = "crossbeam_channel::Receiver::recv_timeout" },
+  { path = "std::process::Child::wait", reason = "Blocks until the child exits; the shim must poll cooperatively against its deadline.", replacement = "std::process::Child::try_wait polled against the deadline" },
+  { path = "std::process::Command::output", reason = "Runs the child to completion, blocking unbounded; the shim talks to a long-lived child over piped stdio.", replacement = "Command::spawn + piped stdio drained against a deadline" },
+  { path = "std::process::Command::status", reason = "Runs the child to completion, blocking unbounded.", replacement = "Command::spawn + try_wait" },
+
+  # ── GROUP 2: stdout is the JSON-RPC wire (protocol corruption, not style) ───
+  { path = "std::io::stdout", reason = "stdout IS the JSON-RPC frame stream; any ad-hoc handle can interleave bytes and corrupt the protocol. print_stdout does NOT catch direct-handle writes.", replacement = "the single framed wire writer owned by the driver" },
+  { path = "std::io::stderr", reason = "The child's stderr is forwarded verbatim to ours and interleaves with rust-analyzer output in the editor log; all diagnostics must be prefixed and go through tracing.", replacement = "tracing::{warn,info,debug} (default filter=warn)" },
+
+  # ── GROUP 3: time source must be the injected Clock (test determinism) ──────
+  { path = "std::time::Instant::now", reason = "Ad-hoc clock reads bypass the injected `trait Clock`/TestClock and break the §15 protocol-race tests.", replacement = "shared::Clock::now" },
+  { path = "std::time::SystemTime::now", reason = "Bypasses the injected Clock. Trace timestamps use SystemTime::UNIX_EPOCH.elapsed() (a different method) and are unaffected by this ban.", replacement = "shared::Clock (or UNIX_EPOCH.elapsed() for trace micros)" },
+
+  # ── GROUP 4: environment / cwd soundness (threaded from startup) ────────────
+  # rust#90308: "Observing an environment variable concurrently with a call to
+  # setenv constitutes a data race."  Made unsafe in edition 2024 (rust PR #124636).
+  { path = "std::env::set_var", reason = "Unsound in a multi-threaded process (data race, rust#90308) and unsafe in edition 2024; this process is threaded from startup.", replacement = "set configuration at process construction, before threads spawn" },
+  { path = "std::env::remove_var", reason = "Unsound in a multi-threaded process and unsafe in edition 2024." },
+  { path = "std::env::set_current_dir", reason = "Process-global; cargo's test runner is multi-threaded, so this races across tempfile/ignore fixture tests (schneems SetCurrentDirTempSafe case).", replacement = "pass absolute paths; use a serialized test helper if a cwd is unavoidable" },
+  { path = "std::env::temp_dir", reason = "Shared, non-isolated temp dir races across parallel tests.", replacement = "tempfile::tempdir" },
+
+  # ── GROUP 5: error discipline (shared::Error is closed & typed) ─────────────
+  { path = "std::io::Error::other", reason = "Produces a stringly-typed io error; shared::Error is a closed enum with typed context (PathBuf/ByteOffset/DocumentUri) and no Other/Message variant.", replacement = "a typed shared::Error variant" },
+
+  # ── GROUP 6: forwarded frames are never round-tripped ("one message-copy") ──
+  { path = "serde_json::from_reader", reason = "Parsing from a Reader is much slower than reading into a buffer then from_slice, and allocates; frames must reach the child byte-for-byte.", replacement = "serde_json::from_slice" },
+
+  # ── GROUP 7: cache wrapper bypass ──────────────────────────────────────────
+  # lru 0.18.1 (MSRV 1.85.0): capacity is a NonZeroUsize count of ENTRIES, not bytes.
+  { path = "lru::LruCache::put", reason = "lru 0.18 bounds by entry count only; the driver wraps it to also bound total bytes. Direct put() bypasses the byte accounting.", replacement = "the byte-bounded cache wrapper's insert()" },
+
+  # ── GROUP 8: walker / thread hygiene (tidy) ────────────────────────────────
+  { path = "std::fs::read_dir", reason = "Bypasses gitignore semantics; gitignored files are out of scope and must be filtered by the `ignore` walker.", replacement = "ignore::WalkBuilder" },
+  { path = "std::thread::spawn", reason = "Unnamed threads are hard to identify in traces; ~5 long-lived threads are created at startup.", replacement = "std::thread::Builder::new().name(...).spawn()" },
+  { path = "crossbeam_channel::unbounded", reason = "Unbounded channels hide backpressure and are usually where a recv_timeout/select was intended. Use bounded unless sender and receiver share a thread.", replacement = "crossbeam_channel::bounded" },
+]
+
+disallowed-types = [
+  # There is NO lock anywhere in the design. If one of these appears, the fix is
+  # architectural, not a faster mutex. NOTE: this is the OPPOSITE of rerun/linkerd
+  # (which ban std locks in favour of parking_lot); here parking_lot is also
+  # rejected, so there is deliberately no `replacement`.
+  { path = "std::sync::Mutex", reason = "No locks in the design; a Mutex means a shared-mutable-state mistake. parking_lot is also rejected." },
+  { path = "std::sync::RwLock", reason = "No locks in the design." },
+  { path = "std::sync::Condvar", reason = "No locks/condvars in the design; coordination is via crossbeam-channel." },
+
+  # Big false-positive surface — see notes. Frames use RawValue (raw_value feature),
+  # not a parsed tree.
+  { path = "serde_json::Value", reason = "Allocates a whole tree per frame; forwarded frames must not be materialized. Use RawValue / typed structs.", replacement = "serde_json::value::RawValue or a typed struct" },
+]
+
+disallowed-macros = [
+  # Tailored protocol-corruption messages for the print family. If you prefer
+  # config-based test exemption instead, DELETE these four and rely on the
+  # print_stdout/print_stderr plain lints (which honour allow-print-in-tests);
+  # disallowed-macros does NOT honour allow-print-in-tests.
+  { path = "std::print",    reason = "Writes to stdout, which is the JSON-RPC wire — this corrupts the protocol stream." },
+  { path = "std::println",  reason = "Writes to stdout, which is the JSON-RPC wire — this corrupts the protocol stream." },
+  { path = "std::eprint",   reason = "Interleaves with forwarded child stderr in the editor log; use tracing with a prefix." },
+  { path = "std::eprintln", reason = "Interleaves with forwarded child stderr in the editor log; use tracing with a prefix." },
+]
