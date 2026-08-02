@@ -10,6 +10,20 @@ It can simply be run like this:
 $ heuristic-jump rust-analyzer
 ```
 
+It also runs with no language server behind it at all:
+
+```sh
+$ heuristic-jump --hj-standalone
+```
+
+In that mode it is the whole language server - it answers `initialize`
+itself and serves nothing but heuristic go-to-definition. That is
+for languages with no usable server, for debugging the heuristic
+without a server's variability in the picture, and for editors that
+can run several servers per language. It has no ground truth, so it
+borrows its calibration from the proxy mode that does. See
+`core-implementation-design.md` section 17.
+
 Each language implements its own resolution logic. Dispatch is simple -
 the go-to-definition call is handed directly to the language's
 implementation. Sharing and dedupe between languages happens through
@@ -236,46 +250,91 @@ Generally this should reference the zed code (../zed) and how it does
 LSP. It's conceivable this could be integrated back into Zed or
 possibly as an extension if Zed's extension API is greatly expanded.
 
-## Future questions
+## License
+
+The crates in `crates/` are MIT.
+
+The shipped binary is GPL-3.0-or-later, because it links a vendored
+copy of Zed's `rope` (`vendor/rope`), which is GPL-3.0-or-later.
+`vendor/sum_tree` and `vendor/util` are Apache-2.0.
+
+Keeping our own crates MIT is deliberate: `rope` is the only GPL
+input, so replacing it would make the whole workspace permissively
+licensable without relicensing anything. See `dependency-plan.md`
+section 5.
+
+## Future questions / work
 
 1. When it's whole project search, how to choose the better module when
-  it's heuristic ? Maybe something like repomap's pagerank?
+   it's heuristic? Maybe something like repomap's pagerank?
 
-2. Does the editor actually send a second go-to-definition request while
-the first is still pending? It might instead cancel the first and send a
-new one, or dedupe and send nothing at all. The entire retry-triggered
-design assumes the first of these. This needs a trace from Zed and from
-VS Code, pressing go-to-definition twice against a deliberately slow
-server, before much is built on top of it.
+2. Does the editor actually send a second go-to-definition request while the
+   first is still pending? It might instead cancel the first and send a new one,
+   or dedupe and send nothing at all. The entire retry-triggered design assumes
+   the first of these. This needs a trace from Zed and from VS Code, pressing
+   go-to-definition twice against a deliberately slow server, before much is
+   built on top of it.
 
-3. Disk-file parse caches key on (path, mtime, len). Second-granularity
-mtime on some filesystems means a same-second rewrite of the same length
-serves a stale tree. Is a content hash worth the read, or is this rare
-enough to accept?
+   - *Zed* does send two requests
 
-4. What should the shim do when the editor misbehaves - didOpen for a
-document already open, didChange for one never opened, didClose for one
-that isn't? Ignoring is probably right, but silently ignoring hides
-editor bugs the user would want reported.
+3. The shim caps concurrent heuristic queries and abstains past the cap. But a
+   retry is itself a new query, so under load the second press - the one the
+   whole retry protocol exists to serve - could be the one that gets dropped.
+   Should retries of an already-pending spot bypass the cap, or hold reserved
+   slots?
 
-5. Should the shim supervise and restart the proper LSP when it dies,
-  instead of just exiting and letting the editor deal with it? The shim
-  already holds authoritative text for every open document, so replaying
-  state into a fresh server is nearly free, and it could serve heuristics
-  through the whole gap. rust-analyzer restarts on Cargo.toml edits often
-  enough that this might be the most noticeable feature. The cost is
-  owning restart policy and backoff, which is real machinery.
+4. Should a slow-but-alive proper LSP be pre-empted, the way a warming one is?
+   Right now it isn't - a server that has answered one definition request is
+   treated as ready no matter how slowly it answers afterward. Doing otherwise
+   reintroduces a "slow" health state, detected against the server's own rolling
+   baseline rather than an absolute threshold. Whether that can be done without
+   false positives needs measurements that don't exist yet, so the conservative
+   version ships first.
 
-3. **Should eager answering extend to `Slow`?** The health model can
-   distinguish "slow" from "warming," but whether a slow-but-alive server
-   should be pre-empted depends on how well `Slow` can be detected without
-   false positives. Starting conservative.
+5. Disk-file parse caches key on (path, mtime, len). Second-granularity mtime on
+   some filesystems means a same-second rewrite of the same length serves a
+   stale tree. Is a content hash worth the read, or is this rare enough to
+   accept?
 
-4. **How should multi-root workspaces order search scope?** Requesting
-   folder first is the obvious default, but a monorepo with many roots may
-   need the pagerank-style ranking already noted in the readme's future
-   questions.
+6. What should the shim do when the editor misbehaves - didOpen for a document
+   already open, didChange for one never opened, didClose for one that isn't?
+   Ignoring is probably right, but silently ignoring hides editor bugs the user
+   would want reported.
 
-5. **Does the parse LRU need a memory ceiling separate from its entry
-   ceiling?** Probably, but the right number depends on measurements that do
-   not exist yet.
+7. Should the shim supervise and restart the proper LSP when it dies,
+   instead of just exiting and letting the editor deal with it? The shim
+   already holds authoritative text for every open document, so replaying
+   state into a fresh server is nearly free, and it could serve heuristics
+   through the whole gap. rust-analyzer restarts on Cargo.toml edits often
+   enough that this might be the most noticeable feature. The cost is
+   owning restart policy and backoff, which is real machinery.
+
+8. How should multi-root workspaces order search scope? The folder containing
+   the requesting document first is the obvious default, but a monorepo with
+   many roots may want the pagerank-style ranking from question 1 instead.
+
+9. Does the parse cache need a memory ceiling separate from its entry ceiling?
+   Probably - one generated file can be enormous - but the right number depends
+   on measurements that don't exist yet.
+
+10. **Does standalone want the watcher that proxy mode defers?**
+    `dependency-plan.md` section 7 defers `notify` because a stale file list
+    costs a miss the proper LSP covers. In standalone it costs a permanent miss,
+    so the case for watching is stronger here — possibly strong enough to make
+    standalone the reason the watcher gets built.
+
+11. **Error or `null` for abstention?** `core-implementation-design.md`
+    section 17.5 picks the error on section 9's reasoning, but that reasoning was written
+    about a transiently unresponsive server, where the failure really is
+    transient. In standalone an abstention is permanent for that spot, and a
+    permanent failure reported as a transient one is its own small lie. Needs a
+    look at what Zed and VS Code actually render for each.
+
+12. **Revisit precision floor** - actually seems useful to return questionable
+results.
+
+13. **Should the precision floor differ by mode?**
+    `core-implementation-design.md` section 17.6 says no, for v1, on trust
+    grounds. It is the change most likely to be worth
+    making later and the one most likely to be made for bad reasons, so it
+    should require a measurement rather than an argument.
