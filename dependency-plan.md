@@ -819,33 +819,127 @@ not created by this piece of work.
 ## 15. Clippy in workspace toml
 
 ```toml
+[workspace.lints.rust]
+# Edition 2024 made `env::set_var` and friends unsafe; be explicit about scope.
+unsafe_op_in_unsafe_fn = "deny"
+# `let _ = handle;` silently drops a JoinHandle or a guard. In a design that is
+# ~5 long-lived threads plus RAII guards, that is a real bug class.
+let_underscore_drop = "deny"
+unreachable_pub = "deny"
+unused_qualifications = "deny"
+elided_lifetimes_in_paths = "deny"
+missing_debug_implementations = "warn"
+
 [workspace.lints.clippy]
+
+# -- group levels -----------------------------------------------------------
+# Follow Zed: style nits slow down shipping and are discovered late. Individual
+# lints below sit at the default priority 0 and so override this.
+#
+# CAUTION: `disallowed_methods`, `disallowed_types`, `disallowed_macros`,
+# `disallowed_names` and `disallowed_fields` are all in the STYLE group. The
+# first three are re-denied by name below. `disallowed_fields` (new in 1.95) is
+# NOT, so it is currently off — deny it here by name if you ever reach for it.
+style = { level = "allow", priority = -1 }
+
+# -- path-based bans; the paths themselves are in ./clippy.toml -------------
 disallowed_methods = "deny"
 disallowed_types = "deny"
 disallowed_macros = "deny"
-# stdout/stderr protocol
-print_stdout = "deny"      # macro family; honours allow-print-in-tests
+
+# -- stdout is the JSON-RPC wire -------------------------------------------
+# A stray write corrupts the protocol stream. Note print_stdout/print_stderr
+# catch only the print!/println!/eprint!/eprintln! macro family — direct writes
+# to std::io::stdout() are banned in clippy.toml instead.
+print_stdout = "deny"
 print_stderr = "deny"
-explicit_write = "deny"    # catches write!(std::io::stdout(), ...)
-dbg_macro = "deny"         # honours allow-dbg-in-tests
-# panic discipline in long-lived pipe threads
-unwrap_used = "deny"       # honours allow-unwrap-in-tests
-expect_used = "deny"       # honours allow-expect-in-tests
-panic = "deny"             # honours allow-panic-in-tests
+explicit_write = "deny"              # catches write!(std::io::stdout(), ..)
+dbg_macro = "deny"
+
+# -- panic discipline -------------------------------------------------------
+# A panic in a long-lived pipe thread kills the shim and takes the editor's
+# language support with it. All five honour their allow-*-in-tests config keys
+# in clippy.toml where one exists.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unreachable = "deny"
 todo = "deny"
 unimplemented = "deny"
-exit = "deny"              # a stray process::exit kills the editor's LSP
-# correctness
-unchecked_time_subtraction = "deny"   # Instant-Duration / Duration-Duration underflow
-indexing_slicing = "deny"             # honours allow-indexing-slicing-in-tests
-string_slice = "deny"                 # byte-slicing a str can split a char / position
-float_cmp = "deny"
-undocumented_unsafe_blocks = "deny"
-mem_forget = "deny"
-declare_interior_mutable_const = "deny"
-redundant_clone = "deny"
+exit = "deny"                        # a stray process::exit is the same failure
+panic_in_result_fn = "deny"          # reinforces §12: Result is not the abstain path
 
-[workspace.lints.clippy.style]           # follow Zed: allow the style group
-level = "allow"
-priority = -1
+# -- position encoding (§3/§4: highest-risk correctness detail) -------------
+# The wire carries u32; offsets internally are usize; the unit (UTF-16 code
+# units vs UTF-8 bytes) depends on a negotiation. Every place those meet is an
+# `as` cast. WirePosition's private fields stop you STORING the wrong thing;
+# these stop you COMPUTING it. Consider additionally denying `as_conversions`
+# in crates/shared alone via a per-crate [lints] override.
+cast_possible_truncation = "deny"
+cast_possible_wrap = "deny"
+cast_sign_loss = "deny"
+cast_lossless = "deny"
+cast_precision_loss = "deny"
+indexing_slicing = "deny"
+string_slice = "deny"                # byte-slicing a str can split a char
+char_lit_as_u8 = "deny"
+
+# -- determinism ------------------------------------------------------------
+# Hash iteration order varies between executions of the same program on the
+# same hardware. This project is a measurement harness with insta snapshots,
+# JSONL corpus records and candidate ranking; an FxHashMap in a for loop
+# silently makes all three irreproducible. Catches .keys()/.values()/.iter() too.
+iter_over_hash_type = "deny"
+
+# -- closed error set (§10) -------------------------------------------------
+# §10 deliberately leaves the top-level `Error` NOT #[non_exhaustive] so that an
+# exhaustive match is a feature. A single `_ =>` arm gives that away, and the
+# §14 failure table is only enforceable if the compiler catches new variants.
+wildcard_enum_match_arm = "deny"
+match_wildcard_for_single_variants = "deny"
+# `Error` nests nine sub-enums carrying PathBuf/DocumentUri/ByteOffset, and sits
+# in the Err of every Result on the hot path. Threshold tuned in clippy.toml.
+result_large_err = "deny"
+large_enum_variant = "deny"
+
+# -- time -------------------------------------------------------------------
+# Instant - Duration and Duration - Duration underflow and panic. (Renamed from
+# unchecked_duration_subtraction; the old name is a deprecated alias.)
+unchecked_time_subtraction = "deny"
+
+# -- numeric ----------------------------------------------------------------
+# p50/p99 and per-stratum percentages: silent truncation produces
+# plausible-looking wrong numbers, which is the worst failure for a metric.
+integer_division = "deny"
+float_cmp = "deny"
+
+# -- clone cost (§5: the design turns on Rope/Tree clones being cheap) ------
+# Forces Arc::clone(&x) over x.clone(), so "is this the cheap kind?" is visible
+# at the call site rather than requiring you to know the type.
+clone_on_ref_ptr = "deny"
+# NOTE: `redundant_clone` is a NURSERY lint — it was moved out of `perf` after
+# upstream MIR changes produced a batch of false positives, and its own docs
+# call the analysis conservative and limited. Kept because it is the lint that
+# would catch a Rope/Tree clone that is not cheap, but at `warn`, so a false
+# positive does not break CI under -D warnings.
+redundant_clone = "warn"
+
+# -- unsafe -----------------------------------------------------------------
+undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "deny"
+unnecessary_safety_comment = "deny"
+mem_forget = "deny"
+
+# -- attribute hygiene ------------------------------------------------------
+# §14 states the convention as "each allow carries a comment saying why". These
+# mechanize it: the first pushes #[allow] -> #[expect] (so a silenced lint that
+# stops being necessary becomes a warning instead of accumulating), the second
+# requires reason = "...". Neither can be `forbid`: macro-generated code
+# sometimes forces a plain #[allow]. Known FP: a lint that only fires in test
+# builds confuses the allow->expect suggestion (rust-clippy#16488).
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+
+# -- misc -------------------------------------------------------------------
+declare_interior_mutable_const = "deny"
 ```
