@@ -10,7 +10,16 @@ does.*
 * Lint: `cargo clippy --workspace --all-targets -- -D warnings`. Should pass for
   every commit.
 
-* `cargo fmt` before committing.
+* **Never run bare `cargo fmt` or `cargo fmt --all`** — it formats every
+  workspace member including `vendor/`, and rustfmt's `ignore` option is
+  nightly-only so `rustfmt.toml` cannot protect them. Reformatting the vendored
+  Zed crates destroys the upstream re-sync property `vendored-rope-design.md`
+  depends on. Formatting is handled per-file by a PostToolUse hook
+  (`.claude/settings.json`); for a manual sweep use `cargo fmt -p <crate>` on
+  our crates only.
+
+* Invoking `rustfmt` directly needs `--edition 2024`. Standalone rustfmt
+  defaults to edition 2015 and hard-fails on modern syntax.
 
 * Snapshots: update with `cargo insta accept`, never the interactive
   `cargo insta review` (it needs a TTY). Never hand-edit `.snap` files.
