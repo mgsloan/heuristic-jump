@@ -1447,6 +1447,91 @@ writes the records above. The one thing it shares with the shim beyond
 fork, or the shipped metric and the measured metric stop being the same
 number.
 
+### Two modes: collect and replay
+
+Driving a real language server over ten repositories is hours of wall clock,
+and it produces an answer that does not change when the handler changes. The
+proper LSP's answer for a given position at a given commit is a *fact about
+the corpus*, not about our code, so it is collected once and frozen.
+
+`scan` therefore has two subcommands, and only the first needs a server:
+
+* **`collect`** — spawn the server, drive `didOpen` across the repository,
+  enumerate identifiers, ask the LSP, write `truth.jsonl`. Slow, run rarely,
+  output is a checked-in artifact.
+* **`replay`** — read `truth.jsonl`, reconstruct the `DocumentSnapshot` and
+  `Query` for each recorded position, run the handler, classify agreement,
+  emit the metric table. No server, no network, no `didOpen` round trips.
+
+The record in this section is the join. `collect` writes rows with the
+`lsp_*` fields populated and the heuristic side null; `replay` fills the
+heuristic side and computes `agreement` and `severity` with the same
+predicate the driver uses. A completed replay row is byte-comparable with a
+row the shim emitted in the field, which is what keeps the measured metric and
+the shipped metric the same number.
+
+This is not a convenience. It is the difference between a tuning iteration
+costing minutes and costing an afternoon, and it is on the critical path for
+every language: the target is a full replay over one language's tuning corpus
+in under a minute, so that iteration is bounded by thinking rather than by
+I/O. It is stated here rather than left implicit because nothing else in this
+document requires `scan` to be able to run without a server, and discovering
+the requirement later means discovering it after the corpus has been
+collected in a shape that cannot be replayed.
+
+Constraints that make a replay trustworthy:
+
+* **`truth.jsonl` carries its provenance in a header record**: repository
+  path and commit, language server name and version, grammar revision, and
+  the `scan` version that wrote it. Replay refuses to run against a truth
+  file whose repository commit does not match the checkout, rather than
+  silently reporting metrics for positions that have since moved.
+* **Only the heuristic side is re-measured.** `heuristic_latency_us` is
+  produced by replay and is meaningful, because it is the same handler code
+  on the same snapshot. `lsp_latency_us` comes from `collect` and is a
+  property of the frozen truth — which is exactly what the readme's value
+  weighting wants, since it is a fact about how slow the real server was, not
+  about this run.
+* **Replay measures the handler, not the driver**, same as `collect` — the
+  paragraph above applies unchanged. Nothing in the proxy, the health model,
+  or the retry protocol is under test in either mode.
+* **A truth file is regenerated, never edited.** Metrics compared across two
+  corpus versions are not comparable, and a partially refreshed corpus is the
+  worst case: it looks like a regression.
+
+### Where the corpus lives
+
+Not inside the repository. Two roots, outside the workspace, passed by path:
+
+```
+../heuristic-jump-corpus/       tuning corpus
+  rust/
+    repos/<name>/               checkout, pinned commit
+    truth/<name>.jsonl
+  python/
+    ...
+../heuristic-jump-heldout/      held-out corpus, same shape
+```
+
+Three reasons for the split, in ascending order of importance:
+
+* Repository checkouts are large and are not our source. Keeping them out of
+  the workspace keeps `cargo` and the `ignore` walk away from them, and keeps
+  them from being duplicated by every `git worktree`.
+* The two are used by different commands at different times — the tuning
+  corpus on every iteration, the held-out corpus rarely — so they have no
+  reason to share a directory.
+* **Separate roots make held-out isolation a path check rather than a
+  convention.** The readme's development plan holds repositories back
+  precisely because tuning sessions will otherwise learn them, and a rule that
+  says "do not look at these subdirectories" is enforced by whoever remembers
+  it. A rule that says "this session is given one path and never the other" is
+  enforced by not having the path. `implementation-loop-design.md` §11 relies
+  on this being a filesystem boundary.
+
+`--corpus <dir>` on both subcommands; no default, because a defaulted corpus
+path is one that eventually points at the wrong one.
+
 ## 12. Handler interface
 
 The seam this document commits to; everything behind it is out of scope here.

@@ -160,11 +160,26 @@ the LSP. There will be a complete scan of all identifiers, and it will
 write all of it to a file. For each identifier the scan records both
 the LSP's resolved location and how long the LSP took to answer.
 
+That file - `truth.jsonl` - is collected once per (repo commit, server
+version) and then frozen. The LSP's answer is a fact about the corpus,
+not about our code, so tuning never re-runs a language server: it
+replays the handler against the recorded positions. `scan` has both
+modes for this reason, and the fast one is what a tuning session
+actually runs. See `core-implementation-design.md` section 11.
+
 Of the ~10 repos per language, 2-3 are held out and never seen by
 tuning sessions. Since the plan is Claude code sessions iterating
 against the corpus, learning a particular repo's local conventions is
 the default outcome rather than a risk. Both numbers get reported, and
 a gap between tuned and held-out repos is the overfitting signal.
+
+The held-out repos and their truth files live in a **separate corpus
+root**, outside the workspace, alongside but distinct from the tuning
+one. Keeping them in a sibling directory of the tuning corpus - rather
+than a subdirectory of it that everyone agrees not to look at - is what
+makes the separation something other than an honour system: a session
+is given one path and never the other. The layout is in
+`core-implementation-design.md` section 11.
 
 Claude code sessions will then be used on each language to improve the
 metrics below.
