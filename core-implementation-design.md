@@ -882,7 +882,7 @@ pub trait ServerAdapter: Send + Sync {
 }
 ```
 
-Implementations live in `hj-core` beside the driver, one per language server —
+Implementations live in `driver` beside the driver, one per language server —
 `rust_analyzer.rs` reading `experimental/serverStatus` and recognising the
 indexing progress title, `pyright.rs`, `gopls.rs`, and so on. This is a driver
 concern rather than a language concern: it is about a specific *server
@@ -1325,12 +1325,12 @@ driver classifies `agreement` and `severity`, since only it has both answers.
 ### The corpus scan is a separate program
 
 The scan in the readme's development plan is **not** a mode of the shim. It is
-its own binary, `hj-scan`, and `hj-core` has no batch path, no transport
+its own binary, `scan`, and `driver` has no batch path, no transport
 abstraction, and no awareness that it exists.
 
 The requirements are opposed at nearly every point:
 
-| | `hj-core` | `hj-scan` |
+| | `driver` | `scan` |
 |---|---|---|
 | The proper LSP | raced against | waited for — it *is* ground truth |
 | Optimises for | latency | throughput |
@@ -1346,15 +1346,15 @@ The reason to hesitate is that a separate harness could drift into measuring a
 reimplementation rather than the real thing. That concern turns out to be
 weaker than it looks: **what the scan measures is the handler, not the
 driver.** The proxy, the health model, and the retry protocol are not under
-test — resolution accuracy is. So as long as `hj-scan` builds its `Query` and
+test — resolution accuracy is. So as long as `scan` builds its `Query` and
 `DocumentSnapshot` the same way, the code under test is genuinely identical.
-Snapshot construction therefore lives in `hj-shared`, which makes that
+Snapshot construction therefore lives in `shared`, which makes that
 structural rather than a matter of discipline.
 
-`hj-scan` spawns a fresh language server per repository, opens documents,
+`scan` spawns a fresh language server per repository, opens documents,
 enumerates identifiers with the handler's own grammar, asks both sides, and
 writes the records above. The one thing it shares with the shim beyond
-`hj-shared` is the agreement predicate from
+`shared` is the agreement predicate from
 [section 10](#10-divergence-reporting) — the definition of "match" must not
 fork, or the shipped metric and the measured metric stop being the same
 number.
@@ -1365,12 +1365,12 @@ The seam this document commits to; everything behind it is out of scope here.
 Per the readme, dispatch is direct — no framework, no config format that
 languages must be expressed in.
 
-This trait lives in `hj-shared`, which is deliberately *not* `hj-core`. See
+This trait lives in `shared`, which is deliberately *not* `driver`. See
 [section 16](#16-workspace-layout) for why that separation matters.
 
 ### Vocabulary types
 
-`hj-shared` newtypes the primitives rather than passing bare integers and
+`shared` newtypes the primitives rather than passing bare integers and
 strings across the seam. Almost every value here is an offset, an index, or an
 identifier, and those are exactly the things that silently substitute for each
 other.
@@ -1445,7 +1445,7 @@ pub trait LanguageHandler: Send + Sync {
     /// arrive as a bare path with no languageId attached.
     fn file_extensions(&self) -> &'static [FileExtension];
 
-    /// The tree-sitter grammar, supplied at runtime so that `hj-core` can
+    /// The tree-sitter grammar, supplied at runtime so that `driver` can
     /// maintain its parse cache without depending on any grammar crate.
     fn grammar(&self) -> tree_sitter::Language;
 
@@ -1497,14 +1497,14 @@ Notes on the shape:
   within a query, and account I/O against the deadline.
 * **Handlers are `Send + Sync` and re-entrant.** The same handler serves
   concurrent queries; per-query mutable state lives in locals.
-* **`grammar()` is what keeps `hj-core` language-free.** The driver needs to
+* **`grammar()` is what keeps `driver` language-free.** The driver needs to
   parse — for the parse cache in [section 5](#5-document-state) and the
   token-span check in [section 8](#8-go-to-definition-lifecycle) — but
   `tree_sitter::Language` is a runtime value, so the grammar arrives through
   the registry rather than through a `tree-sitter-<lang>` build dependency.
-  Without this, `hj-core` would have to depend on every language crate, which
+  Without this, `driver` would have to depend on every language crate, which
   is exactly the edge the workspace layout forbids.
-* **`ProjectView` is a trait, not a struct.** Handlers consume it; `hj-core`
+* **`ProjectView` is a trait, not a struct.** Handlers consume it; `driver`
   implements it, because the file list cache and scope rules live there.
 
 ## 13. Parallel dispatch and resource limits
@@ -1626,7 +1626,7 @@ shim is responsible for something.
 * **Position encoding property tests.** Random text with astral-plane
   characters, round-tripped UTF-8/UTF-16/byte offsets against a reference.
 * **Protocol type differential tests.** Every message in the golden corpus
-  deserialized with both `hj-shared::proto` and `lsp-types` (a dev-dependency
+  deserialized with both `shared::proto` and `lsp-types` (a dev-dependency
   only), asserting the fields we model agree. Plus a dedicated case per
   untagged union in [section 18.5](#185-the-untagged-unions-are-the-actual-risk),
   since those are where a hand-written wire type actually goes wrong.
@@ -1652,36 +1652,48 @@ vendor/
   sum_tree/             copied from zed, Apache-2.0
   util/                 cut down to only what rope needs
 crates/
-  hj-shared/            handler trait + query/outcome types
-  hj-resolve/           shared resolution utilities
-  hj-lang-rust/         one crate per language
-  hj-lang-python/
-  hj-lang-typescript/
-  hj-core/              the LSP driver
-  hj-cli/               the shim binary
-  hj-scan/              the corpus scan binary (see section 11)
+  shared/           handler trait, vocabulary newtypes, proto, Error
+  resolve/          shared resolution utilities
+  lang_rust/        one crate per language
+  lang_python/
+  lang_typescript/
+  driver/           the LSP driver
+  heuristic_jump/   the shim binary -- `heuristic-jump`
+  scan/             the corpus scan binary -- `hj-scan`, section 11
 ```
+
+Crate names carry no project prefix, matching the vendored Zed crates
+alongside them (`rope`, `sum_tree`) and the workspace-wide `publish = false`.
+Two of the names are chosen rather than mechanical:
+
+* **`driver`, not `core`.** A crate named `core` shadows Rust's own, and this
+  document already uses "`core`" throughout for the single-threaded actor in
+  [section 2](#thread-layout). Two different things called `core` in one
+  system is a needless ambiguity; `driver` is what the prose calls the crate
+  anyway.
+* **`heuristic_jump`** for the binary crate, so the produced binary is
+  `heuristic-jump` without a `[[bin]]` rename — the same relationship Zed has
+  between its `zed` crate and its `zed` binary.
 
 ### The dependency graph
 
-The shape is dictated by one rule from the outset: **`hj-core` must not depend
-on any language crate.** Wiring happens in `hj-cli`.
+The shape is dictated by one rule from the outset: **`driver` must not depend
+on any language crate.** Wiring happens in `heuristic_jump`.
 
 ```
-             hj-shared  <-- rope, tree-sitter, serde_json, url
-            /    |    \
-           /     |     \
-  hj-resolve     |      hj-core  <-- crossbeam, rayon, ignore, serde_json
-           \     |          |
-       hj-lang-* /          |
-             \              |
-              \             |
-               +--> hj-cli <+
+                    shared  <-- rope, tree-sitter, serde, serde_json, url
+                   /   |   \
+                  /    |    \
+           resolve     |     driver  <-- crossbeam, rayon, ignore, clap
+                  \    |        |
+                lang_* /        |
+                     \          |
+                      +--> heuristic_jump <--+
 ```
 
 Every edge, and why:
 
-* **`hj-shared` depends on nothing of ours.** The shared vocabulary: it holds
+* **`shared` depends on nothing of ours.** The shared vocabulary: it holds
   `LanguageHandler`, `Query`, `Outcome`, `Stratum`, `Deadline`,
   `DocumentSnapshot`, the `ProjectView` trait, and `Error` — types every other
   crate needs to talk about, and no behaviour. It also holds `proto`, the
@@ -1692,7 +1704,7 @@ Every edge, and why:
   and `tree-sitter`.
 
   **`Error` is one enumerated type covering every failure in the system**, not
-  an `anyhow`-style boxed `dyn Error`. It lives here rather than in `hj-core`
+  an `anyhow`-style boxed `dyn Error`. It lives here rather than in `driver`
   precisely because it spans crates: a handler's failures and the driver's are
   variants of the same enum, which is what lets
   [section 14](#14-failure-handling)'s response table be an exhaustive match
@@ -1702,61 +1714,61 @@ Every edge, and why:
   our own typed context. Abstention is emphatically not in it: `Outcome` and
   `AbstainReason` stay separate, per
   [section 12](#12-handler-interface).
-* **`hj-resolve` depends on `hj-shared`.** The shared *resolution* utilities —
-  search, candidate filtering, and so on. Distinct from `hj-shared` in that
+* **`resolve` depends on `shared`.** The shared *resolution* utilities —
+  search, candidate filtering, and so on. Distinct from `shared` in that
   this is code languages call, not types they are described in. Out of scope
   for this document beyond its position in the graph.
-* **`hj-lang-*` depend on `hj-shared` and `hj-resolve`**, plus their own
+* **`lang_*` depend on `shared` and `resolve`**, plus their own
   `tree-sitter-<lang>` grammar crate. Nothing depends on them except
-  `hj-cli`.
-* **`hj-core` depends on `hj-shared` only.** Everything in sections 1 through 15
+  `heuristic_jump`.
+* **`driver` depends on `shared` only.** Everything in sections 1 through 15
   lives here. It is generic over the handler set.
-* **`hj-cli` depends on `hj-core` and every `hj-lang-*`.** It is the single
+* **`heuristic_jump` depends on `driver` and every `lang_*`.** It is the single
   place where the language list is enumerated:
 
 ```rust
-fn main() -> anyhow::Result<()> {
+fn main() -> Result<(), shared::Error> {
     let registry = HandlerRegistry::new(vec![
-        Arc::new(hj_lang_rust::Handler::new()),
-        Arc::new(hj_lang_python::Handler::new()),
-        Arc::new(hj_lang_typescript::Handler::new()),
+        Arc::new(lang_rust::Handler::new()),
+        Arc::new(lang_python::Handler::new()),
+        Arc::new(lang_typescript::Handler::new()),
     ]);
-    hj_core::run(registry, std::env::args_os().skip(1))
+    driver::run(registry, Cli::parse())
 }
 ```
 
-### Why `hj-shared` is separate from `hj-core`
+### Why `shared` is separate from `driver`
 
-The trait could have lived in `hj-core` — languages would depend on `hj-core`,
-`hj-core` would depend on no language, and the stated rule would still hold.
+The trait could have lived in `driver` — languages would depend on `driver`,
+`driver` would depend on no language, and the stated rule would still hold.
 It is split anyway, for two reasons:
 
 * **Compile times.** Otherwise every language crate transitively pulls in
   the channels, the codec, and the whole proxy just to implement one trait, and every
   edit to the proxy rebuilds every language crate. With ten languages that
   dominates the edit-test loop.
-* **It keeps the rule honest.** With `hj-core` at the bottom of the graph,
+* **It keeps the rule honest.** With `driver` at the bottom of the graph,
   "handlers may as well reach into the driver for this one thing" is always
-  one import away. With `hj-shared` at the bottom and `hj-core` a sibling, the
+  one import away. With `shared` at the bottom and `driver` a sibling, the
   layering violation does not typecheck.
 
-* **`hj-scan` depends on `hj-shared` and every `hj-lang-*`** — but *not* on
-  `hj-core`. It is an LSP client, not a proxy, so none of the driver applies
+* **`scan` depends on `shared` and every `lang_*`** — but *not* on
+  `driver`. It is an LSP client, not a proxy, so none of the driver applies
   to it.
 
 ### Adding a language
 
-New `crates/hj-lang-<x>/` depending on `hj-shared` + `hj-resolve` + its grammar,
-implementing `LanguageHandler`; then one line in `hj-cli`. Nothing else in the
+New `crates/lang_<x>/` depending on `shared` + `resolve` + its grammar,
+implementing `LanguageHandler`; then one line in `heuristic_jump`. Nothing else in the
 workspace changes. That is the whole cost, and keeping it at that is the point
 of the graph above.
 
-### Module layout inside `hj-core`
+### Module layout inside `driver`
 
 ```
-crates/hj-core/src/
+crates/driver/src/
   lib.rs            run(), thread wiring, child spawn, mode selection
-  config.rs         Mode, deadline and pool sizing (clap lives in hj-cli)
+  config.rs         Mode, deadline and pool sizing (clap lives in heuristic_jump)
   codec.rs          Content-Length framing, raw frame type
   peek.rs           bounded prefix scan for method/id, serde_json fallback
   router.rs         classification, forwarding, id namespacing
@@ -2110,7 +2122,7 @@ both answers, and here there is one. So:
 * Coverage, latency, and per-stratum breakdown are all still measurable, since
   none of them need the child. Precision and error severity are not.
 
-The corpus scan is unaffected: `hj-scan` is an LSP *client* that drives a real
+The corpus scan is unaffected: `scan` is an LSP *client* that drives a real
 server for ground truth ([section 11](#the-corpus-scan-is-a-separate-program)),
 and it has no proxy in it at all. Calibration therefore continues to come from
 proxy-mode-equivalent measurement even for users who only ever run standalone,
@@ -2190,7 +2202,7 @@ there are no forwarded frames to compare. What replaces it:
 
 ## 18. Protocol types
 
-`hj-shared::proto` defines every LSP message and field the shim touches. There
+`shared::proto` defines every LSP message and field the shim touches. There
 is no `lsp-types` dependency.
 
 ### 18.1 Why not `lsp-types`
@@ -2515,14 +2527,14 @@ in the log."
 
 ### 18.7 Where it lives
 
-`hj-shared::proto`, not a separate crate. [Section 16](#the-dependency-graph)
-already has `hj-scan` depending on `hj-shared`, and `Location`,
-`DocumentUri`, and the vocabulary newtypes have to be in `hj-shared`
+`shared::proto`, not a separate crate. [Section 16](#the-dependency-graph)
+already has `scan` depending on `shared`, and `Location`,
+`DocumentUri`, and the vocabulary newtypes have to be in `shared`
 regardless, since they are in the handler seam. Splitting the wire types into
 their own crate would separate them from newtypes they are defined in terms
 of, for no gain.
 
-`hj-shared`'s dependencies become `serde`, `serde_json`, `url` (for
+`shared`'s dependencies become `serde`, `serde_json`, `url` (for
 `DocumentUri` normalization and `file:` path extraction, which is where the
 percent-encoding and Windows drive-letter bugs live and is not worth
 hand-rolling), `rope`, and `tree-sitter`.

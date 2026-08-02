@@ -4,8 +4,8 @@ Decided before any code, because two of these choices (the runtime and the
 rope) are load-bearing for the architecture in `core-implementation-design.md`
 and expensive to reverse.
 
-Scope: the core driver only — `hj-shared`, `hj-core`, `hj-cli`, plus the
-vendored text crates. `hj-resolve` and `hj-lang-*` dependencies are named
+Scope: the core driver only — `shared`, `driver`, `heuristic_jump`, plus the
+vendored text crates. `resolve` and `lang_*` dependencies are named
 where they are already implied, but not settled here.
 
 Versions are what crates.io resolves to as of 2026-08-02, against
@@ -17,29 +17,29 @@ it is worth knowing when we are ahead of them.
 
 | Crate | Version | Where | Verdict |
 |---|---|---|---|
-| `crossbeam-channel` | 0.5.16 | hj-core | **chosen** over tokio — see §1 |
-| `rayon` | 1.12.0 | hj-core, vendored rope | chosen |
-| `serde` | 1.0.229 | hj-shared, hj-core | chosen |
-| `serde_json` | 1.0.151 (`raw_value`) | hj-shared, hj-core | chosen |
+| `crossbeam-channel` | 0.5.16 | driver | **chosen** over tokio — see §1 |
+| `rayon` | 1.12.0 | driver, vendored rope | chosen |
+| `serde` | 1.0.229 | shared, driver | chosen |
+| `serde_json` | 1.0.151 (`raw_value`) | shared, driver | chosen |
 | `lsp-types` | 0.95.1 | **dev only** | **rejected as a runtime dep** — see §3 |
-| `url` | 2.5.8 | hj-shared | chosen, now a direct dep |
-| `tree-sitter` | 0.26.11 | hj-shared, hj-core | chosen (Zed: 0.26.9) |
-| `ignore` | 0.4.31 | hj-core | chosen |
-| `notify` | 8.2.0 | hj-core | **deferred** behind a feature — see §7 |
-| `lru` | 0.18.1 | hj-core | chosen, with a caveat — see §8 |
-| `thiserror` | 2.0.19 | hj-shared | chosen; `anyhow` explicitly rejected — see §10 |
+| `url` | 2.5.8 | shared | chosen, now a direct dep |
+| `tree-sitter` | 0.26.11 | shared, driver | chosen (Zed: 0.26.9) |
+| `ignore` | 0.4.31 | driver | chosen |
+| `notify` | 8.2.0 | driver | **deferred** behind a feature — see §7 |
+| `lru` | 0.18.1 | driver | chosen, with a caveat — see §8 |
+| `thiserror` | 2.0.19 | shared | chosen; `anyhow` explicitly rejected — see §10 |
 | `tracing` | 0.1.44 | all | chosen |
-| `tracing-subscriber` | 0.3.23 | hj-cli | chosen |
-| `rustc-hash` | 2.x | hj-core | chosen (small win, no cost) |
+| `tracing-subscriber` | 0.3.23 | heuristic_jump | chosen |
+| `rustc-hash` | 2.x | driver | chosen (small win, no cost) |
 | `heapless` | 0.9.3 | vendored rope/sum_tree | forced by rope |
 | `unicode-segmentation` | 1.13.3 | vendored rope | forced by rope |
 | `log` | 0.4.x | vendored rope/sum_tree/util | forced by rope |
-| `memchr` | 2.8.3 | hj-resolve (not yet) | noted, out of scope |
+| `memchr` | 2.8.3 | resolve (not yet) | noted, out of scope |
 | `insta` | 1.48.0 | dev | chosen |
 | `proptest` | 1.11.0 | dev | chosen |
 | `tempfile` | 3.x | dev | chosen |
 | `anyhow` | — | — | **rejected** |
-| `clap` | 4.6.5 (no default features) | hj-cli | **chosen** — see §11 |
+| `clap` | 4.6.5 (no default features) | heuristic_jump | **chosen** — see §11 |
 | `num_cpus` | — | — | **rejected**, `available_parallelism` |
 | `tokio` | — | — | **rejected** — see §1 |
 
@@ -109,7 +109,7 @@ log and watch, not just assert about.
 
 ## 3. LSP types: our own, not `lsp-types`
 
-**Chosen: hand-written wire types in `hj-shared::proto`. `lsp-types` 0.95.1
+**Chosen: hand-written wire types in `shared::proto`. `lsp-types` 0.95.1
 stays as a dev-dependency oracle only.**
 
 This reverses an earlier decision in this document, on grounds that are not
@@ -209,7 +209,7 @@ Two qualifications, both from design §3.1:
 
 The scanner itself is hand-written and needs no dependency; `memchr` would
 accelerate the quote search but the scan is bounded at 1 KiB, so it is not
-obviously worth an import that `hj-core` otherwise does not need.
+obviously worth an import that `driver` otherwise does not need.
 
 Deliberately **not** enabling `preserve_order` (Zed does). We never re-serialize
 a forwarded frame, so map order cannot leak, and `preserve_order` swaps in
@@ -291,7 +291,7 @@ Marking them GPL would be volunteering a restriction the license of `rope`
 imposes on the *combination* only.
 
 What that buys, concretely: the portable and valuable part of this project is
-`hj-resolve` and the `hj-lang-*` handlers — resolution logic that has nothing
+`resolve` and the `lang_*` handlers — resolution logic that has nothing
 to do with which rope is underneath. Marking those MIT means anyone who
 supplies a different text layer can lift them, and it means that if `ropey`
 ever wins the argument above, the whole workspace becomes permissively
@@ -299,11 +299,11 @@ licensable **without relicensing a line**. That option costs nothing today and
 is awkward to recover later, since relicensing needs every contributor's
 agreement.
 
-The honest caveat: `hj-shared`'s `DocumentSnapshot` names `Rope` in its public
+The honest caveat: `shared`'s `DocumentSnapshot` names `Rope` in its public
 API, so MIT source is not *drop-in* usable without rope — a taker would have
 to modify it. Under MIT they may. It is a real option, just not a free one.
 
-Not proposed: isolating `rope` behind a trait so `hj-shared` could avoid the
+Not proposed: isolating `rope` behind a trait so `shared` could avoid the
 dependency. That would put dynamic dispatch or a generic parameter through the
 hottest data structure in the system for a licensing reason rather than a
 technical one, and it would not even change the binary's license.
@@ -327,13 +327,13 @@ keeps the exit open.
 
 `tree-sitter = "0.26.11"`. Zed pins 0.26.9; semver-compatible, and the
 readme's requirement is that the *grammars* match Zed's pinned revisions, not
-that the runtime version does. Grammar crates are `hj-lang-*` business and
+that the runtime version does. Grammar crates are `lang_*` business and
 out of scope here, except to note that the old repo's pins
 (`../heuristic_jump_old/Cargo.toml`) are the starting list, including the two
 that must stay as git revs: `tree-sitter-typescript` (zed-industries fork) and
 `tree-sitter-cpp`.
 
-`hj-core` depends on `tree-sitter` but on **no** grammar crate — that is the
+`driver` depends on `tree-sitter` but on **no** grammar crate — that is the
 rule design §16 exists to enforce, and `LanguageHandler::grammar()` returning
 a runtime `tree_sitter::Language` is what makes it possible.
 
@@ -377,7 +377,7 @@ built — recorded as design §17.10 question 4.
 
 **`lru = "0.18.1"`**, with a caveat: design §5 wants the cache bounded by
 *both* entry count and total bytes, and `lru` bounds only entries. So
-`hj-core` wraps it — track a running byte total, and after each `put`, `pop_lru`
+`driver` wraps it — track a running byte total, and after each `put`, `pop_lru`
 until under the byte ceiling. That is about fifteen lines and is fine.
 
 Alternatives:
@@ -411,7 +411,7 @@ the default filter is `warn` so we are quiet unless asked.
 
 The JSONL metric records of design §11 are **not** tracing output. They go to
 their own file via `serde_json`, because they are structured data with a fixed
-schema that `hj-scan` also writes, and routing them through a log subscriber
+schema that `scan` also writes, and routing them through a log subscriber
 would make the schema a formatting concern.
 
 Alternative: `log` + `env_logger`. Simpler, but `tracing` is already in the
@@ -420,7 +420,7 @@ the readme asks for.
 
 ## 10. Errors: one enumerated type, no `anyhow`
 
-**`anyhow` is rejected. `hj-shared` defines a single total error enum, nested
+**`anyhow` is rejected. `shared` defines a single total error enum, nested
 one level by subsystem.**
 
 The granularity is settled rather than left open: a flat enum of ~60 variants
@@ -439,7 +439,7 @@ class to a specific response, and that table is only enforceable if the
 failure classes are a closed set the compiler knows about.
 
 ```
-hj_shared::Error            // the total enum; every failure in the system
+shared::Error            // the total enum; every failure in the system
 ├─ Config(ConfigError)      // argv, missing child command, bad trace path
 ├─ Codec(CodecError)        // framing: bad header, bad Content-Length, ...
 ├─ Protocol(ProtocolError)  // unexpected message shape, double response, ...
@@ -464,7 +464,7 @@ Rules, so this stays a real closed set rather than `anyhow` with extra steps:
   detail is theirs.
 * **`Result` is not the abstention path.** `Outcome::Abstain` /
   `AbstainReason` stay entirely separate, per design §12 — abstention is a
-  correct outcome and must not share a type with failure. Some `hj-core` code
+  correct outcome and must not share a type with failure. Some `driver` code
   will convert an `Error` into an abstention; that conversion is explicit and
   logged.
 * `#[non_exhaustive]` on the sub-enums but **not** on `Error` itself — within
@@ -476,7 +476,7 @@ everything" property — the enum is still written out by hand; thiserror only
 writes the boilerplate impls. Hand-writing `Display` for ~60 variants is the
 alternative and is pure transcription.
 
-`hj-cli::main` returns `Result<(), hj_shared::Error>` (or exits with the
+`heuristic_jump::main` returns `Result<(), shared::Error>` (or exits with the
 child's status), so the top-level match is exhaustive.
 
 ## 11. CLI parsing: `clap`
@@ -608,12 +608,12 @@ Alternatives considered:
 | `insta` | 1.48.0 | Frame-trace golden tests (design §15). Snapshot review is the right workflow for "assert every forwarded frame is byte-identical" |
 | `proptest` | 1.11.0 | Position-encoding property tests; edit-log prefix consumption; spot anchoring |
 | `tempfile` | 3.x | Fixture repositories for `ProjectView` scope tests |
-| `lsp-types` | 0.95.1 | Differential oracle for `hj-shared::proto`, per §3 and design §18.5. Dev only — it must never appear in a non-dev dependency table, and that is worth a CI check, since the whole point of §3 is defeated the moment a runtime `use lsp_types::` appears |
+| `lsp-types` | 0.95.1 | Differential oracle for `shared::proto`, per §3 and design §18.5. Dev only — it must never appear in a non-dev dependency table, and that is worth a CI check, since the whole point of §3 is defeated the moment a runtime `use lsp_types::` appears |
 
 Deliberately not adding:
 
 * **`criterion`** — no benchmarks yet, and the latency numbers that matter are
-  end-to-end against a real repo, which is `hj-scan`'s job, not a
+  end-to-end against a real repo, which is `scan`'s job, not a
   microbenchmark's.
 * **`arbitrary` / `cargo-fuzz`** — design §15 asks for codec fuzzing. `proptest`
   covers the split-read / bogus-`Content-Length` cases well enough to start;
@@ -625,7 +625,7 @@ Deliberately not adding:
   quality actually matters.
 
 The injected clock for design §15's protocol race tests is a `trait Clock`
-with a `TestClock` impl in `hj-shared`, not a dependency.
+with a `TestClock` impl in `shared`, not a dependency.
 
 ## 13. Explicitly not depended on
 
@@ -641,9 +641,9 @@ with a `TestClock` impl in `hj-shared`, not a dependency.
   and the fix is not a faster mutex.
 * **`dashmap`** — same, more so.
 * **`regex`** — `DefinitionHints` in the resolution design wants it, so it
-  will land in `hj-resolve`. Nothing in the driver needs it.
+  will land in `resolve`. Nothing in the driver needs it.
 * **`memchr` / `aho-corasick` / `grep-searcher`** — the literal scan primitive
-  is `hj-resolve`'s. `hj-core` executes the scan on its pool (resolution
+  is `resolve`'s. `driver` executes the scan on its pool (resolution
   design §3) but the matching itself lives behind that seam. `memchr` is the
   likely pick when we get there.
 * **`jiff` / `chrono` / `time`** — trace timestamps are
@@ -725,15 +725,23 @@ vendor/
   sum_tree/             Apache-2.0
   util/                 Apache-2.0, cut down to 3 items
 crates/
-  hj-shared/            MIT -- types, LanguageHandler, proto, Error
-  hj-core/              MIT -- the driver
-  hj-cli/               MIT -- the binary crate; the artifact it builds is GPL
+  shared/           MIT -- vocabulary newtypes, LanguageHandler, proto, Error
+  driver/           MIT -- the LSP driver
+  heuristic_jump/   MIT -- binary crate; the artifact it builds is GPL
 ```
+
+Crate names carry no project prefix — these are `publish = false` crates in a
+private workspace, exactly like the vendored `rope` and `sum_tree` beside
+them, and like every crate in Zed. Two names are deliberate rather than
+mechanical: **`driver` rather than `core`**, since a crate named `core`
+shadows Rust's own and the design already uses "core" for the actor; and
+**`heuristic_jump`** for the binary crate, so the artifact is `heuristic-jump`
+with no `[[bin]]` rename.
 
 A `cargo-deny` config asserting that `GPL` appears in the graph only via
 `vendor/rope` is worth having from the start: it is the check that notices if
 a second GPL input ever sneaks in, which is the thing that would quietly
 foreclose the exit §5 is preserving.
 
-`hj-resolve`, `hj-lang-*`, and `hj-scan` are in design §16's layout but are
+`resolve`, `lang_*`, and `scan` are in design §16's layout but are
 not created by this piece of work.
