@@ -1279,9 +1279,45 @@ measure something nobody experiences as wrong. The tiers below it are the
 error severity classes `readme.md` reports, and are what a future budget would
 be attached to.
 
-When the child returns multiple locations, agreement means the shim's answer
-matches *any* of them — the LSP itself is expressing ambiguity there, so
-picking one of its candidates is not an error.
+### Both sides are sets
+
+The table above compares one location against one location. Neither side is
+one location.
+
+The child's side never was: when it returns several, agreement means matching
+*any* of them, because the LSP is itself expressing ambiguity and picking one
+of its own candidates is not an error. The shim's side is now a set too —
+`readme.md` decides that indistinguishable candidates are all returned, ranked
+— so the predicate needs a rule for set against set, and the obvious one is
+wrong. "Any of ours matches any of theirs" is a predicate that improves
+monotonically as the shim returns more, which is the flaw `readme.md` rejects
+plain match rate for, reappearing inside the classifier.
+
+So the pairwise table is applied twice, against the child's whole set:
+
+* **`top1`** — the shim's *first* location matches. Cannot be improved by
+  returning more, so it is the number that gets optimized.
+* **`contained`** — any of the shim's locations matches. This is what the user
+  could actually reach through the picker, and it is reported only alongside
+  the result count, since alone it is gameable.
+
+`agreement` therefore takes one of `match_top1`, `match_contained`, or
+`mismatch`, and these are ordered: `match_top1` implies `match_contained`.
+`severity` is classified from the shim's **top-ranked** location whenever
+`agreement` is `mismatch`, since that is where a user who trusts the ordering
+looks first, and is undefined otherwise.
+
+**Divergence is reported to the user on `mismatch` only.** A `match_contained`
+answer showed the user the correct location; telling them they were misled
+would be false, and would train them to ignore the reports that matter.
+[The reporting rules below](#how-much-to-report) are unchanged otherwise, and
+this makes them fire meaningfully less often.
+
+One consequence for [section 8](#8-go-to-definition-lifecycle): the shim's
+answer is now a ranked list rather than a location, so the pending-query record
+holds the list and its order is load-bearing — `answered_by_shim` must preserve
+rank, not collapse to a set, or `top1` cannot be computed when the child
+eventually replies.
 
 ### Reporting
 
@@ -1390,6 +1426,8 @@ resolved as abstained):
   "confidence": 0.94,
   "heuristic_latency_us": 8300,
   "heuristic_locations": ["..."],
+  "returned": 3,
+  "truncated_list": false,
   "lsp_latency_us": 4210000,
   "lsp_locations": ["..."],
   "agreement": "match",
@@ -1403,6 +1441,15 @@ LSP-latency value weighting. `stratum` and `confidence` are reported *by the
 handler*, since only it knows which resolution path produced the answer; the
 driver classifies `agreement` and `severity`, since only it has both answers.
 
+`heuristic_locations` is **ordered**, and `returned` is its length —
+redundant, and worth carrying anyway, because the result-count distribution is
+one of the three numbers `readme.md` requires and computing it by measuring an
+array length in every consumer is how a metric acquires two definitions.
+`truncated_list` says the ranked list hit the cap, which is the difference
+between "this is everything" and "this is the best of more than we will show"
+— and `agreement: match_contained` means something weaker in the second case,
+since containment was only ever measured over what survived the cap.
+
 `mode` is `"proxy"` or `"standalone"`. In standalone, `server_health`,
 `lsp_latency_us`, `lsp_locations`, `agreement`, and `severity` are all `null`,
 because there is no second answer to compare against
@@ -1413,8 +1460,9 @@ could never have had an `agreement`.
 ### The corpus scan is a separate program
 
 The scan in the readme's development plan is **not** a mode of the shim. It is
-its own crate, `scan`, building the binary `heuristic-jump-lsp-scan`. `driver`
-has no batch path, no transport abstraction, and no awareness that it exists.
+its own crate — `measure_core`, plus a four-line `measure_<lang>` binary per
+language, below. `driver` has no batch path, no transport abstraction, and no
+awareness that any of it exists.
 
 The requirements are opposed at nearly every point:
 
@@ -1441,11 +1489,58 @@ structural rather than a matter of discipline.
 
 `scan` spawns a fresh language server per repository, opens documents,
 enumerates identifiers with the handler's own grammar, asks both sides, and
-writes the records above. The one thing it shares with the shim beyond
-`shared` is the agreement predicate from
+writes the records above. The one thing it shares with the shim beyond the
+vocabulary is the agreement predicate from
 [section 10](#10-divergence-reporting) — the definition of "match" must not
 fork, or the shipped metric and the measured metric stop being the same
-number.
+number. **That predicate therefore lives in `shared`**, not in `driver`:
+`scan` does not depend on `driver` ([section 16](#the-dependency-graph)), so
+there is no other place both can reach it from.
+
+### One measurement library, one tiny binary per language
+
+The measurement program is not one program. It is a library plus a trivial
+binary per language:
+
+* **`measure_core`** — the LSP client, `truth.jsonl` reading and writing,
+  snapshot and `Query` construction, the replay driver, agreement
+  classification, and the per-stratum table. Depends on `shared` and nothing
+  else of ours. It takes the handler as `&dyn LanguageHandler`, so it is
+  compiled once and is generic over the language without monomorphising over
+  it.
+* **`measure_<lang>`** — the binary, and essentially the whole of it:
+
+  ```rust
+  fn main() -> Result<(), shared::Error> {
+      measure_core::run(&lang_rust::Handler::new(), Cli::parse())
+  }
+  ```
+
+The alternative — one `scan` binary depending on every `lang_*`, which is
+what an earlier draft of [section 16](#16-workspace-layout) specified — makes
+every language's measurement depend on every other language *building*. Three
+things go wrong with that, and the third is the one that matters:
+
+* **Build cost per measurement.** Collecting a Rust number would compile every
+  grammar in the workspace. Grammars are large generated C, so this is the
+  dominant cost in a fresh checkout, and it is paid on every iteration of a
+  tuning session for no benefit.
+* **Fault coupling.** A language crate that does not compile takes every other
+  language's metrics down with it, including languages nobody has touched.
+* **It defeats the isolation the parallel-tuning plan depends on.**
+  `implementation-loop-design.md` runs one session per language, each confined
+  to its own crate. Confinement that still requires the other crates to build
+  is not confinement; it just moves the coupling into the build graph where it
+  is harder to see. A language must be measurable entirely on its own.
+
+The cost is one extra crate per language, whose contents are the four lines
+above. That is the right price: it keeps `lang_*` unaware that `scan` exists,
+so the shipped `heuristic-jump` binary never links an LSP client, and it keeps
+the dependency direction one-way.
+
+Aggregating across languages — the combined table, the frontier — is done over
+the emitted records, which are data. Nothing that aggregates needs to link a
+handler at all.
 
 ### Two modes: collect and replay
 
@@ -1486,18 +1581,88 @@ Constraints that make a replay trustworthy:
   the `scan` version that wrote it. Replay refuses to run against a truth
   file whose repository commit does not match the checkout, rather than
   silently reporting metrics for positions that have since moved.
-* **Only the heuristic side is re-measured.** `heuristic_latency_us` is
-  produced by replay and is meaningful, because it is the same handler code
-  on the same snapshot. `lsp_latency_us` comes from `collect` and is a
-  property of the frozen truth — which is exactly what the readme's value
-  weighting wants, since it is a fact about how slow the real server was, not
-  about this run.
+* **Replay does not enforce deadlines by wall clock.** This is the constraint
+  that makes replay worth having, and it is easy to get wrong by doing the
+  obvious thing. A wall-clock deadline makes abstention depend on machine
+  load: the same handler on the same snapshot truncates a search on a busy
+  machine and completes it on an idle one, so *coverage* — not just
+  latency — becomes a property of what else was running. Metrics that move
+  with background load cannot be compared across runs, and a tuning session
+  cannot tell an improvement from a quiet minute.
+
+  So replay substitutes the deterministic surrogate the design already
+  carries: the per-query byte budget from
+  [section 13](#13-parallel-dispatch-and-resource-limits), plus the file and
+  parse counts that go with it. Same abstention behaviour, same truncation
+  points, same answer, every time, on any machine. Choosing the surrogate
+  budget that corresponds to a given wall-clock deadline is a calibration —
+  `resolution-design.md` open question 13 is exactly this question — and it
+  is measured once rather than re-derived per run.
+* **Only the heuristic side is re-measured, and its timing is an observation,
+  not a control input.** `heuristic_latency_us` is recorded during replay
+  because it is the same handler code on the same snapshot, but nothing in
+  the run branches on it. It is therefore the one field in the record that a
+  replay does not reproduce exactly, and the one that needs a quiet machine
+  to mean anything. `lsp_latency_us` comes from `collect` and is a property
+  of the frozen truth — which is exactly what the readme's value weighting
+  wants, since it is a fact about how slow the real server was, not about
+  this run.
 * **Replay measures the handler, not the driver**, same as `collect` — the
   paragraph above applies unchanged. Nothing in the proxy, the health model,
   or the retry protocol is under test in either mode.
 * **A truth file is regenerated, never edited.** Metrics compared across two
   corpus versions are not comparable, and a partially refreshed corpus is the
   worst case: it looks like a regression.
+
+### The oracle is the server being proxied
+
+Two language servers for the same language do not agree, and the disagreement
+is not always one of them being wrong. `go-to-definition` on a re-exported
+name has two defensible answers — the re-export site and the original
+definition — and servers make different choices. The same is true of
+declaration versus definition, of trait method versus impl method, and of
+whether a `use` resolves to the import or through it.
+
+The shim's job is to stand in for **one specific server**, and
+[section 10](#10-divergence-reporting) reports divergence against that
+server. So the answer that counts as correct is that server's answer, and a
+shim that split the difference would be wrong in both deployments rather than
+right in either.
+
+Two consequences.
+
+**Every metric is per (language, server).** There is no aggregate across
+servers, in the same way and for the same reason that
+[the readme](readme.md#stratification) refuses a single rolled-up number
+across strata: the mix is not a fact about the tool. `heuristic-jump --
+pyright` and `heuristic-jump -- pylsp` are different products with different
+scores, and reporting their average would describe neither.
+
+**The behaviour itself varies**, through a `ServerProfile` reaching handlers
+in `Query` ([section 12](#the-trait)). Which brings the cross-server
+comparison back with a real job, rather than as a measurement workaround:
+
+* Positions where **every server agrees** are the shared handler's
+  responsibility. That is the bulk of the corpus, and it is where resolution
+  logic is developed and measured.
+* Positions where **servers differ** are the profile's responsibility. Each
+  server's divergent set is small, specific, and is exactly the evidence for
+  what its profile should say.
+
+This decomposition is worth having because it makes the two surfaces
+separately optimisable — a profile change cannot affect another server's
+numbers, and a shared-logic change is evaluated where the servers do not
+disagree about the answer. It also produces a free finding: the set of
+positions where servers differ is, in practice, a map of where re-export and
+alias chains matter, which `resolution-design.md` open question 9 says it
+needs data on before deciding whether to follow them.
+
+**The profile must not become a per-language configuration format.**
+`resolution-design.md` §1.2 and §9 rule that out, and a struct of behaviour
+knobs is precisely the shape it would take. The rule is the same one §9
+applies to sharing generally: it starts empty, and a knob is added only when the
+corpus shows a systematic divergence that a knob would fix. Nothing is
+predicted.
 
 ### Where the corpus lives
 
@@ -1507,11 +1672,29 @@ Not inside the repository. Two roots, outside the workspace, passed by path:
 ../heuristic-jump-corpus/       tuning corpus
   rust/
     repos/<name>/               checkout, pinned commit
-    truth/<name>.jsonl
+    truth/rust-analyzer/<name>.jsonl
   python/
-    ...
+    repos/<name>/
+    truth/pyright/<name>.jsonl
+    truth/pylsp/<name>.jsonl
+  ...
 ../heuristic-jump-heldout/      held-out corpus, same shape
 ```
+
+**Truth is per server, not per language.** Repositories are shared across
+servers — the checkout is the expensive artifact and the source text is the
+same either way — but each server gets its own `truth.jsonl`, because each
+server is a different oracle answering the same questions differently. The
+provenance header names exactly one server and version, which is what makes a
+truth file comparable to itself over time and never silently merged with
+another's.
+
+Collapsing them into one file with a per-answer server field was the obvious
+alternative and is worse: the two are collected at different times, refreshed
+on different schedules as servers release, and consumed by different
+measurement runs. A file per server means refreshing pyright's truth does not
+touch pylsp's, and a corpus half-refreshed across servers is not even
+representable.
 
 Three reasons for the split, in ascending order of importance:
 
@@ -1526,7 +1709,7 @@ Three reasons for the split, in ascending order of importance:
   precisely because tuning sessions will otherwise learn them, and a rule that
   says "do not look at these subdirectories" is enforced by whoever remembers
   it. A rule that says "this session is given one path and never the other" is
-  enforced by not having the path. `implementation-loop-design.md` §11 relies
+  enforced by not having the path. `implementation-loop-design.md` §12 relies
   on this being a filesystem boundary.
 
 `--corpus <dir>` on both subcommands; no default, because a defaulted corpus
@@ -1556,7 +1739,7 @@ pub struct ByteOffset(pub usize);
 
 /// A quantity of bytes, distinct from a position. `offset + len` advances,
 /// `offset - offset` measures, `offset + offset` does not typecheck.
-/// Also what `resolve` counts a query's byte budget in.
+/// Also what a handler counts a query's byte budget in.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ByteLen(pub usize);
 
@@ -1644,9 +1827,23 @@ pub trait LanguageHandler: Send + Sync {
 pub struct Query<'a> {
     pub doc: &'a DocumentSnapshot,       // rope + tree, immutable
     pub position: ByteOffset,
-    pub project: &'a dyn ProjectView,    // file list, roots, scoped reads
+    pub project: &'a ProjectView,        // file list, roots, scoped reads
     pub deadline: &'a Deadline,
+    pub server: &'a ServerProfile,       // which oracle we are standing in for
 }
+
+/// The behavioural differences between language servers for one language,
+/// as observed rather than predicted -- see section 11. Empty in v1: a
+/// field appears only once the corpus shows a systematic divergence that
+/// a field would fix.
+pub struct ServerProfile {
+    pub id: ServerId,
+}
+
+/// Interned server identity, resolved from the child's command name at
+/// startup. `None` in standalone, and for a server we have no profile for.
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+pub struct ServerId(&'static str);
 
 pub enum Outcome {
     Committed {
@@ -1701,8 +1898,47 @@ Notes on the shape:
   the registry rather than through a `tree-sitter-<lang>` build dependency.
   Without this, `driver` would have to depend on every language crate, which
   is exactly the edge the workspace layout forbids.
-* **`ProjectView` is a trait, not a struct.** Handlers consume it; `driver`
-  implements it, because the file list cache and scope rules live there.
+* **`ProjectView` is a concrete struct in `shared`, not a trait in `driver`.**
+  An earlier revision put the trait in `shared` and the implementation in
+  `driver`, on the grounds that the file list cache and the scope rules live
+  there. Both halves of that were wrong.
+
+  *Not in `driver`*, because `measure_core` needs one too, and it must be the
+  same one. Scope rules — workspace roots, gitignore, the `..` escape check —
+  decide which candidates a search can find at all, so a second implementation
+  in the measurement path would mean the corpus scores a tool that is not the
+  one that ships. [Section 11](#11-observability-and-the-corpus-scan) makes
+  that argument for snapshot construction already; it applies here with more
+  force, and it is what forced the move: under
+  [`implementation-phases.md`](implementation-phases.md) the measurement
+  binaries exist a whole phase before `driver` does.
+
+  *Not a trait*, because there is exactly one implementation and no prospect
+  of a second. The variation a trait would buy is variation we specifically do
+  not want. The plausible-sounding second implementations do not survive
+  inspection: an in-memory one for tests is ruled out by `CLAUDE.md`'s
+  no-unit-tests rule, since fixtures are real directories on disk; standalone
+  and proxy share scope rules exactly; and multi-root ordering
+  ([readme](readme.md) question 8) is configuration, not polymorphism. A trait
+  with one impl on a per-file-read hot path is a vtable and an indirection
+  bought with a guess about the future.
+
+  Its dependency on `ignore` moves to `shared` with it — see
+  `dependency-plan.md` §7.
+* **`ServerProfile` is data, not a trait, and it is distinct from
+  `ServerAdapter`.** Two different things are keyed by the same server
+  identity and it is worth keeping them apart: `ServerAdapter`
+  ([section 7](#7-server-health-model)) lives in `driver` and interprets a
+  server's progress notifications for the health model; `ServerProfile` lives
+  in `shared` and tells a handler what that server considers a definition.
+  The first never reaches a handler; the second never reaches the health
+  model. They share only `ServerId`.
+
+  It is data rather than a trait because handlers must not dispatch on server
+  *identity* — `if server.id == PYRIGHT` scattered through a handler is the
+  per-language configuration format §11 rules out, wearing yet another hat.
+  A handler reads a field describing a behaviour; it does not ask which
+  server it is talking to.
 
 ## 13. Parallel dispatch and resource limits
 
@@ -1856,14 +2092,17 @@ vendor/
   sum_tree/             copied from zed, Apache-2.0
   util/                 cut down to only what rope needs
 crates/
-  shared/           handler trait, vocabulary newtypes, proto, Error
-  resolve/          shared resolution utilities
+  shared/           handler trait, vocabulary newtypes, ProjectView, proto, Error
+  similarity/       ported from the prior implementation; frozen until phase 3
   lang_rust/        one crate per language
   lang_python/
   lang_typescript/
   driver/           the LSP driver
   heuristic_jump/   the shim binary -- `heuristic-jump`
-  scan/             corpus scan -- `heuristic-jump-lsp-scan`, section 11
+  measure_core/        corpus scan library -- LSP client, replay, metrics
+  measure_rust/        `heuristic-jump-measure-rust` -- four lines, section 11
+  measure_python/
+  measure_typescript/
 ```
 
 Crate names carry no project prefix, matching the vendored Zed crates
@@ -1885,27 +2124,31 @@ The shape is dictated by one rule from the outset: **`driver` must not depend
 on any language crate.** Wiring happens in `heuristic_jump`.
 
 ```
-                    shared  <-- rope, tree-sitter, serde, serde_json, url
-                   /   |   \
-                  /    |    \
-           resolve     |     driver  <-- crossbeam, rayon, ignore, clap
-                  \    |        |
-                lang_* /        |
-                     \          |
-                      +--> heuristic_jump <--+
+              shared  <-- rope, tree-sitter, serde, serde_json, url, ignore
+             /  /  |  \
+            /  /   |   \
+measure_core  /  similarity  driver  <-- crossbeam, rayon, clap
+       |     /     |          |
+       |    lang_* /          |
+       |     /  \ /           |
+       +--> measure_<lang>   heuristic_jump
 ```
+
+`measure_core` and `driver` are siblings that never meet; `measure_<lang>` is the
+only crate that depends on both `measure_core` and a language, and it contains
+four lines.
 
 Every edge, and why:
 
 * **`shared` depends on nothing of ours.** The shared vocabulary: it holds
   `LanguageHandler`, `Query`, `Outcome`, `Stratum`, `Deadline`,
-  `DocumentSnapshot`, the `ProjectView` trait, and `Error` — types every other
-  crate needs to talk about, and no behaviour. It also holds `proto`, the
+  `DocumentSnapshot`, `ProjectView`, and `Error` — types every other
+  crate needs to talk about, and almost no behaviour. It also holds `proto`, the
   hand-written LSP wire types ([section 18](#18-protocol-types)); there is no
   `lsp-types` dependency, so that the vocabulary newtypes are what
   deserialization *produces* rather than what a conversion layer produces
   afterwards. Its own dependencies are `serde`, `serde_json`, `url`, `rope`,
-  and `tree-sitter`.
+  `tree-sitter`, and `ignore` (for `ProjectView`'s walk).
 
   **`Error` is one enumerated type covering every failure in the system**, not
   an `anyhow`-style boxed `dyn Error`. It lives here rather than in `driver`
@@ -1918,13 +2161,23 @@ Every edge, and why:
   our own typed context. Abstention is emphatically not in it: `Outcome` and
   `AbstainReason` stay separate, per
   [section 12](#12-handler-interface).
-* **`resolve` depends on `shared`.** The shared *resolution* utilities —
-  search, candidate filtering, and so on. Distinct from `shared` in that
-  this is code languages call, not types they are described in. Out of scope
-  for this document beyond its position in the graph.
-* **`lang_*` depend on `shared` and `resolve`**, plus their own
+* **`similarity` depends on `shared`, and is frozen.** It holds only what is
+  ported from the prior implementation — `Occurrences`, `IdentifierParts`, and
+  path–namespace scoring (`resolution-design.md` §5). Nothing is added to it
+  during phase 2. It is a body of known-good code that exists before any
+  language does, which is why it can be shared without creating the churn that
+  a growing shared library would.
+* **There is no other shared resolution code until phase 3.** Two languages
+  that need the same helper each write their own, and the duplication is left
+  standing. This is the rule `resolution-design.md` §9 argues for — sharing
+  derived from working handlers rather than predicted — carried to its
+  conclusion: with per-language loops running concurrently, a shared
+  resolution crate is not merely premature, it is a surface two writers would
+  contend on and a source of silent cross-language regressions. Extraction is
+  phase 3's job, under phase 3's equality constraint.
+* **`lang_*` depend on `shared` and `similarity`**, plus their own
   `tree-sitter-<lang>` grammar crate. Nothing depends on them except
-  `heuristic_jump`.
+  `heuristic_jump` and their own `measure_<lang>`.
 * **`driver` depends on `shared` only.** Everything in sections 1 through 15
   lives here. It is generic over the handler set.
 * **`heuristic_jump` depends on `driver` and every `lang_*`.** It is the single
@@ -1956,16 +2209,26 @@ It is split anyway, for two reasons:
   one import away. With `shared` at the bottom and `driver` a sibling, the
   layering violation does not typecheck.
 
-* **`scan` depends on `shared` and every `lang_*`** — but *not* on
-  `driver`. It is an LSP client, not a proxy, so none of the driver applies
-  to it.
+* **`measure_core` depends on `shared` only** — not on `driver`, not on any
+  language. It is an LSP client, not a proxy, so none of the driver applies to
+  it; and it takes its handler as `&dyn LanguageHandler`, so it does not
+  depend on the languages it measures.
+* **`measure_<lang>` depends on `measure_core` and one `lang_*`.** One per language,
+  four lines each. The reason it is a separate crate rather than a `[[bin]]`
+  inside the language crate is that a `[[bin]]` shares its crate's dependency
+  list: `lang_rust` would acquire `measure_core`, and `heuristic_jump` would then
+  link an LSP client into the shipped binary. The dependency has to point the
+  other way, which means a separate crate.
+
+  The property this buys is that **a language can be measured without any
+  other language building** — see [section 11](#one-measurement-library-one-tiny-binary-per-language).
 
 ### Adding a language
 
-New `crates/lang_<x>/` depending on `shared` + `resolve` + its grammar,
-implementing `LanguageHandler`; then one line in `heuristic_jump`. Nothing else in the
-workspace changes. That is the whole cost, and keeping it at that is the point
-of the graph above.
+New `crates/lang_<x>/` depending on `shared` + `similarity` + its grammar,
+implementing `LanguageHandler`; `crates/measure_<x>/`, which is four lines; then
+one line in `heuristic_jump`. Nothing else in the workspace changes. That is
+the whole cost, and keeping it at that is the point of the graph above.
 
 ### Module layout inside `driver`
 
@@ -2018,7 +2281,7 @@ Three things stated here because they change this section's own claims:
 * `ByteOffset`, `ByteLen`, `ByteRange`, `LineIndex`, `ByteColumn`,
   `Utf16Column`, and `CharCount` are *defined in* `rope` and re-exported by
   `shared`, since the dependency direction forbids the reverse. `ByteLen` is
-  also what `resolve` uses for its per-query byte budget — one byte quantity,
+  also what a handler uses for its per-query byte budget — one byte quantity,
   not two.
 * The "re-sync is a clean diff" claim is weakened, in the ways that document
   sets out.
@@ -2298,14 +2561,26 @@ be served, which is true, and which clients surface as a transient failure
 rather than as an answer.
 
 The error message names the abstention reason, because in standalone the user
-has no second opinion to fall back on and "could not resolve `parse_config`:
-ambiguous, 7 candidates" is actionable in a way that a bare failure is not.
+has no second opinion to fall back on and "could not resolve `Deserialize`:
+defined outside the workspace" is actionable in a way that a bare failure is
+not.
 
-**This is worth revisiting once there is usage.** An error per abstention may
-be noisy, and a mode whose baseline is "no navigation at all" might tolerate
-`null` better than proxy mode does. Recorded as an open question below rather
-than settled here, because the honest answer depends on what editors actually
-do with each and on how often standalone abstains, neither of which is known.
+**Which reasons are worth saying is the part to revisit.** An earlier version
+of this section used "ambiguous, 7 candidates" as its example, which is no
+longer a reason the shim can give: ambiguity now returns all the candidates
+rather than declining ([section 12](#the-trait),
+`resolution-design.md` §6.4). What remains is a shorter and much less
+interesting list — `resolution-design.md` §8 has it — and it is dominated by
+`NotAnIdentifier`, which fires whenever the user presses go-to-definition on a
+keyword or in whitespace. An error response for *that* is noise, and unlike the
+ambiguity case it teaches the user nothing.
+
+So the open question is not only "error or `null`" but "for which reasons".
+The plausible split is an error for the reasons that say something — the target
+is outside the workspace, the search ran out of budget — and `null` for the
+cursor simply not being on a resolvable identifier, where "no definition found"
+is very nearly true and is what the user expects. Left open because it depends
+on what editors actually render for each, which is unmeasured.
 
 ### 17.6 The budgets change, because what they are traded against changed
 
@@ -2794,7 +3069,7 @@ in the log."
 ### 18.7 Where it lives
 
 `shared::proto`, not a separate crate. [Section 16](#the-dependency-graph)
-already has `scan` depending on `shared`, and `Location`,
+already has `measure_core` depending on `shared`, and `Location`,
 `DocumentUri`, and the vocabulary newtypes have to be in `shared`
 regardless, since they are in the handler seam. Splitting the wire types into
 their own crate would separate them from newtypes they are defined in terms

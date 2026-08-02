@@ -5,7 +5,7 @@ rope) are load-bearing for the architecture in `core-implementation-design.md`
 and expensive to reverse.
 
 Scope: the core driver only — `shared`, `driver`, `heuristic_jump`, plus the
-vendored text crates. `resolve` and `lang_*` dependencies are named
+vendored text crates. `similarity` and `lang_*` dependencies are named
 where they are already implied, but not settled here.
 
 Versions are what crates.io resolves to as of 2026-08-02, against
@@ -301,7 +301,7 @@ Marking them GPL would be volunteering a restriction the license of `rope`
 imposes on the *combination* only.
 
 What that buys, concretely: the portable and valuable part of this project is
-`resolve` and the `lang_*` handlers — resolution logic that has nothing
+`similarity` and the `lang_*` handlers — resolution logic that has nothing
 to do with which rope is underneath. Marking those MIT means anyone who
 supplies a different text layer can lift them, and it means that if `ropey`
 ever wins the argument above, the whole workspace becomes permissively
@@ -358,6 +358,14 @@ latency observation made while developing.
 so `.gitignore` semantics are correct for free, which is directly what the
 readme's "gitignored files are out of scope" needs. `walkdir` plus a
 hand-rolled ignore implementation would be reimplementing the hard part.
+
+**It is a dependency of `shared`, not `driver`.** `ProjectView` is a concrete
+struct in `shared` (design §12), because `measure_core` needs the same scope
+rules the shim uses and gets them a whole phase earlier. So `ignore` is
+compiled by every language crate. That is the cost of having exactly one
+implementation of the rules that decide what a search can find, and it is
+worth paying: two implementations would mean the corpus scores a tool that is
+not the one that ships.
 
 **`notify = "8.2.0"`** — **deferred behind a non-default `watch` feature.**
 
@@ -687,9 +695,9 @@ with a `TestClock` impl in `shared`, not a dependency.
   and the fix is not a faster mutex.
 * **`dashmap`** — same, more so.
 * **`regex`** — `DefinitionHints` in the resolution design wants it, so it
-  will land in `resolve`. Nothing in the driver needs it.
+  will land in a `lang_*` crate. Nothing in the driver needs it.
 * **`memchr` / `aho-corasick` / `grep-searcher`** — the literal scan primitive
-  is `resolve`'s. `driver` executes the scan on its pool (resolution
+  is a handler's. `driver` executes the scan on its pool (resolution
   design §3) but the matching itself lives behind that seam. `memchr` is the
   likely pick when we get there.
 * **`jiff` / `chrono` / `time`** — trace timestamps are
@@ -813,8 +821,8 @@ A `cargo-deny` config asserting that `GPL` appears in the graph only via
 a second GPL input ever sneaks in, which is the thing that would quietly
 foreclose the exit §5 is preserving.
 
-`resolve`, `lang_*`, and `scan` are in design §16's layout but are
-not created by this piece of work.
+`similarity`, `lang_*`, `measure_core`, and `measure_<lang>` are in design §16's layout
+but are not created by this piece of work.
 
 ## 15. Clippy in workspace toml
 

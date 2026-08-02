@@ -163,9 +163,20 @@ the LSP's resolved location and how long the LSP took to answer.
 That file - `truth.jsonl` - is collected once per (repo commit, server
 version) and then frozen. The LSP's answer is a fact about the corpus,
 not about our code, so tuning never re-runs a language server: it
-replays the handler against the recorded positions. `scan` has both
-modes for this reason, and the fast one is what a tuning session
-actually runs. See `core-implementation-design.md` section 11.
+replays the handler against the recorded positions. The `measure`
+binaries have both modes for this reason, and the fast one is what a
+tuning session actually runs. See `core-implementation-design.md`
+section 11.
+
+Where a language has more than one usable server - Python and
+TypeScript both do - each gets its own truth file, and each is a
+separate thing to optimize. This is not redundancy. The shim stands in
+for one specific server and reports divergence against that server, so
+that server's answer is what counts as correct - and two servers
+genuinely disagree on cases like re-exports, where both answers are
+defensible rather than one being wrong. So the tool's behaviour varies
+with the server behind it, metrics are reported per (language, server),
+and they are never averaged across servers.
 
 Of the ~10 repos per language, 2-3 are held out and never seen by
 tuning sessions. Since the plan is Claude code sessions iterating
@@ -232,8 +243,10 @@ Two things cause the tool to decline. Neither is about confidence:
   matched.
 * The latency budget ran out. See below.
 
-A third case is undecided: several candidates that nothing distinguishes.
-Future question 13 sets out the options.
+Several candidates that nothing distinguishes is not a third case. LSP's
+definition response is already a list, so the tool returns all of them,
+ranked, and the editor shows a picker. That is decided - see "Several
+candidates" below.
 
 What keeps this honest in the meantime is divergence reporting: when
 the proper LSP disagrees with an answer the user was already shown,
@@ -246,10 +259,72 @@ disagree with, so it never reports anything - which is right, because a
 standalone user was told at startup that the tool is heuristic-only and
 has no reason to expect otherwise.
 
+### Several candidates
+
+When the ranking cannot separate the candidates, all of them are
+returned, ranked best-first. `textDocument/definition` answers with a
+list, and both Zed and VS Code render a multi-result answer as a picker
+rather than a jump, so this needs no protocol extension and no new
+interaction - it is the one the editor already has for this exact
+situation.
+
+It is also the honest answer. Eleven files define `new`; the tool knows
+which eleven and does not know which one. Returning one of them is a
+coin flip presented as knowledge, and returning all eleven is a
+correct statement of what was found.
+
+This decides the question the deferred precision floor left open, and it
+decides it without an abstention: ambiguity is a *shape of answer*, not a
+reason to decline. It also improves the case the tool is worst at -
+`x.foo()` needing type inference - from a coin flip to a short list.
+
+**A list has to be short to be an answer.** Past some size a picker is
+worse than nothing, so the ranked list is capped and the cap is reported.
+What should happen at the cap - truncate to the best N, or treat "too
+many to be useful" as an abstention - is not settled; see future question
+13.
+
+#### What this does to the metrics
+
+Precision was defined against a single answer, and a set breaks it in a
+specific way worth naming: **"the correct answer is somewhere in the
+list" always improves by returning more.** That is exactly the flaw that
+made plain match rate unusable above, arriving in a new place. So it is
+never the headline, and never reported alone.
+
+Three numbers, together:
+
+* **Top-1 agreement** - the first location matches the LSP. Directly
+  comparable to the single-answer number it replaces, and **returning
+  more candidates cannot improve it**. This is the one to optimize.
+
+* **Containment** - the LSP's answer is somewhere in the list. This is
+  what the user can actually get to, so it is the ceiling on how useful
+  the answer was. Always reported beside the size distribution, because
+  alone it is gameable.
+
+* **Result count** - the distribution of how many locations were
+  returned, per stratum. The gap between containment and top-1 is the
+  cost the picker imposes, and this is what prices it.
+
+A change that raises containment while raising result counts has bought
+nothing. A change that raises top-1 at constant counts is a real
+improvement. Stating both is what keeps that distinction visible.
+
+**Divergence is reported on containment, not on top-1.** If the proper
+LSP's answer was in the list, the user was shown it and nothing was
+hidden from them - telling them they were misled would be false. This
+also makes the report meaningfully rarer and therefore more worth
+reading.
+
 ### Error severity
 
 Wrong answers are not interchangeable, so they are measured
-separately - reported, with no budget attached yet:
+separately - reported, with no budget attached yet.
+
+With a list, the failure being classified is **the correct answer not
+being in it**, and the tier is taken from the top-ranked location, since
+that is where a user who trusts the ordering looks first:
 
 Landing within 3 lines of the proper LSP's answer counts as a match, not
 an error. At that distance the right definition is on screen and the
@@ -314,10 +389,14 @@ The per-class table is the artifact that drives decisions, not any
 single rolled-up number.
 
 That last class is the one a heuristic fundamentally cannot compete on,
-and in Rust it's a large share of real go-to-definition invocations.
-Whether it abstains or returns a ranked guess is undecided - see future
-question 13. Keeping it as its own row rather than dissolving it into an
-average is most of what makes these numbers honest.
+and in Rust it's a large share of real go-to-definition invocations. It
+is no longer a candidate for a permanent abstain class, though: returning
+every method of that name, ranked, is a genuinely useful answer where
+picking one would have been a guess. Expect this row to show low top-1
+agreement, high containment, and large result counts - which is a fair
+description of the case rather than a failure to handle it. Keeping it as
+its own row rather than dissolving it into an average is most of what
+makes these numbers honest.
 
 ### Value weighting
 
@@ -435,30 +514,29 @@ section 5.
     arithmetic turns out to be a source of bugs; not worth widening the
     vendoring patch for pre-emptively.
 
-13. **What should happen when several candidates are equally plausible?**
-    This is the hole left by deferring the precision floor, and it is the
-    single biggest undecided behaviour. Success metrics above says the only
-    two reasons to decline are "no candidate at all" and "the deadline ran
-    out" - so an ambiguous name, where eleven files define `new`, is by that
-    rule answered with the top-ranked guess. That may well be right: the
-    ranking exists, a guess is what this version promises, and the divergence
-    report catches it when wrong.
+13. **How long may the candidate list be, and what happens at the cap?**
+    The larger question this replaces - what to do when several candidates are
+    equally plausible - is decided: return all of them, ranked. See "Several
+    candidates" under Success metrics.
 
-    But it is not obviously right, and two things in this document still
-    assume otherwise. Stratification below describes the type-inference class
-    as one that "may turn out to be a permanent abstain class", and the
-    `AmbiguousName` stratum exists precisely to name the case where nothing
-    distinguishes the candidates. Returning the best of eleven indistinguishable
-    options is a coin flip dressed as an answer, and it is also the case most
-    likely to land in a completely unrelated crate - the error class with the
-    lowest tolerance once budgets exist.
+    What is left is the cap. A picker with six entries is an answer; one with
+    sixty is worse than nothing, because the user pays the cost of reading it
+    and then falls back to waiting for the LSP anyway. So there is a limit,
+    and two things about it are unsettled.
 
-    Options, roughly: always answer the top-ranked candidate; answer only when
-    the ranking has a clear margin, abstaining otherwise (the margin test
-    already exists in the resolution design); or answer but attach a low
-    confidence and rely on the future work item that marks guesses as guesses.
-    The corpus scan can settle it - measure how often the top-ranked candidate
-    among N is right, per stratum, and how bad the misses are.
+    *Where it sits* needs a measurement rather than a guess - the useful
+    number is how often the LSP's answer is at rank N, per stratum, which
+    directly gives what a cap of N would cost in containment.
+
+    *What happens when it is hit* is the more interesting half. Truncating to
+    the best N keeps the answer and quietly drops the guarantee that
+    containment was measuring, which makes the metric slightly dishonest in
+    the one case where the tool knew least. Abstaining instead reintroduces a
+    confidence-shaped decline, which is the thing the permissive posture was
+    meant to remove - but it is defensible on different grounds, that "too
+    many to be useful" is a statement about usefulness rather than about
+    confidence. Truncation is the provisional choice, because it is the one
+    that keeps producing data about the case.
 
 14. **When the precision floor arrives, should it differ by mode?**
     `core-implementation-design.md` section 17.6 argues the counter-intuitive
@@ -466,3 +544,12 @@ section 5.
     mode is contradicted by the real LSP seconds later; in standalone there is
     no divergence report and it stands forever. Needs a measurement rather
     than an argument.
+
+15. **Which server's behaviour should standalone imitate?** Now that the
+    tool varies with the server behind it, standalone has no answer:
+    there is nothing behind it. Either a neutral profile that makes no
+    server-specific choice, or the most widely deployed server's profile
+    on the grounds that it matches what users expect. The same question
+    covers proxying a server we have no profile for. It matters more here
+    than it looks, because there is no divergence report to correct a
+    mismatched convention - see question 14.
