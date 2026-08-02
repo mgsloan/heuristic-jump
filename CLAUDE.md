@@ -1,5 +1,3 @@
-# Idiosyncratic project guidelines
-
 * Avoid premature optimization - implement the slow simple version
   first to check if the idea works. Only after its validated worry
   about efficiency.
@@ -22,11 +20,29 @@
   complex. Think relying on the external md files (and referencing
   those), and/or having a few central spots with more lengthy prose.
 
+* Push allocations to the call site; avoid intermediate collections
+  (accumulator-first recursion) — directly relevant to a latency-budgeted
+  parser.
+
+* Avoid monomorphization on crate boundaries (prefer &dyn/&Path over impl
+  AsRef<Path>) to keep compile times down.
+
+* Express preconditions in types; push control flow to the caller ("push ifs up
+  and fors down").
+
+* Prefer using enums to enforce invariants where possible instead of documenting
+  invariatns
+
+* Doc comments use full sentences, capitalized, ending in a period. Regular
+  comments can be fragments for concision
+
 # General rust coding hygiene
 
 * Do not use wildcard imports
 
 * Use `cargo fmt`
+
+* Use `cargo clippy` - should pass for every commit
 
 # Rust coding guidelines (from Zed)
 

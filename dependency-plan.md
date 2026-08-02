@@ -30,7 +30,7 @@ it is worth knowing when we are ahead of them.
 | `thiserror` | 2.0.19 | shared | chosen; `anyhow` explicitly rejected — see §10 |
 | `tracing` | 0.1.44 | all | chosen |
 | `tracing-subscriber` | 0.3.23 | heuristic_jump | chosen |
-| `rustc-hash` | 2.x | driver | chosen (small win, no cost) |
+| `rustc-hash` | 2.x | driver, shared | chosen — the default map/set, see §8 |
 | `heapless` | 0.9.3 | vendored rope/sum_tree | forced by rope |
 | `unicode-segmentation` | 1.13.3 | vendored rope | forced by rope |
 | `log` | 0.4.x | vendored rope/sum_tree/util | forced by rope |
@@ -386,9 +386,40 @@ Alternatives:
   `VecDeque` of keys is not a large loss.
 
 Note the cache is keyed by `(uri, version)` for open docs and `(path, mtime,
-len)` for disk files, so it is a `HashMap<CacheKey, Tree>` shape, not a
-string-keyed one — `rustc-hash`'s `FxHashMap` is the right hasher for it
-(keys are our own types, not attacker-controlled).
+len)` for disk files, so it is a map keyed by our own types, not by
+attacker-controlled strings.
+
+### `FxHashMap` and `FxHashSet` are the default
+
+Not just for the parse cache. **`rustc_hash::FxHashMap` and `FxHashSet` are the
+default map and set throughout the workspace**; `std::collections::HashMap` is
+the exception and wants a comment saying why.
+
+The reason is that std's default hasher is SipHash-1-3, chosen to make
+`HashMap` safe against hash-flooding from untrusted input. Nothing here is
+keyed by untrusted input. Every map in the driver is keyed by a
+`DocumentUri`, a `ByteOffset`, a `LanguageId`, an `EditorRequestId`, a
+`ProjectPath`, or a small tuple of those — values the shim itself constructed
+from one editor and one language server, both of which are already inside the
+trust boundary and can trivially do worse than degrade a hash table. Paying a
+cryptographic hash for that protection is pure overhead, and these maps sit on
+the definition path where the budget is a p50 of 50ms.
+
+FxHash is a few instructions per word and is what rustc itself uses for the
+same reason. The types involved are also short — a `LanguageId` is a pointer,
+a `ByteOffset` is a word — which is precisely where SipHash's fixed setup cost
+dominates and FxHash wins by the largest margin.
+
+Two rules so this does not become folklore:
+
+* **A type alias, not a naked import.** `shared` exports
+  `pub type Map<K, V> = FxHashMap<K, V>` and `pub type Set<T> = FxHashSet<T>`,
+  so switching hashers later is one line rather than a sweep, and so the
+  choice is visible at every use site.
+* **Reach for `std::collections::HashMap` when a key is genuinely external and
+  unbounded** — nothing in the current design qualifies, but content-derived
+  keys would. When it happens, say so in a comment; an unexplained `HashMap`
+  should read as an oversight.
 
 ## 9. Logging and tracing
 
@@ -762,3 +793,37 @@ foreclose the exit §5 is preserving.
 
 `resolve`, `lang_*`, and `scan` are in design §16's layout but are
 not created by this piece of work.
+
+## 15. Clippy in workspace toml
+
+```
+[workspace.lints.clippy]
+disallowed_methods = "deny"
+disallowed_types = "deny"
+disallowed_macros = "deny"
+# stdout/stderr protocol
+print_stdout = "deny"      # macro family; honours allow-print-in-tests
+print_stderr = "deny"
+explicit_write = "deny"    # catches write!(std::io::stdout(), ...)
+dbg_macro = "deny"         # honours allow-dbg-in-tests
+# panic discipline in long-lived pipe threads
+unwrap_used = "deny"       # honours allow-unwrap-in-tests
+expect_used = "deny"       # honours allow-expect-in-tests
+panic = "deny"             # honours allow-panic-in-tests
+todo = "deny"
+unimplemented = "deny"
+exit = "deny"              # a stray process::exit kills the editor's LSP
+# correctness
+unchecked_time_subtraction = "deny"   # Instant-Duration / Duration-Duration underflow
+indexing_slicing = "deny"             # honours allow-indexing-slicing-in-tests
+string_slice = "deny"                 # byte-slicing a str can split a char / position
+float_cmp = "deny"
+undocumented_unsafe_blocks = "deny"
+mem_forget = "deny"
+declare_interior_mutable_const = "deny"
+redundant_clone = "deny"
+
+[workspace.lints.clippy.style]           # follow Zed: allow the style group
+level = "allow"
+priority = -1
+```
