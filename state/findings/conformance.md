@@ -1,86 +1,70 @@
-# Findings — conformance, after 571b1bb0
+# Findings — conformance, after 576c2c6f
 
-**The audit lags; check the code before believing a gap.** `measure_core`,
-`measure_rust`, `lang_rust`, `shared::identifier_at`, `Deadline::none`,
-`driver::run`, `ProjectView::{candidates,parse,scan}`, `driver::TreeCache`,
-`measure_core::QueryRecord`, `replay::write_records` and now
-`driver::FileListCache` all exist. A `found:` reading "does not exist" for one
-of those is a re-judge, not work.
+**The audit lags badly; verify a gap before working it.** Directly checked this
+session and already satisfied: `#vocabulary-types[fbe658c158]` (all seven
+re-exported, `shared.rs:47`), `#the-trait[93f2f340e6]`
+(`ProjectView::{candidates,parse,scan}`), `#two-modes[90c8d7bd21]`
+(`Deadline::none`), `#the-dependency-graph[7f643e614e,7f3a1bb4ec]` (core.md
+lists `tracing`; `seam.rs` asserts the set), `#adding-a-language[0858868078]`
+and `#what-the-templates-handler-does` (both, `lang_rust::Handler` +
+`heuristic_jump`'s `Registry`), plus every gap saying `measure_core`/
+`measure_rust`/`lang_rust` "do not exist". Re-judging is not work.
 
-**Six campaigns running, the stated blocker was not one.** §the-trait, §8.4,
-§2, §7 and now §4 were each "blocked" on a subsystem that turned out to be
-irrelevant. Treat a `found:` naming a missing subsystem as the *default* false
-blocker: ask what remains after removing it. Usually ordinary code.
+**Genuinely open, verified:** `#86-modelling-errors` (no trust state anywhere),
+`#both-sides-are-sets`, `#10-testing[ddadbddae0]` (no codec),
+`#the-oracle[8e6807da19]` (`ServerId::new` has zero callers; every
+`ServerProfile` is `id: None`) — all four wait on `driver`'s actor, off
+`driver::run`, still a config report. One gap alone is a campaign.
+`#85[081351da0e]` (negative-parse assertions — `proto.rs` has none) is small
+but cannot clean its section. `#vendoring[148fd8d277]` is its own campaign.
 
-**Making a claim mechanical is the whole job.** Three shapes, strongest first:
-(1) remove the thing the claim forbids — `watched_files_changed()` takes no
-payload, so "never reads the payload" cannot regress; (2) an exhaustive match,
-so a new variant fails to compile; (3) a test, *mutation-checked before
-committing* — break the code deliberately and watch it fail, or it proves
-nothing. When the claim is about *which path ran*, add a small enum
-(`ParseKind`, `Refinement`, `Refresh`) to make the branch observable.
+**Seven campaigns running, the stated blocker was not one.** A `found:` naming
+a missing subsystem is the *default* false blocker: ask what remains after
+removing it. Usually ordinary code.
 
-**A consumer that wants to case-split on a `#[non_exhaustive]` seam enum is
-asking for a method on it, not a `match`** — the wildcard arm `CLAUDE.md` bans
-is the only alternative, and it silently misclassifies the next variant.
-`AbstainReason::file_list_evidence` is the worked example.
+**When the fix is a deletion, the campaign is the licence, not the edit.**
+576c2c6f deleted a `Vec<u64>`; the work was proving it cost nothing. Three
+questions, all of which must pass or it is a Class B escalation: does another
+section already own the thing being removed; does `grep harness/` show anyone
+consuming it; and is the doc that seems to contradict you talking about a
+different artifact? Two design claims that look contradictory usually are not —
+§7 makes the *record* non-reproducible and the *table* byte-identical, and both
+hold at once.
 
-**Handler doubles are available** in `driver`, `shared` and `measure_core` —
-`seam.rs`'s grammar ban reads `[dependencies]` only, though a `lang_*` edge
-stays banned in every table.
+**Making a claim mechanical is the whole job.** Strongest first: (1) remove
+what the claim forbids — `Table` holds no `Duration`, so `render` cannot vary;
+(2) an exhaustive match; (3) a test, *mutation-checked before committing*. For
+"which path ran", add a small enum (`ParseKind`, `Refinement`, `Refresh`).
+Assert an artifact is non-empty before comparing two — empty strings are equal.
 
-**Target selection.** Stale gaps, then `state/phase.toml`'s `write` list, then
-fewest gaps left — the number moves per section.
+**Case-splitting on a `#[non_exhaustive]` seam enum wants a method on it, not
+a `match`** (`AbstainReason::file_list_evidence`).
 
-**What is left, best first.**
+**Traps.**
 
-* The driver cluster — `#86-modelling-errors`, `#both-sides-are-sets`,
-  `#10-testing[ddadbddae0]`, `#the-oracle[8e6807da19]`. All wait on `driver`'s
-  document map, channels and transport, hanging off `driver::run` (still a
-  config report). `TreeCache` and `FileListCache` are two owned pieces of that
-  actor with no actor; a third is not obviously worth more than starting the
-  loop. One gap alone is a campaign.
-* `#85[081351da0e]` — negative-parse assertions per union. Small, and does not
-  clean the section: its sibling needs captured traffic, an intervention.
-* The rope newtype sweep (`#vendoring[148fd8d277]`) is its own campaign and
-  never a step inside another.
-
-**Blocked: `conformance-011`.** §9 gives `similarity` an edge to `shared`; its
-manifest lacks it and the crate is denied to every loop.
-
-**Traps that cost real time.**
-
-* **Widening a seam type trips `result_large_err` at 128 bytes**, firing at
-  `Result<_, Dispatched>` signatures the diff never touched. Box *inside* the
-  new type. `Dispatched` is near the line again.
-* Bulk edits through `python3` skip the formatting hook — `cargo fmt -p
-  <crate>` right after, or the gate fails at step 1.
-* `FileList::enumerate` never returns `Err`: unreadable entries are skipped and
-  a missing root walks to an empty list. Do not build a test on its error path.
-* A test that needs time to *move* wants `DrivenClock`
-  (`driver/tests/file_list.rs`): a base `Instant` plus an `AtomicU64`, not a
-  cell and not a lock. `FrozenClock` cannot advance.
-* `measure_core`'s table cannot be asserted on in-process: `Table` is
-  `pub(crate)` and `report` writes past cargo's test capture. Making `replay`
-  return its table is a real target.
-* Picking the wrong `Error` sub-enum compiles and passes. Choose it beside
-  `dispatch::classify`.
-* Manifest assertions are subsets, not equalities (`deps.md` §14).
-* Fixtures are real directories under `env!("CARGO_TARGET_TMPDIR")` with an
-  empty `.git/`, or `ignore` skips `.gitignore` entirely.
+* `measure_core::run` writes to a raw `stdout()` handle cargo does not capture.
+  `replay_table` now returns the table; anything else asserting on printed
+  output needs the same treatment.
+* Widening a seam type trips `result_large_err` at 128 bytes, at `Result<_,
+  Dispatched>` signatures the diff never touched. Box *inside* the new type.
+* `python3` bulk edits skip the format hook — `cargo fmt -p <crate>` after.
+* `FileList::enumerate` never returns `Err`. No test on its error path.
+* Time must *move* → `DrivenClock` (`driver/tests/file_list.rs`).
+* Wrong `Error` sub-enum compiles and passes. `HandlerError` has one variant.
+* Manifest assertions are subsets (`deps.md` §14). Fixtures are real dirs under
+  `CARGO_TARGET_TMPDIR` with a real `.git/`.
 
 **Clippy.** `unwrap`/`expect`/`panic` denied in *free* fns in `tests/*.rs`;
-file-level `#![expect(…, reason = "…")]` listing **only** the lints the file
-trips (`unfulfilled_lint_expectations` is fatal). Also `redundant_clone`,
+file-level `#![expect(…, reason)]` listing **only** lints the file trips
+(`unfulfilled_lint_expectations` is fatal). Also `redundant_clone`,
 `unreachable_pub`, `cast_possible_truncation`, `integer_division`. Disallowed:
 `serde_json::Value`, `Instant::now`, `read_dir`, `Command::output`,
-`io::stdout`, `thread::spawn` (use `Builder::new().name(…)`),
-`crossbeam_channel::unbounded` and blocking `Receiver::recv`.
+`io::stdout`, `thread::spawn`, `crossbeam_channel::unbounded`, blocking `recv`.
 
 **Ruled out.** §8.5's golden corpus is captured traffic — an intervention.
-`#9-workspace-layout` can never go clean: `lang_python`/`lang_typescript` are
-outside every owned path by design.
+`#9-workspace-layout` can never go clean (`lang_python`/`lang_typescript` are
+outside every owned path). `conformance-011`: `similarity` is denied.
 
-**Gate.** It inspects unstaged and untracked paths too, so a human edit under
-`harness/**` makes the no-argument form un-greenable: commit your own paths,
-then `harness/gate conformance --rev <sha>`.
+**Gate.** It inspects unstaged and untracked paths, so a human edit under
+`harness/**` un-greens the no-argument form: commit yours, then
+`harness/gate conformance --rev <sha>`.

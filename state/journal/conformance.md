@@ -1310,3 +1310,61 @@ caller on the real query path rather than a stub.
   milliseconds — atomic rather than a cell because `Clock` is `Sync`, and not a
   lock. Copy it; every debounce, health-probe and report-window test will want
   the same thing.
+
+## 576c2c6f — `core.md#the-command-line[d2a209c7a8]` — confirmed
+
+**The gap in one sentence.** `Table` held `latencies: Vec<u64>` and `render`
+printed `heuristic latency: p50 … p99 …` in both formats, so §7's "same corpus,
+same commit, same table, byte for byte" was false of the artifact the gate
+consumes. Removed the field, moved the run's own wall clock to `tracing`, made
+the rendered artifact a value (`measure_core::replay_table`) so a test can hold
+it, added `the_printed_table_is_byte_identical_across_runs`.
+
+**Nearly all of the campaign was spent establishing that deleting the
+percentiles trades nothing off, and that is the part worth recording**, because
+the same shape will come up again: the fix was fifteen minutes and the licence
+to make it was two hours. Three things had to be true at once, and if any one
+had failed this was a Class B escalation rather than a Class A-free fix:
+
+* §7 already owns the latency numbers. "This single record type covers …
+  latency percentiles" (core.md:880) — the *record*, not the table. And the
+  record's `heuristic_latency_us` is per query, so it is strictly more than a
+  global p50/p99: `loops.md` §10 asks for **per-stratum** percentiles, which
+  the deleted global pair could never have produced.
+* Nothing consumes them. `grep heuristic_latency_us harness/` is empty, so the
+  dashboard and the metrics row were not reading the field that was removed.
+* `loops.md` §9's "`measure replay` reports its own wall clock" is about a
+  number read as a trend, not about the gate's artifact. It survives on the log
+  stream, and that is where it now goes.
+
+**The spec is not self-contradictory here, which is worth saying explicitly**
+because it reads as though it is. §"Two modes" calls `heuristic_latency_us`
+"the one field **in the record** that a replay does not reproduce exactly", and
+§"The command line" calls the table byte-identical. Both hold simultaneously
+once the clock is not in the table. A campaign that reads only one of the two
+will reach for `state/spec-changelog.md`; there was nothing to change.
+
+**What the existing test was doing and why it was not enough.**
+`replay_is_deterministic_byte_for_byte` compares two `--records` files with
+`heuristic_latency_us` masked. That is a real property and it stays. It is not
+this section's property: the records file is not the table, and it needs a mask
+to pass at all, so it could never have caught the p50/p99 line.
+
+**`replay_table` is public for a reason that will recur.** `measure_core::run`
+writes the table into a raw `std::io::stdout()` handle, and cargo does not
+capture raw stdout writes — only `println!`. So an in-process test cannot see
+the table at all unless something returns it. Any future assertion about what
+`measure` *prints* needs the same treatment; do not spend a second campaign
+rediscovering that the output is invisible from `tests/`.
+
+**Mutation-checked before committing**, per the standing rule: re-added a
+`SystemTime::now()` nanos field to `Report` and a `mutation clock:` line to
+`as_text`, ran the test, watched it fail on `Table` and then (with the text
+mutation removed) on `Json`. Both halves fire. The test loops over both formats
+deliberately — `--format json` is the one the harness consumes, so a check that
+only covered the text table would guard the wrong artifact.
+
+**Also asserted the table is non-empty** (`once.contains("unimplemented")`)
+before comparing. Two empty strings are equal; without that line the test would
+pass against a corpus that produced nothing, which is exactly the failure a
+fixture change would introduce silently.
