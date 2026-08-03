@@ -1172,6 +1172,21 @@ def panel_sections(loop: str = "") -> str:
     return panel("Sections and gaps", "".join(blocks), note="gap ids are what a campaign names in its target")
 
 
+def mix(row: dict) -> str:
+    """`design/loops.md` section 15's health signal, in the shape it names it:
+    a campaign that is mostly empty experiments is stalling regardless of what
+    it spent. Rows written before the field existed read as an em dash rather
+    than as three zeroes, which would be a claim."""
+    experiments = row.get("experiments") or {}
+    if not experiments:
+        return "—"
+    return (
+        f"{experiments.get('committed', 0)}/"
+        f"{experiments.get('reverted', 0)}/"
+        f"{experiments.get('empty', 0)}"
+    )
+
+
 def panel_cost(loop: str = "") -> str:
     """`design/loops.md` section 15's derived number is the one that should
     drive stopping decisions: cost per unit of progress, which should *rise*
@@ -1183,7 +1198,10 @@ def panel_cost(loop: str = "") -> str:
     for owner in sorted(phase.loops):
         if loop and owner != loop:
             continue
-        everything = hj.read_jsonl(hj.cost_path(owner))
+        # Merged by campaign id rather than read straight off the file: it is
+        # append-only, so a re-measured campaign has more than one row and
+        # summing the lines would count its spend twice.
+        everything = hj.cost_rows(owner)
         if not everything:
             continue
         rows = [r for r in everything if r.get("kind") != "audit"]
@@ -1192,6 +1210,12 @@ def panel_cost(loop: str = "") -> str:
         total = sum(r.get("usd") or 0 for r in everything)
         output = sum(r.get("output_tokens") or 0 for r in rows)
         minutes = sum(r.get("model_seconds") or 0 for r in rows) / 60
+        gate_minutes = sum(r.get("gate_seconds") or 0 for r in rows) / 60
+
+        def share(name: str) -> int:
+            return sum((r.get("experiments") or {}).get(name, 0) for r in rows)
+
+        committed, reverted, empty = share("committed"), share("reverted"), share("empty")
         progressed = [r for r in rows if r.get("progress")]
         per_progress = (total / len(progressed)) if progressed else None
         per_progress_tokens = (output / len(progressed)) if progressed else None
@@ -1204,8 +1228,9 @@ def panel_cost(loop: str = "") -> str:
             f"<td class='num'>${(r.get('usd') or 0):.2f}</td>"
             f"<td class='num'>{(r.get('output_tokens') or 0):,}</td>"
             f"<td class='num'>{(r.get('model_seconds') or 0) / 60:.0f}m</td>"
+            f"<td class='num'>{(r.get('gate_seconds') or 0) / 60:.0f}m</td>"
             f"<td class='num'>{esc(r.get('turns'))}</td>"
-            f"<td class='num'>{esc(r.get('commits'))}</td>"
+            f"<td class='num'>{esc(mix(r))}</td>"
             f"<td>{'yes' if r.get('progress') else 'no'}</td>"
             "</tr>"
             for r in rows
@@ -1225,8 +1250,9 @@ def panel_cost(loop: str = "") -> str:
         <article class="metrics">
           <h3>{esc(owner)}</h3>
           <p class="headline"><strong>{output:,}</strong> output tokens over {len(rows)} campaigns
-            <span class="note">{minutes:.0f} model-minutes · API-equivalent ${total:.2f},
-            of which ${audit_usd:.2f} in {len(audits)} audit session(s)</span></p>
+            <span class="note">{minutes:.0f} model-minutes · {gate_minutes:.0f} of them in the gate ·
+            {committed}/{reverted}/{empty} experiments committed/reverted/empty ·
+            API-equivalent ${total:.2f}, of which ${audit_usd:.2f} in {len(audits)} audit session(s)</span></p>
           <p class="headline" style="font-size:16px">{('%.0f' % per_progress_tokens) if per_progress_tokens else '—'} output tokens
             <span class="note">per campaign that made progress — this is the number that says when to stop,
             and it should rise as the easy wins are exhausted</span></p>
@@ -1237,8 +1263,9 @@ def panel_cost(loop: str = "") -> str:
           <div class="charts">{chart}</div>
           <details><summary>per campaign</summary>
           <table><thead><tr><th>campaign</th><th>target</th><th>outcome</th><th class="num">API-eq $</th>
-            <th class="num">output</th><th class="num">model</th><th class="num">turns</th>
-            <th class="num">commits</th><th>progress</th></tr></thead><tbody>{body}</tbody></table></details>
+            <th class="num">output</th><th class="num">model</th><th class="num">gate</th>
+            <th class="num">turns</th><th class="num" title="committed / reverted / empty">c/r/e</th>
+            <th>progress</th></tr></thead><tbody>{body}</tbody></table></details>
         </article>""")
 
     if not blocks:

@@ -2207,6 +2207,72 @@ def cost_path(owner: str) -> Path:
     return STATE / "cost" / f"{owner}.jsonl"
 
 
+# What a complete campaign row carries, which is `design/loops.md` section 15's
+# row spec less the fields the harness fills in from `state/sessions.jsonl`.
+# `cost --refresh` re-measures exactly the rows missing one of these, so adding
+# a field to the measurement and naming it here is the whole of a backfill.
+COST_FIELDS = ("usd", "output_tokens", "model_seconds", "gate_seconds", "experiments")
+
+
+def cost_rows(owner: str) -> list[dict]:
+    """Every cost row, campaign rows merged by campaign id, in file order.
+
+    Merged rather than read straight, for the same reason `campaigns_of` merges
+    `state/sessions.jsonl`: the file is append-only, so re-measuring a campaign
+    appends a second row for it and a naive sum then counts that campaign's
+    spend twice. Nothing appended a second row until `--refresh` existed, which
+    is why summing the file was correct up to now and stops being.
+
+    File order is kept, and a merged campaign keeps the position of its first
+    row, because the cumulative-spend chart reads this as a time series and an
+    append-only file is already in time order.
+    """
+    merged: dict[str, dict] = {}
+    ordered: list[dict] = []
+    for row in read_jsonl(cost_path(owner)):
+        if row.get("kind") == "audit":
+            ordered.append(row)
+            continue
+        key = row.get("campaign", "")
+        if key in merged:
+            merged[key].update(row)
+            continue
+        merged[key] = dict(row)
+        ordered.append(merged[key])
+    return ordered
+
+
+def experiment_mix(campaign: dict, numbers: dict) -> dict:
+    """The committed / reverted / empty triple `design/loops.md` section 15
+    keeps in the row, because "a campaign that is mostly empty experiments is
+    stalling regardless of what it spent".
+
+    An experiment is one gate run: section 4's contract is change, gate,
+    commit-or-revert, so the gate is what marks the boundary. The three shares
+    come from different places and only the first is exact —
+
+    * `committed` is the campaign's commits, from git via its trailer.
+    * `reverted` is revert commands seen in the stream.
+    * `empty` is what is left, which is a gate run that neither committed nor
+      reverted: usually a failed gate the campaign then fixed in place.
+
+    So `empty` is a residual and inherits the error in the other two. That is
+    the honest version, and it is enough for the health signal the section
+    asks for — a campaign whose runs are nearly all empty is thrashing, and no
+    finer definition changes that reading.
+    """
+    gate_runs = numbers.pop("gate_runs", 0) or 0
+    committed = campaign.get("commits") or 0
+    reverted = numbers.pop("reverts", 0) or 0
+    return {
+        "committed": committed,
+        "reverted": reverted,
+        "empty": max(0, gate_runs - committed - reverted),
+        "gate_runs": gate_runs,
+        "gate_failed": numbers.pop("gate_failed", 0) or 0,
+    }
+
+
 def cmd_cost(args: argparse.Namespace) -> int:
     """One row per campaign, joined on the session id.
 
@@ -2223,11 +2289,18 @@ def cmd_cost(args: argparse.Namespace) -> int:
     owners = [args.loop] if args.loop else sorted(phase.loops)
     written = 0
     for owner in owners:
-        already = {row.get("campaign") for row in read_jsonl(cost_path(owner))}
+        already = {
+            row.get("campaign"): row for row in cost_rows(owner) if row.get("kind") != "audit"
+        }
         for campaign in campaigns_of(owner):
             campaign_id = campaign.get("campaign", "")
-            if campaign_id in already or not campaign.get("outcome"):
+            if not campaign.get("outcome"):
                 continue
+            existing = already.get(campaign_id)
+            if existing is not None:
+                stale = any(field not in existing for field in COST_FIELDS)
+                if not (args.refresh and stale):
+                    continue
             transcript = subprocess.run(
                 [str(HARNESS / "adapter"), "transcript-path", owner, campaign_id],
                 capture_output=True, text=True, check=False,
@@ -2244,6 +2317,7 @@ def cmd_cost(args: argparse.Namespace) -> int:
                 numbers = {}
             if not numbers:
                 continue
+            experiments = experiment_mix(campaign, numbers)
             append_jsonl(
                 cost_path(owner),
                 {
@@ -2255,6 +2329,7 @@ def cmd_cost(args: argparse.Namespace) -> int:
                     "target": campaign.get("target"),
                     "outcome": campaign.get("outcome"),
                     "commits": campaign.get("commits"),
+                    "experiments": experiments,
                     "progress": campaign.get("progress"),
                     "sections_clean": campaign.get("sections_clean"),
                     "open_gaps": campaign.get("open_gaps"),
@@ -2264,7 +2339,12 @@ def cmd_cost(args: argparse.Namespace) -> int:
                 },
             )
             written += 1
-            print(f"cost: {campaign_id[:8]}  ${numbers.get('usd', 0):.2f}  {numbers.get('output_tokens', 0):,} out")
+            print(
+                f"cost: {campaign_id[:8]}  ${numbers.get('usd') or 0:.2f}  "
+                f"{numbers.get('output_tokens') or 0:,} out  "
+                f"{numbers.get('gate_seconds') or 0:.0f}s gate  "
+                f"{experiments['committed']}c/{experiments['reverted']}r/{experiments['empty']}e"
+            )
     if written:
         commit_harness_state([cost_path(owner) for owner in owners], f"cost rows for {written} campaign(s)")
     else:
@@ -2597,6 +2677,11 @@ def main() -> int:
 
     p = sub.add_parser("cost", help="join campaign records to what their sessions cost")
     p.add_argument("loop", nargs="?")
+    p.add_argument(
+        "--refresh",
+        action="store_true",
+        help="re-measure closed campaigns whose row predates a field the row spec now carries",
+    )
     p.set_defaults(run=cmd_cost)
 
     p = sub.add_parser("audit-cost", help="record what an audit session cost")

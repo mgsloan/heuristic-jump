@@ -29,7 +29,8 @@
 #       line: {kind, text?, name?, summary?, input?, diff?}. Everything
 #       downstream reads this and not the vendor's records.
 #   cost <transcript>
-#       What the session cost: usd, tokens, model seconds, turns.
+#       What the session cost: usd, tokens, model seconds, gate seconds,
+#       turns, and the gate-run counts the experiment mix is composed from.
 #   progress <transcript>
 #       The same numbers for a session still running, which `cost` cannot
 #       give because it reads the terminal `result` event.
@@ -223,10 +224,38 @@ cost)
 	# `design/loops.md` section 17: ccusage reads the CLI's own store, but the
 	# teed stream already carries the same numbers, so this is a parsing job
 	# rather than a dependency.
+	#
+	# It also measures the two things section 15's row spec asks for that the
+	# `result` event does not carry: **gate seconds**, and the raw counts the
+	# committed / reverted / empty experiment mix is composed from. Both are
+	# read off tool calls, which is a vendor shape and therefore this file's
+	# business; `hj` turns the counts into the triple, because the committed
+	# side of it comes from git rather than from the stream.
+	#
+	# Gate wall-clock is the gap between the assistant event carrying the
+	# `tool_use` and the user event carrying its `tool_result`. There is no
+	# duration field on either — checked — so this is the measurement
+	# available, and it overstates by whatever the round trip costs.
 	python3 - "${1:?transcript}" <<-'PY'
 		import json, sys
+		from datetime import datetime
+
+		def stamp(event):
+		    raw = event.get("timestamp") or ""
+		    try:
+		        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+		    except ValueError:
+		        return None
+
+		# A revert is green-or-revert being applied: the tree goes back to the
+		# last commit. Anything narrower than this list has been seen in a real
+		# campaign, so all four count.
+		REVERTS = ("reset --hard", "git checkout --", "git restore", "git stash")
 
 		last = None
+		pending = {}          # tool_use id -> when the gate run started
+		gate_seconds = 0.0
+		gate_runs = gate_failed = reverts = 0
 		for line in open(sys.argv[1], errors="replace"):
 		    line = line.strip()
 		    if not line:
@@ -235,8 +264,39 @@ cost)
 		        event = json.loads(line)
 		    except json.JSONDecodeError:
 		        continue
-		    if event.get("type") == "result":
+		    kind = event.get("type")
+		    if kind == "result":
 		        last = event
+		    elif kind == "assistant":
+		        for block in event.get("message", {}).get("content", []):
+		            if block.get("type") != "tool_use":
+		                continue
+		            command = str((block.get("input") or {}).get("command", ""))
+		            if "harness/gate" in command:
+		                gate_runs += 1
+		                pending[block.get("id")] = stamp(event)
+		            if any(marker in command for marker in REVERTS):
+		                reverts += 1
+		    elif kind == "user":
+		        content = event.get("message", {}).get("content", [])
+		        if not isinstance(content, list):
+		            continue
+		        for block in content:
+		            if block.get("type") != "tool_result":
+		                continue
+		            started = pending.pop(block.get("tool_use_id"), None)
+		            if started is None:
+		                continue
+		            ended = stamp(event)
+		            if ended is not None:
+		                gate_seconds += (ended - started).total_seconds()
+		            body = block.get("content")
+		            if isinstance(body, list):
+		                text = "\n".join(p.get("text", "") for p in body if isinstance(p, dict))
+		            else:
+		                text = str(body or "")
+		            if "GATE FAILED" in text:
+		                gate_failed += 1
 		if last is None:
 		    print("{}")
 		    raise SystemExit(0)
@@ -249,6 +309,10 @@ cost)
 		    "cache_creation_tokens": usage.get("cache_creation_input_tokens"),
 		    "model_seconds": round((last.get("duration_ms") or 0) / 1000, 1),
 		    "api_seconds": round((last.get("duration_api_ms") or 0) / 1000, 1),
+		    "gate_seconds": round(gate_seconds, 1),
+		    "gate_runs": gate_runs,
+		    "gate_failed": gate_failed,
+		    "reverts": reverts,
 		    "turns": last.get("num_turns"),
 		    "terminal": last.get("subtype"),
 		}, sort_keys=True))
