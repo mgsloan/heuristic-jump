@@ -8,8 +8,8 @@
 # of code (`design/loops.md` section 7).
 
 phase = "1a"
-taken = "2026-08-03T03:26:11+00:00"
-commit = "229cf98884813813072f2b50c4e1732d49f0eb0f"
+taken = "2026-08-03T21:06:34+00:00"
+commit = "fd75a3aa8fcbaab9813d8f19e6a0ae4a3e2654b6"
 
 [doc."core.md"]
 anchors = [
@@ -47,4 +47,27 @@ anchors = [
   "what-the-templates-handler-does",
   "vendoring-the-zed-crates",
   "10-testing",
+]
+
+[doc."rope-modifications.md"]
+anchors = [
+  "1-rope-already-works-this-way-byte-offsets-are-the-omission",
+  "2-where-the-types-live-is-forced",
+  "3-what-keeps-this-safe",
+  "4-what-changes",
+  "the-newtypes-are-opaque",
+  "the-constructors-take-newtypes",
+  "the-signatures",
+  "textsummary-is-converted-too",
+  "the-dimension-impls",
+  "offsets-and-lengths-are-separate-types-and-bytelen-is-shared",
+  "folding-vendorutil-in",
+  "5-what-deliberately-does-not-change",
+  "lineindex-is-ropes-and-shared-re-exports-it",
+  "6-consequences-for-re-syncing",
+  "7-testing",
+  "all-of-upstreams-tests-are-kept",
+  "consequences-for-the-dependency-plan",
+  "beyond-upstreams-tests",
+  "8-decided-and-what-remains",
 ]
