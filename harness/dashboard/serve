@@ -511,14 +511,11 @@ def panel_campaign_table() -> str:
         d_clean = (close.get("sections_clean") or 0) - (open_row.get("sections_clean") or 0)
         d_gaps = (close.get("open_gaps") or 0) - (open_row.get("open_gaps") or 0)
 
-        if len(targets) > 1:
-            shown = (
-                f'<details><summary>{len(targets)} targets</summary><ul class="sites">'
-                + "".join(f"<li><code>{esc(a.split('#')[-1])}</code></li>" for a in targets)
-                + "</ul></details>"
-            )
-        else:
-            shown = f"<code>{esc(targets[0].split('#')[-1])}</code>" if targets else "—"
+        shown = (
+            "<br>".join(f"<code>{esc(anchor.split('#')[-1])}</code>" for anchor in targets)
+            if targets
+            else "—"
+        )
 
         def signed(value: int, good_when_positive: bool = True) -> str:
             if value == 0:
@@ -1144,6 +1141,7 @@ tr.unjudged td.state { color:var(--dim); }
 .sections td.state { width:1%; white-space:nowrap; }\n.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
 .campaigns { font-size:12px; }
 .campaigns td, .campaigns th { padding:4px 7px; }
+.campaigns td:nth-child(2) { line-height:1.45; }
 .campaigns .add { color:var(--good); }
 .campaigns .del { color:var(--bad); }
 .up { color:var(--good); }
