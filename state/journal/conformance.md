@@ -483,3 +483,97 @@ is used by *all*, so the defensible edit is one sentence in §9 saying the
 graph names what is distinctive rather than what is ubiquitous. `clap` and
 `tracing-subscriber` are both on §9's list for `heuristic_jump` already, so
 this campaign added no unlisted dependency beyond that one.
+
+## bc8f02bb — core.md#vocabulary-types
+
+Target picked on distance again, and this time on *freshness first*: the
+previous campaign's warning about the `03:47:22` stamps is now the first step
+of target selection rather than an afterthought. `#vocabulary-types` carried
+the newest stamp in `state/audit/core.toml` (`06:13:37`), two gaps, both in one
+file that already existed, with no missing crate underneath them. That
+combination is rarer than it sounds and is worth checking for directly.
+
+**A large part of the gap list is not reachable by this loop at all, and the
+audit does not say so.** Ruled out during selection, on the write list rather
+than on difficulty: `#the-dependency-graph`, `#adding-a-language`,
+`#one-measurement-library...`, `#the-corpus-scan-is-a-separate-program`,
+`#two-modes-collect-and-replay`, `#the-command-line`,
+`#the-table-is-not-enough...`, `#7-observability...` and `#9-workspace-layout`'s
+remaining gap all bottom out in a crate that does not exist. `measure_core`,
+`measure_rust` and `lang_rust` are ours to create; **`similarity` is not** — it
+is on the deny list in every phase, and §9 makes every `lang_*` depend on it.
+Filed as `conformance-008` (open). Do not spend another campaign rediscovering
+this: read the write list in `state/phase.toml` *before* estimating a section,
+the same way you now read `last_audited`.
+
+**What `normalized text form` had to mean.** §1 prints
+`EditorRequestId(Box<str>)` with the sentence "stored in normalized text form
+so the fast peek path (section 3.1) and the serde_json path produce the same
+key", and does not say what the form is. It holds the id's **JSON** text — `42`
+and `"42"` are different keys — rather than the decoded content. Three
+independent facts force it, and any one of them would have:
+
+* `shim.md` §7 keys `PendingQuery` by this type, and a number id and a string
+  id spelling the same digits are different requests.
+* §8.2's response envelope echoes the id back and LSP wants the echo identical,
+  so the kind has to survive storage. JSON text is copied; decoded content
+  would have to be re-encoded from a kind it no longer carries.
+* §3.1's scanner sees raw bytes. On everything it accepts — it declines on
+  backslashes, fractions and exponents — its slice and `serde_json`'s parse
+  reach the same text with no conversion in between, which is the "same key"
+  the sentence is about.
+
+Requoting uses JSON's *mandatory* escape set and nothing wider (so not DEL, not
+U+0085), because the point of the stored text is that it is byte-identical to
+what `serde_json` would write. Escaping more is still valid JSON and would
+quietly turn the echo into a re-encoding.
+
+**Approaches considered and dropped:**
+
+* *A kind tag plus decoded content* (`n42`, `s42`). Same information, no
+  escaping code, and it was tempting for exactly that reason. Dropped because
+  the tag has to be stripped before the id can be echoed, which puts a
+  conversion back on the one path §8.1 exists to remove it from — and because
+  "normalized text form" does not describe a private tagging scheme.
+* *Accepting a fractional id.* `visit_f64` is deliberately not implemented, so
+  `1.5` is refused. Accepting it would key a request the §3.1 scanner declines
+  on, i.e. produce exactly the disagreement between the two producers that this
+  type exists to prevent. §8.6's fail-closed rule, applied to the one field
+  routing depends on.
+* *Deriving `Deserialize` on `LanguageId`/`FileExtension`.* They are interned
+  `&'static str`; an impl would have to leak or intern an arbitrary string, and
+  §1 requires an unknown language to fail at the boundary. The absence is the
+  design, and a future campaign should not read it as an oversight.
+* *Adding `Serialize` alongside.* Left out for the same reason the previous
+  campaign left it off `WirePosition`: §8.2's rule that the incoming
+  projections must not implement `Serialize` is a property someone will check
+  mechanically, and pre-empting it from a section that is not the target is how
+  that check ends up with an exception in it. The JSON-text representation is
+  what keeps the option open.
+
+**The tooling rewrites `\uXXXX` sequences in file writes.** Two edits were lost
+to this: a test input spelled with a `a` escape arrived in the file as a
+literal `a`, and a control character written as `\u{1}` came back as a raw
+control byte that no subsequent `Edit` could match. Both were silent. If a test
+needs an escaped JSON string, express it without typing a `\u` sequence — an
+escaped solidus (`"a\/b"` and `"a/b"` are one id) covers the decode-and-requote
+case, and a control character is better asserted by round-tripping
+`from_string(&format!("a{}b", char::from(1u8)))` through `serde_json`, which
+proves the escaping happened because a raw control byte inside a JSON string
+does not parse.
+
+**`conformance-004` reconciled, and the spec edit is the ruling's own.** The
+answer said in as many words that "the code blocks are what is wrong, and
+removing those three pubs is the Class A follow-up", so §1 and §8.4 lost them
+and the tag came off `Location::at_node`. The type did not change: the document
+moved toward code written under the tag a campaign earlier, which is the
+opposite direction from the one being watched for, and `CHANGE-conformance-004`
+says so in those terms. A reconciliation is cheap when the code already took
+the accepted reading — it is one commit and it lowers `provisional_decisions`.
+
+**The `loc:` trailer on `7c9bca1` says `+2` where the real figure is `-2`.**
+Left uncorrected because the metrics row is computed from the tree rather than
+read from the trailer, and `--amend` is off the table. Compute it with the
+`loc_per_crate` rule (non-blank, non-`tests/`) rather than from
+`git diff --numstat`, which counts blank lines and test files and will always
+disagree.
