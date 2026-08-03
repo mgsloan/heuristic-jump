@@ -36,6 +36,12 @@ sum_tree = { path = "vendor/sum_tree" }
 # is in the graph yet (`deps.md` §6).
 ignore = "0.4.31"
 rustc-hash = "2.1"
+serde = { version = "1", features = ["derive"] }
+# `raw_value` is not optional: `deps.md` §4 forwards frames without
+# materializing them, which is what `RawValue` is for. It is declared here
+# rather than at the first user because a feature added later unifies across
+# the whole graph anyway, and a `serde_json` without it silently compiles.
+serde_json = { version = "1", features = ["raw_value"] }
 thiserror = "2.0"
 tree-sitter = "0.26"
 url = "2.5"

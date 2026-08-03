@@ -136,9 +136,17 @@ pub fn dispatch(handler: &dyn LanguageHandler, query: &Query<'_>) -> Dispatched 
         // into `Failed` by default.
         Err(error) => match &error {
             Error::Handler(HandlerError::DeadlineExpired) => Dispatched::DeadlineExpired,
-            Error::Handler(_) | Error::Parse(_) | Error::Project(_) | Error::Protocol(_) => {
-                Dispatched::Failed(error)
-            }
+            // `Encoding` is here for completeness rather than because a
+            // handler can raise one: encoding stops at the dispatch wrapper
+            // and never crosses the seam (`core.md` §3, §8.4), so a handler
+            // has nothing to convert. If one ever appears here it is the
+            // wrapper's own failure surfacing through the same `Result`, which
+            // is a failure and not an abstention.
+            Error::Encoding(_)
+            | Error::Handler(_)
+            | Error::Parse(_)
+            | Error::Project(_)
+            | Error::Protocol(_) => Dispatched::Failed(error),
         },
     }
 }

@@ -917,8 +917,11 @@ name = "shared"
 version = "0.1.0"
 dependencies = [
  "ignore",
+ "proptest",
  "rope",
  "rustc-hash",
+ "serde",
+ "serde_json",
  "thiserror",
  "tracing",
  "tree-sitter",

@@ -21,7 +21,18 @@ doctest = false
 ignore.workspace = true
 rope.workspace = true
 rustc-hash.workspace = true
+serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tree-sitter.workspace = true
 url.workspace = true
+
+# `serde_json` is a dev-dependency and not yet a dependency: nothing in
+# `shared` writes a frame, and `proto`'s only inbound door is `Deserialize`,
+# which is generic over the format. The property tests need *a* format to open
+# that door with, and it has to be the one production uses (`core.md` §8.3:
+# `WirePosition::encode` is the only other constructor, so a test cannot build
+# one any other way — which is the point of the type).
+[dev-dependencies]
+proptest.workspace = true
+serde_json.workspace = true

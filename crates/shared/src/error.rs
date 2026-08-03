@@ -7,18 +7,20 @@
 //! workspace an exhaustive match on the top level is a feature — while every
 //! sub-enum is, so adding a leaf is not a breaking change to the table.
 //!
-//! Five of `deps.md` §10's nine arms are absent: `Config`, `Codec`, `Child`,
-//! `Document` and `Encoding` classify failures of code that does not exist
-//! yet (argv parsing, framing, the child process, the open-document map, and
-//! §8.3's position resolution). They arrive with their producers, which is the
-//! same rule the dependency set follows — a variant nothing can return is a
-//! row in `shim.md` §11's table that nothing can exercise.
+//! Four of `deps.md` §10's nine arms are absent: `Config`, `Codec`, `Child`
+//! and `Document` classify failures of code that does not exist yet (argv
+//! parsing, framing, the child process and the open-document map). They arrive
+//! with their producers, which is the same rule the dependency set follows — a
+//! variant nothing can return is a row in `shim.md` §11's table that nothing
+//! can exercise. `Encoding` arrived that way, with §8.3's position resolution.
 
 use std::io;
 use std::path::PathBuf;
 
+use rope::{ByteLen, ByteOffset, LineIndex};
 use thiserror::Error;
 
+use crate::proto::PositionEncoding;
 use crate::vocabulary::{DocumentUri, LanguageId};
 
 #[derive(Debug, Error)]
@@ -31,6 +33,8 @@ pub enum Error {
     Project(#[from] ProjectError),
     #[error(transparent)]
     Handler(#[from] HandlerError),
+    #[error(transparent)]
+    Encoding(#[from] EncodingError),
 }
 
 /// Unexpected message shape: a field that does not hold what the protocol says
@@ -82,6 +86,31 @@ pub enum ProjectError {
         #[source]
         source: ignore::Error,
     },
+}
+
+/// A wire position that does not name a place in the document it arrived
+/// against, read in the encoding the two ends negotiated (`core.md` §3, §8.3).
+///
+/// These are inconsistencies rather than user errors: the editor and the shim
+/// hold the same document at the same version, so a position outside it means
+/// one of them is wrong about the text. `shared::proto` reports it rather than
+/// clipping to the nearest valid position, which is `conformance-006`.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum EncodingError {
+    #[error("line {line} is past line {last_line}, the last in the document")]
+    LineOutOfRange {
+        line: LineIndex,
+        last_line: LineIndex,
+    },
+    #[error("character {character} is not a {encoding} boundary within line {line}")]
+    CharacterOutOfRange {
+        line: LineIndex,
+        character: u32,
+        encoding: PositionEncoding,
+    },
+    #[error("byte offset {offset} is not a character boundary in {len} bytes of text")]
+    OffsetOutOfRange { offset: ByteOffset, len: ByteLen },
 }
 
 #[derive(Debug, Error)]

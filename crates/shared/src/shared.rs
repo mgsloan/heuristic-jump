@@ -16,9 +16,15 @@ mod handler;
 mod project;
 mod vocabulary;
 
+// The one public module rather than a re-export: `core.md` §8.3 and §8.7 name
+// the path `shared::proto`, and the wire types are a namespace rather than
+// vocabulary — `proto::WirePosition` is meant to read as "the wire's idea of a
+// position" at every use site.
+pub mod proto;
+
 pub use deadline::{Clock, Deadline, SystemClock};
 pub use document::{DocumentSnapshot, SnapshotSeed};
-pub use error::{Error, HandlerError, ParseError, ProjectError, ProtocolError};
+pub use error::{EncodingError, Error, HandlerError, ParseError, ProjectError, ProtocolError};
 pub use handler::{
     AbstainReason, CommitPolicy, LanguageHandler, Outcome, Query, ServerProfile, Stratum,
 };
