@@ -175,6 +175,7 @@ summary)
 
 		text = []
 		terminal = ""
+		errored = False
 		for line in open(sys.argv[1], errors="replace"):
 		    line = line.strip()
 		    if not line:
@@ -185,6 +186,7 @@ summary)
 		        continue
 		    if event.get("type") == "result" and event.get("subtype"):
 		        terminal = event["subtype"]
+		        errored = bool(event.get("is_error"))
 		    if event.get("type") == "result" and isinstance(event.get("result"), str):
 		        text.append(event["result"])
 		    elif event.get("type") == "assistant":
@@ -206,6 +208,13 @@ summary)
 		# is not a substitute: sessions that finish cleanly have been observed
 		# exiting non-zero.
 		print(terminal)
+		# Fourth line: whether the result event carried `is_error`. A usage
+		# ceiling reports `subtype: success` *with* this set and no closing
+		# line, which is indistinguishable from a crash on subtype alone —
+		# and a campaign that ran 142 turns and committed five times was
+		# recorded as having died. The policy is the loop's; this only
+		# reports the flag.
+		print("error" if errored else "ok")
 	PY
 	;;
 

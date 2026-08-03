@@ -1796,10 +1796,17 @@ def cmd_audit_due(args: argparse.Namespace) -> int:
     every = phase.audit_every
     rows = read_jsonl(GAP_LOG)
     since = rows[-1]["ts"] if rows else ""
+    # A campaign that died counts if it committed anything. The exclusion is
+    # meant for sessions that produced nothing, but it keyed on the outcome
+    # rather than on the work: four campaigns recorded `crashed` had between
+    # two and five commits each, and a quota ceiling at turn 142 hid a whole
+    # campaign's work from the cadence. What the audit measures is the
+    # repository, so what should gate it is whether the repository moved.
     closed_since = [
         campaign
         for campaign in campaigns_of(config.owner)
-        if campaign.get("ended", "") > since and campaign.get("outcome") != "crashed"
+        if campaign.get("ended", "") > since
+        and (campaign.get("outcome") not in ("crashed", "budget") or campaign.get("progress"))
     ]
     due = len(closed_since) >= every
     print(

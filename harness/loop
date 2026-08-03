@@ -129,6 +129,7 @@ while :; do
 	outcome="$(printf '%s\n' "$summary" | sed -n 1p)"
 	target="$(printf '%s\n' "$summary" | sed -n 2p)"
 	terminal="$(printf '%s\n' "$summary" | sed -n 3p)"
+	errored="$(printf '%s\n' "$summary" | sed -n 4p)"
 
 	# The stream's terminal event decides, not the exit code. Two campaigns
 	# that finished cleanly — result subtype `success`, both reporting
@@ -146,7 +147,17 @@ while :; do
 		# `budget` is the harness's to assign and never the campaign's.
 		outcome="budget"
 		;;
-	success) ;;
+	success)
+		# A usage ceiling reports `success` with `is_error` set, and stops the
+		# campaign before it can write its closing line — so an empty outcome
+		# here is a ceiling, not a crash. One such campaign ran 142 turns and
+		# committed five times and was recorded as having died, which then hid
+		# it from the audit cadence and the judged count.
+		if [ "$outcome" = "" ] && [ "$errored" = "error" ]; then
+			echo "loop: session ended at a usage ceiling; recording budget." >&2
+			outcome="budget"
+		fi
+		;;
 	"")
 		outcome="crashed"
 		;;
@@ -183,22 +194,30 @@ while :; do
 
 	"$hj" cost "$loop"
 
-	# Consecutive crashes are their own stop condition. They are excluded from
-	# the stall count on purpose — a crash is not evidence the loop cannot make
-	# progress — but that exclusion means nothing else would ever halt a loop
-	# whose sessions are all failing. Running out of quota looks exactly like
-	# this: no result event, so no outcome, so `crashed`, forever.
-	if [ "$outcome" = "crashed" ]; then
+	# Consecutive sessions that ended without the campaign speaking are their
+	# own stop condition. They are excluded from the stall count on purpose — a
+	# session dying is not evidence the loop cannot make progress — but that
+	# exclusion means nothing else would ever halt a loop whose sessions are
+	# all failing.
+	#
+	# `budget` counts here as well as `crashed`. Running out of quota is the
+	# common case and it is a ceiling rather than a crash, so counting only
+	# crashes would leave the loop spinning against an exhausted quota,
+	# starting a campaign every few seconds and recording each as a clean stop.
+	case "$outcome" in
+	crashed | budget)
 		crashes=$((crashes + 1))
 		if [ "$crashes" -ge 3 ]; then
 			echo
-			echo "loop: three campaigns crashed in a row. Sessions are failing rather" >&2
-			echo "      than working — quota, credentials, or the CLI. Stopping." >&2
+			echo "loop: three sessions in a row ended without the campaign closing." >&2
+			echo "      Quota, credentials, or the CLI — not the work. Stopping." >&2
 			exit 1
 		fi
-	else
+		;;
+	*)
 		crashes=0
-	fi
+		;;
+	esac
 
 	if ! "$hj" stall "$loop"; then
 		echo

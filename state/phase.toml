@@ -16,7 +16,12 @@ phase = "1a"
 # campaign that closes with no audit since it opened is excluded from the
 # stall count unless it made progress — otherwise the cadence itself would
 # stop the loop.
-audit_every = 3
+# Lowered from 3. The audit is the only oracle, and at 3 it was firing
+# rarely enough that a section's verdict was often several campaigns stale
+# by the time anything read it — and `audit_due` was additionally skipping
+# campaigns recorded `crashed`, four of which had committed real work, so
+# the effective cadence was slower than the number said.
+audit_every = 2
 
 # Phase 1a is one writer, and it runs as a conformance loop. The one carve-out
 # is the seam — `LanguageHandler`, `Query`, `Outcome`, `ProjectView`, the
