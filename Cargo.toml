@@ -65,6 +65,10 @@ clap = { version = "4.5", default-features = false, features = [
   "suggestions",
 ] }
 ignore = "0.4.31"
+# `deps.md` §0's table and §1: chosen over tokio, and over `std::sync::mpsc`
+# because `core`'s loop needs `select!` over several receivers and std has
+# none. Arrives with its first user, which is `core.md` §4's background rescan.
+crossbeam-channel = "0.5"
 rustc-hash = "2.1"
 serde = { version = "1", features = ["derive"] }
 # `raw_value` is not optional: `deps.md` §4 forwards frames without

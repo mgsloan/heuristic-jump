@@ -393,6 +393,42 @@ pub enum AbstainReason {
     External { name: Box<str> },
 }
 
+impl AbstainReason {
+    /// `core.md` §4's rule that the rescan trigger is `NoCandidates`
+    /// *specifically*, not any abstention.
+    ///
+    /// Here rather than in `driver`, for two reasons. It is a fact about what
+    /// a reason means, which is this enum's business and not its consumer's;
+    /// and the enum is `#[non_exhaustive]`, so the same match written in
+    /// `driver` would need the wildcard arm `CLAUDE.md` bans — the arm that
+    /// would silently classify the next variant as inconclusive instead of
+    /// failing to compile until somebody decides.
+    pub fn file_list_evidence(&self) -> FileListEvidence {
+        match self {
+            // An exhaustive search found nothing, which is evidence about the
+            // list: the file it wanted may have been created since the walk.
+            Self::NoCandidates => FileListEvidence::Stale,
+            // Evidence about the cursor and about the language, not about the
+            // filesystem. `Deadline` is the one that matters: the search was
+            // cut off, so it says nothing about what a complete one would have
+            // found, and rescanning on it would spend I/O inside the window
+            // that just proved to be short of it.
+            Self::NotAnIdentifier
+            | Self::UnsupportedRole
+            | Self::Deadline
+            | Self::External { name: _ } => FileListEvidence::Inconclusive,
+        }
+    }
+}
+
+/// Whether an abstention is evidence that the file list is out of date. An
+/// enum rather than a `bool` so the call site reads as the question §4 asks.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum FileListEvidence {
+    Stale,
+    Inconclusive,
+}
+
 /// Stratum -> minimum `Confidence`. Empty in v1, where `decide` returns
 /// `Committed` for every input.
 ///

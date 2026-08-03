@@ -45,6 +45,37 @@ impl DeadlineMs {
     }
 }
 
+/// How long a stale mark waits before the rescan actually goes out
+/// (`core.md` §4). The second of the three durations [`DeadlineMs`] names, and
+/// not interchangeable with it: this one bounds *wasted work*, where the
+/// deadline bounds a user's wait.
+///
+/// The design gives no number — §4 says only that a burst of misses triggers
+/// at most one rescan — so [`DebounceMs::RESCAN`] is a default rather than a
+/// target, and nothing measured depends on it. It is a constructor argument
+/// and not a constant so that raising it is configuration.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct DebounceMs(u64);
+
+impl DebounceMs {
+    /// Long enough that a branch switch's frames coalesce into one walk, short
+    /// enough that §4's "the user asks again" lands after the rescan rather
+    /// than during it.
+    pub const RESCAN: Self = Self(500);
+
+    pub const fn new(milliseconds: u64) -> Self {
+        Self(milliseconds)
+    }
+
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+
+    pub const fn window(self) -> Duration {
+        Duration::from_millis(self.0)
+    }
+}
+
 /// `--deadline-ms`, before a mode has been chosen. Absent is not zero and not
 /// a sentinel: it means whichever of the two defaults the mode carries, which
 /// is why this is an enum rather than the `Option<u64>` clap produces.

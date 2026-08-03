@@ -9,10 +9,14 @@
 
 mod config;
 mod dispatch;
+mod files;
 mod trees;
 
-pub use config::{Config, DeadlineMs, DeadlineOverride, Heuristics, Mode, ServerCommand};
+pub use config::{
+    Config, DeadlineMs, DeadlineOverride, DebounceMs, Heuristics, Mode, ServerCommand,
+};
 pub use dispatch::{Answer, Completed, Dispatched, Parsed, Registry, Request, dispatch, hard_cap};
+pub use files::{DID_CHANGE_WATCHED_FILES, FileListCache, Rescan};
 pub use trees::{OpenDocument, TreeCache};
 
 /// The whole of `heuristic_jump`'s `main` after argument parsing, and the

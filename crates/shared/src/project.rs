@@ -112,21 +112,31 @@ impl ProjectPath {
 /// Which enumeration of the file list a [`CandidateFiles`] was drawn from, so
 /// that a caller holding one can say how stale it is (`resolution.md` §3).
 ///
-/// Nothing bumps it. A refreshing owner would mint the next one, and there is
-/// no owner — that is `core.md` §4's own gap, not this one's. The field is
-/// here rather than added later because `candidates` is specified to carry it,
-/// and a return type that acquires a field is a change to every call site.
+/// Bumped by [`FileList::superseding`], which is the refreshing owner's one
+/// move — `driver::FileListCache` in this workspace.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Generation(pub u64);
 
 impl Generation {
     pub const FIRST: Self = Self(0);
+
+    /// Saturating, because the alternative to a stuck counter after 2^64
+    /// refreshes is a wrapped one that makes an older list compare as newer.
+    /// Neither will happen; only one of them is wrong if it does.
+    pub fn next(self) -> Self {
+        Self(self.0.saturating_add(1))
+    }
 }
 
-/// The cached list `core.md` §4 describes. Built lazily on first need and
-/// refreshed in the background by whoever owns it — a stale list costs recall
-/// on files created in the last few seconds, which is a miss rather than a
-/// wrong answer.
+/// The cached list `core.md` §4 describes. A stale list costs recall on files
+/// created in the last few seconds, which is a miss rather than a wrong
+/// answer, so it is refreshed rather than kept correct.
+///
+/// The owner that builds it lazily and refreshes it in the background is
+/// `driver::FileListCache`, and it is there rather than here for the reason
+/// §4 gives: the two things that invalidate the list are a query's abstention
+/// and the editor's watcher, neither of which `shared` can see. What is here
+/// is the walk and the [`Generation`] a refresh advances.
 #[derive(Debug)]
 pub struct FileList {
     roots: Vec<ProjectRoot>,
@@ -183,6 +193,18 @@ impl FileList {
 
     pub fn generation(&self) -> Generation {
         self.generation
+    }
+
+    /// This walk replaces `previous`, so it carries the generation after it.
+    ///
+    /// Takes the list it supersedes rather than a [`Generation`], so a refresh
+    /// cannot mint a number that is not one more than the list it is about to
+    /// evict — which is the whole of what makes the counter comparable. A
+    /// background walk does not know its own generation, because it started
+    /// before the owner decided which list it would replace.
+    pub fn superseding(mut self, previous: &FileList) -> Self {
+        self.generation = previous.generation.next();
+        self
     }
 
     /// Every file the walk found.

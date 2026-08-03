@@ -231,6 +231,14 @@ pub enum ProjectError {
         #[source]
         source: ignore::Error,
     },
+    /// `core.md` §4's background rescan thread could not be spawned. Fatal at
+    /// construction rather than degrading to a list that never refreshes,
+    /// which would cost recall silently and forever.
+    #[error("spawning the file-list scanner")]
+    Scanner {
+        #[source]
+        source: io::Error,
+    },
     /// A URI the project view cannot turn back into one of its own files.
     ///
     /// Reached from the wire conversion (`core.md` §8.4), which is handed a
