@@ -1,6 +1,6 @@
 ---
 id: conformance-011
-status: open
+status: accepted
 opened: 2026-08-03T08:10:00+00:00
 campaign: de2706af-51e1-4f63-828c-7cd3cfcc5195
 kind: class-b
@@ -72,3 +72,14 @@ in `crates/driver/tests/seam.rs` gains an assertion that the edge exists. If it
 is option 2, one bullet and one arrow in §9 change and the phase-2 language
 loops inherit the conversion at the `similarity` boundary instead. Either way
 no code written by this loop is redone.
+
+## Answer — 2026-08-03T19:00:32+00:00
+
+**Ruling:** accepted
+
+Option A.
+
+**Rationale:** The deps.md 14 objection -- each dependency arrives with its first user -- is about third-party crates, where an unused dependency is version risk carried for nothing. `shared` is a path dependency in the same workspace: no pin, no resolution, no risk, so the rule's cost does not apply. Against that, dropping the edge means the dependency arrives during phase 2, in a crate nobody may touch, at the moment a language loop is blocked on it. And `similarity` is frozen precisely so nobody re-argues it; leaving its manifest disagreeing with the graph guarantees exactly that argument. The contradiction was introduced by the human who placed the crate, not by any campaign.
+
+Reconciling the sites tagged `// DECISION-conformance-011: provisional` is a
+normal campaign target, not an interrupt.
