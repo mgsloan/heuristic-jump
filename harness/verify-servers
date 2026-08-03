@@ -1,0 +1,268 @@
+#!/usr/bin/env python3
+"""Verify every server in servers.toml starts, initializes, and answers a
+definition request on a trivial same-file fixture.
+
+Phase 1c's acceptance check. It is deliberately weaker than what
+`measure collect` will do -- no readiness protocol, no project resolution --
+because its question is only "is this install usable at all", asked before a
+hundred machine-hours are spent finding out that it is not.
+
+Usage: harness/verify-servers [server-name ...]
+"""
+
+import json
+import os
+import subprocess
+import sys
+import time
+import tomllib
+from pathlib import Path
+
+HARNESS = Path(__file__).resolve().parent
+REPOSITORY = HARNESS.parent
+MANIFEST = REPOSITORY / "servers.toml"
+FIXTURES = HARNESS / "server-fixtures"
+TIMEOUT_SECONDS = 300.0
+
+NOT_READY = object()
+
+# Per language: fixture directory, file, the call site's line and character,
+# the line its definition is on, and the LSP language id.
+PROBES = {
+    "rust": ("rust", "src/main.rs", 5, 16, 0, "rust"),
+    "go": ("go", "main.go", 9, 13, 4, "go"),
+    "python": ("python", "probe.py", 5, 10, 0, "python"),
+    "typescript": ("ts", "probe.ts", 5, 16, 0, "typescript"),
+    "javascript": ("js", "probe.js", 5, 16, 0, "javascript"),
+    "c": ("c", "probe.c", 5, 11, 0, "c"),
+    "cpp": ("cpp", "probe.cpp", 5, 11, 0, "cpp"),
+}
+
+
+class Client:
+    def __init__(self, command, cwd, env):
+        self.process = subprocess.Popen(
+            command,
+            cwd=str(cwd),
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        self.next_id = 1
+
+    def send(self, payload):
+        body = json.dumps(payload).encode()
+        self.process.stdin.write(b"Content-Length: %d\r\n\r\n" % len(body) + body)
+        self.process.stdin.flush()
+
+    def request(self, method, params):
+        request_id = self.next_id
+        self.next_id += 1
+        self.send({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
+        return request_id
+
+    def notify(self, method, params):
+        self.send({"jsonrpc": "2.0", "method": method, "params": params})
+
+    def read(self):
+        length = None
+        while True:
+            line = self.process.stdout.readline()
+            if not line:
+                return None
+            line = line.strip()
+            if not line:
+                break
+            if line.lower().startswith(b"content-length:"):
+                length = int(line.split(b":")[1])
+        if length is None:
+            return None
+        return json.loads(self.process.stdout.read(length))
+
+    def await_response(self, request_id, deadline):
+        """Pump messages until the response arrives, answering server requests.
+
+        A server that asks for configuration and is never answered blocks
+        before it ever indexes, so the request side of the loop is not
+        optional even for a smoke test.
+        """
+        while time.monotonic() < deadline:
+            message = self.read()
+            if message is None:
+                raise RuntimeError("server closed the connection")
+            if "method" in message and "id" in message:
+                self.answer(message)
+            elif message.get("id") == request_id:
+                error = message.get("error")
+                if error:
+                    # ContentModified and RequestCancelled are what a server
+                    # says while it is still loading -- rust-analyzer answers
+                    # -32801 for the whole of its first workspace load. They
+                    # mean "ask again", not "no definition", and a collector
+                    # that recorded them as answers would poison a truth file
+                    # in the direction `data-collection.md` section 4 warns
+                    # about.
+                    if error.get("code") in (-32801, -32800):
+                        return NOT_READY
+                    raise RuntimeError(f"{error}")
+                return message.get("result")
+        raise TimeoutError("no response before the deadline")
+
+    def answer(self, message):
+        method = message["method"]
+        if method == "workspace/configuration":
+            result = [{} for _ in message["params"]["items"]]
+        elif method == "workspace/workspaceFolders":
+            result = None
+        else:
+            result = None
+        self.send({"jsonrpc": "2.0", "id": message["id"], "result": result})
+
+    def close(self):
+        try:
+            self.process.stdin.close()
+        except OSError:
+            pass
+        try:
+            self.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+
+
+def verify(servers_root, name, entry, language):
+    fixture_dir, relative, line, character, expected_line, language_id = PROBES[language]
+    root = FIXTURES / fixture_dir
+    path = root / relative
+    uri = f"file://{path}"
+    deadline = time.monotonic() + TIMEOUT_SECONDS
+
+    command = [part.replace("${servers}", str(servers_root)) for part in entry["command"]]
+    env = dict(os.environ)
+    env.update(entry.get("env", {}))
+
+    client = Client(command, root, env)
+    try:
+        request_id = client.request(
+            "initialize",
+            {
+                "processId": os.getpid(),
+                "rootUri": f"file://{root}",
+                "workspaceFolders": [{"uri": f"file://{root}", "name": root.name}],
+                "capabilities": {
+                    "workspace": {"configuration": True, "workspaceFolders": True},
+                    "textDocument": {
+                        "definition": {"linkSupport": True},
+                        "synchronization": {"dynamicRegistration": False},
+                    },
+                    "window": {"workDoneProgress": True},
+                },
+            },
+        )
+        result = client.await_response(request_id, deadline)
+        server_info = result.get("serverInfo") or {}
+        provides_definition = bool(result.get("capabilities", {}).get("definitionProvider"))
+        client.notify("initialized", {})
+
+        client.notify(
+            "textDocument/didOpen",
+            {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": language_id,
+                    "version": 1,
+                    "text": path.read_text(),
+                }
+            },
+        )
+
+        # No readiness protocol here on purpose -- poll until the server stops
+        # answering empty, which is exactly the confidently-wrong-empty problem
+        # `data-collection.md` section 4 says collection must not have.
+        locations = []
+        while time.monotonic() < deadline and not locations:
+            request_id = client.request(
+                "textDocument/definition",
+                {"textDocument": {"uri": uri}, "position": {"line": line, "character": character}},
+            )
+            answer = client.await_response(request_id, deadline)
+            if answer is NOT_READY:
+                answer = None
+            locations = answer if isinstance(answer, list) else ([answer] if answer else [])
+            if not locations:
+                time.sleep(1.0)
+
+        got_line = None
+        if locations:
+            location = locations[0]
+            span = location.get("range") or location.get("targetSelectionRange") or {}
+            got_line = span.get("start", {}).get("line")
+
+        ok = provides_definition and got_line == expected_line
+        # gopls reports its whole build info as serverInfo.version.
+        reported = f"{server_info.get('name', '?')} {server_info.get('version', '?')}"[:34]
+        detail = f"definition -> line {got_line}, expected {expected_line}"
+        label = f"{name}/{language}"
+        print(f"{'PASS' if ok else 'FAIL'}  {label:42} {reported:28} {detail}")
+        return ok
+    finally:
+        client.close()
+
+
+def check_version(servers_root, name, entry):
+    """The drift check `data-collection.md` section 4 requires, run once here so
+    the manifest's `version` strings are known to match on the day they are
+    written rather than on the day collection first refuses to resume."""
+    command = [part.replace("${servers}", str(servers_root)) for part in entry["version_command"]]
+    output = subprocess.run(command, capture_output=True, text=True, timeout=120)
+    reported = output.stdout.strip().splitlines()
+    if not reported or reported[0].strip() != entry["version"]:
+        got = reported[0].strip() if reported else "<nothing>"
+        print(f"FAIL  {name:42} version_command said {got!r}, manifest says {entry['version']!r}")
+        return False
+    return True
+
+
+def resolve_servers_root(manifest):
+    """`servers_root` is relative to the manifest, which is in the repository;
+    the tree it names is not. `HJ_SERVERS` is for a machine that keeps the
+    install somewhere else."""
+    override = os.environ.get("HJ_SERVERS")
+    root = Path(override) if override else REPOSITORY / manifest["servers_root"]
+    root = root.resolve()
+    if not root.is_dir():
+        die(f"no server install at {root}; see design/external-dependencies.md section 3")
+    return root
+
+
+def die(message):
+    print(f"verify-servers: {message}", file=sys.stderr)
+    sys.exit(2)
+
+
+def main():
+    with open(MANIFEST, "rb") as handle:
+        manifest = tomllib.load(handle)
+    servers_root = resolve_servers_root(manifest)
+    wanted = sys.argv[1:]
+    unknown = set(wanted) - set(manifest["server"])
+    if unknown:
+        die(f"no such server: {', '.join(sorted(unknown))}")
+    failures = 0
+    for name, entry in manifest["server"].items():
+        if wanted and name not in wanted:
+            continue
+        if not check_version(servers_root, name, entry):
+            failures += 1
+        for language in entry["languages"]:
+            try:
+                if not verify(servers_root, name, entry, language):
+                    failures += 1
+            except Exception as error:  # noqa: BLE001 - the report is the point
+                print(f"FAIL  {name}/{language:34} {type(error).__name__}: {error}")
+                failures += 1
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

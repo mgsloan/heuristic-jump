@@ -1,0 +1,119 @@
+# The server matrix, machine-readable. Phase 1c of `design/phases.md`; the
+# human half is `design/external-dependencies.md`, which says how each of
+# these was installed and what it needed.
+#
+# `measure collect` resolves `--server <name>` against the table keys here.
+#
+# This file is in the repository and the binaries it points at are not. The
+# split follows what is reviewable: which servers the corpus is collected
+# against is a decision, and it belongs in the history next to the code that
+# is scored against it. Several hundred megabytes of platform-specific
+# binaries are not a decision, and they live beside the corpus they serve.
+#
+# `${servers}` expands to `servers_root` below, resolved relative to this
+# file, so the install tree relocates without editing any entry. `HJ_SERVERS`
+# overrides it for a machine that puts the tree somewhere else.
+#
+# Not in any loop's write list, deliberately: this file names the oracle every
+# language loop is scored against, and a loop that could edit it could choose
+# its own examiner.
+#
+# Two version fields, because they answer different questions:
+#
+# * `pin` is the identity the install was requested by -- a GitHub release
+#   tag, an npm version, a Go module version. It is what a reinstall passes,
+#   and it is what an upgrade changes.
+# * `version` is the string the installed server actually reports through
+#   `version_command`. It is what `measure collect`'s drift check compares
+#   against, per `data-collection.md` section 4: warn and record on a fresh
+#   collection, refuse on a resume. The two differ for rust-analyzer and
+#   clangd, which is exactly why the check reads the server rather than
+#   trusting the tag.
+#
+# `languages` uses the corpus's own language directory names. TSX rides with
+# `typescript`, as it does throughout the design.
+
+servers_root = "../heuristic-jump-corpus/servers"
+
+[server.rust-analyzer]
+languages = ["rust"]
+pin = "2026-08-03"
+version = "rust-analyzer 0.3.2997-standalone"
+command = ["${servers}/rust/rust-analyzer"]
+version_command = ["${servers}/rust/rust-analyzer", "--version"]
+
+[server.gopls]
+languages = ["go"]
+pin = "v0.23.0"
+version = "golang.org/x/tools/gopls v0.23.0"
+command = ["${servers}/go/bin/gopls"]
+version_command = ["${servers}/go/bin/gopls", "version"]
+
+[server.clangd]
+languages = ["c", "cpp"]
+pin = "22.1.6"
+version = "clangd version 22.1.6 (https://github.com/llvm/llvm-project fc4aad7b5db3fff421df9a9637605b9ca5667881)"
+command = ["${servers}/c/clangd_22.1.6/bin/clangd"]
+version_command = ["${servers}/c/clangd_22.1.6/bin/clangd", "--version"]
+
+[server.pyright]
+languages = ["python"]
+pin = "1.1.411"
+version = "pyright 1.1.411"
+command = [
+  "node",
+  "${servers}/node/pyright/node_modules/pyright/langserver.index.js",
+  "--stdio",
+]
+version_command = ["${servers}/node/pyright/node_modules/.bin/pyright", "--version"]
+
+[server.basedpyright]
+languages = ["python"]
+pin = "1.39.9"
+version = "basedpyright 1.39.9"
+command = [
+  "node",
+  "${servers}/node/basedpyright/node_modules/basedpyright/langserver.index.js",
+  "--stdio",
+]
+version_command = [
+  "${servers}/node/basedpyright/node_modules/.bin/basedpyright",
+  "--version",
+]
+
+[server.pylsp]
+languages = ["python"]
+pin = "1.15.0"
+version = "pylsp v1.15.0"
+command = ["${servers}/python/pylsp-venv/bin/pylsp"]
+version_command = ["${servers}/python/pylsp-venv/bin/pylsp", "--version"]
+
+[server.typescript-language-server]
+languages = ["javascript", "typescript"]
+pin = "5.3.0"
+version = "5.3.0"
+command = [
+  "node",
+  "${servers}/node/typescript-language-server/node_modules/typescript-language-server/lib/cli.mjs",
+  "--stdio",
+]
+version_command = [
+  "node",
+  "${servers}/node/typescript-language-server/node_modules/typescript-language-server/lib/cli.mjs",
+  "--version",
+]
+
+[server.vtsls]
+languages = ["javascript", "typescript"]
+pin = "0.3.0"
+version = "0.3.0"
+command = [
+  "node",
+  "${servers}/node/vtsls/node_modules/@vtsls/language-server/bin/vtsls.js",
+  "--stdio",
+]
+version_command = [
+  "node",
+  "${servers}/node/vtsls/node_modules/@vtsls/language-server/bin/vtsls.js",
+  "--version",
+]

@@ -2,11 +2,11 @@
 
 Phase 1c of [`phases.md`](phases.md): every language server the corpus is
 collected against, how it was installed, and what it needs at run time. This
-is the human half. The machine-readable half is
-`../heuristic-jump-corpus/servers.toml`, which is what `measure collect`
-resolves `--server <name>` against; the split exists because `collect` must
-record what it actually ran and a prose document cannot be resolved by a
-program ([`data-collection.md` §0](data-collection.md)).
+is the human half. The machine-readable half is `servers.toml` at the root of
+this repository, which is what `measure collect` resolves `--server <name>`
+against; the split exists because `collect` must record what it actually ran
+and a prose document cannot be resolved by a program
+([`data-collection.md` §0](data-collection.md)).
 
 Also pinned here: the tools that produce the numbers but appear in no
 `Cargo.toml` — the Claude Code CLI most of all, for the reason
@@ -14,20 +14,37 @@ Also pinned here: the tools that produce the numbers but appear in no
 
 ## 1. Where it all lives, and why not on the system
 
+It is split across the repository and the corpus root, along the line of what
+is reviewable:
+
 ```
-../heuristic-jump-corpus/
+heuristic_jump/
   servers.toml                    the matrix, machine-readable
-  servers/
-    rust/rust-analyzer            standalone binary
-    go/bin/gopls                  go install --> GOBIN
-    c/clangd_22.1.6/bin/clangd    unpacked release
-    python/pylsp-venv/            uv venv
-    node/<server>/node_modules/   one container per server
-    fixtures/<language>/          the probe fixtures section 5 uses
-    verify.py                     the acceptance check
+  harness/verify-servers          the acceptance check
+  harness/server-fixtures/<lang>/ the probes it runs
+
+../heuristic-jump-corpus/servers/
+  rust/rust-analyzer              standalone binary
+  go/bin/gopls                    go install --> GOBIN
+  c/clangd_22.1.6/bin/clangd      unpacked release
+  python/pylsp-venv/              uv venv
+  node/<server>/node_modules/     one container per server
 ```
 
-472 MB total, none of it on `$PATH` and none of it in this repository.
+Which servers the corpus is collected against is a decision, and it belongs
+in the history beside the code that is scored against it — as does the check
+that says the decision was carried out. 472 MB of platform-specific binaries
+is not a decision, and it lives beside the corpus it serves.
+
+The manifest resolves the two halves with a `servers_root` key, relative to
+itself, expanded into every `${servers}` in the file. `HJ_SERVERS` overrides
+it. Nothing is on `$PATH`.
+
+**The verifier and the fixtures are under `harness/`, which every loop is
+denied.** `servers.toml` is not in any loop's write list either, though that
+is an allowlist rather than the deny list's constant. Both facts are the same
+argument: this manifest names the oracle a language loop is measured against,
+and a loop that could edit it could choose its own examiner.
 
 **Nothing is installed system-wide, and no `sudo` was used.** The reason is
 not tidiness. `data-collection.md` §4 makes the server version part of every
@@ -38,13 +55,10 @@ life reporting drift nobody chose. Every server here is therefore installed
 at an exact version into a directory this project owns, and upgrading one is
 a deliberate act.
 
-Paths in `servers.toml` are written against a `${servers}` placeholder, so
-the corpus root can move without editing the manifest.
-
-**The tree is platform-specific.** `clangd`, `rust-analyzer` and `gopls` are
-x86_64 Linux binaries sitting inside what is otherwise portable data. Moving
-the corpus to another machine means re-running the installs in section 3 and
-re-running `verify.py`; it does not mean re-collecting anything.
+**The install tree is platform-specific.** `clangd`, `rust-analyzer` and
+`gopls` are x86_64 Linux binaries sitting inside what is otherwise portable
+data. Moving the corpus to another machine means re-running section 3 and
+re-running `harness/verify-servers`; it does not mean re-collecting anything.
 
 ## 2. What the host must already provide
 
@@ -53,7 +67,7 @@ re-running `verify.py`; it does not mean re-collecting anything.
 | `node` | v24.18.1 | pyright, basedpyright, typescript-language-server, vtsls |
 | `npm` | 11.16.0 | installing the above |
 | `go` | go1.26.5 | building gopls, and gopls at run time |
-| `python3` | 3.14.6 | `verify.py` (needs `tomllib`, so ≥3.11) |
+| `python3` | 3.14.6 | `harness/verify-servers` (needs `tomllib`, so ≥3.11) |
 | `uv` | 0.11.8 | the pylsp venv |
 | `cargo` | 1.95.0 | rust-analyzer shells out to it for `cargo metadata` |
 
@@ -222,7 +236,7 @@ information is whether the fork has diverged where it matters.
 
 ## 5. Verification
 
-`servers/verify.py` is the phase's acceptance check. Per server, per
+`harness/verify-servers` is the phase's acceptance check. Per server, per
 language it claims: read `version_command` and compare against the manifest,
 then start the server, `initialize`, `didOpen` a fixture, and issue
 `textDocument/definition` at a call site whose definition is three lines up.
@@ -230,7 +244,7 @@ It passes only if the server both advertises `definitionProvider` and returns
 the right line.
 
 ```
-$ python3 verify.py
+$ harness/verify-servers
 PASS  rust-analyzer/rust                    ...  definition -> line 0, expected 0
 PASS  gopls/go                              ...  definition -> line 4, expected 4
 PASS  clangd/c                              ...  definition -> line 0, expected 0
@@ -258,9 +272,18 @@ recording, because both would have been near-invisible later:
   readiness crux from `data-collection.md` §4 arriving on the smallest
   possible input — a two-file cargo project — and a client that treated the
   error as an answer would record a `none` for a position with a perfectly
-  good definition. `verify.py` retries on `-32801` and `-32800`; whatever
+  good definition. `verify-servers` retries on `-32801` and `-32800`; whatever
   `measure collect` does about readiness, treating these two codes as "ask
   again" rather than as an outcome is not optional.
+
+**The Rust fixture declares an empty `[workspace]`**, which is not decoration.
+It lives under `harness/` and would otherwise be a package inside this
+repository's workspace directory without being a member, which `cargo
+metadata` refuses outright — so rust-analyzer loads nothing and answers
+nothing, and the failure looks like a broken server rather than a broken
+fixture. Making it its own root also keeps it out of the gate's build, lint
+and format sweep, which is where it belongs: it is a thing for a server to
+load, not a crate this project ships.
 
 ## 6. What each server needs from a repository
 

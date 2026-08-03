@@ -47,6 +47,7 @@ boundary, which is safe because every experiment commits or reverts.
 | `trailer-format.md`, `decision-template.md` | the commit trailer convention and the decision-record shape, spliced into the prompts at launch so there is one copy of each |
 | `section-baseline.toml` | the denominator, frozen for the phase. See below |
 | `corpus`, `corpus-selection.toml`, `corpus-lock.toml` | phase 1b: which repositories the corpus is made of, and rebuilding it. See below |
+| `verify-servers`, `server-fixtures/` | phase 1c: every server in `../servers.toml` starts, reports the pinned version, and answers a definition. Here because a loop must not be able to edit the oracle it is scored against |
 
 Run `harness/hj --help` for the subcommands.
 

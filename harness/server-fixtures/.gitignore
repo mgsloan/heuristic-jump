@@ -1,0 +1,6 @@
+# rust-analyzer builds the probe crate while answering, and gopls/clangd may
+# leave caches beside theirs. The fixtures are inputs; anything a server
+# writes into them is not.
+target/
+node_modules/
+.cache/

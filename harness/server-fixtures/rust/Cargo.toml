@@ -1,0 +1,10 @@
+[package]
+name = "probe"
+version = "0.1.0"
+edition = "2021"
+
+# Its own workspace root. The probe crate sits inside this repository's tree
+# but must not join its workspace: it would then be built, linted and
+# format-checked by the gate, and it exists only to be a two-file thing
+# rust-analyzer can load.
+[workspace]

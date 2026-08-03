@@ -10,21 +10,24 @@ after it is wrong and nothing says so."
 
 ```
 ../heuristic-jump-corpus/
-  servers.toml                    per language, each server's command and
-                                  pinned version -- what `collect` resolves
-                                  `--server <name>` against
   training/<lang>/
     repos/<name>/                 checkout at a pinned commit
     positions/<name>.jsonl        every query position, enumerated once
     truth/<server>/<name>.jsonl   one per server
     manifest.toml                 what was chosen and why
   test/                           held out. Same shape, five repositories
+  servers/                        the installed servers, phase 1c
 ```
 
-`servers.toml` is the machine-readable half of what phase 1c produces;
-`external-dependencies.md` is the human half, covering how each server
-was installed and what it needed. The split matters because `collect`
-must record what it actually ran, and a prose document cannot be
+`servers.toml` — per language, each server's command and pinned version,
+what `collect` resolves `--server <name>` against — is the machine-readable
+half of what phase 1c produces, and it lives at the root of the *code*
+repository rather than here. What the corpus holds is the several hundred
+megabytes of installed binaries it points at; which servers were chosen is a
+decision, and it is versioned beside the code that is scored against them.
+`external-dependencies.md` is the human half, covering how each server was
+installed and what it needed. That split matters for a different reason:
+`collect` must record what it actually ran, and a prose document cannot be
 resolved by a program.
 
 **Milestone — the calibration run.** For **Rust**, every repository has
