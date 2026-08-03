@@ -1,34 +1,24 @@
 # Criticism of `design/` and `readme.md`
 
 Written against the tree at `5aa4a85`, covering `readme.md` and all ten
-documents in `design/` (~10,600 lines). Nothing here is a style objection.
-Every item is either a claim I believe is false, an arithmetic result that
-contradicts a stated target, a decision I think is wrong, or a gap that has to
-be filled before code can be written against the document.
+documents in `design/` (~10,600 lines), and revised after the first round of
+fixes — findings that have since been acted on are removed rather than kept
+with a note, so what remains is what is still open.
+
+Nothing here is a style objection. Every item is either a claim I believe is
+false, an arithmetic result that contradicts a stated target, a decision I
+think is wrong, or a gap that has to be filled before code can be written
+against the document.
 
 Ordered by consequence, not by document. Section 9 is the short version.
-
-**Disposition, as of the review pass that followed.** Recorded here rather than
-by editing the findings, so the document stays a snapshot of what was argued and
-the reader can see which arguments were accepted:
-
-| Item | Outcome |
-|---|---|
-| §1.1 replay-time arithmetic | **Actioned differently.** The target is removed rather than defended: `core.md` §7 and `loops.md` §9 now measure replay wall clock and set no number. The arithmetic here is what motivated the removal; whether replay is *too slow* is now a question the first corpus run answers |
-| §1.2 no measurement path for serverless languages | **Actioned.** `open-questions.md` question 15, with an LLM oracle as the likely answer; `high-level.md` now states the bet where it ranks the reason first |
-| §1.3 latency has no owner | Acknowledged, not changed |
-| §1.4 value weighting unused | Acknowledged, not changed |
-| §2.2 top-1 arithmetic in `resolution.md` §12 | Acknowledged, not changed |
-| §6.3 vendor lint config | **Actioned at the root:** `CLAUDE.md` no longer restricts edits to `vendor/`, so fixing a lint there is permitted. See the note at the end of §6.3 for what this does and does not resolve |
-| §6 others | Open |
 
 **Method and standing assumptions.** I take the product goal as given: an
 unindexed heuristic go-to-definition that runs in front of, or instead of, a
 real language server. I take `CLAUDE.md`'s hard constraints as given. I do not
-relitigate settled trade-offs (no async, vendored rope over `ropey`, hand-written
-protocol types) — those are argued well and I have nothing to add. What I attack
-is where the documents disagree with each other, with arithmetic, or with their
-own stated method.
+relitigate settled trade-offs (no async, vendored rope over `ropey`,
+hand-written protocol types) — those are argued well and I have nothing to add.
+What I attack is where the documents disagree with each other, with arithmetic,
+or with their own stated method.
 
 ---
 
@@ -61,112 +51,9 @@ The criticisms below do not touch any of these.
 
 ---
 
-## 1. The three things that could invalidate the plan
+## 1. Two ways the plan optimises the wrong number
 
-### 1.1 The sub-minute replay target is arithmetically incompatible with the exhaustive scan
-
-This is the most serious item in the document.
-
-Two decisions were made independently and they do not fit together:
-
-* `core.md` §7 and `loops.md` §9 set the target at **a full replay over one
-  language's tuning corpus in under a minute**, and `loops.md` calls that target
-  "load-bearing" twice — the metrics history is recomputable only if replay is
-  cheap, and iteration count collapses if it is not.
-* `resolution.md` §1.3 and §4 make the search **exhaustive**: no byte budget, no
-  file cap, no parse cap, and in replay **no deadline at all**. Stage 5 reads
-  every project file with a matching extension, and every file with a literal
-  hit reaches the parse stage.
-
-Now the arithmetic, which nobody appears to have done. Per `data-collection.md`
-§1 and §3: five tuning repositories per language, 20,000 sampled positions each,
-so **100,000 positions per (language, server)**. A sub-minute replay is a budget
-of **600 µs per position, on average, including everything**.
-
-`resolution.md` §12 predicts the strata that fall through to whole-project
-search — `WildcardImport` 5%, `AmbiguousName` 4%, `TypeInferenceRequired` 10%,
-plus the `ExplicitImport` misses — at roughly 15–20% of queries. Call it 15,000
-stage-5 searches per replay. Each one reads every matching file in the
-repository. A mid-corpus repository at 60k lines is about 2 MB of source. Even
-at an optimistic 1 GB/s for a warm-page-cache literal scan with no parsing at
-all, that is 2 ms per query — **more than three times the entire per-query
-budget for the whole run** — and 30 seconds of pure scanning across the 15,000.
-
-Parsing is the term that actually dominates. `resolution.md` §4 puts the parse
-at "a millisecond per ten thousand lines" and observes that a whole-project
-search for `new`, `get`, or `id` hits thousands of lines; with the budget gone,
-*every* file with a hit reaches the parse stage. A single query on a common name
-is plausibly hundreds of parses. Fifteen thousand such queries is hours, not
-seconds.
-
-Three mitigations exist in the design and none of them closes a two-order-of-
-magnitude gap:
-
-* **The parse LRU is cross-query** (`shim.md` §5), so a replay over one
-  repository could in principle end up with the whole repository's trees
-  resident. But the LRU is bounded by entry count *and* total bytes
-  (`deps.md` §8), no sizes are given anywhere, and nothing in `core.md` §7 says
-  replay sizes it differently from the shim. If it is sized for a shim that must
-  stay out of a language server's way, replay thrashes it.
-* **`DefinitionHints`** (`resolution.md` §4) prunes before parsing —
-  `resolution.md` open question 11 already concedes the exhaustive-scan decision
-  moved this "a long way toward yes". But it is a per-language regex surface
-  that `CLAUDE.md` would have you not build first, and it prunes lines, not the
-  literal scan itself.
-* **`rayon` fan-out.** Parallelism improves wall clock, but `loops.md` §13 runs
-  a dozen replay-driven loops concurrently on one machine, so the cores are
-  already spoken for.
-
-**Why it matters beyond speed.** `loops.md` §9 makes the replay target the
-premise for two further claims — that the entire metric history is recomputable
-on demand, and that a metric redefinition triggers a sweep rather than
-discarding the frontier. Both die if a replay is an afternoon. So does the
-phase 3 equality gate (`loops.md` §10), which replays *every* language's corpus
-before and after each refactor.
-
-**What I would do.** Do this arithmetic properly before phase 1a is designed
-around it, using a real repository and a real tree-sitter parse to get the
-constants. Then pick one of: a much smaller replay sample for the inner loop
-with the full corpus at gates (cheapest, and it costs only statistical power on
-thin strata); or reinstate a deterministic per-query work budget — the design
-had one, removed it in `resolution.md` §1.3, and the removal's stated benefit
-(determinism without calibration) is real but is not worth a loop that cannot
-iterate. `data-collection.md` §3 did exactly this arithmetic for *collection*
-and let it overturn `high-level.md`'s exhaustive-enumeration plan. The same
-discipline was not applied to replay.
-
-### 1.2 The first-ranked reason the tool exists has no measurement path
-
-`high-level.md` lists four reasons for standalone mode "in descending order of
-how much they should influence the design", and the first is **languages with no
-usable language server** — "the heuristic is not a stopgap for something better,
-it is the only thing on offer."
-
-But `data-collection.md` collects ground truth by driving a real language server
-(§4), and `core.md` §7 makes the proxied server *the definition of correct*.
-A language with no usable server therefore has:
-
-* no `truth.jsonl`, so no corpus, so no coverage or precision number, ever;
-* no divergence reporting (`shim.md` §14.4), by design;
-* no calibration to borrow — `shim.md` §14.7 says standalone "borrows its
-  thresholds from the mode that has ground truth", which works for Python but is
-  vacuous for a language where no server exists to borrow from;
-* no answer to `open-questions.md` question 14 (which server should standalone
-  imitate), because the question presupposes servers exist.
-
-So the design's top-priority use case is the one it is structurally unable to
-measure, and every metric, phase, and loop in the plan is built for the case
-ranked *second-to-last* (proxying a good server). That is not necessarily wrong
-— you tune where you can measure and hope it generalises — but it is a large
-unstated bet, and `high-level.md` should say so rather than ranking that reason
-first and then never mentioning it again.
-
-Concretely: either demote that reason, or add a plan for it. The obvious plan is
-to treat one well-served language's handler quality as the transfer estimate and
-say so, or to pick one target language with a weak-but-existent server and
-measure the generalisation gap deliberately.
-
-### 1.3 Latency has no owner
+### 1.1 Latency has no owner
 
 Follow the thread:
 
@@ -202,9 +89,10 @@ deadline-abstention rate — the fraction of replayed queries whose work counter
 exceed a calibrated threshold. `resolution.md` open question 15 asks for exactly
 this ("report it per stratum and per repository size from the first corpus run")
 and `loops.md` §10 does not carry it into the metrics row. That is the one line
-that would make the trade visible during phase 2a instead of at the phase 3 gate.
+that would make the trade visible during phase 2a instead of at the phase 3
+gate.
 
-### 1.4 The optimisation target may be the one the design says does not matter
+### 1.2 The optimisation target may be the one the design says does not matter
 
 `high-level.md`'s "Value weighting" section says it plainly:
 
@@ -398,33 +286,7 @@ The same question applies, less urgently, to the `didSave` checksum
 (`core.md` §8.6), which §8.6 does correctly assign to a worker — showing the
 authors know the constraint and simply missed this instance.
 
-### 3.2 Proxy mode already has a filesystem watcher and the design does not notice
-
-`deps.md` §7 defers `notify` behind a feature, and `core.md` §4 describes a
-watcher as viable "only where watching is cheap", falling back to a
-`NoCandidates`-triggered background rescan. The reasoning against `notify` is
-good: inotify descriptor exhaustion on large trees, a Zed fork as a warning
-sign, wakeups on every build artifact.
-
-But in proxy mode the shim is sitting in the middle of a pipe on which the
-child has *already registered file watchers* via `client/registerCapability`
-(`shim.md` §3 lists it as forwarded verbatim), and the editor is *already
-sending* `workspace/didChangeWatchedFiles` through the shim to the child. The
-shim forwards those frames untouched today. Teeing them to `core` costs one row
-in the routing table and gives a file-list invalidation signal with:
-
-* no new dependency,
-* no descriptor cost — the editor already paid it,
-* correct glob scoping — the child chose the patterns,
-* and no wakeups on artifacts the editor is not watching.
-
-This is strictly better than `notify` for the mode that has it, and it is
-unmentioned in both `core.md` §4 and `deps.md` §7. It also sharpens
-`open-questions.md` question 10: the answer is that the watcher is *only* needed
-in standalone, because proxy mode gets it free — which is a cleaner statement of
-the question than the one currently recorded.
-
-### 3.3 The constants that decide behaviour are absent
+### 3.2 The constants that decide behaviour are absent
 
 The documents specify 1 KiB, 3 lines, 512 words, 4 in-flight, 750 ms, 2000 ms,
 20,000 positions. They do not specify:
@@ -432,7 +294,8 @@ The documents specify 1 KiB, 3 lines, 512 words, 4 in-flight, 750 ms, 2000 ms,
 * the `Unresponsive` threshold — "requests pending beyond a threshold with no
   frames of any kind arriving" (`shim.md` §6);
 * the parse LRU's entry and byte ceilings (`shim.md` §5, `deps.md` §8), which
-  §1.1 above shows are load-bearing for replay speed;
+  decide whether a replay reuses trees across queries or reparses the same
+  repository thousands of times;
 * the rescan debounce window (`core.md` §4);
 * the divergence report window (`shim.md` §2 mentions a timer driving it);
 * the repeated-panic count that disables a handler (`shim.md` §11);
@@ -532,10 +395,9 @@ encoding property tests show a real failure or phase 3 has spare capacity. That
 also keeps the clean re-sync property for longer, and keeps `vendor/util` as an
 independent decision rather than a contingent one.
 
-If the sweep is done anyway, one thing is missing: the document says review
-checks the five edit shapes and the tests check behaviour, but `rope`'s upstream
-tests are what verify the sweep, and `deps.md` §14 puts `[lints] workspace =
-true` in every member — see §6.3 below, which makes those tests fail to compile.
+If the sweep is done anyway, note the interaction with `deps.md` §14's
+workspace-wide lint config (§6.6 below): `rope`'s upstream tests are what verify
+the sweep, and they are kept verbatim precisely because they are unedited.
 
 ### 4.3 The retry protocol's machinery costs more than its expected yield
 
@@ -736,50 +598,7 @@ Against that:
 * **The held-out split**, §6.1 above — the one restatement that has already
   produced a contradiction, exactly as the rule predicts.
 
-### 6.3 `deps.md` §14's lint config cannot compile the vendored crates
-
-`deps.md` §14: "**`[lints] workspace = true` in every member**, with the rules in
-`[workspace.lints.rust]` and `[workspace.lints.clippy]` — one place, no
-`#![deny(...)]` scattered in `lib.rs` files."
-
-`deps.md` §15 then denies, among others: `unwrap_used`, `expect_used`, `panic`,
-`indexing_slicing`, `string_slice`, `cast_possible_truncation`, `cast_sign_loss`,
-`integer_division`, `unreachable`.
-
-`vendor/rope` and `vendor/sum_tree` are members. They are 7,400 lines of
-someone else's text-datastructure code that certainly uses `unwrap`, indexing,
-and `usize` casts throughout — and `CLAUDE.md` says "**never fix a lint in
-them**." Under `-D warnings`, which `CLAUDE.md` also mandates, the workspace
-does not build.
-
-The fix is trivial (`[lints]` opt-out for `vendor/*`, or a per-crate override)
-but it must be written down, because as stated the two documents make the very
-first `cargo clippy` impossible and the natural resolution — fixing the lints —
-is the one thing forbidden.
-
-Two related frictions in the same config, both worth a sentence:
-
-* `indexing_slicing` and `string_slice` are denied workspace-wide, and
-  `shim.md` §3.1's bounded prefix scanner is a hand-written byte scanner that is
-  nothing but indexing and slicing. It will be written entirely under
-  `#[expect]`, which converts a deny into decoration in the one file where the
-  lint would have had the most value.
-* `resolution.md` §6.4 requires a **total order** over candidate scores. If
-  scores are `f32`, the idiomatic comparator is `partial_cmp().unwrap()`, and
-  `unwrap_used` is denied. `f32::total_cmp` solves it; nothing says so, and the
-  first implementer will reach for the `unwrap`.
-
-**Update.** `CLAUDE.md` now permits editing `vendor/`, including fixing lints
-there, which removes the contradiction as stated — the build is no longer
-impossible-by-rule. It does not remove the *work*: satisfying `unwrap_used`,
-`expect_used`, `panic`, and `indexing_slicing` across 7,400 lines of upstream
-text-datastructure code, plus the randomised tests `rope-modifications.md` §7
-keeps verbatim precisely because they are unedited, is a large and low-value
-task that would also enlarge every re-sync diff. The cheap resolution is still
-a per-crate `[lints]` override for `vendor/*` in `deps.md` §14 — now a
-deliberate choice rather than a forced one. `deps.md` has not been updated.
-
-### 6.4 `phases.md` 1.5's scope is much larger than its gate or the exit criterion
+### 6.3 `phases.md` 1.5's scope is much larger than its gate or the exit criterion
 
 * `phases.md` 1.5: "Collect the ground truth for **every language server on
   every repo**." Seven languages, ten repositories each, more servers than
@@ -800,7 +619,7 @@ one-language reading.
 Resolve it in `phases.md`, which the readme calls "the authority the other
 documents defer to."
 
-### 6.5 The error/abstention separation leaks
+### 6.4 The error/abstention separation leaks
 
 `CLAUDE.md`, `core.md` §1, `resolution.md` §1.1, and `deps.md` §10 all insist,
 correctly and at length, that abstention and failure are different things and
@@ -819,7 +638,7 @@ coverage because resolution is hard" from "this handler is panicking", which is
 precisely the distinction `resolution.md` §8's last paragraph says the reasons
 exist to make.
 
-### 6.6 `ServerProfile.id` is a documented backdoor to something the design forbids
+### 6.5 `ServerProfile.id` is a documented backdoor to something the design forbids
 
 `core.md` §1: `ServerProfile.id` is `Option<ServerId>`, `None` in standalone,
 and "a handler that branches on this is doing something wrong — but the absence
@@ -835,8 +654,27 @@ which `resolution.md` §1.1 separately says a handler must never learn.
 Either the field should not be in the struct handed to handlers, or the rule
 should be enforced the way every comparable rule in the design is enforced.
 
-### 6.7 Assorted smaller ones
+### 6.6 Assorted smaller ones
 
+* **`deps.md` §14 puts `[lints] workspace = true` in every member**, and §15
+  then denies `unwrap_used`, `expect_used`, `panic`, `indexing_slicing`,
+  `string_slice`, and the `cast_*` family. Members include `vendor/rope` and
+  `vendor/sum_tree` — 7,400 lines of someone else's text-datastructure code,
+  plus the upstream tests `rope-modifications.md` §7 keeps *verbatim* precisely
+  because they are unedited. Editing `vendor/` is permitted now, so this is no
+  longer a contradiction, but satisfying those lints there is a large amount of
+  low-value work that would also enlarge every re-sync diff. `deps.md` §14
+  should carry a per-crate `[lints]` override for `vendor/*` as a deliberate
+  choice.
+* **`indexing_slicing` and `string_slice` are denied workspace-wide**, and
+  `shim.md` §3.1's bounded prefix scanner is a hand-written byte scanner that is
+  nothing but indexing and slicing. It will be written entirely under
+  `#[expect]`, which converts a deny into decoration in the one file where the
+  lint would have had the most value.
+* **`resolution.md` §6.4 requires a total order over candidate scores.** If
+  scores are `f32`, the idiomatic comparator is `partial_cmp().unwrap()`, and
+  `unwrap_used` is denied. `f32::total_cmp` solves it; nothing says so, and the
+  first implementer will reach for the `unwrap`.
 * `loops.md` describes the design corpus as "nine thousand lines" (§3) and "ten
   thousand-odd lines" (§0) and "ten thousand lines" (§6). It is ~10,600.
 * `core.md` §9 says the template handler's `Stratum::Unimplemented` "means the
@@ -858,7 +696,7 @@ should be enforced the way every comparable rule in the design is enforced.
 * `high-level.md` scopes out `ExternalDependency` (predicted 4% of queries,
   0% coverage) while its own Future Work says "jumping into a dependency is a
   common go-to-definition." Those two sentences are about the same stratum and
-  they disagree about how common it is — and §1.4's value weighting suggests it
+  they disagree about how common it is — and §1.2's value weighting suggests it
   is also where the slow-LSP tail lives.
 
 ---
@@ -877,13 +715,13 @@ open-questions section where 8 of 18 entries are "Resolved" or "void"; §4's
 explicit history of "the successive positions this document held"; §6.4's
 rebuttal of "the argument the previous revision gave"; §7.5's "this reverses an
 earlier decision"; §8's list of three deleted variants. `core.md` §7 and §9,
-`shim.md` §14.5, `rope-modifications.md` §3 and §4, and `loops.md` §3, §10, and
-§13 all do the same. The rationale — `readme.md`'s "a decision whose alternatives
-are not written down gets relitigated" — is sound, and the implementation is
-wrong: the alternatives should be written down *once*, in a decisions log, not
-threaded through the prose that a fresh context has to read to learn what is
-currently true. I estimate 15–20% of the corpus is argument against positions no
-reader holds.
+`shim.md` §14.5, `rope-modifications.md` §3 and §4, and `loops.md` §3, §9, §10,
+and §13 all do the same. The rationale — `readme.md`'s "a decision whose
+alternatives are not written down gets relitigated" — is sound, and the
+implementation is wrong: the alternatives should be written down *once*, in a
+decisions log, not threaded through the prose that a fresh context has to read
+to learn what is currently true. I estimate 15–20% of the corpus is argument
+against positions no reader holds.
 
 **The document set is sized for a much larger project than the one scoped.**
 `deps.md` is 966 lines pinning exact patch versions of ~25 crates against a
@@ -915,10 +753,10 @@ Shorter, and mostly fine. Three things:
   "Four reasons it exists", or the readme should link.
 * It duplicates the licensing rationale, which now exists in four places
   (§6.2).
-* The "Planned layout" tree is the fifth copy of the workspace layout
-  (`core.md` §9, `deps.md` §14, and `readme.md`) and the fourth copy of the
-  corpus layout. For a file whose job is orientation, the table of documents at
-  the bottom is the valuable part and the trees are the part that will drift.
+* The "Planned layout" tree is the third copy of the workspace layout
+  (`core.md` §9, `deps.md` §14) and the fourth copy of the corpus layout. For a
+  file whose job is orientation, the table of documents at the bottom is the
+  valuable part and the trees are the part that will drift.
 
 The document table itself is good and should stay. The one improvement worth
 making: mark which documents are in scope for the current phase. A reader today
@@ -929,30 +767,30 @@ that `phases.md` explicitly defers.
 
 ## 9. The short version
 
-If I could change six things:
+If I could change four things:
 
-1. **Do the replay arithmetic** (§1.1). The sub-minute target and the exhaustive
-   scan cannot both survive, and every loop in `loops.md` is built on the former.
-2. **Put a predicted deadline-abstention rate in the metrics row** (§1.3), so
+1. **Put a predicted deadline-abstention rate in the metrics row** (§1.1), so
    the gap between replay coverage and delivered coverage is visible during
    phase 2a rather than at the phase 3 gate, where the equality constraint
    forbids fixing it.
-3. **Make the latency-weighted stratum distribution a gate condition on
-   entering phase 2a** (§1.4). The design already says the headline metric may
+2. **Make the latency-weighted stratum distribution a gate condition on
+   entering phase 2a** (§1.2). The design already says the headline metric may
    be nearly uncorrelated with value; check before spending the dominant budget.
-4. **Record a VS Code trace** (§4.3). It is an afternoon, it is a prerequisite
+3. **Record a VS Code trace** (§4.3). It is an afternoon, it is a prerequisite
    for `shim.md` §7, and if the answer is "cancels", a large section of the shim
    design deletes itself.
-5. **Fix the Class A defects** (§6): the 3–4 vs 5/5 split, the vendor lint
-   config, the phase-1a self-contradiction, the phase-1.5 scope, the
-   `similarity` ownership row, the four-way duplication.
-6. **Defer the inert machinery** (§4.1) and the column-newtype half of the rope
-   sweep (§4.2) out of phase 1a. Keep the trace-record columns; they are the
-   only part that is genuinely unrecoverable later.
+4. **Fix the Class A defects** (§6): the 3–4 vs 5/5 split, the phase-1a
+   self-contradiction, the phase-1.5 scope, the `similarity` ownership row, the
+   four-way duplication.
+
+Plus one standing recommendation that is not a defect: **defer the inert
+machinery** (§4.1) and the column-newtype half of the rope sweep (§4.2) out of
+phase 1a. Keep the trace-record columns; they are the only part that is
+genuinely unrecoverable later.
 
 The design's core judgement — measure everything, freeze the oracle, abstain
 rather than block, keep languages independent — is right, and the parts of it
 that will be built first are the parts that are best argued. The risk is not
 that it is wrong. It is that it is *finished*: 10,600 lines of interlocking,
-cross-cited commitments written before the first measurement, in which the one
-piece of arithmetic that would falsify the inner loop was never done.
+cross-cited commitments written before a single measurement exists to check any
+of them against.

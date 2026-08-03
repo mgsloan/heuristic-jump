@@ -735,7 +735,7 @@ specifies both sides already, so this is a review-discipline problem at
 the 1a gate rather than an ordering problem — but it is the thing to be
 most careful about there.
 
-## 9. The inner loop must be fast
+## 9. The inner loop is a replay, and its cost is measured
 
 A metric loop whose iteration takes four hours is not a loop. The
 corpus scan drives a real language server over ten repositories; that
@@ -748,17 +748,52 @@ iterations run `measure replay`, which launches no language server at all
 — it replays handlers against the frozen positions and compares to the
 frozen answers. `core.md` §7 specifies both modes.
 
-Target: full replay over one language's tuning corpus in under a
-minute. If it is slower than the model's thinking time, the loop is I/O
-bound on its own feedback and iteration count collapses.
+### There is no replay-time target, and that is deliberate
 
-That target turns out to be load-bearing for a second reason, which
-[section 10](#10-objectives-phases-and-the-frontier) needs: a fast
-deterministic replay means the *entire metric history is
-recomputable*. Any past commit can be re-measured on demand, so a
-change to how a metric is defined does not silently invalidate
-everything recorded before it — it triggers a sweep. Without that, the
-first metric redefinition throws away the frontier.
+An earlier revision set one — a full replay over one language's tuning
+corpus in under a minute — and it is removed rather than relaxed.
+
+The number could not have been justified. Replay cost is dominated by how
+often a query falls through to whole-project search, by how much of that
+survives `DefinitionHints`, and by how much of a repository stays resident
+in the parse LRU across queries. All three are properties of a handler and
+a corpus that do not exist yet, and the search is exhaustive by
+construction (`resolution.md` §1.3), so the cost is not something a
+constant can be chosen to fit. A target picked now would either be met
+trivially and mean nothing, or be missed on the first real run and demand
+a design change to satisfy a number nobody measured.
+
+**So it is measured instead.** `measure replay` reports its own wall clock,
+and the harness records it as an ordinary metric alongside the work
+counters ([section 10](#the-metrics-history)) — per language, per commit,
+from the very first run. Three things it is used for:
+
+* **Calibration, not gating.** The first ten campaigns already exist to
+  replace estimates with measurements
+  ([section 15](#estimates-and-replacing-them-with-measurements)); replay
+  wall clock is one of them.
+* **Noticing the trend.** A replay that doubles over a phase is a finding
+  about the handler's search behaviour, visible in the same row as the
+  coverage it bought. That is more useful than a threshold, because it
+  attributes the cost to a diff.
+* **Deciding what to do about it, later and with data.** If replay turns
+  out to be slow enough to bound iteration, the options are real and
+  choosable at that point — replay a sample in the inner loop with the
+  full corpus at gates, warm the parse LRU across a run, or reinstate a
+  deterministic work budget. Choosing between them now would be choosing
+  without the one number that decides it.
+
+The one thing that does **not** depend on how long a replay takes is
+correctness: a slow replay is a slow loop, never a wrong number.
+
+That matters for a second reason, which
+[section 10](#10-objectives-phases-and-the-frontier) needs: a
+deterministic replay means the *entire metric history is recomputable*.
+Any past commit can be re-measured on demand, so a change to how a metric
+is defined does not silently invalidate everything recorded before it — it
+triggers a sweep. Whether that sweep is affordable is exactly the
+measurement above; whether it is *sound* is the determinism below. Without
+soundness, the first metric redefinition throws away the frontier.
 
 Corollary: `truth.jsonl` is versioned and pinned, and regenerated
 rather than edited. A metric comparison across two corpus versions is
@@ -881,9 +916,19 @@ commit, phase, per-stratum {coverage, top1, contained, result-count
 distribution, n},
 conformance loops instead: {sections clean/total, open gaps, audit minors},
 work counters (bytes read, files parsed, nodes visited),
+replay wall clock,
 measure_<lang> stripped size, lang_<lang> crate contribution,
 LOC per crate, test count
 ```
+
+**Replay wall clock is in the row despite being machine-dependent**, which
+looks like it contradicts the rule below that wall-clock numbers are taken
+at gates. It does not, because it is not measuring the same thing: the
+latency numbers below are a claim about the *shipped tool* and have to be
+comparable, whereas this is a claim about *how long the loop's own feedback
+took* and only ever needs to be right to within a factor. It is noisy under
+parallel loops and should be read as a trend, never gated on
+([section 9](#there-is-no-replay-time-target-and-that-is-deliberate)).
 
 Append-only, in git, one row per commit, **one file per owner** so that
 concurrent loops never write the same file. It is a *cache*, not a
@@ -1829,11 +1874,12 @@ means optimising the wrong one.
 The distinction matters immediately. Truth collection is ~100 machine
 hours and approximately zero tokens; a slow replay inflates model
 wall-clock without costing a token; a loop that re-reads 160KB of design
-doc per iteration costs tokens without costing wall clock. The
-under-a-minute replay target in [section 9](#9-the-inner-loop-must-be-fast)
+doc per iteration costs tokens without costing wall clock. Replay speed
+([section 9](#9-the-inner-loop-is-a-replay-and-its-cost-is-measured))
 is a wall-clock lever and not a cost lever, and the document anchors on
 audit gaps ([section 3](#3-where-the-work-comes-from)) are a cost lever
-and not a wall-clock one.
+and not a wall-clock one. Replay wall clock is one of the numbers these
+first campaigns exist to measure.
 
 ### The unit of accounting is the campaign
 
@@ -1939,8 +1985,11 @@ the hardest reasoning in the project. The auditor is a fixed cost of one
 session per conformance campaign, and it is not a knob: it is the only
 number that loop has ([section 5](#sections-clean-is-the-metric)).
 
-**Model wall-clock.** Parallelism across languages, and the replay speed
-target. Neither costs tokens.
+**Model wall-clock.** Parallelism across languages, and replay speed —
+which is measured rather than targeted
+([section 9](#there-is-no-replay-time-target-and-that-is-deliberate)), so
+it becomes a lever only once the measurement says it is one. Neither
+costs tokens.
 
 **Machine wall-clock.** Parallelism across repositories and servers
 during truth collection; a warm shared `target/` in the evaluation

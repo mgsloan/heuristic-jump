@@ -993,7 +993,8 @@ That definition is only worth anything if it is measured, so:
 Note that calibration is now cheap to redo and does not need a language server.
 Core doc [section 7] freezes the LSP's answers into `truth.jsonl` once per
 (repo commit, server version), so re-fitting a confidence model is a replay
-over stored data — minutes, not an afternoon. That is what makes
+over stored data rather than a fresh corpus run against a live server. That
+is what makes
 [section 7.2](#72-how-a-threshold-would-be-derived-when-there-is-one) a
 realistic future step rather than an aspiration.
 

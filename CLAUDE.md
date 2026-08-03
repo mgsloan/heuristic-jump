@@ -13,13 +13,15 @@ does.*
   grammar to check one handler, which is the coupling `design/core.md` §7
   splits `measure_core` apart to avoid.
 
-* **Never run bare `cargo fmt` or `cargo fmt --all`** — it formats every
-  workspace member including `vendor/`, and rustfmt's `ignore` option is
-  nightly-only so `rustfmt.toml` cannot protect them. Reformatting the vendored
-  Zed crates destroys the upstream re-sync property that
-  `design/rope-modifications.md` depends on. Formatting is handled per-file by
-  a PostToolUse hook (`.claude/settings.json`); for a manual sweep use
-  `cargo fmt -p <crate>` on our crates only.
+* **Do not run bare `cargo fmt` or `cargo fmt --all` incidentally** — it
+  formats every workspace member including `vendor/`, and rustfmt's `ignore`
+  option is nightly-only so `rustfmt.toml` cannot exclude them. Reformatting
+  a vendored crate is permitted, but it produces a whole-crate diff that
+  buries whatever real change was in the same commit. Formatting is handled
+  per-file by a PostToolUse hook (`.claude/settings.json`); for a manual
+  sweep use `cargo fmt -p <crate>`. If a vendored crate is to be reformatted,
+  do it as its own commit that changes nothing else, and record it in
+  `vendor/README.md`.
 
 * Invoking `rustfmt` directly needs `--edition 2024`. Standalone rustfmt
   defaults to edition 2015 and hard-fails on modern syntax.
@@ -48,11 +50,16 @@ These are the ones that cost the most to get wrong.
   a runtime `use lsp_types::` defeats the point. If a new crate seems necessary,
   ask. `design/deps.md` records every choice and every rejection.
 
-* **Vendored crates are not ordinary code.** `vendor/` holds copies of Zed
-  crates. Never reformat, refactor, or "improve" them, and never fix a lint in
-  them. They *are* modified, but only in the specific ways
-  `design/rope-modifications.md` sets out — read it before touching `vendor/`.
-  Every edit has to survive a re-sync against upstream.
+* **Vendored crates are ours to edit, but every edit has a re-sync cost.**
+  `vendor/` holds copies of Zed crates. Editing them — reformatting,
+  refactoring, fixing lints — is allowed; `design/rope-modifications.md`
+  already rewrites rope's public API and concedes that a re-sync is a merge
+  rather than a clean diff. What is still required is that the edit be
+  *recorded*: `vendor/README.md` names the upstream revision and every patch
+  applied, so a future re-sync can tell at a glance what changed and why.
+  Read `design/rope-modifications.md` before touching `vendor/` — not for
+  permission, but because it says what has already been decided there and
+  what the tests are that verify it.
 
 * **Tree-sitter grammars are pinned to the revisions Zed uses.** Do not bump a
   grammar crate. (The `tree-sitter` runtime version is ours to choose; the

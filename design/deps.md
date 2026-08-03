@@ -382,14 +382,22 @@ not the one that ships.
 
 **`notify = "8.2.0"`** — **deferred behind a non-default `watch` feature.**
 
-`core.md` §4 already describes the watcher as best-effort and enabled "only
-where watching is cheap." Given that, and given `core.md` provides a second
-invalidation path that does not need it (`AbstainReason::NoCandidates`
-triggers a debounced background rescan, which pairs with the retry protocol),
-v1 should ship the rescan path and leave the watcher unbuilt. Reasons:
+`core.md` §4 gives the file list two invalidation paths that do not need it,
+so v1 should ship those and leave the watcher unbuilt. Reasons, strongest
+first:
 
-* It is the invalidation path that must work anyway, so building it first
-  means the watcher is a pure optimization rather than load-bearing.
+* **In proxy mode the editor is already watching, and the notifications cross
+  the shim.** The child registers `workspace/didChangeWatchedFiles` with the
+  editor via `client/registerCapability`; the editor's notifications then flow
+  editor → child through us. Teeing them to `core` is one routing row
+  (`shim.md` §3) and gives a correctly scoped watch with **no descriptors of
+  our own and no exclusion rules to reimplement** — the editor honours its own
+  and the child's globs. A `notify` watcher in proxy mode would be a second,
+  worse copy of a signal already on the wire.
+* **`AbstainReason::NoCandidates` triggers a debounced background rescan**,
+  which pairs with the retry protocol and is the invalidation path that must
+  work anyway. Building it first makes any watcher a pure optimization rather
+  than load-bearing.
 * `notify` on Linux is inotify, which needs a watch descriptor per directory
   and hits `max_user_watches` on large repos — exactly the failure `core.md`
   wants to avoid, and one that manifests as a silent partial watch.
@@ -399,11 +407,13 @@ v1 should ship the rescan path and leave the watcher unbuilt. Reasons:
 The dependency is written into `Cargo.toml` as optional so the decision is
 visible, not lost.
 
-One thing that weakens this: in **standalone mode** (`shim.md` §14) a stale file
-list costs a *permanent* miss, not one the proper LSP quietly covers. The
-`NoCandidates` rescan still repairs it on the next query, so the deferral
-holds, but standalone is the likeliest reason the watcher eventually gets
-built — recorded as `open-questions.md` question 10.
+**What survives as a reason to build it: standalone.** There is no editor
+watching on our behalf (`shim.md` §14.4), and a stale file list costs a
+*permanent* miss rather than one the proper LSP quietly covers. The
+`NoCandidates` rescan still repairs it on the next query at that spot, so the
+deferral holds, but standalone is now the *only* case for `notify` rather than
+merely the strongest one — `open-questions.md` question 10, rewritten to say
+so.
 
 ## 8. Parse cache
 

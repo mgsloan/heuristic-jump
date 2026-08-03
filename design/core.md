@@ -492,11 +492,45 @@ contents beyond the parse LRU.**
   is acceptable —it costs recall on files created in the last few seconds,
   which is a miss, not a wrong answer, and misses are cheap under the
   measured-precision posture.
-*  Invalidated by a filesystem watcher (`notify`) **only where watching is
-  cheap** —a workspace small enough, on a platform with a real recursive watch
-  API. Watching a large tree costs descriptors and memory and wakes the shim
-  on every build artifact write, which is the exact opposite of staying out of
-  the proper LSP's way during its startup.
+*  **In proxy mode, invalidated by the editor's watcher, for free.** The child
+  registers file watching with the editor —`client/registerCapability` for
+  `workspace/didChangeWatchedFiles` —and the editor's resulting notifications
+  flow editor → child *through the shim*, which forwards them anyway. Teeing
+  them to `core` costs one routing row ([`shim.md` §3](shim.md#3-message-routing))
+  and is strictly better than watching ourselves: no descriptors, since the
+  editor has already paid for them and editors do this at scale; and correct
+  scoping for nothing, since the editor honours its own exclusions and the
+  child's glob patterns, so `target/` and `node_modules/` never wake us. That
+  is exactly the failure the next bullet is about.
+
+  **The response is "mark stale", not "apply the delta".** `core` does only
+  O(1) work per event ([`shim.md` §2](shim.md#thread-layout)) and one frame can
+  carry thousands of events after a branch switch, so the payload is never
+  read: any such frame sets the stale flag and schedules the same debounced
+  rescan the `NoCandidates` path below uses. Registration ids and glob patterns
+  are not tracked either, for the same reason — nothing here needs them, and
+  `client/registerCapability` stays pure passthrough
+  ([`shim.md` §3](shim.md#server-originated-requests-are-load-bearing)).
+
+  It also catches the one thing the on-demand trigger structurally cannot:
+  **deletions**. A rescan discovers files that appeared; a stale entry for a
+  file that was removed only ever surfaces as a failed read.
+
+  It is **opportunistic, and nothing depends on it.** A child that does not
+  register file watching produces no events, and the on-demand path below is
+  the backstop that always works — the same shape as a `ServerAdapter`
+  ([`shim.md` §6](shim.md#per-server-adapters)): precision when present, never
+  load-bearing. Whether the editors and servers we care about do send these
+  frames is a question the golden corpus
+  ([section 8.5](#85-the-untagged-unions-are-the-actual-risk)) answers rather
+  than one to assume.
+*  **A filesystem watcher of our own (`notify`) is deferred**, and the bullet
+  above is most of why: in proxy mode it would duplicate a signal already
+  arriving on the wire, at the cost of descriptors and memory on a large tree,
+  and wakeups on every build artifact write —the exact opposite of staying out
+  of the proper LSP's way during its startup. The case that survives is
+  **standalone**, which has no editor watching on our behalf; `deps.md` §7 has
+  the deferral and `open-questions.md` question 10 has what would reverse it.
 *  Otherwise invalidated on demand: when a query finishes without a good
   candidate, that is itself the signal the file list may be stale, so a rescan
   is kicked off in the background. The query that triggered it still abstains,
@@ -511,8 +545,10 @@ contents beyond the parse LRU.**
 
   This pairs neatly with the retry protocol: a second query on the same spot
   is already the expected path, so the rescan usually lands exactly when it
-  is needed. Rescans are debounced, so a burst of misses triggers at most one.
-* The watcher, where enabled, is best-effort and never blocks a query.
+  is needed. Rescans are debounced, so a burst of misses triggers at most one,
+  and the two triggers share one debounce rather than one each.
+* **Both invalidation paths are best-effort and neither blocks a query.** A
+  query that arrives while a rescan is in flight uses the list it has.
 
 Search scope is the workspace folders only. External dependency sources
 (`~/.cargo/registry` and equivalents) are excluded per `high-level.md`; this is
@@ -873,11 +909,23 @@ the shipped metric the same number.
 
 This is not a convenience. It is the difference between a tuning iteration
 costing minutes and costing an afternoon, and it is on the critical path for
-every language: the target is a full replay over one language's tuning corpus
-in under a minute, so that iteration is bounded by thinking rather than by
-I/O. It is stated here rather than left implicit because nothing else in this
-document requires `measure` to be able to run without a server, and discovering
-the requirement later means discovering it after the corpus has been
+every language, because a loop whose feedback is slower than its own thinking
+is bounded by I/O rather than by ideas.
+
+**How fast a replay actually is, is a measurement rather than a target.**
+No number is set here, and none should be inferred: the cost is dominated by
+how often a query falls through to the whole-project search
+(`resolution.md` §5), by how much of that survives the lexical prefilter, and
+by how much of the corpus stays resident in the parse LRU across queries —
+none of which is known before a handler and a corpus both exist. Setting a
+target now would mean either designing around a guess or declaring a failure
+that has not happened. So `measure replay` reports its own wall clock
+alongside the per-query work counters, `loops.md` §9 records both from the
+first run, and what to do about the number is decided when there is one.
+
+The requirement that replay run *without a server at all* is stated here
+rather than left implicit because nothing else in this document requires it,
+and discovering it later means discovering it after the corpus has been
 collected in a shape that cannot be replayed.
 
 Constraints that make a replay trustworthy:
@@ -1621,8 +1669,8 @@ crates/measure_<x>/
   src/measure_<x>.rs  the four lines
 ```
 
-**No tests.** The corpus is the oracle, it runs in under a minute, and it is
-made of real repositories nobody here wrote. Hand-built fixtures are a slower,
+**No tests.** The corpus is the oracle, it replays without a language server,
+and it is made of real repositories nobody here wrote. Hand-built fixtures are a slower,
 weaker oracle graded against expectations the same session authored — and an
 empty `tests/fixtures/` directory in the template is an invitation to fill it,
 which converts a self-graded oracle into the thing a campaign optimises. The

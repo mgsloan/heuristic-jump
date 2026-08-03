@@ -254,6 +254,7 @@ it moves.
 | `initialized` | Forward |
 | `textDocument/didOpen` / `didChange` / `didClose` / `didSave` | Tee to `core`, forward |
 | `textDocument/definition` | Tee to `core`, forward. May be answered by the shim |
+| `workspace/didChangeWatchedFiles` | Tee to `core`, forward. The file list's invalidation signal — see below |
 | `$/cancelRequest` | Tee to `core`, forward |
 | `shutdown` / `exit` | Tee to `core`, forward |
 | **Response to a child-originated request** | **Forward verbatim** — see below |
@@ -538,6 +539,36 @@ that presents as the language server misbehaving. The shim avoids it by having
 no reason to touch these messages at all — see the id namespacing below — but
 "we never had a reason to break it" is not a guarantee, so it is a test
 ([section 12](#12-testing)) rather than an assumption.
+
+### The editor's file watcher is the shim's too
+
+One consequence of the passthrough above is worth naming, because it is easy
+to miss and it deletes a dependency.
+
+The child registers file watching by sending `client/registerCapability` for
+`workspace/didChangeWatchedFiles`, which the shim forwards verbatim like every
+other server-originated request. The editor then sends the resulting
+notifications editor → child, and those pass through the shim as well. So a
+correctly scoped filesystem watch is **already crossing the wire**, paid for by
+the editor, filtered by the editor's own exclusions and the child's globs.
+
+Teeing it to `core` is the one row added to the table above.
+[`core.md` §4](core.md#4-project-file-enumeration) owns what happens next and
+is not repeated here; the two properties that belong to *this* document are:
+
+* **`core` does not read the payload.** One of these frames can carry
+  thousands of events after a branch switch, and `core` is held to O(1) work
+  per event ([section 2](#thread-layout)). Arrival is the whole signal: it sets
+  a stale flag and schedules a debounced rescan.
+* **Registration is not tracked.** No ids, no globs, no
+  `client/unregisterCapability` bookkeeping — which keeps
+  [the passthrough above](#server-originated-requests-are-load-bearing) exactly
+  as unconditional as it was, and keeps this from becoming a second
+  registry.
+
+Standalone has no editor doing this, so the mechanism is proxy-only. That is
+what narrows `open-questions.md` question 10 to the one mode still wanting a
+watcher of its own.
 
 ### Request id namespacing
 

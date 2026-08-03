@@ -32,6 +32,14 @@ influence the design:
   for something better - it is the only thing on offer, and the
   comparison it has to win is against no navigation at all.
 
+    This is the reason ranked first and the one nothing below can
+    measure: every metric here is defined against a language server's
+    answer, and this case has none. `open-questions.md` question 15 asks
+    how such a language is scored at all - an LLM oracle is the likely
+    answer - and until it is settled, the plan serves this case on the
+    unmeasured bet that quality tuned against languages that do have
+    servers transfers to languages that do not.
+
 * **Developing and debugging the heuristic.** Running resolution with
   no server in the picture removes every source of variability that is
   not the handler, which is exactly what you want when a jump lands in
