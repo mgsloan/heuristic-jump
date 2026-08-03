@@ -24,7 +24,7 @@
 
 #![expect(
     clippy::disallowed_methods,
-    reason = "`Command::output` is banned so the shim polls cooperatively against its deadline. This is a test building a fixture git checkout, where there is no deadline and the child is `git` on a three-file repository."
+    reason = "Two bans, neither of which reaches here. `Command::output` is banned so the shim polls cooperatively against its deadline; this is a test building a fixture git checkout, where there is no deadline and the child is `git` on a three-file repository. `read_dir` is banned because it bypasses gitignore semantics on the *search* path, where a gitignored file is out of scope; `files_under` asks the opposite question — whether a file the run was not asked for appeared at all — and a walk that honoured .gitignore would answer no whatever the run wrote."
 )]
 #![expect(
     clippy::expect_used,
@@ -535,6 +535,76 @@ fn a_replay_refuses_a_truth_file_collected_against_another_server() {
     assert_eq!(*field, "server");
 }
 
+/// §7's "the table is not enough": `replay --records <path>` writes the
+/// per-query JSONL "unchanged and unfiltered", and digesting those into
+/// something readable is the harness's job — the same split that keeps
+/// `measure_core` ignorant of `state/`.
+///
+/// Unfiltered is the half that can be lost silently. A `--records` that wrote
+/// only the failures would be smaller, would look right, and would make every
+/// group's *share of its stratum* wrong — and the share is what the section
+/// says turns a thousand failures into a finding. Here every row is a mutual
+/// "no definition here", so a file filtered to anything would be empty.
+#[test]
+fn the_records_file_holds_every_replayed_query_and_not_only_the_failures() {
+    let corpus = fixture("unfiltered_records");
+    enumerate(&corpus);
+    write_truth(&corpus);
+
+    let records = corpus.scratch.join("records.jsonl");
+    replay(&corpus, Some(&records));
+
+    let text = fs::read_to_string(&records).expect("replay wrote the records file");
+    let truth = fs::read_to_string(truth_path(&corpus, "oracle")).expect("the truth file");
+    // Every row but the provenance header, since the fixture's oracle answered
+    // on all of them and none is `error` or `timeout`.
+    let replayed = truth.lines().count() - 1;
+
+    assert!(replayed > 1, "the fixture enumerated {replayed} positions");
+    assert_eq!(
+        text.lines().count(),
+        replayed,
+        "replay wrote {} records for {replayed} queries. core.md §7 makes the \
+         records the *unfiltered* per-query JSONL, because the digest leads \
+         with each group's count and its share of its stratum, and a share \
+         computed over a filtered file is wrong in a way nothing downstream \
+         can see",
+        text.lines().count()
+    );
+}
+
+/// The other half of that flag: "with no `--records` it **writes nothing**, so
+/// the default stays a pure function of its inputs and `measure_core` still
+/// needs no knowledge of `state/`".
+///
+/// Asserted over the whole corpus tree rather than the one path the flag would
+/// have written, because "writes nothing" is the claim and a run that dropped
+/// a file somewhere else would satisfy the narrower reading. Paths rather than
+/// contents: `verify_checkout` runs `git status`, which refreshes the index.
+#[test]
+fn a_replay_given_no_records_path_writes_nothing() {
+    let corpus = fixture("no_records");
+    enumerate(&corpus);
+    write_truth(&corpus);
+
+    let before = files_under(&corpus.root);
+    let table = table_of(&corpus, measure_core::Format::Json);
+    assert!(
+        table.contains("unimplemented"),
+        "the replay produced no table, so the comparison below would hold \
+         whatever it wrote.\n{table}"
+    );
+
+    assert_eq!(
+        before,
+        files_under(&corpus.root),
+        "a replay with no --records changed what is on disk. core.md §7 makes \
+         the default a pure function of its inputs, which is what lets the \
+         table be a gate rather than a report and keeps measure_core ignorant \
+         of where a harness would put a digest"
+    );
+}
+
 #[test]
 fn a_run_given_one_split_cannot_reach_its_sibling() {
     let corpus = fixture("isolation");
@@ -820,6 +890,31 @@ fn between<'a>(line: &'a str, open: &str, close: &str) -> &'a str {
         Some(end) => &rest[..end],
         None => rest,
     }
+}
+
+/// Every file under `root`, relative and sorted.
+fn files_under(root: &Path) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(&directory).expect("a fixture directory") {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                found.push(
+                    path.strip_prefix(root)
+                        .unwrap_or(&path)
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
+        }
+    }
+
+    found.sort();
+    found
 }
 
 fn git(repository: &Path, arguments: &[&str]) -> String {
