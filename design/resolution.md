@@ -185,7 +185,7 @@ The consequences run through the whole document:
   *latency* fact rather than a resolution one. That is the right split: phase
   2a optimises resolution against replay, phase 3 optimises cost against the
   wall clock, and neither is measuring the other's problem
-  (`implementation-loop.md` §10).
+  (`loops.md` §10).
 * **A deadline expiry is a whole-query abstention.** Not a partial commit,
   and not a marked row to be filtered later — `AbstainReason::Deadline`, and
   nothing is returned. A handler interrupted at an arbitrary point has an
@@ -210,7 +210,7 @@ into a measurable latency problem, which is the one phase 3 exists to solve.
 The abstention rate attributable to the deadline is therefore a number worth
 watching from the first corpus run.
 
-The payoff is what `implementation-loop.md` is built on: because replay is
+The payoff is what `loops.md` is built on: because replay is
 deterministic, a metric that moves has a cause in the diff, so per-stratum
 numbers can be ratcheted in a baseline file rather than treated as noisy
 observations. [Section 11](#11-testing) makes the property a test, and that
@@ -477,7 +477,7 @@ overturned it, and the second is the one that decides it.
   implementation on the measurement path means the corpus scores a tool that
   is not the one that ships — the argument core doc [section 7] already makes
   for snapshot construction, with more force here.
-* Under `implementation-phases.md` the measurement binaries exist **a whole
+* Under `phases.md` the measurement binaries exist **a whole
   phase before `driver` does**. A `ProjectView` that lives in `driver` is not
   available when the first thing that needs it is built.
 
@@ -1283,8 +1283,8 @@ shared utilities designed before any language exists is a framework wearing a
 different hat.
 
 **This rule has hardened into a schedule, and the schedule is stricter than
-the rule.** `implementation-loop.md` §1 and §13 and
-`implementation-phases.md` now take it as a hard sequencing constraint rather
+the rule.** `loops.md` §1 and §13 and
+`phases.md` now take it as a hard sequencing constraint rather
 than a preference, and they go further than "extract after, not before":
 
 * **Phase 2 has no shared resolution code at all.** Not "a small amount, added
@@ -1295,7 +1295,7 @@ than a preference, and they go further than "extract after, not before":
   source of cross-language regressions that neither loop's metrics would
   attribute correctly.
 * **Extraction is phase 3's job, under phase 3's equality constraint.**
-  `implementation-phases.md` requires that the deterministic responses do not
+  `phases.md` requires that the deterministic responses do not
   change at all across that refactor. So extraction is not a design activity
   with judgment in it; it is a mechanical transformation checked by replaying
   the corpus before and after
@@ -1499,9 +1499,9 @@ snapshot, or the corpus metrics themselves. Failing seeds are committed under
   ([section 1.3](#13-the-search-is-exhaustive-and-the-clock-may-only-abort-it)).
   Two other documents now depend on this section by name, and the second
   dependency is much heavier than the first:
-  * `implementation-loop.md` cites it when arguing that metrics can be
+  * `loops.md` cites it when arguing that metrics can be
     ratcheted in a baseline file rather than tracked as noisy statistics.
-  * **`implementation-phases.md`'s phase 3 gate is an equality check on
+  * **`phases.md`'s phase 3 gate is an equality check on
     replayed outcomes** — the optimisation and shared-extraction phase may not
     change any answer, and that is verified by replaying the corpus before and
     after and comparing byte for byte. That converts a judgment call
@@ -1560,7 +1560,7 @@ snapshot, or the corpus metrics themselves. Failing seeds are committed under
   language never seen by tuning, in `../heuristic-jump-corpus/test/` — a
   sibling of `training/`, not a subdirectory of it, so isolation is a path a
   session was never given rather than a rule it was asked to respect (core
-  doc [section 7], `implementation-loop.md` §12). Both numbers reported; the
+  doc [section 7], `loops.md` §12). Both numbers reported; the
   gap is the overfitting signal, and it should be reported per stratum, since
   overfitting
   will not distribute evenly across them. This matters more under the

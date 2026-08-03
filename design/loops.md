@@ -80,9 +80,9 @@ solving it. The only shared code during tuning is the seam and a frozen
 |  | **Conformance loop** | **Metric loop** |
 |---|---|---|
 | Scope | `vendor/`, `shared`, `driver`, `heuristic_jump`, `measure_*` | one `lang_*` crate |
-| Oracle | spec ledger + test suite + the audit gap count | corpus numbers per stratum |
-| Progress | ledger items reaching `verified`, gaps falling ([section 5](#5-the-auditor-and-the-conformance-loops-number)) | movement on the frontier ([section 10](#10-objectives-phases-and-the-frontier)) |
-| Done | no gaps left, and a human has ruled on the minor list | frontier stops advancing, or budget exhausted |
+| Oracle | the audit, plus the test suite | corpus numbers per stratum |
+| Progress | a section going clean ([section 5](#5-the-auditor-and-the-conformance-loops-number)) | movement on the frontier ([section 10](#10-objectives-phases-and-the-frontier)) |
+| Done | every section clean, and a human has ruled on the minor list | frontier stops advancing, or budget exhausted |
 | Failure mode | spec drift; the loop edits the spec to match the code | overfitting to the tuning corpus |
 | Concurrency | one writer | parallel, one per (language, server), in phase 2a ([section 13](#parallel-loops-and-what-they-share)) |
 
@@ -91,60 +91,106 @@ with no number to chase will invent one; a metric loop with a spec
 checklist will spend its iterations on checklist bookkeeping instead of
 on the thing that moves the number.
 
-## 3. The spec ledger
+## 3. Where the work comes from
 
-Nine thousand lines of prose is not a work queue. The first loop task — and
-one artifact worth reviewing by hand before anything else runs — is
-extracting the design documents into a machine-readable ledger.
+Nine thousand lines of prose is not a work queue — but it is already
+*structured*. The design documents are numbered, sectioned, anchored,
+and written by hand, which means the enumeration a work queue needs
+already exists and has already been reviewed by the person who wrote it.
 
-`spec/ledger.toml`, one entry per checkable claim:
+An earlier revision extracted that structure into `spec/ledger.toml`:
+one entry per checkable claim, several hundred of them, hand-reviewed
+once before anything ran. **That is removed.** It duplicated a structure
+the documents already have, it was the single largest artifact standing
+between here and the first line of code, it would have gone stale on
+every Class A spec edit, and — by [section 19](#19-how-this-goes-wrong)'s
+own ranking — a ledger with a hole in it was the highest-consequence
+failure available, because the loop would faithfully implement the wrong
+thing and every downstream number would agree that all was well.
+
+### The audit produces the queue
+
+[Section 5](#5-the-auditor-and-the-conformance-loops-number) already
+reads the spec and the code and reports gaps. Those gaps *are* the work
+queue. `state/audit/<doc>.toml` holds the result, written only by the
+auditor and read by everyone:
 
 ```toml
-[[item]]
-id      = "core-3.2"
-title   = "Swallow decision belongs to writer:editor"
-doc     = "core.md#32-the-swallow-decision-belongs-to-writereditor"
-owner   = "driver"
-phase   = 1
-priority = "p0"
-verify  = "test:double_response_assertion"
-status  = "todo"     # todo | implemented | verified | deferred | blocked
+[section."shim.md#3-message-routing"]
+state       = "gaps"        # clean | gaps | unjudged
+last_audited = "..."
+
+  [[section."shim.md#3-message-routing".gap]]
+  claim = "the swallow decision belongs to writer:editor"
+  found = "router.rs drops the frame before the writer sees it"
+  where = "crates/driver/src/router.rs:88"
 ```
 
-Rules that make it load-bearing rather than decorative:
+Nobody authors this file and nobody edits it by hand. The section list
+comes from parsing headings out of `core.md` and `shim.md`, so it is
+mechanical, it costs nothing, and it updates itself when a document is
+edited rather than drifting from it.
 
-* **`status` moves forward only.** `verified` requires `verify` to name
-  a test that exists and passes. A loop cannot mark something verified
-  by asserting that it is.
-* **`verify` is a test name, a metric threshold, or the literal
-  `manual`.** `manual` items are the ones a human has to look at, and
-  their count is a number the loop reports rather than reduces.
-* **`deferred` requires a reason and a decision id.** Deferral is a
-  legitimate outcome — much of these documents defers deliberately —
-  but an undocumented deferral is indistinguishable from giving up.
-* **Extraction is reviewed once, by hand.** Everything downstream is
-  driven from this file. An hour spent reading it is the highest
-  leverage hour in the plan; a ledger that omits the prime invariant
-  produces a loop that never implements it and reports success.
+### Sections clean is the number
 
-Worth stealing for the extraction pass: **EARS** (Easy Approach to
-Requirements Syntax — five sentence patterns, from Rolls-Royce
-requirements practice). Its whole purpose is turning prose into claims
-that are individually testable, which is exactly the transformation
-being asked for here. It is a notation to write ledger titles in, not a
-framework to adopt.
+A gap count is a poor metric on its own: two audits of unchanged code
+disagree about *how many* problems a section has, because that is a
+judgement about granularity. They agree far more readily about whether
+a section has **any**.
 
-The ledger is also how the loop bounds its own context. Each item
-carries a document anchor, so an iteration reads the one section it
-needs rather than 160KB of core design.
+So the headline is **sections clean over sections total**. The
+denominator is fixed and mechanical, the numerator moves only when a
+section that had gaps stops having them, and neither depends on the
+auditor's mood about whether two related problems are one gap or two.
+The gap list stays, as the work queue and as a secondary "how much is
+left" figure, but it is not what progress is measured in.
+
+Coverage comes from **rotation, not from a checklist**: every audit
+covers the sections the last campaign touched plus a rotating slice of
+the rest, so every section is revisited within a bounded number of
+campaigns. That replaces the property the ledger was providing — that
+nothing is silently unexamined — with a schedule instead of an
+inventory. A section nobody has reached yet is `unjudged`, which is
+visible, and different from `clean`.
+
+### Who uses it
+
+**Only the conformance loops**, and it is worth saying so because the
+document could easily read as though this were universal. Tuning loops
+target the stratum with the largest share × gap and are judged by the
+corpus; phase 3 targets duplication reports and is judged by an equality
+check. Neither reads any of it.
+
+The asymmetry is not an oversight, it is the difference between the
+documents. **`core.md` and `shim.md` make checkable claims** — the prime
+invariant holds, `writer:editor` owns the swallow decision,
+`ProjectView` yields nothing gitignored — and a claim either holds or it
+does not. **`resolution.md` describes an approach whose success is
+measured**, and no amount of conforming to it makes a handler good. So
+one is audited and the other is not, and a tuning campaign that tried to
+"conform to `resolution.md`" would be optimising the wrong thing.
+
+### What the ledger was carrying, and where it went
+
+* **A named test per claim.** Gone as a mechanical link. The audit
+  judges the claim directly and may cite a test as evidence; a passing
+  test with an unsatisfied claim is still a gap, which is the stronger
+  reading anyway.
+* **Priority.** The auditor ranks its own gaps, and phase decides which
+  documents are in scope at all.
+* **Items needing a human.** These are the audit's minor list and its
+  `unjudged` sections, both of which already escalate.
+* **Context bounding.** Unchanged, and now direct: a gap names a
+  document anchor, so a campaign reads that section rather than 90KB of
+  shim design.
 
 ## 4. The iteration contract
 
 One iteration is:
 
-1. Read `spec/ledger.toml`, `state/decisions/`, `state/journal.md`, and
-   the last N commit messages.
-2. Pick exactly one item — highest priority, lowest phase, unblocked.
+1. Read `state/audit/`, `state/decisions/`, `state/journal/<owner>.md`,
+   and the last N commit messages.
+2. Pick exactly one target — an open gap, or an `unjudged` section.
 3. Do it. Read only the spec sections the item names.
 4. Run the gate (below). If the gate fails and cannot be fixed within
    the iteration, `git revert` to green and write what was learned into
@@ -163,7 +209,7 @@ One iteration is:
   ([section 13](#mechanics-isolation-in-four-layers)). This is the enforcement,
   not the hook.
 * ratchets, in phase 3 only ([section 11](#11-size-and-loc-as-objectives))
-* ledger consistency: every `verified` item's test exists and ran
+* audit consistency: every open gap names a document anchor that exists
 * metrics row appended ([section 10](#10-objectives-phases-and-the-frontier))
 
 **The gate is scoped to the crates the loop owns**, per `CLAUDE.md`'s rule
@@ -185,9 +231,9 @@ Commit messages carry machine-readable trailers, parseable with stock
 detection needs no separate bookkeeping:
 
 ```
-[core-3.2] route swallow decision through writer:editor
+[shim-3.2] route swallow decision through writer:editor
 
-ledger: core-3.2 todo -> verified
+audit: shim.md#3-message-routing gaps -> clean
 tests:  +1 double_response_assertion
 loc:    driver +38
 binary: +412B
@@ -211,7 +257,7 @@ A campaign:
    `state/campaigns/<owner>/<id>.md` — for a tuning loop, the
    (stratum, language, server) with the largest share × gap, plus the
    hypothesis about why it is losing coverage; for a conformance loop, a
-   ledger item or a cluster of them from one document section. The
+   open gap, or an unjudged section. The
    session id and its resume command are recorded here at open
    ([section 16](#16-the-operator-view)).
 2. **Runs experiments.** Each is the iteration contract above: change,
@@ -233,12 +279,12 @@ Which unit each loop uses:
 
 | Loop | Campaign is |
 |---|---|
-| conformance (1a, 2b) | one ledger item, or a cluster from one doc section |
+| conformance (1a, 2b) | one open gap, or one unjudged section |
 | tuning (2a) | one hypothesis about one stratum |
 | phase 3 | one refactor target |
 
-The conformance loops sit close to pure Ralph, because ledger items
-genuinely are independent and the spec is the memory. Tuning sits
+The conformance loops sit close to pure Ralph, because gaps genuinely
+are independent and the spec is the memory. Tuning sits
 furthest from it, for the reasons in [section 0](#0-the-shape-of-the-idea).
 
 ### Campaigns compare notes, asymmetrically
@@ -348,14 +394,15 @@ in two numbered lists — **gaps** and **minor items** — and that shape is
 what turns the audit from a safety net into the measurement the
 conformance loop otherwise lacks.
 
-### The count is the metric
+### Sections clean is the metric
 
 [Section 2](#2-two-loops-two-oracles) concedes that the conformance loop
-has no gradient: its properties are pass/fail, so it lives or dies on
-the ledger being good. The audit supplies the missing number. **Gap
-count is to the conformance loop what coverage is to a tuning loop** —
-something that moves campaign by campaign, that a campaign can be aimed
-at, and that says whether the last ten campaigns accomplished anything.
+has no gradient: its properties are pass/fail. The audit supplies the
+missing number. **Sections clean is to the conformance loop what
+coverage is to a tuning loop** — something that moves campaign by
+campaign, that a campaign can be aimed at, and that says whether the
+last ten campaigns accomplished anything
+([section 3](#sections-clean-is-the-number)).
 
 Two lists rather than one, because they terminate differently:
 
@@ -379,22 +426,17 @@ A count produced by a model's judgement is not a measurement, and two
 audits of unchanged code will not agree. Left alone, that variance
 swamps the signal — a falling count could be a different auditor mood.
 
-So the audit has two parts, and only one of them is counted:
+So the audit is asked a question with a stable answer. Not "how many
+things are wrong?" but, **per section, "does this section have any
+gap?"** The section set is fixed and mechanical, so that is
+classification rather than discovery and successive audits are
+comparable by construction. The individual gaps are still reported —
+they are the work queue — but they are not the number.
 
-* **Per ledger item, is it implemented?** The item set is fixed, so this
-  is classification rather than discovery and successive audits are
-  comparable. **This is the number.**
-* **What is missing that the ledger does not name?** Free-form, not
-  comparable between runs, and the most valuable thing the audit
-  produces — it is the only mechanism that catches a ledger that was
-  wrong in the first place ([section 19](#19-how-this-goes-wrong) ranks
-  that as the highest-consequence failure). These become new ledger
-  items, and are counted from the *next* audit onward.
-
-Comparing successive audits by item identity rather than by total is
-what makes the difference visible: a list that is the previous list
-minus what was fixed is progress; a different list of the same length is
-variance, and worth noticing.
+Comparing successive audits by gap identity rather than by total is what
+makes the difference visible even so: a list that is the previous list
+minus what was fixed is progress; a different list of the same length,
+in sections that were already dirty, is variance and worth noticing.
 
 ### Properties worth keeping
 
@@ -425,7 +467,7 @@ most on the prose-shaped claims — "handlers get a snapshot, not a lock",
 "the driver must not depend on any language crate" — several of which
 are also mechanically checkable if someone writes the check. Converting
 an audit finding into a permanent mechanical check is itself a
-high-value ledger item, because it moves a claim from the fuzzy count to
+high-value gap to close, because it moves a claim from the audit's judgement to
 the exact one, and the loop should be told so.
 
 ## 6. Spec changes: what the loop may decide alone
@@ -463,7 +505,7 @@ the most reversible option, tags every affected site with
 for an answer.
 
 When the answer arrives, reconciling the tagged sites is a normal
-ledger item. `grep -r DECISION-` is the outstanding-provisional-choice
+campaign target. `grep -r DECISION-` is the outstanding-provisional-choice
 report, and its count is a health metric: rising steadily means the
 loop is running ahead of its decisions and the work is getting
 speculative.
@@ -501,9 +543,9 @@ what stops them being reopened.
 
 ## 7. Progress, stall, and the ways it is faked
 
-**Progress** is any of: a ledger status advancing; a test count
+**Progress** is any of: a section going clean; a test count
 increasing; the audit's gap count falling
-([section 5](#the-count-is-the-metric)); a frontier point being added
+([section 5](#sections-clean-is-the-metric)); a frontier point being added
 that is not dominated by an existing one; a decision item being
 resolved. All five are computable
 from the repository, which is the point — the loop does not get to
@@ -518,7 +560,7 @@ conformance loop and 5 for a tuning loop.** The asymmetry is the point:
 a tuning campaign legitimately spends several rounds on a restructuring
 that only pays off at the end, so a tight threshold would kill the
 campaigns most worth running. A conformance loop making no progress on
-a ledger item three times running has hit something the ledger did not
+one gap three times running has hit something the spec did not
 anticipate, and the sooner that reaches a human the better.
 
 **An experiment that produces no commit at all is still a tick**, and it
@@ -546,13 +588,13 @@ the metrics can be satisfied without work being done:
 
 | Gaming route | Countermeasure |
 |---|---|
-| Mark ledger items `verified` without tests | `verify` must name a test that exists and passed in the gate run |
 | Delete or weaken tests | Test count is a ratchet; test *deletions* are flagged for review regardless of count |
 | Rewrite the gate script | `harness/` is owned by nobody and denied to every loop; changes to it are Class B |
 | Rewrite the spec to match the code | Class A/B split, plus `spec/changelog.md` review; any spec edit in the same commit as code touching the same item is flagged |
 | Tune to the corpus | Held-out repos are in a corpus split the loop is never given ([section 12](#12-held-out-integrity)) |
 | `cargo insta accept` a metric regression | The gate checks metric *direction* itself; insta pins the table's shape, not its values |
 | Split one item into ten to show motion | Ledger additions by the loop are marked `origin = "loop"` and reported separately from the reviewed baseline |
+| Write a test that passes trivially | The audit judges the claim, not the test; a passing test with an unsatisfied claim is still a gap |
 | Add a language to show progress | Forbidden outright. A new `crates/lang_*` is outside every loop's owned paths, so the gate rejects it |
 
 None of these is airtight against a determined optimiser. They are
@@ -562,7 +604,7 @@ grounding drifts toward whatever is easiest to satisfy.
 
 ## 8. Sequencing and gates
 
-The phase structure is [`implementation-phases.md`](implementation-phases.md).
+The phase structure is [`phases.md`](phases.md).
 It is short and it is the authority; this section says what each phase
 means for the loops and what its gate is.
 
@@ -627,7 +669,7 @@ which is [`shim.md`](shim.md) end to end.
 Gate: transparency golden tests, server-originated round-trips, protocol
 race tests, double-response assertion, codec fuzz.
 *Conformance loop.* The largest single body of work, and it has no
-gradient, so it lives or dies on the ledger being good.
+gradient, so it lives or dies on the audit being honest.
 
 **Phase 3 — whole-repository optimisation.** Latency, binary size, line
 count, cross-language, serial, single writer. This is where extraction
@@ -766,7 +808,7 @@ what coverage is *available* before anything is spent making it cheap.
 
 ### Phase 3 is a refactor under an exact oracle
 
-The rule from [`implementation-phases.md`](implementation-phases.md):
+The rule from [`phases.md`](phases.md):
 **deterministic responses do not change at all, and an optimisation that
 requires changing them is escalated for human review rather than
 taken.**
@@ -819,7 +861,7 @@ both regimes:
 ```
 commit, phase, per-stratum {coverage, top1, contained, result-count
 distribution, n},
-conformance loops instead: {ledger by status, audit gaps, audit minors},
+conformance loops instead: {sections clean/total, open gaps, audit minors},
 work counters (bytes read, files parsed, nodes visited),
 measure_<lang> stripped size, lang_<lang> crate contribution,
 LOC per crate, test count
@@ -1023,7 +1065,7 @@ not a nicety here; it is what makes step 3 mean anything.
 ### Going back is not a reset
 
 Choosing a historical version means carrying that commit's *crate
-source* forward — not resetting the branch. The ledger, the journal,
+source* forward — not resetting the branch. The audit state, the journal,
 the decision records, and possibly the corpus have all advanced, and
 all of them are worth keeping: the abandoned attempts are exactly what
 the next phase needs so it does not repeat them.
@@ -1367,8 +1409,6 @@ data: **partition shared state by owner.**
 
 * `state/metrics/<language>.jsonl` — one file per loop, never shared.
 * `state/journal/<language>.md` — likewise.
-* `spec/ledger/<language>.toml` for language items; the core ledger is
-  written only by the conformance loop.
 * `state/decisions/<owner>-NNN.md` — owner-prefixed, so two loops
   cannot claim the same number at the same moment. A bare incrementing
   id is exactly the kind of thing that looks fine until two sessions
@@ -1533,14 +1573,14 @@ You are the {loop} loop, in phase {phase}.
 You may write only: {owned paths}. Anything else fails the gate.
 
 One campaign per session:
-  1. Pick one ledger item, or a cluster from one document section:
-     highest priority, lowest phase, unblocked.
+  1. Pick one target from state/audit/: an open gap, or an unjudged
+     section. Prefer gaps.
      Write the target to state/campaigns/{owner}/{campaign_id}.md.
   2. Read only the design sections the item names. Not whole documents.
   3. Implement. Run `harness/gate {loop}` after each change.
      Green: commit using {{trailer-format}}.
      Red and unfixable in this experiment: revert to green, record why.
-  4. Close when the item is verified, or three experiments produce no
+  4. Close when the item's test passes, or three experiments produce no
      commit, or the budget is spent. The auditor runs on close; its gap
      list is your next campaign's most likely target.
   5. On close: write state/journal/{owner}.md — what you tried, what
@@ -1552,7 +1592,7 @@ state/decisions/{owner}-NNN.md, pick the reversible option, tag the
 sites `// DECISION-NNN: provisional`, and keep going. Never wait.
 ---
 Ledger: {open items for this phase}
-Open gaps: {from the last audit, with their ledger ids}
+Open gaps: {from the last audit, with their document anchors}
 Your campaigns so far: {one line each — target, outcome}
 Decisions affecting you: {unresolved}
 ```
@@ -1570,16 +1610,15 @@ Ledger: {{items for this phase, with their claims}}
 
 Answer in exactly two numbered lists.
 
-GAPS — a ledger claim that is unimplemented, contradicted, or
-implemented in a way that does not satisfy it. For each: the ledger id,
-what the claim requires, what the code does instead, and where.
+GAPS — a claim in these sections that is unimplemented, contradicted, or
+implemented in a way that does not satisfy it. For each: the section
+anchor, what the claim requires, what the code does instead, and where.
 
 MINOR — the claim is satisfied but the manner invites objection.
 Naming, structure, a test that passes for the wrong reason.
 
-Then, separately and outside both lists: anything the spec requires that
-no ledger item names. These are not counted this round; they become
-ledger items and are counted from the next audit.
+Finally, per section you were given: does it have any gap, or is it
+clean? That verdict is the number; the gap list is the work queue.
 
 Report a gap where you find one. Do not report a gap you cannot point
 at in the code, and do not pad either list to look thorough — the counts
@@ -1627,8 +1666,7 @@ Other languages: {their digests; candidates, not conclusions — test
   before adopting}
 ```
 
-**Optimisation loop** (phases 3, 7) has no hypothesis and no ledger
-item — its target is duplication, and its oracle is exact:
+**Optimisation loop** (phases 3, 7) has no hypothesis and no spec gap — its target is duplication, and its oracle is exact:
 
 ```
 {{CLAUDE.md}}
@@ -1702,9 +1740,9 @@ every rule," which would be worse than pointers:
   procedure, ownership, and stop conditions are inlined. The spec
   sections, code, and corpus tables a campaign works *on* are not rules
   and are not all knowable in advance — but the ones that are get
-  spliced too: a ledger item carries a document anchor, so the
-  supervisor can inline the named section and the campaign starts with
-  it already in context. Anything further it follows from there, it
+  spliced too: a gap carries a document anchor, so the supervisor can
+  inline that section and the campaign starts with it already in
+  context. Anything further it follows from there, it
   reads.
 
 Both go in the volatile tail rather than the stable prefix, so the
@@ -1748,9 +1786,9 @@ hours and approximately zero tokens; a slow replay inflates model
 wall-clock without costing a token; a loop that re-reads 160KB of design
 doc per iteration costs tokens without costing wall clock. The
 under-a-minute replay target in [section 9](#9-the-inner-loop-must-be-fast)
-is a wall-clock lever and not a cost lever, and the ledger's document
-anchors in [section 3](#3-the-spec-ledger) are a cost lever and not a
-wall-clock one.
+is a wall-clock lever and not a cost lever, and the document anchors on
+audit gaps ([section 3](#3-where-the-work-comes-from)) are a cost lever
+and not a wall-clock one.
 
 ### The unit of accounting is the campaign
 
@@ -1786,13 +1824,13 @@ mostly empty experiments is stalling regardless of what it spent
 
 The derived number, and the one that should drive stopping decisions.
 [Section 7](#7-progress-stall-and-the-ways-it-is-faked) already defines
-progress mechanically — ledger advance, test count, frontier movement,
+progress mechanically — a section going clean, test count, frontier movement,
 decision resolved — so cost per progress event is computable without a
 new definition.
 
 Per phase, the useful ratios are different:
 
-* **1a, 2b (conformance):** tokens per ledger item reaching `verified`.
+* **1a, 2b (conformance):** tokens per gap closed.
 * **2a (per language, per server):** tokens per coverage point, per
   stratum. This is the number that says when to stop, and it should
   *rise* over a run as the easy wins are exhausted. A rising
@@ -1821,7 +1859,7 @@ independently of anything here.
 
 | Phase | Tokens | Model wall-clock | Machine wall-clock | Sensitive to |
 |---|---|---|---|---|
-| 1a core for measurement | low–moderate | days | small | how good the ledger is |
+| 1a core for measurement | low–moderate | days | small | how sharp the audit is |
 | 1b repo collection | ~none | ~none | days (mostly human) | repo count |
 | truth collection (gate into 2) | ~none | ~none | ~100 machine-hours | repos × servers × index time |
 | 2a per language × server | **dominant** | weeks, parallel | small per iteration | iterations to plateau |
@@ -1837,18 +1875,18 @@ is never compared against an actual is decoration.
 
 ### Levers, by which resource they move
 
-**Tokens.** Bound the context: the ledger's document anchors mean an
-iteration reads one section rather than the whole design. Keep the
+**Tokens.** Bound the context: a gap's document anchor means a campaign
+reads one section rather than the whole design. Keep the
 prompt's fixed prefix byte-identical across iterations and order it
-stable-to-volatile — constitution, then prompt, then ledger, then the
+stable-to-volatile — constitution, then prompt, then audit state, then the
 journal tail and recent commits — so the cacheable prefix is as long as
 possible. Choose the model tier per loop rather than globally: phase 3
 is mechanical work under an exact oracle
-([`implementation-phases.md`](implementation-phases.md)), which is the
+([`phases.md`](phases.md)), which is the
 best candidate for a cheaper tier, whereas phase 2a resolution logic is
 the hardest reasoning in the project. The auditor is a fixed cost of one
 session per conformance campaign, and it is not a knob: it is the only
-number that loop has ([section 5](#the-count-is-the-metric)).
+number that loop has ([section 5](#sections-clean-is-the-metric)).
 
 **Model wall-clock.** Parallelism across languages, and the replay speed
 target. Neither costs tokens.
@@ -1898,7 +1936,7 @@ behaviour:
 * **Metrics.** The per (language, server) frontier chart, the
   per-stratum table, current versus the recorded baseline, and the
   held-out verdict. This is the chart
-  [`implementation-phases.md`](implementation-phases.md) asks for at the
+  [`phases.md`](phases.md) asks for at the
   phase 2a gate; it wants to exist before then, because a frontier is
   more useful watched than reviewed once.
 * **Cost.** Per phase and per language, spend against budget, and the
@@ -1946,7 +1984,7 @@ timestamp, kind, target, answer, rationale, resulting commit
 `kind` covers the full set: decision answered, phase-3 behaviour change
 approved or refused, frontier point selected, stall unblocked, budget
 raised, ratchet exception granted, spec edited by hand, loop killed or
-restarted, ledger corrected, **prompt revised**, **harness changed**.
+restarted, audit overruled, **prompt revised**, **harness changed**.
 
 **The log is the mechanism, not a record of it.** Answering a decision
 *means* appending to this file; the harness derives the decision's
@@ -2087,7 +2125,7 @@ problem we actually have, not a problem adjacent to it.
 | Held-out isolation | **Build** — physical separation; `denyRead` as defence in depth only |
 | Worktrees | **Adopt** plain `git worktree` — one per parallel loop, plus ephemeral ones for gate-time evaluation |
 | Worktree orchestrators (Conductor, Crystal, claude-squad) | **Reject** — GUI- or macOS-first, and the merge discipline is ours |
-| Spec ledger | **Build** — see below |
+| Spec work queue | **Build** — see below |
 | Numeric ratchets | **Build** — see below |
 | Metric table regression | **Adopt** `insta` for shape; gate checks direction |
 | Test runner | **Adopt** `cargo-nextest` (machine-readable output for the test-count ratchet) |
@@ -2128,11 +2166,11 @@ Wilson interval over a query count, computed once, not variance
 inferred from history.
 
 **`beads`.** A git-backed issue graph designed for coding agents, with
-dependency-aware "what is ready" queries. The ledger's value is that it
-is reviewed by hand, once, in a single sitting — 9000 lines of prose
-compressed into something a person can audit for omissions. A greppable
-TOML file serves that; a Dolt-backed graph database does not, and
-`bd ready` is a `phase` field and fifteen lines.
+dependency-aware "what is ready" queries. There is no hand-authored
+queue to put in it: the work list is the audit's gap output
+([section 3](#3-where-the-work-comes-from)), regenerated rather than
+maintained, and a database for a derived artifact is storage for
+something that should be cheap to recompute.
 
 **Spec-driven frameworks.** They solve "the agent has no structure and
 hallucinates APIs." That problem is already solved here by a mechanical
@@ -2170,10 +2208,13 @@ save it.
 Stated plainly, because each of these has a countermeasure above and
 the countermeasures are the weakest part of this document.
 
-* **The ledger is wrong and the loop faithfully implements the wrong
-  thing.** Highest-consequence failure. Only defence is the one-time
-  hand review, and it is a defence against errors of omission that are
-  by nature hard to see.
+* **The audit never looks at a section, or looks and misses.** This
+  replaces the old "the ledger has a hole in it" failure and is milder
+  in one respect and worse in another: rotation guarantees every section
+  is *reached*, which no hand-built inventory did, but a section can be
+  audited and wrongly called clean, and nothing downstream disagrees.
+  Successive audits of the same section by fresh sessions are the only
+  defence, and it is a statistical one.
 * **The loop rewrites the spec toward what it built.** Class A/B is a
   judgement call made by the entity with the incentive. The changelog
   makes it auditable after the fact, not preventable.
@@ -2193,7 +2234,7 @@ the countermeasures are the weakest part of this document.
   log in [section 16](#every-intervention-is-logged) only helps to the
   extent answering *through* it is easier than answering around it.
 * **Plausible motion.** A hundred iterations of refactoring, journal
-  entries, and ledger churn with no metric movement. Stall detection is
+  entries, and audit churn with no metric movement. Stall detection is
   the answer and it is tuned by guessing at N.
 * **Phase 2 under-scoped.** Corpus collection is real infrastructure
   work. If it slips, every language loop is blocked and the temptation
@@ -2239,7 +2280,7 @@ look re-openable later.
    remedy if it fails, and it reintroduces coordination that the current
    rule removes — so it should be a measured retreat, not a drift.
 
-4. **Moot.** `implementation-phases.md` answers it: phases 4 through 7
+4. **Moot.** `phases.md` answers it: phases 4 through 7
    repeat 2a and 3 for Zed's full language set.
 
 5. **Phase 2a keeps a standing cost guardrail** — an order-of-magnitude

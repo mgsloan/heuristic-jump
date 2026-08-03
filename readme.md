@@ -32,8 +32,8 @@ clippy.toml
 design/              the design documents, described below
 harness/             loop runner, gates, ratchets, dashboard. Owned by no
                      agent session; a loop cannot weaken its own gate
-spec/                ledger.toml - design claims extracted into a checkable
-                     work queue, one entry per claim
+state/audit/         per-section audit state and open gaps - written by the
+                     auditor, never by hand
 state/               loop state: metrics, journals, campaigns, decisions,
                      interventions, cost. Partitioned by owner
 vendor/
@@ -74,12 +74,12 @@ Read `design/high-level.md` first; it is the only one that stands alone.
 | Document | What it covers |
 |---|---|
 | `high-level.md` | What the tool is and how it is judged: the retry protocol, divergence reporting, the success metrics, and the per-stratum table those metrics are reported in. Start here |
-| `implementation-phases.md` | The phase ordering, and short enough to read in a minute. It is the authority the other documents defer to |
+| `phases.md` | The phase ordering, and short enough to read in a minute. It is the authority the other documents defer to |
 | `core.md` | Everything that exists before there is a shim, which is phase 1a: the `LanguageHandler` seam, `DocumentSnapshot`, position encoding, `ProjectView`, the agreement predicate, the measurement record and the corpus scan, the hand-written protocol types, and the workspace layout |
 | `shim.md` | The LSP proxy, which is phase 2b: process and thread model, message routing, server health, document state, the retry protocol, divergence reporting, dispatch, and standalone mode |
 | `resolution.md` | What a language handler actually does with a reference - the pipeline stages, candidate verification, ranking, strata - worked out longhand against Rust |
 | `data-collection.md` | Choosing repositories and collecting ground truth from real language servers. Phases 1b through 1.5 |
-| `implementation-loop.md` | How the autonomous coding loops run: the spec ledger, the gate, campaigns, isolation between languages, the Pareto frontier and phase gates, cost accounting, and the operator dashboard |
+| `loops.md` | How the autonomous coding loops run: where work comes from, the gate, campaigns, isolation between languages, the Pareto frontier and phase gates, cost accounting, and the operator dashboard |
 | `deps.md` | Every dependency chosen and every one rejected, with the reasoning. Consult before adding anything |
 | `rope-modifications.md` | What changes in the vendored Zed rope, and what deliberately does not |
 | `open-questions.md` | Numbered, and referenced by number from everywhere else |

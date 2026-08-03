@@ -1,5 +1,5 @@
 Headers prefixed with the same number are run in parallel. The letter suffixes
-are stable names the other documents refer to — `implementation-loop.md` §8
+are stable names the other documents refer to — `loops.md` §8
 and `data-collection.md` use them throughout.
 
 # 1a: Core needed for measurement
@@ -40,7 +40,7 @@ At this point there is no shared resolution code.
 
 This can happen in parallel with the per-language loops. It touches disjoint
 crates, so it lands on master through the same merge-after-every-green-iteration
-rule as everything else (`implementation-loop.md` §13).
+rule as everything else (`loops.md` §13).
 
 # 3: Whole repository loop refining latency, binary size, line count
 

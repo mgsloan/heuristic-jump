@@ -1,6 +1,6 @@
 # Data collection design
 
-Phases 1b and 1.5 of [`implementation-phases.md`](implementation-phases.md):
+Phases 1b and 1.5 of [`phases.md`](phases.md):
 choosing repositories, and collecting ground truth from real language
 servers over them. Everything downstream is measured against what this
 phase produces, so its failure mode is not "late" but "every number
@@ -102,7 +102,7 @@ selection time and placed in the correct root immediately. Once a
 repository has been in the tuning corpus it cannot be moved to held-out
 — nothing un-teaches it. The third split exists because frontier
 selection at phase gates consumes the second one
-(`implementation-loop.md` §12).
+(`loops.md` §12).
 
 ### `manifest.toml`, and repositories are never bumped
 
@@ -350,7 +350,7 @@ Two checks, both cheap, both capable of invalidating the premise:
 
 Almost no tokens and almost no model time, which is exactly why this
 phase is easy to under-plan: it is invisible to the accounting that
-watches everything else (`implementation-loop.md` §15).
+watches everything else (`loops.md` §15).
 
 Rough shape, to be replaced with measurements after the first language:
 

@@ -3,7 +3,7 @@
 The proxy that sits between the editor and the proper language server: message
 routing, document state, server health, the retry protocol, dispatch, and
 divergence reporting. It is
-[`implementation-phases.md`](implementation-phases.md)'s phase 2b, and it is
+[`phases.md`](phases.md)'s phase 2b, and it is
 built *after* the handler seam and the measurement harness, which are
 [`core.md`](core.md).
 

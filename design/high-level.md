@@ -216,7 +216,7 @@ The held-out share is split again, into *select* and *final*: choosing
 a version at a phase gate is itself optimisation against whatever it is
 chosen on, so the set used for that is not the set the last number is
 reported from. Roughly 6-7 / 2 / 1-2 - `data-collection.md` §1 and
-`implementation-loop.md` §12.
+`loops.md` §12.
 
 The held-out repos and their truth files live in a **separate corpus
 split**, outside the workspace: `../heuristic-jump-corpus/test/`,

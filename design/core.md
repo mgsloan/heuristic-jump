@@ -3,7 +3,7 @@
 This covers the parts of the system that exist **before there is a shim**:
 everything `measure_core` and `measure_<lang>` need in order to run a language
 handler against a corpus and score it. It is
-[`implementation-phases.md`](implementation-phases.md)'s phase 1a.
+[`phases.md`](phases.md)'s phase 1a.
 
 * The handler seam — `LanguageHandler`, `Query`, `Outcome`, and the vocabulary
   newtypes every crate speaks in.
@@ -270,7 +270,7 @@ Notes on the shape:
   one that ships. [Section 7](#7-observability-and-the-corpus-scan) makes
   that argument for snapshot construction already; it applies here with more
   force, and it is what forced the move: under
-  [`implementation-phases.md`](implementation-phases.md) the measurement
+  [`phases.md`](phases.md) the measurement
   binaries exist a whole phase before `driver` does.
 
   *Not a trait*, because there is exactly one implementation and no prospect
@@ -787,7 +787,7 @@ things go wrong with that, and the third is the one that matters:
 * **Fault coupling.** A language crate that does not compile takes every other
   language's metrics down with it, including languages nobody has touched.
 * **It defeats the isolation the parallel-tuning plan depends on.**
-  `implementation-loop.md` runs one session per language, each confined
+  `loops.md` runs one session per language, each confined
   to its own crate. Confinement that still requires the other crates to build
   is not confinement; it just moves the coupling into the build graph where it
   is harder to see. A language must be measurable entirely on its own.
@@ -863,7 +863,7 @@ Constraints that make a replay trustworthy:
   what the shim delivers.** The shim has a deadline and will sometimes abstain
   where replay answered. That gap is a latency fact, and it is measured as
   one — work counters per iteration, wall clock at phase gates
-  (`implementation-loop.md` §10). Handler coverage from replay is a statement
+  (`loops.md` §10). Handler coverage from replay is a statement
   about resolution, not a promise about the field.
 * **Only the heuristic side is re-measured, and its timing is an observation,
   not a control input.** `heuristic_latency_us` is recorded during replay
@@ -989,7 +989,7 @@ Three reasons for the split, in ascending order of importance:
   remembers it. A rule that says "this session is given one path and never the
   other" is enforced by not having the path. `test/` is a sibling of
   `training/` rather than a subdirectory of it for exactly that reason, and
-  `implementation-loop.md` §12 relies on it being a filesystem boundary.
+  `loops.md` §12 relies on it being a filesystem boundary.
 
 `--corpus <dir>` on both subcommands; no default, because a defaulted corpus
 path is one that eventually points at the wrong one.
@@ -1516,6 +1516,66 @@ New `crates/lang_<x>/` depending on `shared` + `similarity` + its grammar,
 implementing `LanguageHandler`; `crates/measure_<x>/`, which is four lines; then
 one line in `heuristic_jump`. Nothing else in the workspace changes. That is
 the whole cost, and keeping it at that is the point of the graph above.
+
+**Phase 1a builds this as an instantiable template**, not as prose. Adding a
+language is then a copy and a rename, and — more importantly — the shape every
+language crate inherits is fixed once, by hand, before seven of them exist.
+
+```
+crates/lang_<x>/
+  Cargo.toml          shared, similarity, tree-sitter-<x>. Nothing else
+  src/lang_<x>.rs     the Handler impl, longhand
+crates/measure_<x>/
+  Cargo.toml          measure_core, lang_<x>
+  src/measure_<x>.rs  the four lines
+```
+
+**No tests.** The corpus is the oracle, it runs in under a minute, and it is
+made of real repositories nobody here wrote. Hand-built fixtures are a slower,
+weaker oracle graded against expectations the same session authored — and an
+empty `tests/fixtures/` directory in the template is an invitation to fill it,
+which converts a self-graded oracle into the thing a campaign optimises. The
+fixture tests `resolution.md` §11 describes are for pinning a specific
+behaviour the corpus cannot isolate, such as a shadowing case with three
+instances in ten repositories. They are added deliberately, by a campaign that
+can say why, and not by default.
+
+### What the template's handler does
+
+Not nothing, and not a baseline either.
+
+It declares its real `language_ids`, `file_extensions`, and `grammar` — those
+come from the grammar crate and are correct from the start — so an instantiated
+template compiles, links, runs under `measure_<x> replay`, and produces a
+complete per-stratum table. **The first measurement of a new language
+exercises the whole pipeline**, rather than failing to build and saying nothing
+about whether any of it is wired up.
+
+Beyond that it implements exactly one thing, and it is the one thing that is
+genuinely language-independent: **deciding whether the cursor is on an
+identifier at all.** Is the byte offset inside a named leaf node whose text is
+identifier-shaped? That is a grammar-level question with a grammar-level
+answer, it needs no resolution logic, and it is the same rule
+`data-collection.md` §2 uses to enumerate corpus positions — so using it here
+keeps the tool and the corpus agreeing about what a query even is. A fresh
+language therefore starts out already correct on the `NotAnIdentifier`
+abstention path and zero everywhere else, which is an honest starting position
+rather than a flat one.
+
+Everything else abstains, and the abstention is **self-identifying**. A
+template that abstained as `NoCandidates` would be indistinguishable in the
+metrics from a real handler that searched and found nothing, so a
+half-migrated language would look like a language that was merely bad at its
+job. The placeholder reports a stratum no real handler may return, and its
+presence in a metrics table means the template has not been replaced — a gate
+check rather than something anybody has to notice.
+
+**It is deliberately not a baseline.** A template that did same-file name
+search would give every language a non-zero starting point and would be
+inherited by all of them — anchoring every first campaign on one structure,
+which is exactly what writing the first handler longhand exists to avoid. The
+null model is worth measuring; it is not worth shipping in the template that
+seven languages grow out of.
 
 ### Vendoring the Zed crates
 
