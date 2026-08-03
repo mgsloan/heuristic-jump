@@ -40,13 +40,8 @@ last_audited = "2026-08-03T19:21:14+00:00"
   where = "crates/shared/src/project.rs:500"
 
 [section."core.md#2-document-snapshots"]
-state = "gaps"
-last_audited = "2026-08-03T06:33:47+00:00"
-
-  [[section."core.md#2-document-snapshots".gap]]
-  claim = "driver builds a snapshot at dispatch and measure_core builds one per recorded position, both through the same constructor in shared"
-  found = "the constructor exists (SnapshotSeed::realise) but has no callers: driver constructs no seed \u2014 dispatch receives a Query whose doc is already built \u2014 and measure_core does not exist, so 'the corpus scores the code that ships' rests on nothing. MECHANICAL CHECK AVAILABLE: keeping realise the only public route to a DocumentSnapshot makes a second snapshot path a compile error once both consumers exist"
-  where = "crates/driver/src/dispatch.rs:133"
+state = "clean"
+last_audited = "2026-08-03T20:56:22+00:00"
 
 [section."core.md#snapshots-are-o1-to-take-and-are-parsed-before-a-handler-sees-one"]
 state = "clean"
@@ -80,13 +75,18 @@ last_audited = "2026-08-03T19:21:14+00:00"
   where = "crates/driver/src/driver.rs:33"
 
 [section."core.md#5-deadlines-and-abstention"]
-state = "clean"
-last_audited = "2026-08-03T06:33:47+00:00"
+state = "gaps"
+last_audited = "2026-08-03T20:56:22+00:00"
+
+  [[section."core.md#5-deadlines-and-abstention".gap]]
+  claim = "the deadline is absolute and starts at request arrival, not at handler entry; queueing time counts"
+  found = "no production code constructs a Deadline: Deadline::new is called only from tests, and driver::run has no request path \u2014 it logs the resolved configuration and returns"
+  where = "crates/driver/src/driver.rs:37"
 
   [[section."core.md#5-deadlines-and-abstention".minor]]
-  claim = "the cap is configurable via --deadline-ms"
-  note = "the end-to-end assertion greps a log line for deadline_ms=750/2000, because nothing constructs a Deadline from the resolved Config yet"
-  where = "crates/heuristic_jump/tests/deadline_flag.rs:38"
+  claim = "the hard cap is enforced by the driver"
+  note = "Deadline::none() is public and reachable from the shim path; the prohibition is a doc comment, where driver/tests/seam.rs already asserts absences of this kind mechanically"
+  where = "crates/shared/src/deadline.rs:89"
 
 [section."core.md#6-the-agreement-predicate"]
 state = "clean"
@@ -145,17 +145,22 @@ last_audited = "2026-08-03T09:16:14+00:00"
 
 [section."core.md#two-modes-collect-and-replay"]
 state = "gaps"
-last_audited = "2026-08-03T06:13:37+00:00"
+last_audited = "2026-08-03T20:56:22+00:00"
 
   [[section."core.md#two-modes-collect-and-replay".gap]]
-  claim = "measure has two subcommands, collect and replay; replay reconstructs the DocumentSnapshot and Query from truth.jsonl and runs with no server, and a completed replay row is byte-comparable with a field row"
-  found = "neither subcommand exists in any form: no crates/measure_core or crates/measure_rust directory, no manifest under either path, no truth.jsonl reader or writer anywhere. The provenance header and the refusal to replay against a mismatched repository commit have nothing to live in either"
-  where = "Cargo.toml:3"
+  claim = "truth.jsonl carries its provenance in a header record: repository path and commit, server name and version, grammar revision, and the measure version"
+  found = "the grammar field is a constant literal naming no revision, so two collections under different grammar pins produce identical headers. Mechanically checkable: derive it from the locked grammar version and assert two pins differ"
+  where = "crates/measure_core/src/collect.rs:310"
 
   [[section."core.md#two-modes-collect-and-replay".gap]]
-  claim = "replay enforces no deadline at all, so coverage cannot vary with machine load"
-  found = "the seam cannot express it: Deadline::new(clock, arrived_at, budget) is the only constructor and always resolves against a Clock (deadline.rs:51), ProjectView::new requires a Deadline (project.rs:174), ProjectView::read does a live-clock check on every read, and Query.deadline is non-optional \u2014 so a replay written against this API gets a wall-clock deadline. MECHANICAL CHECK AVAILABLE: an explicit unbounded form (Deadline::none, or a Budget enum with an Unbounded variant) makes 'replay has no deadline' a value the replay path can assert on rather than a convention"
-  where = "crates/shared/src/project.rs:212"
+  claim = "replay refuses to run against a truth file whose repository commit does not match the checkout, rather than silently reporting metrics for positions that have since moved"
+  found = "collect's resume path writes the current HEAD into the header while re-appending rows collected at the old commit; check_resumable compares only server_version, so a mixed-commit file passes replay's check. A commit comparison in check_resumable would close it"
+  where = "crates/measure_core/src/collect.rs:44"
+
+  [[section."core.md#two-modes-collect-and-replay".minor]]
+  claim = "collect writes rows with the lsp_* fields populated and the heuristic side null"
+  note = "collect writes a separate five-field truth row (file, offset, outcome, answer, latency_us); the \u00a77 record is only ever assembled in replay"
+  where = "crates/measure_core/src/truth.rs:71"
 
 [section."core.md#the-table-is-not-enough-a-replay-has-to-show-its-failures"]
 state = "unjudged"
@@ -171,13 +176,13 @@ last_audited = "2026-08-03T19:21:14+00:00"
   where = "crates/measure_core/src/replay.rs:135"
 
 [section."core.md#where-the-corpus-lives"]
-state = "gaps"
-last_audited = "2026-08-03T06:33:47+00:00"
+state = "clean"
+last_audited = "2026-08-03T20:56:22+00:00"
 
-  [[section."core.md#where-the-corpus-lives".gap]]
-  claim = "one corpus root outside the workspace with sibling training/ and test/ splits, each passed by path, and a truth.jsonl per server"
-  found = "no code takes a corpus path or reads a truth file: grep for corpus/truth.jsonl/training across crates/ returns three prose comments only, and measure_core (the corpus scan) is not a workspace member. MECHANICAL CHECK AVAILABLE: a scan given one split's path should be structurally unable to name the other, which is a path check rather than a convention"
-  where = "Cargo.toml:3"
+  [[section."core.md#where-the-corpus-lives".minor]]
+  claim = "the provenance header names exactly one server and version, so a truth file is never silently merged with another's"
+  note = "replay compares only the commit; provenance.server and provenance.language are never checked against --server or the handler's language, leaving the truth/<server>/ path as the only guard"
+  where = "crates/measure_core/src/replay.rs:52"
 
 [section."core.md#the-command-line"]
 state = "gaps"
@@ -240,31 +245,26 @@ last_audited = "2026-08-03T09:16:14+00:00"
 
 [section."core.md#85-the-untagged-unions-are-the-actual-risk"]
 state = "gaps"
-last_audited = "2026-08-03T07:56:16+00:00"
+last_audited = "2026-08-03T20:56:22+00:00"
 
   [[section."core.md#85-the-untagged-unions-are-the-actual-risk".gap]]
-  claim = "two mitigations are the condition on which dropping lsp-types is acceptable: a checked-in golden corpus of real initialize/document traffic, and lsp-types as a dev-dependency oracle asserting the modelled fields agree per message"
-  found = "no crate lists lsp-types in [dev-dependencies] and the workspace deps table does not contain it; no captured-traffic fixture exists under any tests/ directory. The unions are exercised only by hand-written json! literals"
-  where = "crates/shared/Cargo.toml:38"
-
-  [[section."core.md#85-the-untagged-unions-are-the-actual-risk".gap]]
-  claim = "for each union, assert that each shape parses as the intended variant *and* that it fails to parse as each of the others"
-  found = "the definition-result test asserts only the positive half; nothing asserts that a Location object fails WireLocationLink's deserialization or that a LocationLink fails WireLocation's, which is the property that makes the variant order irrelevant. The contentChanges negative case is present at :368"
-  where = "crates/shared/tests/proto.rs:382"
+  claim = "a golden corpus of real traffic captured from Zed and VS Code against rust-analyzer, pyright and gopls, checked in and asserted against, is one of the two conditions on which dropping lsp-types is acceptable"
+  found = "the corpus holds six captured lines, all rust-analyzer server-to-client; no editor initialize params, no captured document traffic, nothing from pyright or gopls. The unions that matter are exercised only by hand-authored messages"
+  where = "crates/shared/tests/golden-traffic.jsonl:45"
 
   [[section."core.md#85-the-untagged-unions-are-the-actual-risk".minor]]
-  claim = "untagged appears only on the unions 8.5 clears, checked mechanically"
-  note = "the check is a line scan of proto.rs's text: single-line derives only, `impl Serialize for {name} ` matched with a trailing space, `pub struct`/`pub enum` at line start. A wrapped derive or a formatting change narrows it silently, and the failure mode is a vacuous pass"
-  where = "crates/shared/tests/proto.rs:156"
+  claim = "captured traffic is what the corpus is asserted to contain"
+  note = "the enforcing test filters on the `source` string starting with \"CAPTURED\", so a relabelled hand-authored line satisfies it"
+  where = "crates/shared/tests/differential.rs:147"
 
 [section."core.md#86-modelling-errors-must-fail-closed"]
-state = "gaps"
-last_audited = "2026-08-03T07:56:16+00:00"
+state = "clean"
+last_audited = "2026-08-03T20:56:22+00:00"
 
-  [[section."core.md#86-modelling-errors-must-fail-closed".gap]]
-  claim = "any failure or detected inconsistency while deserializing a state-bearing message marks that document untrusted, and queries against an untrusted document abstain unconditionally until didClose/didOpen resyncs it \u2014 plus the three O(1) self-checks (range outside the rope, non-increasing version, didSave checksum)"
-  found = "no trust state exists anywhere: DocumentSnapshot/SnapshotSeed carry uri/text/version/language_id/tree and nothing else, driver holds no document map, and DidChangeTextDocumentParams and DidSaveTextDocumentParams have no reader. Only the detection half exists (fractional id, fourth sync kind, `range: null` all refused), which the section says is explicitly not the plan"
-  where = "crates/shared/src/document.rs:44"
+  [[section."core.md#86-modelling-errors-must-fail-closed".minor]]
+  claim = "for an editor that misbehaves, the answer is not to ignore it but to say so in the log"
+  note = "a didOpen for an already-open document is treated as a resync and replaces the row with no log line, where didChange for a never-opened document is both distrusted and logged"
+  where = "crates/driver/src/documents.rs:203"
 
 [section."core.md#87-where-it-lives"]
 state = "clean"
@@ -318,17 +318,17 @@ last_audited = "2026-08-03T07:56:16+00:00"
 
 [section."core.md#what-the-templates-handler-does"]
 state = "gaps"
-last_audited = "2026-08-03T06:13:37+00:00"
+last_audited = "2026-08-03T20:56:22+00:00"
 
   [[section."core.md#what-the-templates-handler-does".gap]]
-  claim = "the template declares its real language_ids, file_extensions and grammar so an instantiated template compiles, runs under measure_<x> replay and produces a complete per-stratum table, abstaining elsewhere as Stratum::Unimplemented"
-  found = "there is no template and no handler: no crates/lang_* directory exists, grep for `impl \u2026 LanguageHandler` returns zero implementors workspace-wide, and Stratum::Unimplemented (handler.rs:103) has no producer \u2014 so the claim that the first measurement of a new language exercises the whole pipeline has neither a pipeline nor a measurement"
-  where = "Cargo.toml:3"
+  claim = "Stratum::Unimplemented is self-identifying: its presence in a metrics table means the template has not been replaced, as a gate check"
+  found = "a handler that returns Err is counted under Unimplemented in replay, and the table renders the row unconditionally, so presence is not evidence the template is in place. A gate needs `unimplemented.queries > 0 && failed == 0`, or failures need their own stratum"
+  where = "crates/measure_core/src/replay.rs:205"
 
-  [[section."core.md#what-the-templates-handler-does".gap]]
-  claim = "deciding whether the cursor is on an identifier is one function in shared, used by both measure_core's position enumeration and a handler's NotAnIdentifier answer"
-  found = "no such function exists: shared exports deadline, document, error, handler, project, proto and vocabulary, and grep for `identifier` under crates/ returns only the doc comment on AbstainReason::NotAnIdentifier. MECHANICAL CHECK AVAILABLE: making it the only pub fn either consumer can reach, in shared \u2014 the same shape the section invokes for ProjectView and the agreement predicate \u2014 keeps 'one function, not two implementations' a compile-time fact"
-  where = "crates/shared/src/handler.rs:113"
+  [[section."core.md#what-the-templates-handler-does".minor]]
+  claim = "the identifier rule is one function in shared, not two implementations that agree"
+  note = "the predicate is shared but the lookups differ \u2014 a tree walk for enumeration, named_descendant_for_byte_range for the handler \u2014 and nothing asserts they select the same positions"
+  where = "crates/shared/src/identifier.rs:31"
 
 [section."core.md#vendoring-the-zed-crates"]
 state = "gaps"
@@ -345,20 +345,5 @@ last_audited = "2026-08-03T09:16:14+00:00"
   where = "crates/similarity/Cargo.toml:13"
 
 [section."core.md#10-testing"]
-state = "gaps"
-last_audited = "2026-08-03T06:33:47+00:00"
-
-  [[section."core.md#10-testing".gap]]
-  claim = "snapshot version invariant: for a randomised sequence of edits and dispatches, snapshot.tree() parses to a tree whose extent matches snapshot.text"
-  found = "no test constructs a SnapshotSeed; crates/shared/tests holds only position_encoding.rs and vocabulary.rs. Blocked the same way the handler double is: SnapshotSeed::fresh needs a tree_sitter::Language and no grammar crate is in the workspace"
-  where = "crates/shared/src/document.rs:56"
-
-  [[section."core.md#10-testing".gap]]
-  claim = "protocol type differential tests against lsp-types over the golden corpus, plus a dedicated case per untagged union"
-  found = "lsp-types is not a dev-dependency of any crate, there is no golden corpus, and proto.rs declares no #[serde(untagged)] type, so \u00a78.5's risk is unexercised"
-  where = "crates/shared/Cargo.toml:36"
-
-  [[section."core.md#10-testing".gap]]
-  claim = "fuzz the frame codec, including split reads, oversized headers and bogus Content-Length"
-  found = "there is no frame codec: driver declares only the config and dispatch modules, and no test names a codec"
-  where = "crates/driver/src/driver.rs:10"
+state = "clean"
+last_audited = "2026-08-03T20:56:22+00:00"
