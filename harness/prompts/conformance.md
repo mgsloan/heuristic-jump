@@ -176,7 +176,7 @@ wrong. Two classes:
 section reference that does not resolve, a type name that changed, a false
 claim about a dependency's API, an example that does not compile. The test
 is: *is there a defensible answer that does not trade anything off?* Fix the
-document, and append to `state/spec-changelog.md` in exactly this shape,
+document, and append to `state/spec-changelog/{{loop}}.md` in exactly this shape,
 because a human is scheduled to read it and the dashboard finds entries by
 their id:
 

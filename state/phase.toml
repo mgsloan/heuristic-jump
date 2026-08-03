@@ -135,6 +135,11 @@ write = [
   "state/decisions/conformance-*.md",
   "state/metrics/conformance.jsonl",
   "state/findings/conformance.md",
+  # Both, for now. The per-loop file is where new entries go; the flat one
+  # stays writable because a campaign whose prompt was rendered before the
+  # split would otherwise fail the gate on a path it was told to use, and
+  # because its oldest entry is `CHANGE-bootstrap`, which is nobody's loop.
+  "state/spec-changelog/conformance.md",
   "state/spec-changelog.md",
   "state/handoff.md",
 ]

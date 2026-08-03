@@ -1923,28 +1923,43 @@ def spec_changes() -> list[dict]:
     was scheduled to read is the one that lets the spec drift toward whatever
     was built.
     """
-    path = STATE / "spec-changelog.md"
-    if not path.exists():
-        return []
-    text = path.read_text()
     reviewed = {
         row.get("target")
         for row in read_jsonl(STATE / "interventions.jsonl")
         if row.get("kind") == "spec-change-reviewed"
     }
     entries = []
-    matches = list(CHANGELOG_ENTRY.finditer(text))
-    for index, match in enumerate(matches):
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
-        entries.append(
-            {
-                "id": match.group("id"),
-                "heading": match.group("rest").strip(),
-                "body": text[match.end() : end].strip(),
-                "reviewed": match.group("id") in reviewed,
-            }
-        )
+    for path in changelog_paths():
+        text = path.read_text()
+        matches = list(CHANGELOG_ENTRY.finditer(text))
+        for index, match in enumerate(matches):
+            end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+            entries.append(
+                {
+                    "id": match.group("id"),
+                    "heading": match.group("rest").strip(),
+                    "body": text[match.end() : end].strip(),
+                    "reviewed": match.group("id") in reviewed,
+                    "owner": path.stem if path.parent.name == "spec-changelog" else "",
+                }
+            )
     return entries
+
+
+def changelog_paths() -> list[Path]:
+    """One changelog per loop, plus the single file that predates the split.
+
+    Two loops on two branches appending to one file conflict on every rebase,
+    which is what `design/loops.md` §13 means by partitioning shared state by
+    owner — it just did not extend the rule this far. A line-level union merge
+    would resolve the conflict and corrupt the result, since these are prose
+    blocks and interleaving two of them produces a third entry that neither
+    loop wrote.
+    """
+    directory = STATE / "spec-changelog"
+    paths = sorted(directory.glob("*.md")) if directory.is_dir() else []
+    legacy = STATE / "spec-changelog.md"
+    return ([legacy] if legacy.exists() else []) + paths
 
 
 def cmd_spec_changes(args: argparse.Namespace) -> int:

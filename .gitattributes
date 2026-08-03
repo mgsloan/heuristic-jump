@@ -1,0 +1,15 @@
+# Append-only logs. Two loops on two branches append to the same end of each
+# of these, so without a union merge every rebase conflicts — which would make
+# `design/loops.md` §13's "the rebase is conflict-free by construction" false
+# the first time a second loop ran.
+#
+# Union is correct here rather than merely convenient: every row is a complete
+# record carrying its own timestamp, nothing refers to a neighbouring line, and
+# duplicate suppression downstream is by id. Order across the seam does not
+# matter because nothing reads these positionally.
+#
+# It is *not* correct for prose — `state/spec-changelog/` is one file per loop
+# for that reason, since interleaving two entries line by line yields a third
+# entry neither loop wrote.
+state/**/*.jsonl merge=union
+state/*.jsonl merge=union
