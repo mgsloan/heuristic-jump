@@ -9,6 +9,7 @@
 //! `shared::ByteOffset` and never has to know which side of that edge it came
 //! from.
 
+mod agreement;
 mod deadline;
 mod document;
 mod error;
@@ -22,6 +23,7 @@ mod vocabulary;
 // position" at every use site.
 pub mod proto;
 
+pub use agreement::{Agreement, DefinitionSite, Severity};
 pub use deadline::{Clock, Deadline, SystemClock};
 pub use document::{DocumentSnapshot, SnapshotSeed};
 pub use error::{EncodingError, Error, HandlerError, ParseError, ProjectError, ProtocolError};

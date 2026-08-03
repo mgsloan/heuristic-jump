@@ -94,6 +94,17 @@ fn line_number<S: Serializer>(line: &LineIndex, serializer: S) -> Result<S::Ok, 
 }
 
 impl WirePosition {
+    /// The row, which is the one part of a wire position that is not in the
+    /// negotiated encoding — every encoding LSP offers counts *columns*.
+    ///
+    /// This does not weaken §8.3's inertness: what that section withholds is a
+    /// way to be used as an offset, and a row is not one. It exists because
+    /// §6's predicate compares `(uri, line)` and has to be able to read the
+    /// child's answer without reading the child's document.
+    pub fn line(self) -> LineIndex {
+        self.line
+    }
+
     /// The only way out. Requires naming the encoding and the document, which
     /// is exactly the information a correct conversion needs.
     pub fn resolve(

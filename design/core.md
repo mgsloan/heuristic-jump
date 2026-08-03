@@ -696,8 +696,15 @@ sent to the wrong place.
 Both sides are first normalized: `textDocument/definition` may answer with
 `Location`, `Location[]`, `LocationLink[]`, or null, and which one depends on
 whether the client advertised `linkSupport`. All shapes collapse to a set of
-`Location` — `(DocumentUri, ByteRange)` — taking `targetSelectionRange` for
-links.
+`DefinitionSite` — `(DocumentUri, LineIndex)` — taking `targetSelectionRange`
+for links.
+
+Not to a set of `Location`, and the reason is the paragraph below: `Location`
+is byte-based, a wire range's `character` is in the negotiated encoding, and
+converting one to the other needs the target document's text. A predicate that
+normalized into byte space would therefore have to read, which is exactly what
+this one may not do. `DefinitionSite` is the pair that gets compared and
+nothing more, so the normalized form and the comparison cannot drift apart.
 
 **The predicate compares `(uri, line)`, and nothing else.** Both sides carry
 a line: the shim's answer because `Location` does
@@ -743,6 +750,7 @@ number that gets measured stop being the same number.
 | Different file, same module tree | differs | `near_module` |
 | Different file, unrelated | differs | `unrelated` |
 | Child answered null or empty, shim committed | differs | `unrelated` |
+| Shim committed nothing, child answered | differs | `unrelated` |
 | Both empty | matches | — |
 
 The 3-line tolerance is deliberate: at that distance the correct definition is
@@ -750,6 +758,20 @@ on screen and the user is already reading it, so scoring it as wrong would
 measure something nobody experiences as wrong. The tiers below it are the
 error severity classes `high-level.md` reports, and are what a future budget
 would be attached to.
+
+The second-to-last row is the one case with no shim location to classify a
+severity from, since [below](#both-sides-are-sets) reads severity off the
+top-ranked one. It takes `unrelated` rather than a fourth class: it is the
+pessimistic choice, so it cannot flatter the precision numbers, and it is
+symmetric with the row above it, which is the same situation with the sides
+swapped.
+
+**What makes two files "the same module tree" is not settled** —
+`state/decisions/conformance-009.md`, where the provisional reading is "the
+same containing directory", which is the strongest test available to something
+that may not read the disk and does not know the language. It decides the
+split between the two severity classes `high-level.md` attaches separate
+budgets to, so it is a measurement question rather than a coding one.
 
 ### Both sides are sets
 

@@ -184,3 +184,84 @@ took this reading in campaign e3b8dbf4 and tagged it provisional at
 the type. The document moved, the code did not.
 
 **Campaign:** bc8f02bb-1cb1-48d7-8814-a22f8a2b8481
+
+## CHANGE-conformance-005 — core.md#6-the-agreement-predicate — normalisation stops at a row, because the predicate may not read
+
+**Contradiction:** §6 says the two sides normalise into byte space —
+
+> "All shapes collapse to a set of `Location` — `(DocumentUri, ByteRange)` —
+> taking `targetSelectionRange` for links."
+
+— and three paragraphs later says the predicate may not read the documents it
+is comparing:
+
+> "So it **reads nothing** — which matters, because divergence is classified
+> when the child responds, seconds after the answer, when the per-query read
+> cache is long gone and the target document may never have been open."
+
+Both cannot hold. The child's side arrives as `WireRange`, whose `character`
+is in the negotiated position encoding (§8.3); turning that into the
+`ByteRange` a `Location` carries requires the target document's text, and §3's
+whole argument is that guessing it instead is the highest-risk correctness
+failure in the shim. `Location` is also unconstructible without a
+`tree_sitter::Node` since the ruling on `conformance-004`, and the classifier
+has no node — it has a JSON response.
+
+**Resolution:** both sides normalise to a set of `DefinitionSite`, which is
+`(DocumentUri, LineIndex)` — exactly the pair the very next paragraph says the
+predicate compares, and nothing else. This trades nothing off because the
+range was never an input: §6 already says so in as many words —
+
+> "`Location.range` is unaffected and still earns its place — it is the jump
+> target on the wire. It simply is not an input to agreement."
+
+— and the section's own argument against comparing columns applies with more
+force to a conversion that would have to read a file to produce a column it
+then discards. The wire's `line` needs no encoding to interpret, because every
+encoding LSP offers counts *columns*; that is why the row survives where the
+range does not.
+
+**Not a spec-toward-code edit:** the code did not exist when this was written.
+The contradiction is between two claims in §6, both older than any of it, and
+the resolution is decided by which of the two is load-bearing elsewhere —
+"reads nothing" is, since §7 classifies agreement when the child's response
+arrives rather than while the query is open.
+
+**Campaign:** 5314b0c3-326e-415a-9eb6-1d9e7fad4378
+
+## CHANGE-conformance-006 — core.md#6-the-agreement-predicate — the table's missing row
+
+**Contradiction:** §6's pairwise table has a row for one side being empty but
+not the other:
+
+> "| Child answered null or empty, shim committed | differs | `unrelated` |"
+
+while "Both sides are sets" says where a severity comes from:
+
+> "`severity` is classified from the shim's **top-ranked** location whenever
+> `agreement` is `mismatch`, since that is where a user who trusts the
+> ordering looks first, and is undefined otherwise."
+
+The reverse of the first row — the shim committed no location and the child
+answered — is reachable (an `Outcome::Committed` carries a `Vec<Location>`
+that nothing constrains to be non-empty) and is a `mismatch`, but it has no
+top-ranked location, so the second quote does not tell you what `severity` to
+write. The table has no row for it either.
+
+**Resolution:** the row is added and takes `unrelated`. Two reasons it trades
+nothing off: it is the pessimistic class, so it cannot overstate precision the
+way a milder default would, and it is symmetric with the row directly above,
+which is the identical situation with the sides exchanged. A fourth class was
+the alternative and was rejected — `high-level.md` attaches a budget to each
+class, and adding one that means "the shim sent the user nowhere" would put a
+non-jump into a table of wrong jumps.
+
+**This campaign edited §6 and wrote the code it describes, and says so here
+because that is the shape being watched for.** The check is the direction of
+travel: this row's answer is asserted in
+`crates/shared/tests/agreement.rs::both_empty_is_a_match_and_one_sided_emptiness_is_not`,
+and it was written from the resolution above rather than the resolution being
+written from it. A human reading this should still treat the `unrelated`
+choice as provisional; it is the one line here with no prior claim behind it.
+
+**Campaign:** 5314b0c3-326e-415a-9eb6-1d9e7fad4378
