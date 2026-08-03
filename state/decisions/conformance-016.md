@@ -1,6 +1,6 @@
 ---
 id: conformance-016
-status: open
+status: accepted
 opened: 2026-08-03T22:50:00+00:00
 campaign: 51628b98-b5ea-48b1-bb77-696ecc51face
 kind: harness-request
@@ -85,7 +85,36 @@ a per-crate `[lints]` override, and `driver` holds both kinds of channel.
 
 ## Decision
 
-Undecided — waiting on a human.
+**Option B — the design documents win; the `clippy.toml` entry is removed**,
+answered 2026-08-03.
+
+`shim.md` §1 forbids a stalled reader outright, and in the transport a full
+channel does not apply backpressure, it deadlocks: the sender is a pipe-reader
+thread, so blocking it stops the fd being drained, which blocks the child's
+write. A lint cannot be right about that by default, because the right answer
+genuinely differs per channel.
+
+The entry is deleted rather than narrowed, since `clippy.toml` is path-based
+and `driver` holds both kinds of channel. Its reasoning is kept in place as a
+comment so it is not rediscovered and re-added — the lint was not wrong, it
+was over-general.
+
+**What replaces it is not a lint.** `deps.md` §2 already names the mitigation
+and it is now the whole of it: log and watch the `core` inbox depth, and rely
+on `shim.md` §10's shed-load rule to bound memory. `bounded` remains correct
+away from the transport — `driver/src/files.rs` uses `bounded(1)` and states
+why — but that is a per-channel judgement, which is what this entry was trying
+and failing to make automatic.
+
+A third option was considered and not taken: keep the lint and carry
+`#[expect(clippy::disallowed_methods, reason = …)]` at the transport sites,
+which would have put the deadlock reasoning at each construction. It was
+rejected as buying too little for a repository-wide rule that is wrong in the
+subsystem it most matters in.
+
+**Remaining work, for the loop rather than a human:** `deps.md` §2 records
+that the entry existed and was removed, and why. `shim.md` §2's "All channels
+are unbounded" is right as written and needs no change.
 
 ## Provisional choice in force
 

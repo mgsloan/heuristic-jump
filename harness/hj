@@ -1210,6 +1210,10 @@ def cmd_record(args: argparse.Namespace) -> int:
     return 0
 
 
+def fragment(name: str) -> str:
+    return (HARNESS / "prompts" / "fragments" / f"{name}.md").read_text().rstrip("\n")
+
+
 def render(template: str, values: dict[str, str]) -> str:
     """`{{name}}` is substituted at launch, from the source file, so there is
     one copy of every rule and it is the original
@@ -1385,6 +1389,17 @@ def prompt_values(phase: Phase, config: LoopConfig, campaign_id: str) -> dict[st
         "gate_command": f"harness/gate {config.owner}",
         "docs": ", ".join(f"`design/{d}`" for d in config.docs) or "(none)",
         "trailer_format": (HARNESS / "trailer-format.md").read_text().strip(),
+        # Two blocks that differ by loop rather than by value. They are files
+        # rather than string literals so the prose lives with the other prose,
+        # and one template rather than one per loop so a rule improved for one
+        # loop is improved for all of them — which is what `render` means by
+        # there being one copy of every rule.
+        "harness_note": fragment(
+            "harness-writable" if config.writes_harness else "harness-denied"
+        ),
+        "reference_note": fragment(
+            "reference-harness" if config.writes_harness else "reference-lsp"
+        ),
         "decision_template": (HARNESS / "decision-template.md").read_text().strip(),
         "stall_n": str(config.stall_n),
         "turn_target": config.turn_target,

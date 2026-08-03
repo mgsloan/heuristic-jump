@@ -19,11 +19,7 @@ Denied to you. Most of these are denied to every loop; the list is yours:
 
 {{denied_paths}}
 
-`harness/` is denied because a loop must not be able to weaken the thing that
-scores it. If the harness will not give you a number you need, or the gate
-rejects something it should allow, that is a decision record — not a
-workaround. A campaign that computes a metric its own way has quietly forked
-the measurement and nothing downstream can tell.
+{{harness_note}}
 
 # One campaign per session
 
@@ -83,18 +79,7 @@ worked through in sequence.
    Write what you took and why into `{{campaign_record}}`, naming the specific
    gaps rather than only the sections.
 
-2. **The protocol is vendored — read it rather than recalling it.**
-   `reference/lsp-3.17/shim-relevant.md` is LSP 3.17 with everything the shim
-   does not touch removed: the base protocol, lifecycle, document
-   synchronisation and the definition family, in the specification's own words.
-   `reference/lsp-3.17/specification.md` beside it is the whole thing, and
-   `metaModel.json` is every request and structure machine-readable.
-
-   Use them whenever a claim turns on what the protocol actually says — a
-   field's optionality, an error code, what a server may send unsolicited.
-   Recalling the protocol from memory is how a `#[serde(untagged)]` variant
-   ends up in the wrong order, which `core.md` §8.5 spends a section on. You
-   may not edit anything under `reference/`; it is generated.
+2. {{reference_note}}
 
    **Read only the design sections the item names.** Not whole documents. The
    gaps below carry document anchors, and the sections for the current ones

@@ -50,7 +50,23 @@ disallowed-methods = [
   # ── GROUP 8: walker / thread hygiene (tidy) ────────────────────────────────
   { path = "std::fs::read_dir", reason = "Bypasses gitignore semantics; gitignored files are out of scope and must be filtered by the `ignore` walker.", replacement = "ignore::WalkBuilder" },
   { path = "std::thread::spawn", reason = "Unnamed threads are hard to identify in traces; ~5 long-lived threads are created at startup.", replacement = "std::thread::Builder::new().name(...).spawn()" },
-  { path = "crossbeam_channel::unbounded", reason = "Unbounded channels hide backpressure and are usually where a recv_timeout/select was intended. Use bounded unless sender and receiver share a thread.", replacement = "crossbeam_channel::bounded" },
+  # `crossbeam_channel::unbounded` was denied here, and is not any more
+  # (`state/decisions/conformance-016.md`). The reason it was denied still
+  # reads well — unbounded channels hide backpressure and are often where a
+  # `recv_timeout`/`select` was meant — but it contradicted two design
+  # documents that require the opposite, and they win: `shim.md` §2 says all
+  # channels are unbounded because a bounded one eventually makes a reader
+  # wait, and a stalled reader stops forwarding, which §1 forbids outright. In
+  # the transport a full channel blocks a pipe-reader thread, which stops
+  # draining the fd, which blocks the child's write — a deadlock rather than
+  # the backpressure the lint was asking for.
+  #
+  # Do not re-add it without reading `deps.md` §2 first. What replaces it is
+  # not a lint: `deps.md` §2 requires the `core` inbox depth to be logged and
+  # watched, and `shim.md` §10's shed-load rule is what actually bounds memory.
+  # `bounded` is still right away from the transport — `driver/src/files.rs`
+  # uses `bounded(1)` and says why — but that is a judgement per channel, which
+  # is what this entry was trying and failing to make automatic.
 ]
 
 disallowed-types = [
