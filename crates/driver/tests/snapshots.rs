@@ -19,6 +19,7 @@
 
 #![expect(
     clippy::expect_used,
+    clippy::panic,
     reason = "`clippy.toml`'s allow-expect-in-tests reaches only `#[test]` bodies, and the fixture builders below are free functions. Failing loudly is the point: a half-built fixture leaves an empty file list, which every assertion here passes against."
 )]
 
@@ -28,7 +29,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use driver::{DebounceMs, Dispatched, FileListCache, OpenDocument, Request, TreeCache, dispatch};
+use driver::{
+    DebounceMs, Dispatched, Documents, FileListCache, OpenDocument, Queried, Registry, Request,
+    Synced, TreeCache, dispatch,
+};
+use serde_json::value::RawValue;
 use shared::proto::PositionEncoding;
 use shared::{
     ByteOffset, Clock, CommitPolicy, Confidence, Deadline, DocumentUri, DocumentVersion, Error,
@@ -142,8 +147,12 @@ fn the_tree_a_worker_parsed_is_what_the_next_seed_reparses_from() {
     let handler = Recording::default();
     let uri = uri_of(&root.join("src").join("lib.rs"));
     let mut cache = TreeCache::default();
+    let mut documents = Documents::new();
+    let registry = registry();
 
     let first = cache.seed(&open(
+        &mut documents,
+        &registry,
         &uri,
         &Rope::from(document().as_str()),
         1,
@@ -191,7 +200,7 @@ fn the_tree_a_worker_parsed_is_what_the_next_seed_reparses_from() {
         new_end_position: Point::new(801, 0),
     }]);
 
-    let second = cache.seed(&open(&uri, &edited, 2, &edits));
+    let second = cache.seed(&open(&mut documents, &registry, &uri, &edited, 2, &edits));
     assert_eq!(
         second.parse_kind(),
         ParseKind::Incremental,
@@ -239,10 +248,19 @@ fn a_tree_older_than_the_cached_one_does_not_replace_it() {
     let handler = Recording::default();
     let uri = uri_of(&root.join("src").join("lib.rs"));
     let mut cache = TreeCache::default();
+    let mut documents = Documents::new();
+    let registry = registry();
     let text = Rope::from(document().as_str());
 
     for version in [4, 2] {
-        let seed = cache.seed(&open(&uri, &text, version, &no_edits()));
+        let seed = cache.seed(&open(
+            &mut documents,
+            &registry,
+            &uri,
+            &text,
+            version,
+            &no_edits(),
+        ));
         let completed = dispatch(
             &handler,
             request(
@@ -275,9 +293,18 @@ fn a_forgotten_document_goes_back_to_a_full_parse() {
     let handler = Recording::default();
     let uri = uri_of(&root.join("src").join("lib.rs"));
     let mut cache = TreeCache::default();
+    let mut documents = Documents::new();
+    let registry = registry();
     let text = Rope::from(document().as_str());
 
-    let seed = cache.seed(&open(&uri, &text, 1, &no_edits()));
+    let seed = cache.seed(&open(
+        &mut documents,
+        &registry,
+        &uri,
+        &text,
+        1,
+        &no_edits(),
+    ));
     let completed = dispatch(
         &handler,
         request(
@@ -294,26 +321,71 @@ fn a_forgotten_document_goes_back_to_a_full_parse() {
 
     assert_eq!(cache.version(&uri), None);
     assert_eq!(
-        cache.seed(&open(&uri, &text, 2, &no_edits())).parse_kind(),
+        cache
+            .seed(&open(
+                &mut documents,
+                &registry,
+                &uri,
+                &text,
+                2,
+                &no_edits()
+            ))
+            .parse_kind(),
         ParseKind::Full,
         "a forgotten document still produced an incremental seed"
     );
 }
 
+/// A document in the map at a version, and the seed input built from it.
+///
+/// It goes through `Documents` rather than assembling an `OpenDocument`
+/// directly because there is no longer a way to assemble one: `core.md` §8.6's
+/// rule that an untrusted document cannot be queried is spelled as
+/// `OpenDocument::new` taking a `Trusted`, which only `Documents::query`
+/// produces. A fixture therefore reaches a seed the way `core` does, or not at
+/// all.
 fn open<'a>(
-    uri: &'a DocumentUri,
-    text: &'a Rope,
+    documents: &'a mut Documents,
+    registry: &Registry,
+    uri: &DocumentUri,
+    text: &Rope,
     version: i32,
     edits: &'a Arc<Vec<InputEdit>>,
 ) -> OpenDocument<'a> {
-    OpenDocument {
-        uri,
-        text,
-        version: DocumentVersion(version),
-        language_id: LanguageId::new("rust"),
-        grammar: grammar(),
-        edits,
+    let params = did_open(uri, text, version);
+    assert_eq!(
+        documents.opened(&params, registry),
+        Synced::Applied,
+        "the fixture's didOpen was not applied, so every assertion below is about an \
+         empty document map"
+    );
+    match documents.query(uri) {
+        Queried::Trusted(trusted) => OpenDocument::new(trusted, grammar(), edits),
+        other @ (Queried::NotOpen | Queried::Untrusted(_)) => {
+            panic!("a document opened a line ago is not queryable: {other:?}")
+        }
     }
+}
+
+fn did_open(uri: &DocumentUri, text: &Rope, version: i32) -> Box<RawValue> {
+    let text: String = text.chunks().collect();
+    let params = format!(
+        r#"{{"textDocument":{{"uri":{},"languageId":"rust","version":{version},"text":{}}}}}"#,
+        json_string(uri.as_str()),
+        json_string(&text),
+    );
+    RawValue::from_string(params).expect("the fixture's didOpen params are JSON")
+}
+
+fn json_string(text: &str) -> String {
+    serde_json::to_string(text).expect("a str is always serializable")
+}
+
+/// The handler set, for resolving the `languageId` a `didOpen` carries. A
+/// second `Recording` from the one under test: this one is never called, and
+/// sharing it would make `called` mean two things.
+fn registry() -> Registry {
+    Registry::new(vec![Arc::new(Recording::default())])
 }
 
 fn no_edits() -> Arc<Vec<InputEdit>> {

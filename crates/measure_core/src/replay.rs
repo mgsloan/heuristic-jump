@@ -258,6 +258,7 @@ fn failure_class(error: &Error) -> Box<str> {
         Error::Codec(_) => "Codec".into(),
         Error::Child(_) => "Child".into(),
         Error::Protocol(_) => "Protocol".into(),
+        Error::Document(_) => "Document".into(),
         Error::Parse(_) => "Parse".into(),
         Error::Project(_) => "Project".into(),
         Error::Handler(_) => "Handler".into(),

@@ -7,15 +7,17 @@
 //! workspace an exhaustive match on the top level is a feature — while every
 //! sub-enum is, so adding a leaf is not a breaking change to the table.
 //!
-//! One of `deps.md` §10's nine arms is still absent: `Document` classifies
-//! failures of the open-document map, which does not exist yet. It arrives
-//! with its producer, which is the same rule the dependency set follows — a
-//! variant nothing can return is a row in `shim.md` §11's table that nothing
-//! can exercise. `Encoding` arrived that way with §8.3's position resolution,
-//! and `Config`, `Codec` and `Child` with `measure_core`: the corpus scan is
-//! the first thing in the workspace that parses arguments, frames JSON-RPC and
-//! spawns a child, and it reaches them a whole phase before the shim does.
+//! All nine of `deps.md` §10's arms are present. Each arrived with its
+//! producer, which is the same rule the dependency set follows — a variant
+//! nothing can return is a row in `shim.md` §11's table that nothing can
+//! exercise. `Encoding` arrived with §8.3's position resolution, `Config`,
+//! `Codec` and `Child` with `measure_core` — the corpus scan is the first
+//! thing in the workspace that parses arguments, frames JSON-RPC and spawns a
+//! child, and it reaches them a whole phase before the shim does — and
+//! `Document` with `driver::Documents`, the open-document map §8.6's
+//! fail-closed rule is written against.
 
+use std::fmt;
 use std::io;
 use std::path::PathBuf;
 
@@ -23,7 +25,7 @@ use rope::{ByteLen, ByteOffset, LineIndex};
 use thiserror::Error;
 
 use crate::proto::PositionEncoding;
-use crate::vocabulary::{DocumentUri, LanguageId};
+use crate::vocabulary::{DocumentUri, DocumentVersion, LanguageId};
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -35,6 +37,8 @@ pub enum Error {
     Child(#[from] ChildError),
     #[error(transparent)]
     Protocol(#[from] ProtocolError),
+    #[error(transparent)]
+    Document(#[from] DocumentError),
     #[error(transparent)]
     Parse(#[from] ParseError),
     #[error(transparent)]
@@ -193,6 +197,118 @@ pub enum ProtocolError {
         #[source]
         source: url::ParseError,
     },
+}
+
+/// Our model of an open document drifting away from the editor's
+/// (`core.md` §8.6, and `deps.md` §10's ninth arm: "didChange for unopened
+/// doc, bad range, ...").
+///
+/// **None of these is ever returned to a caller.** §8.6's whole argument is
+/// that the *consequence* is what makes hand-rolled projections an acceptable
+/// risk: a detected inconsistency marks the document untrusted, and queries
+/// against it abstain until a `didClose`/`didOpen` resyncs it. `driver`'s
+/// `Documents` performs that conversion, explicitly and with a log line, which
+/// is what `deps.md` §10 asks of the one place an `Error` becomes an
+/// abstention. What the variants buy is that the log — and the test — says
+/// *which* self-check fired, and the three are different findings: a bad range
+/// means an earlier change was applied wrongly, a stale version means we and
+/// the editor disagree about what is open, and a `didSave` mismatch means the
+/// whole tracking pipeline is wrong in a way neither of the others caught.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum DocumentError {
+    /// §8.6's second check, in the half that has no document to be about: a
+    /// notification for a URI we hold no row for.
+    #[error("{notification} for {uri}, which is not open")]
+    NotOpen {
+        notification: DocumentNotification,
+        uri: DocumentUri,
+    },
+    /// §8.6's second check. LSP versions increase; one that does not means the
+    /// editor and the shim are describing different documents.
+    #[error("didChange for {uri} at version {}, which does not increase on {}", arriving.0, held.0)]
+    VersionDidNotIncrease {
+        uri: DocumentUri,
+        held: DocumentVersion,
+        arriving: DocumentVersion,
+    },
+    /// §8.6's first check: "an incremental range outside our rope is proof we
+    /// have already diverged. It cannot happen if every prior change was
+    /// applied correctly."
+    #[error("a change to {uri} names a range the document does not have")]
+    RangeOutsideDocument {
+        uri: DocumentUri,
+        #[source]
+        source: EncodingError,
+    },
+    /// The same check, in the half no encoding conversion can catch: both ends
+    /// resolve, and the range still is not one.
+    #[error("a change to {uri} starts at {start} and ends at {end}")]
+    RangeInverted {
+        uri: DocumentUri,
+        start: ByteOffset,
+        end: ByteOffset,
+    },
+    /// §8.6's third check, the free end-to-end one: immediately after a save
+    /// the buffer and the file are identical by definition, so a length that
+    /// differs invalidates the whole document-tracking pipeline at the one
+    /// point where the answer is known.
+    #[error("{uri} holds {held} bytes after didSave, and the text saved is {found}")]
+    SavedTextDiffers {
+        uri: DocumentUri,
+        held: ByteLen,
+        found: ByteLen,
+    },
+    /// The general case §8.6 is written for, and the one that does not care
+    /// which modelling mistake occurred: a forgotten `rename_all`, a missing
+    /// `default`, a numeric width wrong at the edges. Any of them surfaces
+    /// here as a projection that would not read the message it was given.
+    #[error("a state-bearing message could not be read as {notification}")]
+    Unreadable {
+        notification: DocumentNotification,
+        #[source]
+        source: serde_json::Error,
+    },
+    /// [`Unreadable`](DocumentError::Unreadable) with the document unknown
+    /// too: a message that did not parse and did not even name a
+    /// `textDocument`. Since it cannot be attributed, §8.6's direction says it
+    /// applies to everything open — "we do not know which one" is not a reason
+    /// to keep trusting all of them.
+    #[error("a {notification} named no document, so nothing open is still trusted")]
+    Unattributable { notification: DocumentNotification },
+}
+
+/// Which state-bearing notification a [`DocumentError`] arrived on.
+///
+/// An enum and not the method string, because `deps.md` §10 wants typed
+/// context on every variant — and because these four are exactly the messages
+/// §8.6 calls state-bearing, so a fifth one being added to the set should be a
+/// decision rather than a new string literal.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum DocumentNotification {
+    DidOpen,
+    DidChange,
+    DidSave,
+    DidClose,
+}
+
+impl DocumentNotification {
+    /// The LSP method name, so a log line reads in the vocabulary of the
+    /// traffic it is about.
+    pub fn method(self) -> &'static str {
+        match self {
+            DocumentNotification::DidOpen => "textDocument/didOpen",
+            DocumentNotification::DidChange => "textDocument/didChange",
+            DocumentNotification::DidSave => "textDocument/didSave",
+            DocumentNotification::DidClose => "textDocument/didClose",
+        }
+    }
+}
+
+impl fmt::Display for DocumentNotification {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.method())
+    }
 }
 
 #[derive(Debug, Error)]

@@ -28,8 +28,8 @@ pub use agreement::{Agreement, DefinitionSite, Severity};
 pub use deadline::{Clock, Deadline, SystemClock};
 pub use document::{DocumentSnapshot, ParseKind, SnapshotSeed};
 pub use error::{
-    ChildError, CodecError, ConfigError, EncodingError, Error, HandlerError, ParseError,
-    ProjectError, ProtocolError,
+    ChildError, CodecError, ConfigError, DocumentError, DocumentNotification, EncodingError, Error,
+    HandlerError, ParseError, ProjectError, ProtocolError,
 };
 pub use handler::{
     AbstainReason, CandidateCount, CommitPolicy, FileListEvidence, LanguageHandler, Margin, Micros,

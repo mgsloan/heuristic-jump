@@ -9,6 +9,7 @@
 
 mod config;
 mod dispatch;
+mod documents;
 mod files;
 mod pending;
 mod trees;
@@ -17,6 +18,7 @@ pub use config::{
     Config, DeadlineMs, DeadlineOverride, DebounceMs, Heuristics, Mode, ServerCommand,
 };
 pub use dispatch::{Answer, Completed, Dispatched, Parsed, Registry, Request, dispatch, hard_cap};
+pub use documents::{Documents, Queried, SaveCheck, Saved, Synced, Trusted};
 pub use files::{DID_CHANGE_WATCHED_FILES, FileListCache, Rescan};
 pub use pending::{Divergence, PendingQueries, PendingQuery, Resolution};
 pub use trees::{OpenDocument, TreeCache};

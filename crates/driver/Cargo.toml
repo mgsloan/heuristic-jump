@@ -16,6 +16,12 @@ doctest = false
 [dependencies]
 crossbeam-channel.workspace = true
 rustc-hash.workspace = true
+# `deps.md` §1's table lists `serde_json` (`raw_value`) for shared and driver.
+# It arrives here with `Documents`, which reads the four state-bearing
+# notifications itself: `core.md` §8.6's rule starts at "any failure while
+# deserializing", so a caller that deserialized first would have nowhere to
+# report one.
+serde_json.workspace = true
 shared.workspace = true
 tracing.workspace = true
 

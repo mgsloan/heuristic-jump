@@ -265,6 +265,7 @@ version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
  "rustc-hash",
+ "serde_json",
  "shared",
  "tracing",
  "tree-sitter",

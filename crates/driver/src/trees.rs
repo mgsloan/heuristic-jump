@@ -14,12 +14,11 @@
 //! `TreeCache` needs `&mut self` to change, which only its owner has.
 
 use rustc_hash::FxHashMap;
-use shared::{
-    DocumentUri, DocumentVersion, InputEdit, Language, LanguageId, Rope, SnapshotSeed, Tree,
-};
+use shared::{DocumentUri, DocumentVersion, InputEdit, Language, SnapshotSeed, Tree};
 use std::sync::Arc;
 
 use crate::dispatch::Parsed;
+use crate::documents::Trusted;
 
 /// One tree per open document, at the newest version anybody has parsed.
 #[derive(Debug, Default)]
@@ -36,23 +35,47 @@ struct Cached {
 /// What `core` knows about an open document at the moment a query arrives —
 /// everything a seed needs except the tree, which is what the cache adds.
 ///
-/// The open-document map that will own this is `shim.md` §5's and does not
-/// exist; this is the row of it that `core.md` §2 needs, passed rather than
-/// stored so that the cache holds trees and nothing else.
+/// The row itself belongs to `Documents`, which is `shim.md` §5's map; this is
+/// that row plus the two things the map has no business holding — a grammar,
+/// which comes from the registry, and the edit log, which is the parse cache's
+/// business.
+///
+/// **The fields are private and `new` takes a [`Trusted`].** That is
+/// `core.md` §8.6's rule made structural rather than checked: a `Trusted` is
+/// only obtainable from `Documents::query`, which produces none for an
+/// untrusted document, and this is the only way to a `SnapshotSeed` and
+/// therefore the only way to `dispatch`. A query against a document we have
+/// stopped believing does not abstain because something remembered to check —
+/// it cannot be built.
 #[derive(Debug)]
 pub struct OpenDocument<'a> {
-    pub uri: &'a DocumentUri,
-    pub text: &'a Rope,
-    pub version: DocumentVersion,
-    pub language_id: LanguageId,
+    document: Trusted<'a>,
     /// From `LanguageHandler::grammar`, which is how `driver` parses every
     /// registered language without depending on a grammar crate (`core.md`
     /// §1).
-    pub grammar: Language,
+    grammar: Language,
     /// The edits applied since the *cached* tree was parsed, shared by `Arc`
     /// rather than copied. Ignored when nothing is cached, since a full parse
     /// has nothing to reconcile.
-    pub edits: &'a Arc<Vec<InputEdit>>,
+    edits: &'a Arc<Vec<InputEdit>>,
+}
+
+impl<'a> OpenDocument<'a> {
+    pub fn new(document: Trusted<'a>, grammar: Language, edits: &'a Arc<Vec<InputEdit>>) -> Self {
+        Self {
+            document,
+            grammar,
+            edits,
+        }
+    }
+
+    pub fn uri(&self) -> &DocumentUri {
+        self.document.uri()
+    }
+
+    pub fn version(&self) -> DocumentVersion {
+        self.document.version()
+    }
 }
 
 impl TreeCache {
@@ -68,21 +91,22 @@ impl TreeCache {
     /// handler: `SnapshotSeed` keeps it in `base` and `realise` is the only
     /// way across.
     pub fn seed(&self, document: &OpenDocument<'_>) -> SnapshotSeed {
-        match self.trees.get(document.uri) {
+        let believed = &document.document;
+        match self.trees.get(believed.uri()) {
             Some(cached) => SnapshotSeed::incremental(
-                document.uri.clone(),
-                document.text.clone(),
-                document.version,
-                document.language_id,
+                believed.uri().clone(),
+                believed.text().clone(),
+                believed.version(),
+                believed.language_id(),
                 document.grammar.clone(),
                 cached.tree.clone(),
                 Arc::clone(document.edits),
             ),
             None => SnapshotSeed::fresh(
-                document.uri.clone(),
-                document.text.clone(),
-                document.version,
-                document.language_id,
+                believed.uri().clone(),
+                believed.text().clone(),
+                believed.version(),
+                believed.language_id(),
                 document.grammar.clone(),
             ),
         }

@@ -58,6 +58,7 @@ const READ: &[&str] = &[
     "GeneralClientCapabilities",
     "InitializeParams",
     "InitializeResult",
+    "NotifiedDocument",
     "ProgressParams",
     "ProgressToken",
     "ServerCapabilities",

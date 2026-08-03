@@ -548,6 +548,26 @@ pub struct DidSaveTextDocumentParams {
     pub text: Option<Box<str>>,
 }
 
+/// The one field all four state-bearing notifications carry, projected on its
+/// own.
+///
+/// It exists for §8.6: when a `didChange` or a `didSave` fails to deserialize,
+/// the document that message was about is exactly what the fail-closed rule
+/// needs and exactly what the failed deserialization did not produce. Reading
+/// the identifier separately recovers it in the common case — the failure is
+/// somewhere in `contentChanges`, not in `textDocument` — so one document is
+/// distrusted rather than every open one.
+///
+/// Lenient in the way §8.2 makes every projection lenient, and here that is the
+/// point rather than a hazard: this is not a variant of an untagged enum, and
+/// ignoring everything it did not model is what lets it read the identifier out
+/// of a message whose other half is malformed.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotifiedDocument {
+    pub text_document: TextDocumentIdentifier,
+}
+
 /// §8.5's fifth union, and the one that gets a hand-written `Deserialize`:
 /// `{text}` is a *subset* of `{range, rangeLength?, text}`, so the variants
 /// are not disjoint and untagged would decide by declaration order. The

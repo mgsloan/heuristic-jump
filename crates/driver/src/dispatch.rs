@@ -16,8 +16,8 @@ use rustc_hash::FxHashMap;
 use shared::proto::{PositionEncoding, WireLocation, WirePosition, WireRange};
 use shared::{
     ByteOffset, CommitPolicy, Deadline, DocumentSnapshot, DocumentUri, DocumentVersion, Error,
-    FileText, HandlerError, LanguageHandler, Outcome, ProjectError, ProjectPath, ProjectView,
-    Query, RelPath, Rope, ServerProfile, SnapshotSeed, Tree,
+    FileText, HandlerError, LanguageHandler, LanguageId, Outcome, ProjectError, ProjectPath,
+    ProjectView, Query, RelPath, Rope, ServerProfile, SnapshotSeed, Tree,
 };
 
 /// The handler set, resolved once at startup. `heuristic_jump` is the one
@@ -96,6 +96,20 @@ impl Registry {
     pub fn for_language_id(&self, language_id: &str) -> Option<&dyn LanguageHandler> {
         let index = *self.by_language_id.get(language_id)?;
         self.handlers.get(index).map(Arc::as_ref)
+    }
+
+    /// The same resolution, interning rather than dispatching: an incoming
+    /// `languageId` is a `Box<str>` (`core.md` §8.2 leaves it that way
+    /// deliberately), and a [`LanguageId`] is only obtainable from the handler
+    /// that declared it. This is the lookup that turns one into the other, and
+    /// it is why `Documents` cannot invent an id for a language nothing
+    /// handles.
+    pub fn language_id(&self, language_id: &str) -> Option<LanguageId> {
+        self.for_language_id(language_id)?
+            .language_ids()
+            .iter()
+            .copied()
+            .find(|declared| declared.as_str() == language_id)
     }
 
     /// For closed files found by search, which arrive as a bare path.
@@ -400,9 +414,18 @@ fn classify(error: Error) -> Dispatched {
         // wildcarded because this match is the mechanism `deps.md` §10 relies
         // on: a new sub-enum must fail to compile until somebody says which
         // side of the decision it falls on.
+        //
+        // `Document` is the one that cannot arrive here at all rather than
+        // merely not arriving from a handler: §8.6 converts every one of them
+        // to an abstention *before* a query is built, and `Documents::query`
+        // yields no `Trusted` for a document that suffered one — so there is
+        // no `SnapshotSeed`, no `Request`, and nothing to dispatch. One
+        // reaching this arm would mean the map handed out a document it had
+        // stopped believing, which is a failure and not an abstention.
         Error::Child(_)
         | Error::Codec(_)
         | Error::Config(_)
+        | Error::Document(_)
         | Error::Encoding(_)
         | Error::Handler(_)
         | Error::Parse(_)
