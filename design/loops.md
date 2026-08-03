@@ -169,6 +169,13 @@ target the stratum with the largest share × gap and are judged by the
 corpus; phase 3 targets duplication reports and is judged by an equality
 check. Neither reads any of it.
 
+Which documents get audited follows from the same test. `core.md` and
+`shim.md` do. **So does this one**, once the conformance loop turns
+around and builds the phase-2 machinery from it
+([section 18](#the-conformance-loop-builds-the-followup)) — the claims
+here are checkable in the same way, and nothing about the mechanism
+changes.
+
 The asymmetry is not an oversight, it is the difference between the
 documents. **`core.md` and `shim.md` make checkable claims** — the prime
 invariant holds, `writer:editor` owns the swallow decision,
@@ -2274,6 +2281,60 @@ expensive:
   is *not* recoverable: once a repository has been in the tuning corpus,
   moving it to held-out does not un-teach it.
 
+### The conformance loop builds the followup
+
+Once phase 1a is done and the loop has proved itself on it, **point that
+same loop at this document and have it build the phase-2 machinery** —
+supervisor, dashboard, frontier tool, campaign and findings digests, the
+cost join.
+
+The scheduling argument is the strongest one: **phase 1.5 is roughly a
+hundred machine-hours with no model in it at all.** The conformance
+loop finishes 1a and then has nothing to do while ground truth is
+collected. Building the followup in that window costs no wall clock
+that was not already being spent.
+
+The rest of the case is that this is the right shape of work for that
+loop. `loops.md` makes checkable claims — the supervisor reconciles
+desired against observed state, the digest is capped and rewritten,
+answers are appended to the intervention log — which is exactly what
+[section 3](#who-uses-it) says makes a document auditable. So it joins
+`core.md` and `shim.md` as audited material at that point, and the
+conformance loop's own machinery works on it unchanged.
+
+**When.** Not a vibe: phase 1a's own gate — every section of `core.md`
+clean and a human having ruled on the minor list — plus the qualitative
+check [section 15](#estimates-and-replacing-them-with-measurements)
+already asks for over the first ten campaigns. If the loop picked
+sensible targets, left the tree green, and wrote a journal worth
+reading, it is good enough to point at something else. If it did not,
+that is worth knowing before it builds the thing that will run six more
+loops.
+
+**The one rule that has to bend, carefully.**
+[Section 13](#mechanics-isolation-in-four-layers) denies every loop
+write access to `harness/`, and this work is writing to `harness/`. The
+prohibition exists for one reason — *a loop must not weaken the gate
+that judges it* — so the split follows from the reason rather than
+suspending it:
+
+| Path | While building the followup |
+|---|---|
+| `harness/gate*`, `harness/prompts/`, the auditor | **denied** — these judge this loop, now |
+| `harness/supervisor/`, `harness/dashboard/`, the frontier tool | writable — these judge phase 2a, later |
+
+That is enforceable by the same diff-scope check as everything else, and
+it keeps the invariant intact: nothing a loop writes can change how that
+loop is being scored.
+
+**Conformance to this document is necessary and not sufficient.** An
+audit can check that the supervisor has the structure described here.
+It cannot check that the resulting campaigns are any good, because that
+is a claim about behaviour under load, and the first real evidence
+arrives when phase 2a runs. So the machinery is reviewed by a human on
+the way in — it is a Class B change, like any other harness change — and
+the first ten campaigns of 2a are where it is actually validated.
+
 ### What the followup will know that this document does not
 
 Phase 1.5's output is what turns several guesses here into
@@ -2307,6 +2368,13 @@ the countermeasures are the weakest part of this document.
   metrics history is what makes this survivable — the cost phase can
   select an earlier, cheaper point — but it cannot manufacture a good
   option that was never on the curve.
+* **The loop builds the machinery that will judge later loops.** The
+  audit can confirm the supervisor matches
+  [section 14](#the-supervisor-is-a-reconciler-not-a-scheduler)
+  structurally; it cannot confirm the campaigns it produces are any
+  good, and the first evidence of that arrives a whole phase later.
+  Human review on the way in is the only check that happens before the
+  cost is sunk.
 * **Intervention that is never recorded.** A decision made in your head
   and applied by hand is invisible to every mechanism here: the loop
   cannot read the reasoning, the next campaign re-raises the question,
