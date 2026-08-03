@@ -697,7 +697,7 @@ def live_campaign_row(opened: dict, closed: dict, diffs: dict) -> str:
     identifier = running[-1]
     row = opened[identifier]
     owner = row.get("loop") or "conformance"
-    alive = campaign_is_running(identifier)
+    state, state_css = campaign_state(identifier)
     progress = {}
     path = Path(adapter("transcript-path", owner, identifier).strip() or "/nonexistent")
     if path.exists():
@@ -709,24 +709,26 @@ def live_campaign_row(opened: dict, closed: dict, diffs: dict) -> str:
     commits = len(campaign_commits(identifier))
     target = open_campaign_target(owner, identifier)
     shown = target_links(target) if target else '<span class="dim">still choosing</span>'
-    state = "running" if alive else "no process"
     quoted = urllib.parse.quote(identifier)
+
     def diff_cell(text: str, css: str) -> str:
         if not commits:
             return f'<td class="num dim">{text}</td>'
         return f'<td class="num {css}"><a href="/diff/conformance/{quoted}">{text}</a></td>'
+
     return (
         '<tr class="live">'
         f'<td><a href="/record/conformance/{quoted}"><code>{esc(identifier[:8])}</code></a></td>'
         f"<td>{shown}</td>"
-        f'<td class="num"><span class="{"good" if alive else "warn"}">{esc(state)}</span> '
+        f'<td class="num"><span class="{state_css}">{esc(state)}</span> '
         f'<span class="dim">{esc(elapsed(row.get("started") or ""))}</span></td>'
         f'<td class="num">{commits}</td>'
         + diff_cell(f"+{added:,}", "add")
         + diff_cell(f"-{deleted:,}", "del")
         + '<td class="num dim">—</td>'
         '<td class="num dim">—</td>'
-        f'<td class="num dim">{(progress.get("cache_read_tokens") or 0):,} cr</td>'
+        f'<td class="num">{(progress.get("cache_read_tokens") or 0):,}</td>'
+        '<td class="num dim">—</td>'
         f'<td class="num">{esc(progress.get("turns") or "—")}</td>'
         '<td class="num dim">—</td>'
         "</tr>"
@@ -778,6 +780,7 @@ def panel_campaign_table() -> str:
             f'<td class="num del"><a href="/diff/conformance/{urllib.parse.quote(identifier)}">-{deleted:,}</a></td>'
             f'<td class="num">{signed(d_clean)}</td>'
             f'<td class="num">{signed(d_gaps, good_when_positive=False)}</td>'
+            f'<td class="num">{(money.get("cache_read_tokens") or 0):,}</td>'
             f'<td class="num">{(money.get("output_tokens") or 0):,}</td>'
             f'<td class="num">{esc(money.get("turns"))}</td>'
             f'<td class="num">${(money.get("usd") or 0):.2f}</td>'
@@ -789,12 +792,14 @@ def panel_campaign_table() -> str:
         "Campaigns",
         '<table class="campaigns"><thead><tr><th>id</th><th>target</th><th class="num">outcome</th>'
         '<th class="num">commits</th><th class="num">+</th><th class="num">−</th>'
-        '<th class="num">Δclean</th><th class="num">Δgaps</th><th class="num">output</th>'
-        '<th class="num">turns</th><th class="num">API-eq</th></tr></thead>'
+        '<th class="num">Δclean</th><th class="num">Δgaps</th><th class="num">cache read</th>'
+        '<th class="num">output</th><th class="num">turns</th><th class="num">API-eq</th></tr></thead>'
         f"<tbody>{''.join(rows)}</tbody></table>",
         note="Δgaps rises when an audit finds more than the campaign closed — discovery, not "
-        "regression. The running campaign is the first row; its cost is blank rather than "
-        "guessed, since the numbers behind it only exist once the session ends",
+        "regression. Cache read is its own column because it is what a campaign actually costs — "
+        "about 141 tokens read for every one written. The running campaign is the first row, with "
+        "only the figures that can be derived mid-flight: output and cost need the session's final "
+        "event and are left blank rather than guessed",
     )
 
 
@@ -808,12 +813,15 @@ def panel_audit_table() -> str:
 
     Two columns exist to make specific silent failures loud:
 
-    `persisted` is gaps that were open before this audit and still are. It has
-    been 0 on every run so far, which is either the rotation reaching fresh
-    sections each time or gap identity being unstable — identity is
-    `sha256(section|claim)`, so an auditor rewording a claim retires the old
-    id and mints a new one, and the ledger reads that as a close plus a
-    discovery rather than as the same finding twice.
+    `persisted` is gaps that were open before this audit and still are, over
+    the sections this audit actually looked at. It is 0 on every run and that
+    is structural rather than suspicious: `hj audit-plan` takes the sections
+    the last campaign touched plus the `rotation` least-recently-audited
+    ones, so consecutive audits deliberately barely overlap — through the
+    first sweep of 34 sections at most one section per audit had been seen
+    before, and a gap cannot persist across audits that never look at it
+    twice. The number only becomes informative on the second sweep, and the
+    `overlap` column is here so it is obvious which regime you are in.
 
     `since` is the commit the auditor was given a diffstat against. `hj
     render-auditor` looks for the newest gap-log row carrying one; where this
@@ -853,6 +861,15 @@ def panel_audit_table() -> str:
                 best, best_gap = row, gap
         return best if best_gap is not None and best_gap <= 120 else {}
 
+    # How much of each audit's slice it had already seen, oldest first, so the
+    # `persisted` column can be read in the right regime.
+    seen: set[str] = set()
+    overlap: list[int] = []
+    for audit in audits:
+        slice_ = set(audit.get("sections_audited") or [])
+        overlap.append(len(slice_ & seen))
+        seen |= slice_
+
     rows = []
     for index, audit in enumerate(reversed(audits), start=1):
         money = money_for(audit.get("ts") or "")
@@ -865,6 +882,7 @@ def panel_audit_table() -> str:
             f'<td class="num">{len(audits) - index + 1}</td>'
             f'<td>{esc(stamp.strftime("%b %d %H:%M") if stamp else audit.get("ts"))}</td>'
             f'<td class="num">{len(audit.get("sections_audited") or [])}</td>'
+            f'<td class="num dim">{overlap[len(audits) - index]}</td>'
             f'<td class="num up">{closed}</td>'
             f'<td class="num down">{opened}</td>'
             + (
@@ -885,10 +903,12 @@ def panel_audit_table() -> str:
 
     spent = sum(row.get("usd") or 0 for row in cost)
     blind = sum(1 for audit in audits if not audit.get("commit"))
+    covered = len(seen)
     note = (
-        f"{len(audits)} audits, ${spent:.2f} total. "
-        "`persisted` is gaps open before and still open — 0 every time is worth suspecting, "
-        "since a reworded claim gets a new identity and reads as a close plus a discovery"
+        f"{len(audits)} audits, ${spent:.2f} total, {covered} distinct sections reached. "
+        "Each audit takes the sections the last campaign targeted plus the `rotation` "
+        "least-recently-audited ones, so `overlap` — how many it had seen before — is near "
+        "zero through the first sweep, and `persisted` cannot be anything but zero while it is"
     )
     if blind:
         note += (
@@ -898,9 +918,9 @@ def panel_audit_table() -> str:
     return panel(
         "Audits",
         '<table class="campaigns"><thead><tr><th class="num">#</th><th>when</th>'
-        '<th class="num">sections</th><th class="num">closed</th><th class="num">opened</th>'
-        '<th class="num">persisted</th><th class="num">since</th><th class="num">turns</th>'
-        '<th class="num">output</th><th class="num">API-eq</th></tr></thead>'
+        '<th class="num">sections</th><th class="num">overlap</th><th class="num">closed</th>'
+        '<th class="num">opened</th><th class="num">persisted</th><th class="num">since</th>'
+        '<th class="num">turns</th><th class="num">output</th><th class="num">API-eq</th></tr></thead>'
         f"<tbody>{''.join(rows)}</tbody></table>",
         note=note,
     )
@@ -1268,6 +1288,50 @@ def campaign_is_running(identifier: str) -> bool:
         return hj.campaign_is_alive(identifier)
     except Exception:
         return False
+
+
+def running_argv(*expected: str) -> bool:
+    """Whether some process is running `harness/adapter <expected...>`.
+
+    Confirmed against the process's real argv rather than by `pgrep -f`
+    substring, which matches any command line that merely mentions the string —
+    including the shell running this check. That has produced a false
+    "running" here more than once.
+    """
+    result = subprocess.run(
+        ["pgrep", "-f", f"adapter {' '.join(expected)}"], capture_output=True, text=True, check=False
+    )
+    for pid in result.stdout.split():
+        try:
+            argv = Path(f"/proc/{pid}/cmdline").read_bytes().decode().split("\0")
+        except OSError:
+            continue
+        for index, argument in enumerate(argv):
+            if argument.endswith("/adapter") and argv[index + 1 : index + 1 + len(expected)] == list(expected):
+                return True
+    return False
+
+
+def audit_is_running() -> bool:
+    return running_argv("audit")
+
+
+def campaign_state(identifier: str) -> tuple[str, str]:
+    """What the campaign is doing, and the css class for saying so.
+
+    A campaign whose process has exited is not therefore finished. `harness/
+    loop` records the outcome *after* running the audit, and audits have taken
+    forty to sixty turns, so there is a ten-minute window every cycle in which
+    the campaign is gone and no outcome exists yet. Reporting that as "no
+    process" reads as a crash; it is the normal close path.
+    """
+    if campaign_is_running(identifier):
+        return "running", "good"
+    if audit_is_running():
+        return "closing · auditing", "good"
+    if running_argv("campaign"):
+        return "closing", "dim"
+    return "no process", "warn"
 
 
 VIEWS = (
