@@ -45,8 +45,8 @@ Three things make this project unusually suited to it:
   quality is a number produced by the corpus scan, per stratum. A loop
   tuning a language handler is not grading its own homework; it is
   reading a scoreboard it cannot see the answers to.
-* **The spec is already written and it is enormous.** ~9000 lines
-  across nine documents, largely decided, with the undecided parts
+* **The spec is already written and it is enormous.** Ten thousand-odd
+  lines across `design/`, largely decided, with the undecided parts
   already enumerated as numbered open questions. That is a work queue
   that has mostly been built already.
 * **The seam is narrow and stated.** `LanguageHandler` plus the
@@ -476,7 +476,7 @@ in sections that were already dirty, is variance and worth noticing.
   CLI.
 
 The transparency golden tests, the double-response assertion, and the
-zero-inspection assertion (core §15) are the parts of the spec where the
+zero-inspection assertion (`shim.md` §12) are the parts of the spec where the
 audit matters least, because they are already mechanical. It matters
 most on the prose-shaped claims — "handlers get a snapshot, not a lock",
 "the driver must not depend on any language crate" — several of which
@@ -487,7 +487,7 @@ the exact one, and the loop should be told so.
 
 ## 6. Spec changes: what the loop may decide alone
 
-The loop will find the spec wrong. It is 9000 lines written before a
+The loop will find the spec wrong. It is ten thousand lines written before a
 line of code, so this is certain, and a loop that must escalate every
 inconsistency will escalate constantly and stall.
 
@@ -608,7 +608,7 @@ the metrics can be satisfied without work being done:
 | Rewrite the spec to match the code | Class A/B split, plus `state/spec-changelog.md` review; any spec edit in the same commit as code touching the same item is flagged |
 | Tune to the corpus | Held-out repos are in a corpus split the loop is never given ([section 12](#12-held-out-integrity)) |
 | `cargo insta accept` a metric regression | The gate checks metric *direction* itself; insta pins the table's shape, not its values |
-| Split one item into ten to show motion | Ledger additions by the loop are marked `origin = "loop"` and reported separately from the reviewed baseline |
+| Split one item into ten to show motion | Progress is sections clean over sections total ([section 3](#sections-clean-is-the-number)); the denominator is mechanical, so splitting a gap in two moves nothing |
 | Write a test that passes trivially | The audit judges the claim, not the test; a passing test with an unsatisfied claim is still a gap |
 | Add a language to show progress | Forbidden outright. A new `crates/lang_*` is outside every loop's owned paths, so the gate rejects it |
 
@@ -927,7 +927,7 @@ are already being computed.
 
 The size proxy is the stripped release size of the loop's own
 `measure_<lang>` binary. It is built in isolation, by construction —
-that is what the crate split in core §11 is for — so it goes in every
+that is what the crate split in `core.md` §7 is for — so it goes in every
 row.
 
 As an *absolute* number it is not the language's bill: it carries a
@@ -1000,7 +1000,7 @@ never on it, the same treatment latency and LOC get for the same kind of
 reason. A point that raises containment by lengthening lists is not a
 frontier advance and must not read as one.
 
-The list cap (`open-questions.md` question 13) is a constraint, like the
+The list cap (`open-questions.md` question 12) is a constraint, like the
 latency budget: enforced, reported, not optimised.
 
 Phase 3 has no frontier of its own, because it may not move quality at
@@ -1023,7 +1023,7 @@ Two things stay off the axes deliberately:
 ### Multiple servers do not multiply the frontier
 
 A language with two usable servers has two oracles and two metric
-tables (core §11), which threatens to make the frontier
+tables (`core.md` §7), which threatens to make the frontier
 four-dimensional and therefore useless. It does not, because the two
 surfaces being optimised are different code:
 
@@ -1246,7 +1246,8 @@ into a hard constraint, for a reason §9 did not have to consider:
 
 * **A shared crate is a surface two writers contend on.** Everything
   else in this design is partitioned so that no two loops ever write the
-  same thing. A live `resolve` would be the single exception, and it
+  same thing. A live shared resolution crate would be the single exception,
+  and it
   would be the most consequential one.
 * **Worse than contention: silent cross-language regression.** A loop
   editing a shared function changes another language's metrics with no
@@ -1623,7 +1624,6 @@ Anything that trades something off is a decision — write
 state/decisions/{owner}-NNN.md, pick the reversible option, tag the
 sites `// DECISION-NNN: provisional`, and keep going. Never wait.
 ---
-Ledger: {open items for this phase}
 Open gaps: {from the last audit, with their document anchors}
 Your campaigns so far: {one line each — target, outcome}
 Decisions affecting you: {unresolved}
@@ -1638,7 +1638,7 @@ CLAUDE.md is already in your context. Its constraints are absolute.
 You are auditing, not implementing. You may not edit anything.
 
 Spec: {{the design sections this phase covers}}
-Ledger: {{items for this phase, with their claims}}
+Prior audit: {{state/audit/ for those sections — verdicts and open gaps}}
 
 Answer in exactly two numbered lists.
 
@@ -1709,8 +1709,8 @@ You may write anywhere. Nothing else is running.
 
 Deterministic responses must not change. That is the gate, not a goal:
 `harness/equivalence` replays every language's frozen corpus before and
-after, and fails on any difference in a non-truncated query. Differences
-confined to truncated queries are reported for approval, not blocked.
+after, and fails on **any** difference at all. There is no carve-out
+([section 10](#phase-3-is-a-refactor-under-an-exact-oracle)).
 
 One campaign per session, and a campaign is one refactor target:
   1. Pick a target: the duplication report below, or an unharvested
@@ -2181,7 +2181,7 @@ problem we actually have, not a problem adjacent to it.
 | Journal | **Adopt** git trailers + `git interpret-trailers` |
 | Cost monitoring | **Adopt** `ccusage` |
 | Auditor | **Build the prompt**; a read-only session is the whole mechanism |
-| Ledger extraction notation | **Steal** EARS |
+| Spec claim notation | **Steal** EARS, for phrasing auditable claims |
 | SDD frameworks (Spec Kit, Kiro, OpenSpec, BMAD) | **Reject** |
 | Bencher (metric tracking service) | **Reject** — reasoning below |
 | `beads` (agent-facing issue graph) | **Reject** — reasoning below |

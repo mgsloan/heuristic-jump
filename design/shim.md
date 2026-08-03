@@ -250,7 +250,7 @@ it moves.
 
 | Message | Action |
 |---|---|
-| `initialize` | Forward, then inspect (root, capabilities). Never modified — see [section 4](core.md#3-position-encoding) |
+| `initialize` | Forward, then inspect (root, capabilities). Never modified — see [section 3](core.md#3-position-encoding) |
 | `initialized` | Forward |
 | `textDocument/didOpen` / `didChange` / `didClose` / `didSave` | Tee to `core`, forward |
 | `textDocument/definition` | Tee to `core`, forward. May be answered by the shim |
@@ -296,7 +296,7 @@ the one component that can make it race-free.
 
 That is the whole list; the editor -> child direction has no pre-forward
 decision at all, because the shim modifies nothing it forwards
-([section 4](core.md#3-position-encoding)). Every other classification —which
+([section 3](core.md#3-position-encoding)). Every other classification —which
 document changed, which health signal arrived, what latency to record —exists
 to update `core`, and `core` is downstream of the wire. It can be done after
 the frame is on its way, on the same buffer, with no effect on what the editor
@@ -1259,7 +1259,7 @@ tests that need a shim to run at all.
   byte-identically. This is the primary defence for the prime invariant and
   should run against traces from more than one editor. In the editor -> child
   direction there are **no exemptions at all**: the shim modifies nothing it
-  forwards ([section 4](core.md#3-position-encoding)), so every frame the
+  forwards ([section 3](core.md#3-position-encoding)), so every frame the
   editor sends must reach the child byte-identical, `initialize` included. In
   the child -> editor direction the only exemptions are the definition
   responses the shim answered itself, which are dropped rather than altered.
@@ -1297,7 +1297,7 @@ tests that need a shim to run at all.
 *  **Zero-inspection assertion.** Instrument the readers with a counter of
   frames inspected before forwarding, and assert that across a recorded
   session it is 0 in the editor direction —`initialize` included, since the
-  shim modifies nothing it forwards ([section 4](core.md#3-position-encoding))
+  shim modifies nothing it forwards ([section 3](core.md#3-position-encoding))
   —and 0 in the child direction except while the shim has an outstanding
   answer of its own. This is the executable form of
   [section 3.1](#31-how-little-inspection-the-forwarding-path-needs), and
@@ -1321,29 +1321,28 @@ tests that need a shim to run at all.
 
 ## 13. Module layout inside `driver`
 
+No `mod.rs` anywhere and a named library root, both per `CLAUDE.md`.
+
 ```
 crates/driver/src/
-  lib.rs            run(), thread wiring, child spawn, mode selection
+  driver.rs         run(), thread wiring, child spawn, mode selection ([lib] path)
   config.rs         Mode, deadline and pool sizing (clap lives in heuristic_jump)
   codec.rs          Content-Length framing, raw frame type
   peek.rs           bounded prefix scan for method/id, serde_json fallback
   router.rs         classification, forwarding, id namespacing
   standalone.rs     synthesized InitializeResult, MethodNotFound catch-all
+  actor.rs          the event loop, state ownership, snapshot-on-dispatch
   actor/
-    mod.rs          the event loop, state ownership, snapshot-on-dispatch
     pending.rs      PendingQuery table, is_repeat_of scan, cancellation
     health.rs       Child, ServerHealth, generic signals, policy table
+    adapters.rs     ServerAdapter trait, name -> adapter lookup
     adapters/
-      mod.rs        ServerAdapter trait, name -> adapter lookup
       rust_analyzer.rs
       pyright.rs
   docs/
     store.rs        Document map, didOpen/didChange application
     parse.rs        tree-sitter LRU, incremental reparse
     encoding.rs     UTF-16 / UTF-8 / byte offset conversion
-  project/
-    files.rs        ignore-crate walk, file list cache, watcher
-    view.rs         ProjectView impl: scoped disk reads, per-query cache
   dispatch/
     pool.rs         bounded worker pool, deadline enforcement
     registry.rs     languageId / extension -> handler, grammar lookup
@@ -1353,6 +1352,14 @@ crates/driver/src/
   transport/
     stdio.rs        LSP framing over stdin/stdout
 ```
+
+**There is no `project/` here.** The `ignore`-crate walk, the file list cache,
+the watcher, and `ProjectView` itself all live in `shared`, because
+`measure_core` needs exactly the same scope rules a phase earlier and a second
+implementation would mean the corpus scores a tool that is not the one that
+ships ([core.md section 1](core.md#1-handler-interface), `deps.md` §7). The
+driver hands `ProjectView` the worker pool at construction and otherwise does
+not own it.
 
 ## 14. Standalone mode
 
@@ -1396,10 +1403,10 @@ is forwarded byte-for-byte," standalone's is:
 
 | Message | Action |
 |---|---|
-| `initialize` | Answer with a synthesized `InitializeResult` — [17.3](#143-initialize-is-ours-now) |
+| `initialize` | Answer with a synthesized `InitializeResult` — [14.3](#143-initialize-is-ours-now) |
 | `initialized` | Ignore |
 | `textDocument/didOpen` / `didChange` / `didClose` / `didSave` | To `core`, as in [section 5](#5-document-state) |
-| `textDocument/definition` | To `core`. Always answered — [17.5](#145-abstention-must-say-something) |
+| `textDocument/definition` | To `core`. Always answered — [14.5](#145-abstention-must-say-something) |
 | `$/cancelRequest` | To `core`. Drops the pending query; no response is owed to a cancelled request |
 | `$/setTrace`, `$/logTrace` | Ignore |
 | `shutdown` | Answer `null` |
@@ -1414,7 +1421,7 @@ a few invented ones, assert a response comes back for each request and no
 response for any notification.
 
 A well-behaved client should send almost none of these, because
-[17.3](#143-initialize-is-ours-now) advertises almost no capabilities. Clients
+[14.3](#143-initialize-is-ours-now) advertises almost no capabilities. Clients
 are not uniformly well-behaved, and `MethodNotFound` is both correct and cheap.
 
 ### 14.3 `initialize` is ours now
@@ -1441,11 +1448,11 @@ Three things follow, each a change from proxy mode:
   up with broken hover and no idea why. This is also what keeps the
   `MethodNotFound` row above mostly theoretical.
 *  **The shim finally gets a vote on position encoding.**
-  [Section 4](core.md#3-position-encoding) is emphatic that in proxy mode the
+  [Section 3](core.md#3-position-encoding) is emphatic that in proxy mode the
   shim is in the middle of someone else's negotiation and does not get one.
   Here it is a party to the negotiation, so it picks `utf-8` whenever the
   client advertised it in `general.positionEncodings`, and the whole
-  conversion path ([section 4](core.md#3-position-encoding)) goes dark. That
+  conversion path ([section 3](core.md#3-position-encoding)) goes dark. That
   is a real reduction in the driver's highest-risk surface, and it is the one
   respect in which standalone is safer than proxy mode rather than weaker.
 *  **Sync kind is chosen, not observed.** `Incremental`, because the shim
@@ -1466,9 +1473,9 @@ shim emits one `window/showMessage` and one log line:
 This is what replaces the `--standalone` flag
 ([section 14.8](#148-invocation)). It is not suppressible. Standalone behaves
 materially differently — every abstention becomes an error response
-([17.5](#145-abstention-must-say-something)), the deadline is longer
-([17.6](#146-the-budgets-change-because-what-they-are-traded-against-changed)),
-and there is no ground truth ([17.7](#147-what-this-does-to-measurement)) — so
+([14.5](#145-abstention-must-say-something)), the deadline is longer
+([14.6](#146-the-budgets-change-because-what-they-are-traded-against-changed)),
+and there is no ground truth ([14.7](#147-what-this-does-to-measurement)) — so
 a user in this mode should know they are in it, whether they chose it or
 arrived by accident. One line at session start, in the log panel rather than a
 modal, is a small price for that.
@@ -1514,14 +1521,14 @@ absent rather than conditionally skipped:
 * **Response swallowing** ([section 3](#3-message-routing)). No child
   responses exist to swallow. The double-response hazard the swallow rule
   guards against is replaced by the exactly-one-response invariant in
-  [17.2](#142-the-standalone-invariant), which the same test harness assertion
+  [14.2](#142-the-standalone-invariant), which the same test harness assertion
   covers.
 * **Divergence reporting** ([section 9](#9-divergence-reporting)). Nothing
   to compare against, so the agreement predicate is unused and **no mismatch
   message is ever sent.** That is correct rather than a gap. In proxy mode the
   reports exist because the user believes they are talking to a real language
   server and needs telling when they were not. A standalone user was told at
-  startup that this is heuristic-only ([17.3](#143-initialize-is-ours-now)) and
+  startup that this is heuristic-only ([14.3](#143-initialize-is-ours-now)) and
   has no reason to expect otherwise, so there is nothing to correct them about.
   "Sometimes wrong and tells you so" is a proxy-mode property; standalone is
   "sometimes wrong, and you already know."
@@ -1544,10 +1551,10 @@ catch-all, and the policy function.
 This is the substantive behavioural change, and it inherits an argument
 already made.
 
-[Section 5](#what-abstention-means-on-the-wire) observes that in proxy mode
+[Section 8](#what-abstention-means-on-the-wire) observes that in proxy mode
 abstention is free: the request is still pending with the child, so the shim
 says nothing and the child answers. Standalone has no child, so silence is a
-hung request slot — the exact thing [17.2](#142-the-standalone-invariant)
+hung request slot — the exact thing [14.2](#142-the-standalone-invariant)
 forbids.
 
 The shim therefore answers every abstention, and it answers with a
@@ -1611,7 +1618,7 @@ standalone, on the grounds that a wrong answer there competes against no
 answer rather than against a correct one. The counter is that standalone is
 the mode with **no proper LSP to correct the record**: divergence reporting,
 which [section 9](#reporting) identifies as the entire safety mechanism, is
-dark here ([17.4](#144-health-policy-and-what-disappears)). A wrong answer in
+dark here ([14.4](#144-health-policy-and-what-disappears)). A wrong answer in
 proxy mode gets contradicted a few seconds later; a wrong answer in standalone
 stands forever. That argues for the floor being *tighter* in standalone, not
 looser, and it is the opposite of the intuitive conclusion —which is why it is
@@ -1695,7 +1702,7 @@ there are no forwarded frames to compare. What replaces it:
 * **Exhaustive response coverage.** For every request method in the LSP spec
   plus a set of invented ones, assert exactly one response comes back; for
   every notification, assert none does. This is the executable form of
-  [17.2](#142-the-standalone-invariant).
+  [14.2](#142-the-standalone-invariant).
 * **The double-response assertion carries over unchanged.** It is a harness
   invariant, not a proxy-mode one, and here it pairs with the coverage test
   above to make "exactly one" literal in both directions.
@@ -1706,7 +1713,7 @@ there are no forwarded frames to compare. What replaces it:
 * **Mode equivalence.** Run the same document/query script through both modes
   with a child scripted to never respond, and assert the heuristic answers are
   identical. This is what enforces the claim in
-  [17.4](#144-health-policy-and-what-disappears) that standalone is a policy
+  [14.4](#144-health-policy-and-what-disappears) that standalone is a policy
   variation: if resolution behaves differently, some mode knowledge has leaked
   into `core`.
 * **Encoding.** Assert that with a client advertising `utf-8`, no conversion

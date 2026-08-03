@@ -319,7 +319,7 @@ reason to decline. It also improves the case the tool is worst at -
 worse than nothing, so the ranked list is capped and the cap is reported.
 What should happen at the cap - truncate to the best N, or treat "too
 many to be useful" as an abstention - is not settled; see
-`open-questions.md` question 13.
+`open-questions.md` question 12.
 
 #### What this does to the metrics
 

@@ -12,9 +12,9 @@ than a mechanical fix-up:
 > `Point`, `PointUtf16`, and `TextSummary`. The newtypes are opaque — no
 > operators against bare integers, and positions and lengths are distinct.**
 
-`claude.md` asks for newtypes on primitive fields, and the driver's correctness
+`CLAUDE.md` asks for newtypes on primitive fields, and the driver's correctness
 rests on byte offsets more than on anything else — `core.md`
-[section 4](core.md#3-position-encoding) calls position
+[section 3](core.md#3-position-encoding) calls position
 handling the highest-risk detail in the whole driver, and
 [section 8](core.md#8-protocol-types) drops `lsp-types`
 specifically so that `ByteOffset` is what deserialization *produces* rather than
@@ -45,7 +45,7 @@ Both are reasonable upstream. The byte offset is the default dimension, the one
 you reach for without thinking; and a row is a row. They are the wrong defaults
 here for exactly that reason: `PointUtf16.column` and `Point.column` are both
 `u32` and mean different things, and mixing them is the failure
-[section 4](core.md#3-position-encoding) of the core
+[section 3](core.md#3-position-encoding) of the core
 design calls the highest-risk in the driver — invisible on ASCII, wrong by a
 few columns on any line that is not.
 
@@ -332,14 +332,14 @@ There is deliberately **no `From<ByteLen> for ByteOffset`**. Turning a length
 into a position means measuring from somewhere, so it is spelled
 `ByteOffset::ZERO + len`, which names the origin.
 
-**`ByteLen` is one type, shared with `resolve`.** `resolution.md` needs a byte
+**`ByteLen` is one type, shared with resolution code.** `resolution.md` needs a byte
 quantity for `bytes_scanned` — the running total across the files a query
 read — and that is this type, not a parallel one. The two uses look different
 (a document's length; a running total across files) but they are the same
 quantity with the same arithmetic, and the one place they meet is adding a
 file's length to the total. A separate `ScannedBytes` would put a conversion
 at exactly that point, which is the one place a unit error would be invisible
-anyway. So `shared` re-exports `ByteLen` and `resolve` uses it directly.
+anyway. So `shared` re-exports `ByteLen` and handlers use it directly.
 
 Note the total is a *counter*, not a budget: nothing compares it against a
 limit, since a search reads every candidate file (`resolution.md` §1.3). An
@@ -476,21 +476,20 @@ list, with these checks as the enforcement.
 The honest summary is that this trades some re-sync convenience for type safety
 in the place the design says is riskiest. It is worth it, but it is a real
 cost and it is the reason this is a separate document rather than a bullet in
-section 16.
+`core.md` section 9.
 
 ## 7. Testing
 
 ### All of upstream's tests are kept
 
-`core.md`
-[section 9](core.md#vendoring-the-zed-crates) proposes
-deleting rope's `#[cfg(test)]` modules because they reach for `gpui`, `zlog`,
-and `ctor`. **That is reversed: every test is preserved.** Once we are editing
-the crate, deleting its tests is exactly backwards — they are the only
-independent check that a 51-function signature sweep and the body edits that
-follow from it did not change behaviour, and several are randomised differential
-tests against a `String` oracle, which is precisely the kind of test nobody
-would write from scratch.
+rope's `#[cfg(test)]` modules reach for `gpui`, `zlog`, and `ctor`, which looks
+like a reason to delete them. **Every test is preserved instead**, and
+`core.md` [section 9](core.md#vendoring-the-zed-crates) states the same
+conclusion. Once we are editing the crate, deleting its tests is exactly
+backwards — they are the only independent check that a 51-function signature
+sweep and the body edits that follow from it did not change behaviour, and
+several are randomised differential tests against a `String` oracle, which is
+precisely the kind of test nobody would write from scratch.
 
 What they need turns out to be small. Only three things stand between the test
 modules and a plain `cargo test`:

@@ -340,7 +340,8 @@ Notes on the shape:
 
   It is data rather than a trait because handlers must not dispatch on server
   *identity* — `if server.id == PYRIGHT` scattered through a handler is the
-  per-language configuration format §11 rules out, wearing yet another hat.
+  per-language configuration format `resolution.md` §1.2 rules out, wearing yet
+  another hat.
   A handler reads a field describing a behaviour; it does not ask which
   server it is talking to.
 
@@ -1100,9 +1101,9 @@ conversion layer then has to launder into `DocumentUri`, `DocumentVersion`,
 where the encoding bugs live, and — decisively — **it is optional.** Nothing
 stops a later change from holding an `lsp_types::Position` a few functions
 inward, and nothing about that change looks wrong in review. The newtype
-discipline `claude.md` asks for becomes a convention enforced by attention
+discipline `CLAUDE.md` asks for becomes a convention enforced by attention
 rather than by the compiler, in exactly the part of the system
-[section 4](#3-position-encoding) singles out as the highest-risk.
+[section 3](#3-position-encoding) singles out as the highest-risk.
 
 The concrete case is `Position`:
 
@@ -1175,7 +1176,7 @@ impl WirePosition {
 
 `WirePosition` has private fields and no accessors. A `ByteOffset` cannot be
 obtained from it without supplying both the negotiated encoding and the text,
-so the failure mode in [section 4](#3-position-encoding) — using a UTF-16 column
+so the failure mode in [section 3](#3-position-encoding) — using a UTF-16 column
 as a byte index — is not something to be careful about. It does not compile.
 
 The same applies outbound: `WirePosition::encode(ByteOffset, enc, &Rope)` is
@@ -1221,7 +1222,7 @@ strictly it is. It is there because the alternative is worse in two places:
   for a file the handler may only have literal-scanned. With the line
   supplied, only that one line's text is needed, and only to resolve the
   UTF-16 column.
-* The agreement predicate ([section 9](#6-the-agreement-predicate)) is
+* The agreement predicate ([section 6](#6-the-agreement-predicate)) is
   line-based by definition — every severity tier is "within 3 lines" or
   "further than 3 lines", and columns are not compared at all. With the line
   in hand it compares `(uri, line)` and **reads nothing**, including in the
@@ -1402,7 +1403,7 @@ not the plan. **The consequence has to be safe.**
 > document abstain, unconditionally, until a `didClose`/`didOpen` resyncs it.
 
 This is the mechanism that makes hand-rolled types an acceptable risk, and it
-is more general than anything in 18.5: it does not care *which* modelling
+is more general than anything in 8.5: it does not care *which* modelling
 mistake occurred. It converts the entire class from "confidently wrong" to
 "abstain" — the axis the whole tool is built on, since `high-level.md` prices an
 abstention at approximately nothing and a wrong answer at the tool's
@@ -1497,7 +1498,7 @@ on any language crate.** Wiring happens in `heuristic_jump`.
               shared  <-- rope, tree-sitter, serde, serde_json, url,
              /  /  |  \      ignore, rayon, thiserror, rustc-hash
             /  /   |   \
-measure_core  /  similarity  driver  <-- crossbeam, rayon, clap
+measure_core  /  similarity  driver  <-- crossbeam-channel, rayon
        |     /     |          |
        |    lang_* /          |
        |     /  \ /           |
@@ -1521,7 +1522,7 @@ Every edge, and why:
   `tree-sitter`, `ignore` (for `ProjectView`'s walk), `rayon` (for
   `ProjectView::scan`, which executes on the pool it is handed at
   construction — `resolution.md` §3), `thiserror` (for `Error`'s derives),
-  and `rustc-hash`. This list is the authoritative one; §18.7 refers back to
+  and `rustc-hash`. This list is the authoritative one; §8.7 refers back to
   it rather than restating it.
 
   ** `Error` is one enumerated type covering every failure in the system**,
@@ -1551,10 +1552,13 @@ Every edge, and why:
 *  ** `lang_*` depend on `shared` and `similarity` **, plus their own
   `tree-sitter-<lang>` grammar crate. Nothing depends on them except
   `heuristic_jump` and their own `measure_<lang>`.
-*  ** `driver` depends on `shared` only.** Everything in sections 1 through 15
-  lives here. It is generic over the handler set.
-*  ** `heuristic_jump` depends on `driver` and every `lang_*`. ** It is the
-  single place where the language list is enumerated:
+*  ** `driver` depends on `shared` only.** Everything `shim.md` describes lives
+  here. It is generic over the handler set.
+*  ** `heuristic_jump` depends on `driver` and every `lang_*`, plus `clap` and
+  `tracing-subscriber`. ** Argument parsing and log setup live here rather than
+  in `driver` (`deps.md` §11, `shim.md` §13), so `driver` stays a library with
+  no opinion about how it was invoked. It is also the single place where the
+  language list is enumerated:
 
 ```rust
 fn main() -> Result<(), shared::Error> {
@@ -1742,7 +1746,8 @@ glance whether upstream changed anything that matters.
 
 **Licensing consequence, stated plainly:** `rope` is GPL-3.0-or-later, so the
 shipped binary is GPL-3.0-or-later. That is a project-level commitment
-following from vendoring, not a detail, and `high-level.md` should say so.
+following from vendoring, not a detail, and `high-level.md` says so under
+"License".
 
 It does **not** follow that our own crates are GPL. `crates/*` are `MIT`:
 vendoring GPL code does not transfer copyright in code we wrote, and MIT is

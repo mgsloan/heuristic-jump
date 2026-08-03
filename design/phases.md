@@ -55,11 +55,11 @@ Instead of having the per-language loops do premature optimization, this is wher
 
 This should effectively be a refactor. The deterministic responses should not change at all. If this is preventing some optimization, this should be escalated for human review.
 
-# 4: Repo collection for all languages built into Zed
+# 4a: Repo collection for all languages built into Zed
 
-Same as "1: Repo collection" but for all of these languages.
+Same as "1b: Repo collection" but for all of these languages.
 
-# 4: LSP installation
+# 4b: LSP installation
 
 Need to install lsps for all these languages too.
 

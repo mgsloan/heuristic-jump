@@ -3,8 +3,8 @@
 This covers everything behind the handler seam:
 
 * How a reference under the cursor becomes a definition location, stage by stage.
-* The shared resolution utilities in `resolve` that languages build from, and
-  the line between those and per-language code.
+* The shared resolution utilities in `similarity` that languages build from,
+  and the line between those and per-language code.
 * The confidence model, which in v1 is measured rather than enforced, and the
   commit policy that a future precision floor would be expressed in.
 
@@ -83,7 +83,8 @@ From core doc [section 1], a handler receives a `Query` and returns an
   driver enforce scope, count bytes and files for the trace record, and reuse
   the parse cache.
 * **Every failure is `shared::Error`.** Per `CLAUDE.md` and core doc
-  [section 16], there is one system-wide enum, and resolution's failures are
+  [section 9](core.md#the-dependency-graph), there is one system-wide enum,
+  and resolution's failures are
   variants of it rather than a local error type per crate. Abstention is
   emphatically not in it — `AbstainReason` is an outcome, not a failure.
 
@@ -124,8 +125,8 @@ shared utilities, not through a common framework or config format that each
 language has to be expressed in."
 
 Taken seriously, that rules out the obvious design. There is no
-`resolve::Pipeline` with registered stages, no `ResolutionConfig`, no trait
-with eight hooks that `resolve` calls in a fixed order. Each `lang_*`
+`Pipeline` type with registered stages, no `ResolutionConfig`, no trait
+with eight hooks that a shared crate calls in a fixed order. Each `lang_*`
 crate writes its `goto_definition` out longhand as a sequence of `if let`
 returns, calling shared utilities for the parts that are genuinely mechanical.
 
@@ -149,7 +150,7 @@ want to stick with that limitation" refers to.
 
 The rule of three applies to going the other way: when a second language wants
 something the first already wrote, it copies. When a third wants it, it moves
-to `resolve`. Deduplication is allowed to lag, because a shared utility
+to `similarity`. Deduplication is allowed to lag, because a shared utility
 extracted from two examples is usually the wrong shape.
 
 ### 1.3 The search is exhaustive, and the clock may only abort it
@@ -271,7 +272,7 @@ Four consequences here:
 
 The open end is standalone, which has no server to stand in for and therefore
 no oracle at all. `ServerId` is `None` there, and `open-questions.md` question
-15 asks whether it should imitate a neutral profile or the most widely deployed
+14 asks whether it should imitate a neutral profile or the most widely deployed
 one. That is not a resolution decision, but resolution is where it lands: a
 handler must behave *somehow* with an empty profile, and "whatever the shared
 logic does" is the current answer by default rather than by choice.
@@ -595,8 +596,9 @@ The view is instantiated per query. Within it:
 
 The split: **the handler builds the pattern and interprets the matches;
 `ProjectView` executes the search.** Execution belongs to the view because it
-owns the two things a search must respect — the bounded pool from core doc
-[section 13] and the deadline — and because a handler that spawned its own
+owns the two things a search must respect — the bounded pool from
+`shim.md` [section 10](shim.md#10-parallel-dispatch-and-resource-limits) and
+the deadline — and because a handler that spawned its own
 threads would take back exactly the CPU headroom the no-index decision exists
 to preserve.
 
@@ -739,7 +741,7 @@ point.
 `HashFrom`, `IdentifierParts`, and the Jaccard / weighted-overlap metrics
 (`src/text_similarity/`). This is well-factored, generic over the occurrence
 source, and its `u32`-hash tradeoff is argued rather than assumed
-(`occurrences.rs:41-50`). It ports to `resolve` with the buffer types
+(`occurrences.rs:41-50`). It ports to `similarity` with the buffer types
 swapped out.
 
 **Kept: path/namespace similarity.** Scoring a namespace like `a::b::c` against
@@ -912,7 +914,7 @@ signals with held-out validation is defensible; thirty is not.
 ```rust
 pub struct Ranked {
     /// Best first. Never empty; a stage with no candidates abstains.
-    pub locations: Vec<Candidate>,
+    pub candidates: Vec<Candidate>,
     pub margin: Margin,          // normalized gap from first to second
     pub considered: CandidateCount,
     pub truncated_list: bool,    // more candidates existed than the cap allows
@@ -950,7 +952,7 @@ real reduction in the cost of getting ranking wrong, and it is the main reason
 this decision improves the strata the tool is worst at.
 
 The comparator is still a total order, and determinism is still required —
-by the retry protocol, by the core doc's mode-equivalence test (17.9), and by
+by the retry protocol, by `shim.md`'s mode-equivalence test (§14.9), and by
 `measure replay`
 ([section 1.3](#13-the-search-is-exhaustive-and-the-clock-may-only-abort-it)).
 Score, then import tier, then `(ProjectPath, name_range.start)`
@@ -964,7 +966,7 @@ invisible below the winner is now visible in the picker.
 containment means: the metric was only ever computed over what survived the
 cap, so an uncapped and a capped `match_contained` are not the same
 observation. Where the cap sits, and whether hitting it should truncate or
-abstain, is `open-questions.md` question 13 — truncation is the provisional
+abstain, is `open-questions.md` question 12 — truncation is the provisional
 choice, on the grounds that it keeps producing data about the case.
 
 ## 7. Confidence and the commit decision
@@ -1075,7 +1077,7 @@ impl CommitPolicy {
         &self,
         stratum: Stratum,
         confidence: Confidence,
-        location: Location,
+        locations: Vec<Location>,
     ) -> Outcome;
 }
 ```
@@ -1250,7 +1252,8 @@ nothing. [Open question 6](#open-questions).
 Two of these the driver acts on rather than merely logging:
 
 * **`NoCandidates`** triggers the background file-list rescan from core doc
-  [section 6], debounced. The query that triggered it still abstains; the
+  [section 4](core.md#4-project-file-enumeration), debounced. The query that
+  triggered it still abstains; the
   retry sees a fresh list. This is the mechanism that section assumed, and it
   is trustworthy precisely because the scan was exhaustive: "not found" now
   means the name is not in the file list, which is evidence about the list.
@@ -1259,8 +1262,8 @@ Two of these the driver acts on rather than merely logging:
   cut off rather than completed, so it says nothing about the list, and
   rescanning would spend I/O in the window that just proved to be short of
   it.
-* **`HandlerError`** feeds the repeated-panic handler disable in core doc
-  [section 14].
+* **`HandlerError`** feeds the repeated-panic handler disable in
+  `shim.md` [section 11](shim.md#11-failure-handling).
 
 The rest exist so the per-stratum table can say *why* a stratum has low
 coverage, which is the difference between a table that drives work and a table
@@ -1292,10 +1295,11 @@ than a preference, and they go further than "extract after, not before":
   the corpus before and after
   ([section 11](#11-testing)).
 
-**So the `resolve` crate described below does not exist during phase 2**, and
-the table is an inventory of what phase 3 would be expected to find, not a
-plan to build it. One exception, already carved out by core doc
-[section 16]:
+**So none of the shared modules described below exist during phase 2**, and the
+table is an inventory of what phase 3 would be expected to find, not a plan to
+build it. Phase 3 grows them inside `similarity` rather than spawning a second
+shared crate (`loops.md` §13). One exception, already carved out by core doc
+[section 9](core.md#the-dependency-graph):
 
 ### `similarity` — the one exception, ported and frozen
 
@@ -1341,7 +1345,7 @@ abstraction looks like more of the same good thing.
 | Visibility | `pub(crate)`, `_name`, `export`, header/impl splits |
 | Qualifier semantics | What `a::b::C` asserts about where `C` lives |
 
-### Explicit non-goals for `resolve`
+### Explicit non-goals for the shared crate
 
 No pipeline driver. No query-file loader. No per-language config struct. No
 trait that languages implement other than `LanguageHandler` itself.
@@ -1547,7 +1551,7 @@ snapshot, or the corpus metrics themselves. Failing seeds are committed under
   no run-to-run noise to threshold against, only sampling noise in how many
   queries a stratum has — which is a property of the corpus, not of the run,
   and is what the per-stratum interval is for.
-* **Held-out corpus.** Per `high-level.md`'s development plan, 2–3 repositories per
+* **Held-out corpus.** Per `high-level.md`'s development plan, 3–4 repositories per
   language never seen by tuning, in `../heuristic-jump-corpus/test/` — a
   sibling of `training/`, not a subdirectory of it, so isolation is a path a
   session was never given rather than a rule it was asked to respect (core
@@ -1599,7 +1603,7 @@ The predictions most worth being wrong about:
 * **Median N on `AmbiguousName` and `TypeInferenceRequired`.** These decide
   whether the picker is usable. A median of 6 is a list; a median of 30 is a
   wall of text that the cap will be doing all the work on, and
-  `open-questions.md` question 13 becomes urgent rather than tidy.
+  `open-questions.md` question 12 becomes urgent rather than tidy.
 * **`AmbiguousName` share.** Predicted at 4% from the a-priori classification,
   but the refinement in [section 8](#8-strata-and-abstention-reasons) moves
   queries *into* it during search, so the measured share could be several times
@@ -1683,7 +1687,7 @@ documents do not rot.
    improves monotonically as the tool returns more, which is the flaw
    `high-level.md` rejects plain match rate for.
 
-   What is left over is the cap, which is `open-questions.md` question 13 and is
+   What is left over is the cap, which is `open-questions.md` question 12 and is
    genuinely open in both halves — where it sits, and whether hitting it should
    truncate or abstain.
 
@@ -1814,7 +1818,7 @@ documents do not rot.
     nothing else in the design has.
 
 17. **What does a handler do with no oracle?**
-    `open-questions.md` question 15 asks which server standalone should imitate
+    `open-questions.md` question 14 asks which server standalone should imitate
     — a neutral profile, or the most widely deployed one — and notes it also
     covers proxying a server we have no profile for. It is filed as a product
     question, but it lands here, because a handler with an empty

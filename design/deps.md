@@ -18,13 +18,13 @@ it is worth knowing when we are ahead of them.
 | Crate | Version | Where | Verdict |
 |---|---|---|---|
 | `crossbeam-channel` | 0.5.16 | driver | **chosen** over tokio — see §1 |
-| `rayon` | 1.12.0 | driver, vendored rope | chosen |
+| `rayon` | 1.12.0 | shared, driver, vendored rope | chosen |
 | `serde` | 1.0.229 | shared, driver | chosen |
 | `serde_json` | 1.0.151 (`raw_value`) | shared, driver | chosen |
 | `lsp-types` | 0.95.1 | **dev only** | **rejected as a runtime dep** — see §3 |
 | `url` | 2.5.8 | shared | chosen, now a direct dep |
 | `tree-sitter` | 0.26.11 | shared, driver | chosen (Zed: 0.26.9) |
-| `ignore` | 0.4.31 | driver | chosen |
+| `ignore` | 0.4.31 | shared | chosen — `shared`, not `driver`, see §7 |
 | `notify` | 8.2.0 | driver | **deferred** behind a feature — see §7 |
 | `lru` | 0.18.1 | driver | chosen, with a caveat — see §8 |
 | `thiserror` | 2.0.19 | shared | chosen; `anyhow` explicitly rejected — see §10 |
@@ -34,7 +34,7 @@ it is worth knowing when we are ahead of them.
 | `heapless` | 0.9.3 | vendored rope/sum_tree | forced by rope |
 | `unicode-segmentation` | 1.13.3 | vendored rope | forced by rope |
 | `log` | 0.4.x | vendored rope/sum_tree | forced by rope |
-| `memchr` | 2.8.3 | resolve (not yet) | noted, out of scope |
+| `memchr` | 2.8.3 | `lang_*` (not yet) | noted, out of scope |
 | `insta` | 1.48.0 | dev | chosen |
 | `rand` | 0.9 (Zed's pin) | dev | chosen — see §5, §12 |
 | `criterion` | 0.5 | dev | vendored rope's benchmark only — §5 |
@@ -62,7 +62,7 @@ worker pool, communicating only over channels. Nothing in it is async-shaped:
 * `ignore`'s parallel walker is thread-based.
 * `notify` is sync-native.
 * Deadlines are `Instant` + `AtomicBool` polled cooperatively — `core.md`
-  rules out a timer-driven deadline in §9, on the grounds that a timeout does
+  rules out a timer-driven deadline in §5, on the grounds that a timeout does
   not actually stop CPU-bound work. So even the timer story does not want
   tokio.
 * The one remaining timer (the file-list rescan debounce) is
@@ -90,24 +90,24 @@ Alternatives considered:
 * **`std::sync::mpsc`** instead of crossbeam — plausible; std's channel is
   crossbeam-derived now. Rejected because we need `select!` over
   (editor events, child events, worker results, timer) in one loop, and std
-  has no select. Also crossbeam gives `Receiver::len()`, which §13's "no
-  heuristic work while `core` is behind" rule needs to be able to read.
+  has no select. Also crossbeam gives `Receiver::len()`, which `shim.md` §10's
+  "no heuristic work while `core` is behind" rule needs to be able to read.
 
 ## 2. Channels
 
 `crossbeam-channel` 0.5.16, `unbounded()` everywhere, per `shim.md` §2.
 
-One thing to get right: `core.md` says unbounded because a bounded channel
+One thing to get right: `shim.md` §2 says unbounded because a bounded channel
 could stall a reader. That is correct but it means memory is bounded only by
-the shed-load rule in §13, so the `core` inbox length is a number we should
-log and watch, not just assert about.
+the shed-load rule in `shim.md` §10, so the `core` inbox length is a number we
+should log and watch, not just assert about.
 
 ## 3. LSP types: our own, not `lsp-types`
 
 **Chosen: hand-written wire types in `shared::proto`. `lsp-types` 0.95.1
 stays as a dev-dependency oracle only.**
 
-The grounds are not dependency count. Design section 18 has the full
+The grounds are not dependency count. `core.md` §8 has the full
 argument; the dependency-relevant part:
 
 * **The motive is the newtypes.** `CLAUDE.md` asks for newtypes on primitive
@@ -120,12 +120,12 @@ argument; the dependency-relevant part:
   newtype *is* the deserialization target.
 * **The sharp case is `Position`.** `lsp_types::Position.character` is a bare
   `u32` whose unit — UTF-16 code units, UTF-8 bytes, UTF-32 code points —
-  depends on a negotiation that happened elsewhere. Design section 4 calls
+  depends on a negotiation that happened elsewhere. `core.md` §3 calls
   that the highest-risk correctness detail in the driver. Our `WirePosition`
   has private fields and converts only when handed the encoding and the text,
   which makes the bug unrepresentable rather than merely tested for.
 * **The surface is smaller than a general LSP crate.** We never round-trip a
-  message (`core.md` section 1 forbids it), so incoming types are read-only
+  message (`shim.md` §1 forbids it), so incoming types are read-only
   partial projections and serde ignores what we did not model. Roughly thirty
   small structs.
 * **The spec knowledge is kept without the dependency.** `lsp-types` becomes a
@@ -165,7 +165,7 @@ Alternatives considered:
 
 The real cost is the untagged unions — `id`, `textDocumentSync`,
 `definitionProvider`, the definition result, and `contentChanges` — which is
-where hand-rolled wire types actually break. Design section 18.5 makes the
+where hand-rolled wire types actually break. `core.md` §8.5 makes the
 golden corpus and the `lsp-types` differential test the explicit condition on
 which this choice is acceptable.
 
@@ -337,8 +337,7 @@ Summary of the per-crate `license` fields:
 | `crates/*` — everything we write | `MIT` |
 | `vendor/rope` | `GPL-3.0-or-later` (Zed's, unchanged) |
 | `vendor/sum_tree` | `Apache-2.0` (Zed's, unchanged) |
-
-| the shipped binary | GPL-3.0-or-later |
+| the shipped binary | `GPL-3.0-or-later` |
 
 `sum_tree` being Apache-2.0 is worth noting: Apache-2.0 is one-way
 compatible into GPL-3.0, and it is not the constraint here. The handful of
@@ -755,9 +754,10 @@ deliberately rather than by imitation:
   warnings.
 * **Explicit `[lib] path`.** Zed writes `path = "src/rope.rs"` rather than
   relying on `src/lib.rs`. We keep this for the vendored crates because it is
-  how they arrive; our own crates use plain `src/lib.rs`, since adopting a
-  convention that exists to support Zed's crate-named-file layout would be
-  imitation rather than consistency.
+  how they arrive, **and for our own crates too**, per `CLAUDE.md` — a
+  descriptive root file name is worth more than the convention is worth
+  avoiding, and it is what `core.md` §9's language-crate template and
+  `resolution.md` §10 both already assume (`src/lang_rust.rs`, not `lib.rs`).
 * **`doctest = false`** on crates with no doctests, which is most of them.
 * **`[profile.dev.package]` opt-level bumps for the crates that dominate debug
   runtime.** Zed sets `tree-sitter` and `serde_json` to `opt-level = 3`, plus
@@ -835,7 +835,7 @@ a second GPL input ever sneaks in, which is the thing that would quietly
 foreclose the exit §5 is preserving.
 
 `similarity`, `lang_*`, `measure_core`, and `measure_<lang>` are in `core.md`
-§16's layout but are not created by this piece of work.
+§9's layout but are not created by this piece of work.
 
 ## 15. Clippy in workspace toml
 
@@ -888,9 +888,9 @@ unreachable = "deny"
 todo = "deny"
 unimplemented = "deny"
 exit = "deny"                        # a stray process::exit is the same failure
-panic_in_result_fn = "deny"          # reinforces §12: Result is not the abstain path
+panic_in_result_fn = "deny"          # reinforces §10: Result is not the abstain path
 
-# -- position encoding (§3/§4: highest-risk correctness detail) -------------
+# -- position encoding (core.md §3: highest-risk correctness detail) --------
 # The wire carries u32; offsets internally are usize; the unit (UTF-16 code
 # units vs UTF-8 bytes) depends on a negotiation. Every place those meet is an
 # `as` cast. WirePosition's private fields stop you STORING the wrong thing;
@@ -915,7 +915,7 @@ iter_over_hash_type = "deny"
 # -- closed error set (§10) -------------------------------------------------
 # §10 deliberately leaves the top-level `Error` NOT #[non_exhaustive] so that an
 # exhaustive match is a feature. A single `_ =>` arm gives that away, and the
-# §14 failure table is only enforceable if the compiler catches new variants.
+# shim.md §11 failure table is only enforceable if the compiler catches new variants.
 wildcard_enum_match_arm = "deny"
 match_wildcard_for_single_variants = "deny"
 # `Error` nests nine sub-enums carrying PathBuf/DocumentUri/ByteOffset, and sits
@@ -934,7 +934,7 @@ unchecked_time_subtraction = "deny"
 integer_division = "deny"
 float_cmp = "deny"
 
-# -- clone cost (§5: the design turns on Rope/Tree clones being cheap) ------
+# -- clone cost (core.md §2: the design turns on Rope/Tree clones being cheap)
 # Forces Arc::clone(&x) over x.clone(), so "is this the cheap kind?" is visible
 # at the call site rather than requiring you to know the type.
 clone_on_ref_ptr = "deny"

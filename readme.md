@@ -84,6 +84,10 @@ Read `design/high-level.md` first; it is the only one that stands alone.
 | `rope-modifications.md` | What changes in the vendored Zed rope, and what deliberately does not |
 | `open-questions.md` | Numbered, and referenced by number from everywhere else |
 
+One more joins them later: `external-dependencies.md`, written during phase 1c,
+recording every language server the corpus is collected against and how to
+install and pin it.
+
 Two conventions worth knowing before editing any of them. Decisions are
 recorded with the reasoning that produced them, including the arguments
 against - a decision whose alternatives are not written down gets
