@@ -687,6 +687,7 @@ name = "measure_core"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "proptest",
  "serde",
  "serde_json",
  "shared",

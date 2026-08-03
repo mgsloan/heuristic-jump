@@ -9,7 +9,7 @@
 //! build the slow simple version first.
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::Duration;
 
@@ -82,7 +82,7 @@ impl Client {
         self.send(&ClientRequest::new(id, method, params), "a request")?;
 
         loop {
-            let frame = self.read_frame::<R>()?;
+            let frame = self.read_message::<R>()?;
             if frame.answers(id) {
                 let elapsed = clock.now().saturating_duration_since(started);
                 if let Some(failure) = frame.error {
@@ -141,57 +141,132 @@ impl Client {
         Ok(())
     }
 
-    /// One `Content-Length`-framed message. The header block is read line by
-    /// line and the body by exact length, because a JSON-RPC body may contain
-    /// anything and there is no delimiter to scan for.
-    fn read_frame<R: DeserializeOwned>(&mut self) -> Result<ChildFrame<R>, Error> {
-        let mut length = None;
-        loop {
-            let mut line = String::new();
-            let read = self
-                .stdout
-                .read_line(&mut line)
-                .map_err(|source| ChildError::Io {
-                    command: self.command.clone(),
-                    source,
-                })?;
-            if read == 0 {
-                return Err(ChildError::Exited {
-                    command: self.command.clone(),
-                }
-                .into());
-            }
-            let line = line.trim_end_matches(['\r', '\n']);
-            if line.is_empty() {
-                break;
-            }
-            let Some((name, value)) = line.split_once(':') else {
-                return Err(CodecError::MalformedHeader { text: line.into() }.into());
-            };
-            if name.eq_ignore_ascii_case("Content-Length") {
-                length = Some(value.trim().parse::<usize>().map_err(|_| {
-                    CodecError::BadContentLength {
-                        text: value.trim().into(),
-                    }
-                })?);
-            }
-        }
-
-        let Some(length) = length else {
-            return Err(CodecError::MissingContentLength.into());
-        };
-
-        let mut body = vec![0_u8; length];
-        self.stdout
-            .read_exact(&mut body)
-            .map_err(|_| CodecError::Truncated {
-                expected: length,
-                read: 0,
-            })?;
-
+    fn read_message<R: DeserializeOwned>(&mut self) -> Result<ChildFrame<R>, Error> {
+        let body = read_frame(&mut self.stdout, &self.command)?;
         serde_json::from_slice::<ChildFrame<R>>(&body)
             .map_err(|source| CodecError::BodyNotJson { source }.into())
     }
+}
+
+/// A header line is refused past this, before the line is complete.
+///
+/// LSP names two headers and neither is long — `Content-Length` and a
+/// `Content-Type` whose only defined value is thirty-odd characters — so this
+/// is orders of magnitude above anything a conforming peer sends, which is
+/// what a limit whose purpose is to bound memory should be.
+pub const MAX_HEADER_BYTES: usize = 8 * 1024;
+
+/// A `Content-Length` is refused past this, before anything is allocated.
+///
+/// The frame that justifies a large number is `didOpen` carrying a whole file,
+/// and the corpus holds generated files in the low megabytes; the limit is set
+/// well above them because exceeding it is a hard failure rather than a
+/// degradation.
+pub const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
+
+/// One `Content-Length`-framed message body, read from `reader`. The header
+/// block is read line by line and the body by exact length, because a JSON-RPC
+/// body may contain anything and there is no delimiter to scan for.
+///
+/// It is a free function over `&mut dyn BufRead`, rather than the method on
+/// [`Client`] it used to be, for the reason `replay_table` is public: `core.md`
+/// §10 asks for the frame codec to be fuzzed, and the only way to reach a
+/// method on a `BufReader<ChildStdout>` is to spawn a language server — which
+/// is exactly what a property test over split reads and bogus lengths is
+/// trying not to need. `deps.md` §12 declines `cargo-fuzz` on the grounds that
+/// "`proptest` covers the split-read / bogus-`Content-Length` cases well enough
+/// to start", so the fuzzing is `tests/codec.rs` and this is its entry point.
+///
+/// `command` names the peer for the two failures that are the peer's rather
+/// than the frame's — it went away, or the pipe broke — which are
+/// [`ChildError`] and carry which child it was.
+pub fn read_frame(reader: &mut dyn BufRead, command: &Path) -> Result<Vec<u8>, Error> {
+    let mut length = None;
+    loop {
+        let mut line = String::new();
+        // `take` is the memory bound: `read_line` on an unbounded reader
+        // buffers until a line ending arrives, so a peer that sends megabytes
+        // without one is an allocation failure rather than a codec error. The
+        // limit is read back off `line` below, because `read_line` reports the
+        // bytes it consumed and not why it stopped.
+        let read = (&mut *reader)
+            .take(as_u64(MAX_HEADER_BYTES))
+            .read_line(&mut line)
+            .map_err(|source| ChildError::Io {
+                command: command.to_path_buf(),
+                source,
+            })?;
+        if read == 0 {
+            return Err(ChildError::Exited {
+                command: command.to_path_buf(),
+            }
+            .into());
+        }
+        if read == MAX_HEADER_BYTES && !line.ends_with('\n') {
+            return Err(CodecError::HeaderTooLong {
+                limit: MAX_HEADER_BYTES,
+            }
+            .into());
+        }
+        let line = line.trim_end_matches(['\r', '\n']);
+        if line.is_empty() {
+            break;
+        }
+        let Some((name, value)) = line.split_once(':') else {
+            return Err(CodecError::MalformedHeader { text: line.into() }.into());
+        };
+        if name.eq_ignore_ascii_case("Content-Length") {
+            length =
+                Some(
+                    value
+                        .trim()
+                        .parse::<usize>()
+                        .map_err(|_| CodecError::BadContentLength {
+                            text: value.trim().into(),
+                        })?,
+                );
+        }
+    }
+
+    let Some(length) = length else {
+        return Err(CodecError::MissingContentLength.into());
+    };
+    if length > MAX_FRAME_BYTES {
+        return Err(CodecError::FrameTooLarge {
+            length,
+            limit: MAX_FRAME_BYTES,
+        }
+        .into());
+    }
+
+    // Grown as the bytes arrive rather than `vec![0; length]`, so a length
+    // under the limit but past what the peer actually sends costs what was
+    // sent. It is also what lets `Truncated` say how much arrived: the
+    // pre-sized read reported zero whatever it had read, which is the field
+    // somebody debugging a half-written frame would look at first.
+    let mut body = Vec::new();
+    (&mut *reader)
+        .take(as_u64(length))
+        .read_to_end(&mut body)
+        .map_err(|source| ChildError::Io {
+            command: command.to_path_buf(),
+            source,
+        })?;
+    if body.len() != length {
+        return Err(CodecError::Truncated {
+            expected: length,
+            read: body.len(),
+        }
+        .into());
+    }
+    Ok(body)
+}
+
+/// `usize` to `u64` without an `as`, which the workspace denies for the reason
+/// `core.md` §3 gives. Saturating is right and unreachable: it would take a
+/// 128-bit `usize` to lose anything.
+fn as_u64(value: usize) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
 }
 
 /// What we ask for and what the server chose. LSP says a server that names no

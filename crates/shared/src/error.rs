@@ -128,6 +128,19 @@ pub enum CodecError {
     MissingContentLength,
     #[error("Content-Length {text:?} is not a length")]
     BadContentLength { text: Box<str> },
+    /// `core.md` §10's "oversized headers", which is a memory bound rather
+    /// than a shape check: reading a header line buffers until a line ending
+    /// arrives, so a peer that sends megabytes without one is an
+    /// out-of-memory rather than an error. The bound belongs to the codec,
+    /// because a caller only ever sees the line that was completed.
+    #[error("a frame header ran past {limit} bytes with no line ending")]
+    HeaderTooLong { limit: usize },
+    /// `core.md` §10's "bogus `Content-Length`", in the half that parses. A
+    /// length is a claim about bytes that have not arrived, and allocating
+    /// for a claimed four gigabytes aborts the process before anything can
+    /// decide the frame was nonsense.
+    #[error("Content-Length {length} is past the {limit}-byte frame limit")]
+    FrameTooLarge { length: usize, limit: usize },
     #[error("frame body ended after {read} of {expected} bytes")]
     Truncated { expected: usize, read: usize },
     #[error("frame body is not valid UTF-8")]

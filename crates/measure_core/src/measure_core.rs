@@ -38,6 +38,7 @@ use std::sync::Arc;
 use shared::{Error, FileList, LanguageHandler, ProjectPath, SystemClock};
 
 pub use cli::{Cli, Command, Format, Replay};
+pub use client::{MAX_FRAME_BYTES, MAX_HEADER_BYTES, read_frame};
 pub use record::{Decision, Mode, QueryRecord, StratumName};
 
 /// The whole of a `measure_<lang>` binary, after `Cli::parse()`.
