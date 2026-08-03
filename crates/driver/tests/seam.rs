@@ -443,14 +443,26 @@ fn the_licence_text_is_symlinked_into_every_member() {
 /// drive letters live, which is where the bugs actually are". A routine
 /// version bump defeats either one silently.
 ///
-/// `tempfile` is permitted and not required: §12 places it in the
-/// `ProjectView` scope tests, that suite builds its fixtures from
-/// `CARGO_TARGET_TMPDIR` instead, and `conformance-015` is where that sits
-/// until someone rules on it.
+/// `tempfile` is now on the declined list rather than the placed one, on the
+/// ruling on `conformance-015` (CHANGE-conformance-015). §12 had placed it in
+/// the `ProjectView` scope tests; that suite exists and builds its fixtures
+/// under `CARGO_TARGET_TMPDIR`, and the stale-fixture guarantee the crate was
+/// chosen for is already held, because `fixture()` clears on entry.
 #[test]
 fn the_testing_crates_are_placed_where_section_12_puts_them() {
-    /// §12's "Deliberately not adding".
-    const DECLINED: &[&str] = &["mockall", "pretty_assertions", "arbitrary", "cargo-fuzz"];
+    /// §12's "Deliberately not adding". `tempfile` joined it on the ruling on
+    /// `conformance-015`: the `ProjectView` scope fixtures build under
+    /// `CARGO_TARGET_TMPDIR`, whose `fixture()` helper already clears on
+    /// entry, so the stale-fixture guarantee `tempfile` was chosen for is held
+    /// without it — and the directory surviving a failure is worth more here
+    /// than cleanup on drop (CHANGE-conformance-015).
+    const DECLINED: &[&str] = &[
+        "mockall",
+        "pretty_assertions",
+        "arbitrary",
+        "cargo-fuzz",
+        "tempfile",
+    ];
 
     /// §12's table. Every one is a testing crate, so in a crate of ours it
     /// belongs in a dev table — `lsp-types` most of all, which
@@ -458,14 +470,7 @@ fn the_testing_crates_are_placed_where_section_12_puts_them() {
     /// own grounds. The vendored crates are exempt: `sum_tree` carries
     /// `proptest` as an optional runtime dependency behind its `test-support`
     /// feature, which is upstream's shape and not ours to correct.
-    const TESTING: &[&str] = &[
-        "insta",
-        "proptest",
-        "tempfile",
-        "rand",
-        "criterion",
-        "lsp-types",
-    ];
+    const TESTING: &[&str] = &["insta", "proptest", "rand", "criterion", "lsp-types"];
 
     let members = workspace_members();
     assert!(

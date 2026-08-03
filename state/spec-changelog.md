@@ -621,3 +621,38 @@ The document gained a hazard it did not previously describe; it did not lose
 one it could not meet.
 
 **Campaign:** acb37d9b-56ff-4568-8b74-a5ac0bc66a55
+
+## CHANGE-conformance-015 — deps.md#12-testing — `tempfile` is rejected, per the ruling on conformance-015
+
+**Contradiction:** §0's summary table read `| `tempfile` | chosen |` and §12's
+table placed it exactly — "Fixture repositories for `ProjectView` scope
+tests". That suite exists. `crates/shared/tests/project.rs` builds its fixture
+repositories under `Path::new(env!("CARGO_TARGET_TMPDIR")).join(name)` and
+declares no such dependency.
+
+Under §14's "each arrives with its first user", a chosen-but-undeclared crate
+is the intended state — five of §0's rows read that way today. `tempfile` was
+not one of them: its named user had arrived and chosen otherwise, which is
+indistinguishable, from the table alone, from a crate that is merely early.
+
+**Resolution:** §0's row now reads **rejected**, and §12's row names
+`CARGO_TARGET_TMPDIR` instead. A "Deliberately not adding" entry gives the
+reasoning: the safety property `tempfile` was chosen for — a stale fixture
+cannot mask a failure — is already held, because `fixture()` calls
+`remove_dir_all` on entry and rebuilds from scratch, its call sites use
+distinct names, and `CARGO_TARGET_TMPDIR` is per test target. What the
+directory buys over a dropped `TempDir` is that it survives a failure, which
+for a suite whose fixtures encode `.gitignore` semantics is worth more than
+automatic cleanup. The entry says plainly that the general argument for
+`tempfile` is the better one and would win on a suite whose helper did not
+already clear.
+
+**This is a document moved toward the code, and that is flagged rather than
+buried.** It is not this campaign's judgement: `state/decisions/conformance-015.md`
+was answered `accepted` with the edit named as the point of the ruling — "a
+dependency marked chosen whose named user does not use it is indistinguishable
+from one that is merely early, which is the confusion this record was opened
+about". The campaign changed no code here; `fixture()` is untouched and
+predates it.
+
+**Campaign:** 51628b98-b5ea-48b1-bb77-696ecc51face

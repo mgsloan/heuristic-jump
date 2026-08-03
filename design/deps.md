@@ -48,7 +48,7 @@ pin that is a design constraint rather than a resolution detail.
 | `rand` | chosen — held at Zed's pin, see §5, §12 |
 | `criterion` | vendored rope's benchmark only — §5 |
 | `proptest` | chosen |
-| `tempfile` | chosen |
+| `tempfile` | — | **rejected**, `CARGO_TARGET_TMPDIR` — see §12 |
 | `anyhow` | — | **rejected** |
 | `clap` (no default features) | heuristic_jump | **chosen** — see §11 |
 | `toml` (parse only) | measure_core | **chosen** for `servers.toml` — `state/decisions/conformance-010.md` |
@@ -707,7 +707,7 @@ Alternatives considered:
 |---|---|
 | `insta` | Frame-trace golden tests (`shim.md` §12). Snapshot review is the right workflow for "assert every forwarded frame is byte-identical" |
 | `proptest` | Position-encoding property tests; edit-log prefix consumption |
-| `tempfile` | Fixture repositories for `ProjectView` scope tests |
+| *(none)* | Fixture repositories for `ProjectView` scope tests are built under `CARGO_TARGET_TMPDIR`, which cargo supplies per test target. See below |
 | `rand` | Upstream rope/sum_tree tests, kept per §5, plus `util::RandomCharIter`. Pinned to Zed's 0.9 rather than crates.io's 0.10: the tests are kept verbatim and are written against `rng.random_range(..)`. Taking 0.10 would mean editing test bodies, which defeats keeping them |
 | `criterion` | `vendor/rope`'s benchmark only, per §5 |
 | `lsp-types` | Differential oracle for `shared::proto`, per §3 and `core.md` §8.5. Dev only — it must never appear in a non-dev dependency table, and that is worth a CI check, since the whole point of §3 is defeated the moment a runtime `use lsp_types::` appears |
@@ -725,6 +725,20 @@ Deliberately not adding:
   to start;
   add `cargo-fuzz` as a separate non-workspace target if the codec ever gets
   complicated enough to warrant it.
+* **`tempfile`** — *was* chosen for the `ProjectView` scope fixtures, on the
+  grounds that deletion on drop makes a stale fixture unable to mask a
+  failure. Rejected on the ruling on `state/decisions/conformance-015.md`,
+  because that safety property is already held without it: `fixture()` in
+  `crates/shared/tests/project.rs` calls `remove_dir_all` on entry and
+  rebuilds from scratch, its call sites use distinct names, and
+  `CARGO_TARGET_TMPDIR` is per test target besides. What the directory buys
+  over a `TempDir` is that it survives a failure — for a suite whose fixtures
+  encode `.gitignore` semantics, being able to look at what was actually on
+  disk is worth more than automatic cleanup.
+
+  The general argument for `tempfile` is the better one and would win on a
+  suite whose helper did not already clear. It does not win here, and
+  `CLAUDE.md` asks for the in-repo mechanism over a new dependency.
 * **`mockall`** and friends — the fake child is a scripted frame list, which is
   a plain struct.
 * **`pretty_assertions`** — nice, but `insta` covers the cases where diff
