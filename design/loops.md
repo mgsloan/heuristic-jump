@@ -1648,6 +1648,119 @@ rather than wall-clock
 ([section 9](#determinism-is-a-precondition-not-a-description)) — without
 that property, parallel tuning would not be measuring anything stable.
 
+### Workers: one loop, several campaigns at once
+
+[Above](#parallel-loops-and-what-they-share) parallelises *across* loops —
+one per language, disjoint crates. A loop may also be parallelised *within*
+itself: **N workers, each running one campaign at a time, in its own
+worktree on its own branch, all against the same document set and the same
+gap list.**
+
+The reason is throughput against a queue that is deeper than one worker
+can serve. A conformance loop over three documents has tens of open gaps
+and a campaign closes one to four of them, so the queue is the constraint
+rather than the reading — and unlike the across-loops case, there is no
+crate boundary that makes the work disjoint for free. Workers are a
+throughput lever and nothing else; they do not make any single campaign
+better, and they multiply spend by N.
+
+**Naming.** A worker is `<loop>-<n>` — `core-1`, `core-2`, `core-3`. That
+is the branch suffix, the worktree suffix and the campaign record's
+`worker` field. It is not a separate loop: it shares the loop's prompt,
+its documents, its baseline and its number.
+
+#### Disjointness is claimed, not constructed
+
+The across-loops case gets disjointness from the filesystem: two language
+crates cannot collide. Workers have no such boundary — they read the same
+gap list, and the obvious failure is three workers opening the same
+highest-value gap within a second of each other and doing it three times.
+
+So a target is **claimed at campaign open**, by the harness rather than by
+the campaign:
+
+* `hj campaign-open` records the gaps it is handing out in the session row,
+  and renders the prompt with every gap another *live* campaign has claimed
+  removed from the list.
+* A claim ends when the campaign closes, or when `campaign-reap` finds it
+  abandoned. It is not a lock: nothing enforces it after the prompt is
+  rendered.
+* A campaign that takes an additional target mid-run
+  ([section 4](#4-the-iteration-contract)) has not claimed it, and may
+  collide. This is accepted rather than solved — the alternative is a
+  claim protocol the campaign has to obey, which is a rule it can silently
+  break, and the backstop below is cheap.
+
+**The backstop is the rebase.** If two workers do touch the same file, the
+second to finish fails to rebase onto the first, and that is a loud,
+local, recoverable failure with a diff attached. Section 13's
+"conflict-free by construction" is a claim about *loops* and does not hold
+between workers; between workers, conflict is a rare event with a handler
+rather than an impossibility.
+
+**Claiming is per gap, not per section.** Two workers in the same section
+on different gaps is normal and often good — they share the reading, which
+is the expensive part, without doing the same work.
+
+#### What is per worker and what is shared
+
+The rule from [above](#parallel-loops-and-what-they-share) is that shared
+mutable state is partitioned by owner. Within a loop the owner is the
+*loop*, not the worker, so most state stays shared and the partitioning
+happens on the files where concurrent writes actually collide:
+
+| State | Scope | Why |
+|---|---|---|
+| Worktree, branch | per worker | git refuses one branch in two worktrees |
+| `state/campaigns/<loop>/<id>.md` | shared directory | ids are unique; no two workers write one file |
+| `state/journal/<loop>-<n>.md` | per worker | append-only prose; a shared file conflicts on every merge |
+| `state/findings/<loop>.md` | **shared** | see below |
+| `state/metrics/<loop>.jsonl`, `cost/` | shared | append-only, union-merged |
+| `state/decisions/<loop>-NNN.md` | shared | the id is allocated by the harness, not the campaign |
+
+**The findings digest is deliberately shared and deliberately contended.**
+It is one loop's theory of one implementation, and three theories of the
+same code is not three times the value — it is the same synthesis done
+three times, each missing what the other two learned. So the digest is
+rewritten by whichever worker closes, last write wins, and each worker
+reads the current one at open. Losing an edit is acceptable here in a way
+it is not for the journal: a digest is a summary that the next campaign
+reconstructs anyway, and the cap already forces it to be rewritten rather
+than accumulated.
+
+#### The audit does not parallelise
+
+The audit reads the merged tree and writes `state/audit/`, and running two
+concurrently means two verdicts for one section with no rule for which
+wins. So **at most one audit runs at a time, and it runs against `main`
+rather than any worker's branch.** A worker whose close makes the audit due
+runs it; the others skip and continue.
+
+`audit_every` counts campaign closes across all workers, so with N workers
+the audit fires N times more often in wall clock at the same setting. That
+is usually what is wanted — the queue is being consumed N times faster —
+but it means the audit's cost per unit of wall clock rises with N, and the
+setting should be re-read when N changes rather than carried over.
+
+#### What N costs, and how to pick it
+
+* **Spend is linear in N**, and campaigns are the dominant cost. Three
+  workers is three times the burn rate against the same quota, which is
+  the constraint that actually binds.
+* **Disk is linear in N**: a worktree is its own workspace root and gets
+  its own `target/`.
+* **Throughput is sublinear in N**, because the queue is not infinitely
+  deep and because claims remove the best targets from the other workers'
+  lists. Where it stops paying is an empirical question and the number to
+  watch is *gaps closed per campaign*, not campaigns per hour: if that
+  falls as N rises, the workers are picking worse targets because the good
+  ones are claimed.
+* **Latency measurement is unaffected**, for the reason
+  [above](#branches-exist-for-one-commit-at-a-time) — it is not measured
+  during iterations at all.
+
+Three is a starting point, not a derived number.
+
 ## 14. What runs the loops
 
 Deliberately boring: a bash loop around headless `claude -p` with a
