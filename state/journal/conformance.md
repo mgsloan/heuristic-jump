@@ -167,3 +167,140 @@ touches `vendor/`, and say in your journal entry that you did.
 `mod chunk;` in `rope.rs`, because `macro_rules!` scoping is textual and
 `chunk.rs` is its only caller. Putting it at the bottom of the crate root
 compiles as a definition and then fails at every call site.
+
+## e3b8dbf4 — core.md#1-handler-interface
+
+The seam landed: `LanguageHandler`, `Query`, `Outcome`, `Stratum`,
+`AbstainReason`, `ServerProfile`, `CommitPolicy` and the vocabulary newtypes in
+`shared`; `Deadline`, `SnapshotSeed`/`DocumentSnapshot` and
+`ProjectView`/`ProjectPath` alongside them because `Query` names all three;
+`Registry` plus a direct `handler.goto_definition(&query)` in `driver`. Four
+commits, no reverts, `shared` 0 → ~910 lines.
+
+**Nine tenths of this campaign was reading, not deciding.** `core.md` §1
+specifies the seam down to field names, so the work is transcription plus the
+handful of places the transcription does not compile. Budget accordingly: the
+places it does not compile are listed below and they are what took the time.
+
+**`-D warnings` leaks along a dependency edge, and this is the trap to know
+before touching `vendor/` again.** Gate step 2 is
+`cargo clippy -p <owned crate> --all-targets -- -D warnings`. `-D warnings` is
+a *command-line* flag: it applies to every crate clippy compiles from source,
+not to the one named by `-p`. crates.io dependencies are immune because cargo
+passes them `--cap-lints allow`; workspace path dependencies are not. So the
+moment `shared` depended on `rope`, gate step 2 started linting `rope` — the
+crate `vendor/README.md` says out loud is not lint-clean and is not meant to
+be — and the gate went red on a crate the loop had not touched. Two lints,
+both upstream's: `should_implement_trait` on `Lines::next` (which *cannot*
+implement `Iterator`; it lends a `&str` borrowed from `self`) and
+`from_over_into` on `impl Into<Chunk> for ChunkSlice`. Fixed with a two-entry
+`[lints.clippy]` allow block in `vendor/rope/Cargo.toml`, recorded in
+`vendor/README.md`. This does **not** answer `conformance-003`, which is about
+the vendored *tests*; it is the same underlying fact arriving through a
+different door, and the door will open again for every future crate that
+depends on `rope` — `measure_core` next.
+
+**Never `git commit --amend` in this repository.** Two other writers commit to
+this branch while a campaign runs: the harness (`hj record` commits the
+metrics row itself) and a human at the dashboard (this session saw
+`harness: answer conformance-003`, two `spec-change-reviewed` commits and a
+hand-authored gate change land inside a five-minute window). `--amend` amends
+whatever HEAD happens to be, and by the time this campaign ran it, HEAD was a
+dashboard commit — so a decision record and a doc edit were folded into
+`harness: spec-drift-reviewed`, and the metrics row that should have keyed on
+`318c3f77` keyed on that commit instead, with `campaign: null`. Nothing was
+lost and the tree stayed green, but `harness/hj record` only ever records
+`HEAD`, so a mis-keyed row cannot be repaired — `check-metrics` walks back to
+the most recent commit carrying the loop trailer, which is why the next
+commit closed the hole rather than reverting. **Run `commit` and
+`harness/hj record` back to back with nothing in between**, and if the gate
+fails step 7 alone, read it as bookkeeping rather than as a broken tree.
+
+**Four places `core.md`'s printed types do not compile as printed**, all four
+resolved, none of them where you would expect:
+
+* **`Deadline` needs a third field.** §5 prints `{ at: Instant, cancelled:
+  Arc<AtomicBool> }` with `expired(&self) -> bool`, and `clippy.toml` bans
+  `Instant::now` outside `shared::Clock`. Carrying an `Arc<dyn Clock>` is what
+  preserves the printed *signature*, which is the part that matters — the
+  alternative, `expired(&self, clock: &dyn Clock)`, is a seam change for a
+  detail the seam should not know. `Clock`/`SystemClock` are now in
+  `deadline.rs`; `TestClock` is not, because `deps.md` §12 wants it for
+  `shim.md` §12's race tests and those do not exist.
+* **`DocumentSnapshot` needs a `uri`.** A handler resolving a local binding —
+  the commonest answer there is — returns a `Location` in the document it was
+  handed, and `Location::at_node` takes a `DocumentUri`. `Query` has no other
+  route to one, and `ProjectView::root_of` wants the same value.
+  CHANGE-conformance-003; both snapshot types now carry it.
+* **`Location`'s `pub` fields contradict §8.4's "constructed only through
+  `Location::at_node`".** Private fields with accessors, provisionally, under
+  `conformance-004` — the reversible direction, because going the other way
+  later means finding every struct literal that accumulated in one `lang_*`
+  crate per language.
+* **`Registry` cannot derive `Debug`,** because `missing_debug_implementations`
+  is on and `dyn LanguageHandler` is not `Debug`. Do not fix this by adding
+  `Debug` to the seam's supertraits: that puts a requirement on every `lang_*`
+  crate for the sake of a derive. Hand-written, printing the registered
+  `language_ids` from the handler vector rather than from either map —
+  `iter_over_hash_type` is denied and printing in hash order is exactly the
+  irreproducibility it is denied for.
+
+**`Outcome::Committed` being publicly constructible is correct, not a hole.**
+§1 says "handlers never construct `Outcome::Committed`; every path ends
+through `policy.decide(..)`", which reads like something the type should
+enforce. `resolution.md` §7.4 settles it the other way in as many words — it
+is "a rule for handler authors", and the driver's redundant re-check that
+would catch a violation is explicitly not built in v1 because in v1 there is
+nothing for it to catch. Do not spend a campaign making `Outcome` opaque.
+
+**Approaches considered and dropped:**
+
+* *Implementing `ProjectView::candidates`, `parse` and `scan`.* Dropped on
+  scope, not on difficulty: their parameter types (`SearchOrigin`,
+  `CandidateFiles`, `ScanRequest`, `ScanOutcome`) are `resolution.md` §4's,
+  which is not in this phase's audited document set, and `parse`/`scan` need
+  the parse LRU and the bounded worker pool that `shim.md` §5 and §10 own.
+  Writing them now would mean inventing four types against a document nobody
+  is auditing, in a phase that cannot exercise them. `roots`, `root_of`,
+  `lookup` and `read` are enough to make `ProjectPath` unforgeable, which is
+  the property §1 actually leans on.
+* *The per-query read cache `resolution.md` §3 asks for.* It is a lock, and
+  saying so is the instruction rather than a way out: the view is reached
+  through `&Query` from several fan-out threads, so a cache on it is shared
+  mutable state behind `&self`. `conformance-005` has the three shapes that
+  avoid one. Note the precedent that does **not** transfer: §2 removed a
+  `OnceLock` by parsing eagerly, and a read cache cannot be filled eagerly
+  because which files a query reads is what the query is for.
+* *`EditorRequestId`.* It is in §1's vocabulary list and it is fifteen lines,
+  and it was still dropped. "Stored in normalized text form so the fast peek
+  path and the serde_json path produce the same key" has a collision in it —
+  the number `5` and the string `"5"` are different ids — and the only
+  normalization that avoids it is the JSON literal form, which needs
+  `serde_json` for escaping. `serde_json` is not in the graph, nothing
+  consumes the type until `shim.md` §3.1's peek path exists, and a key
+  normalization guessed a phase early is a protocol bug class. It belongs to
+  whoever writes §8.
+* *A dispatch smoke test with a fake handler.* Not possible, and the reason is
+  worth writing down because it will come up again:
+  `LanguageHandler::grammar` returns a `tree_sitter::Language`, and a
+  `Language` cannot be constructed without a grammar — there is no `Default`,
+  no null value, and the only constructor takes an `unsafe` C entry point. So
+  there is no test double for a handler, and there cannot be one until a real
+  grammar crate is in the workspace. The first end-to-end dispatch test
+  arrives with `lang_rust`, not before. What `tests/seam.rs` asserts instead
+  is the pair of *structural* claims nothing else in the build would notice
+  breaking: `type_name::<dyn LanguageHandler>()` names the crate the trait is
+  defined in (a re-export would not satisfy it), and neither manifest may
+  declare a `lang_*` or `tree-sitter-*` dependency.
+* *Populating all nine of `deps.md` §10's error sub-enums.* Five —
+  `Config`, `Codec`, `Child`, `Document`, `Encoding` — classify failures of
+  code that does not exist, so their variants would have been invented from
+  prose with nothing able to return them. `shim.md` §11's table is only
+  enforceable if its rows are exercisable. They arrive with their producers,
+  which is also why `Error`'s match in `dispatch` is written out rather than
+  wildcarded: adding an arm has to be a compile error somewhere.
+* *`#[derive(Debug)]` on `FileChunks`.* `rope::Chunks` has no `Debug` and a
+  448-byte sum-tree cursor trips `large_enum_variant`, which is denied. Both
+  handled locally — a hand-written `Debug` and one `#[expect]` with the reason
+  — rather than by editing `vendor/rope`, which is the cheaper-looking fix and
+  the one that widens the re-sync diff.
