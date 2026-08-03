@@ -20,6 +20,8 @@ doctest = false
 [dependencies]
 ignore.workspace = true
 rope.workspace = true
+rustc-hash.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 tree-sitter.workspace = true
 url.workspace = true

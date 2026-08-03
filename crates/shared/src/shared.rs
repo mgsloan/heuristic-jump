@@ -12,11 +12,13 @@
 mod deadline;
 mod document;
 mod error;
+mod project;
 mod vocabulary;
 
 pub use deadline::{Clock, Deadline, SystemClock};
 pub use document::{DocumentSnapshot, SnapshotSeed};
 pub use error::{Error, HandlerError, ParseError, ProjectError, ProtocolError};
+pub use project::{FileChunks, FileList, FileText, ProjectPath, ProjectRoot, ProjectView, RelPath};
 pub use rope::{ByteLen, ByteOffset, ByteRange, LineIndex, Rope};
 pub use vocabulary::{
     Confidence, DocumentUri, DocumentVersion, FileExtension, LanguageId, Location, ServerId,
