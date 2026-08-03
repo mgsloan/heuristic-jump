@@ -420,6 +420,78 @@ fn the_licence_text_is_symlinked_into_every_member() {
     }
 }
 
+/// `deps.md` §15 is not prose about the lint configuration — it *is* the lint
+/// configuration, printed as a `toml` block that `Cargo.toml`'s
+/// `[workspace.lints]` tables are meant to be. So the document is the fixture
+/// here, rather than a list transcribed from it into this file: the two are
+/// compared directly, and a third copy would be the thing that drifts.
+///
+/// That matters more for §15 than for the other sections in this file, because
+/// its content is a set of reasons attached to individual lints, and the reason
+/// is what makes each one re-derivable. `iter_over_hash_type` is denied because
+/// "hash iteration order varies between executions of the same program on the
+/// same hardware. This project is a measurement harness with insta snapshots,
+/// JSONL corpus records and candidate ranking." `integer_division` and
+/// `float_cmp` are denied because "silent truncation produces
+/// plausible-looking wrong numbers, which is the worst failure for a metric."
+/// A lint quietly dropped from `Cargo.toml` takes its argument with it, and
+/// the argument is not recoverable from the diff.
+///
+/// Levels are compared, not just names: `redundant_clone` at `warn` rather
+/// than `deny` is a decision §15 spends a paragraph on — it is a nursery lint
+/// with known false positives, kept because it is the one that would catch a
+/// `Rope`/`Tree` clone that is not cheap, but not at a level that breaks the
+/// build.
+#[test]
+fn the_workspace_lints_are_the_ones_section_15_prints() {
+    let printed = fenced_toml_of(
+        &workspace_file("design/deps.md"),
+        "## 15. Clippy in workspace",
+    );
+    assert!(
+        printed.contains("[workspace.lints.clippy]"),
+        "no toml block found under deps.md §15, so this test would compare nothing"
+    );
+
+    let manifest = workspace_file("Cargo.toml");
+    let mut compared = 0;
+    for table in ["workspace.lints.rust", "workspace.lints.clippy"] {
+        let spec = lint_entries(&printed, table);
+        let real = lint_entries(&manifest, table);
+        assert!(
+            !spec.is_empty(),
+            "deps.md §15 prints no [{table}] entries, so this comparison is vacuous"
+        );
+
+        for (lint, level) in &spec {
+            let found = real.iter().find(|(name, _)| name == lint);
+            assert_eq!(
+                found.map(|(_, level)| level),
+                Some(level),
+                "Cargo.toml sets {lint} to {found:?} and deps.md §15 prints {level}: §15 is \
+                 the configuration rather than prose about it, and each entry carries the \
+                 reason it exists — a level that drifts takes the argument with it, and the \
+                 argument is not recoverable from the diff"
+            );
+            compared += 1;
+        }
+        for (lint, _) in &real {
+            assert!(
+                spec.iter().any(|(name, _)| name == lint),
+                "Cargo.toml sets {lint} and deps.md §15 does not print it: §15 states the \
+                 convention that each entry carries a comment saying why, and a lint the \
+                 section never argued for has nowhere to carry one"
+            );
+        }
+    }
+
+    assert!(
+        compared > 40,
+        "only {compared} lints compared, and §15 prints more than that — the block or the \
+         manifest is not being read"
+    );
+}
+
 /// `deps.md` §0's summary table, whose middle column is a claim per crate and
 /// the only place the whole dependency set is written down at once.
 ///
@@ -1009,6 +1081,37 @@ fn dependencies_in(text: &str) -> Vec<String> {
         }
     }
     found
+}
+
+/// The first fenced `toml` block after a heading, so a design document can be
+/// used as a fixture rather than transcribed into a constant here.
+fn fenced_toml_of(document: &str, heading: &str) -> String {
+    let Some((_, after)) = document.split_once(heading) else {
+        return String::new();
+    };
+    let Some((_, block)) = after.split_once("```toml\n") else {
+        return String::new();
+    };
+    block
+        .split_once("\n```")
+        .map(|(body, _)| body)
+        .unwrap_or("")
+        .to_owned()
+}
+
+/// One lint table as (name, level) pairs, with trailing comments dropped.
+/// Reused across a manifest and a design document, which is the whole point:
+/// the same reader on both sides means a difference is a difference and not a
+/// parsing artefact.
+fn lint_entries(text: &str, table: &str) -> Vec<(String, String)> {
+    table_of(text, table)
+        .iter()
+        .filter_map(|line| {
+            let (name, rest) = line.split_once('=')?;
+            let level = rest.split('#').next().unwrap_or("").trim();
+            Some((name.trim().to_owned(), level.to_owned()))
+        })
+        .collect()
 }
 
 /// The workspace's own crates, by name, read out of `[workspace.dependencies]`
