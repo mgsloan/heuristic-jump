@@ -1,0 +1,99 @@
+# Desired state. `design/loops.md` section 14.
+#
+# A human advances the phase; the harness only reads this. It has to be a
+# file rather than harness memory, or a restart loses which phase the project
+# is in.
+#
+# Denied to every loop by `harness/hj`'s DENIED_ALWAYS, which is a constant in
+# the code rather than a row here: a loop that could edit the ownership table
+# could widen its own reach, and the table is exactly what stops it.
+
+phase = "1a"
+
+# Phase 1a is one writer, hand-driven or heavily supervised. The seam is
+# decided here and getting it wrong is expensive downstream in a way no loop
+# will notice (`design/loops.md` section 8).
+[loop.conformance]
+status = "running" # running | paused | blocked | done
+prompt = "conformance.md"
+stall_n = 3        # campaigns without progress before the loop stops and asks
+rotation = 6       # sections per audit beyond the ones the last campaign touched
+splice_sections = 3
+
+# The documents the audit covers. `core.md` and `shim.md` make checkable
+# claims; `resolution.md` describes an approach whose success is *measured*,
+# so conforming to it would be optimising the wrong thing
+# (`design/loops.md` section 3). `shim.md` joins this list at phase 2b, and
+# `loops.md` when the loop turns around and builds the phase-2 machinery.
+docs = ["core.md"]
+
+# Cargo packages, matched as globs against the workspace members that
+# actually exist. A row for a crate not yet created costs nothing.
+crates = [
+  "shared",
+  "driver",
+  "heuristic_jump",
+  "measure_core",
+  "measure_rust",
+  "lang_rust",
+]
+
+# `crates/lang_rust/` is named here and not globbed, deliberately. Phase 1a's
+# scope includes instantiating the language-crate template once
+# (`design/phases.md`), but decided question 10 says the loop may never *add*
+# a language — so `crates/lang_python/` stays outside every owned path and the
+# gate rejects it. Naming one path grants the template without granting the
+# glob.
+#
+# `measure_core` and `measure_rust` belong here rather than to a language
+# loop: a loop must not own the code that scores it.
+write = [
+  "Cargo.toml",
+  "Cargo.lock",
+  "rustfmt.toml",
+  ".gitignore",
+  "readme.md",
+  "vendor/**",
+  "crates/shared/**",
+  "crates/driver/**",
+  "crates/heuristic_jump/**",
+  "crates/measure_core/**",
+  "crates/measure_rust/**",
+  "crates/lang_rust/**",
+  "design/**",
+  "state/campaigns/conformance/**",
+  "state/journal/conformance.md",
+  "state/decisions/conformance-*.md",
+  "state/metrics/conformance.jsonl",
+  "state/findings/conformance.md",
+  "state/spec-changelog.md",
+  "state/handoff.md",
+]
+
+# Optional. `budget_usd` closes a campaign that runs long, which also bounds
+# context growth since context now accumulates within a campaign
+# (`design/loops.md` section 15). `model` overrides the tier per loop.
+# budget_usd = 15.0
+# model = "opus"
+
+# Phase 2a adds a row per (language, server), and that is the whole of adding
+# a language to the loop set — the same property the workspace layout already
+# has for adding a language crate. The rows are not written yet because there
+# is nothing to tune until there is a corpus (`design/loops.md` section 18).
+#
+# [loop.lang-rust]
+# status = "paused"
+# prompt = "tuning.md"
+# language = "rust"
+# server = "rust-analyzer"
+# stall_n = 5
+# crates = ["lang_rust", "measure_rust"]
+# write = [
+#   "crates/lang_rust/**",
+#   "state/campaigns/lang-rust/**",
+#   "state/journal/lang-rust.md",
+#   "state/decisions/lang-rust-*.md",
+#   "state/metrics/lang-rust.jsonl",
+#   "state/findings/lang-rust.md",
+#   "state/shared-proposals/rust-*.md",
+# ]

@@ -19,9 +19,17 @@ $ heuristic-jump
 
 ## Status
 
-Design only. No code has been written yet - of the layout below, only
-`design/` exists, and everything in it is a plan rather than a
-description.
+No product code has been written yet. Of the layout below, `design/`,
+`harness/` and `state/` exist; everything under `crates/` and `vendor/` is
+still a plan rather than a description.
+
+What `harness/` holds is the phase 1a conformance loop: the gate, the
+auditor, the loop runner, and the two prompts. `design/loops.md` §18 scopes
+it — the supervisor, the dashboard, the frontier and the tuning loops are
+specified there and deliberately not built, because they exist to serve
+per-language tuning and there is nothing to tune until there is a corpus.
+Start it with `harness/loop conformance`, and read it with `harness/hj
+status`.
 
 ## Planned layout
 

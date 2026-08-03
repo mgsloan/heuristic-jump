@@ -1,0 +1,1195 @@
+#!/usr/bin/env python3
+"""The harness's structural tool. See harness/readme.md.
+
+Everything here is mechanical: parsing section lists out of the design
+documents, merging an auditor's verdict into `state/audit/`, checking a
+commit's diff scope against the ownership table, rendering a prompt from
+its template, and appending the rows that make `state/` a record rather
+than a memory.
+
+Nothing here makes a judgement. The judgements belong to the campaign
+(what to work on) and to the auditor (whether a section is clean); this
+file only decides what is *true* about files on disk.
+
+Owned by nobody, per `design/loops.md` section 13 — a loop that could edit
+this could edit the thing that scores it.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import tomllib
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+HARNESS = REPO / "harness"
+STATE = REPO / "state"
+DESIGN = REPO / "design"
+
+# Denied to every loop in every phase, and deliberately a constant here
+# rather than a row in `state/phase.toml`: the ownership table is data the
+# gate reads, and a loop that could widen it could widen its own reach.
+# `design/loops.md` section 13 states the prohibition; keeping the deny list
+# out of configuration is what makes it unrepresentable rather than merely
+# forbidden.
+DENIED_ALWAYS = [
+    "harness/**",
+    "state/phase.toml",
+    "state/audit/**",
+    "state/interventions.jsonl",
+    "state/sessions.jsonl",
+    "crates/similarity/**",
+    "CLAUDE.md",
+    "clippy.toml",
+    ".claude/**",
+]
+
+OUTCOMES = ("confirmed", "falsified", "no-movement", "budget", "crashed", "error")
+
+
+def now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def die(message: str) -> None:
+    print(f"hj: {message}", file=sys.stderr)
+    raise SystemExit(2)
+
+
+# --------------------------------------------------------------------------
+# Paths and globbing
+
+
+def glob_to_regex(pattern: str) -> re.Pattern[str]:
+    """`**` crosses directory separators, `*` and `?` do not."""
+    if pattern.endswith("/"):
+        pattern = pattern + "**"
+    out = []
+    index = 0
+    while index < len(pattern):
+        char = pattern[index]
+        if pattern.startswith("**/", index):
+            out.append("(?:.*/)?")
+            index += 3
+        elif pattern.startswith("**", index):
+            out.append(".*")
+            index += 2
+        elif char == "*":
+            out.append("[^/]*")
+            index += 1
+        elif char == "?":
+            out.append("[^/]")
+            index += 1
+        else:
+            out.append(re.escape(char))
+            index += 1
+    return re.compile("".join(out) + r"\Z")
+
+
+def matches_any(path: str, patterns: list[str]) -> bool:
+    return any(glob_to_regex(p).match(path) for p in patterns)
+
+
+# --------------------------------------------------------------------------
+# Desired state
+
+
+@dataclass
+class LoopConfig:
+    owner: str
+    status: str
+    prompt: str
+    docs: list[str]
+    crates: list[str]
+    write: list[str]
+    stall_n: int
+    rotation: int
+    splice_sections: int
+    budget_usd: float | None
+    model: str | None
+    language: str | None
+    server: str | None
+
+
+@dataclass
+class Phase:
+    phase: str
+    loops: dict[str, LoopConfig] = field(default_factory=dict)
+
+
+def load_phase() -> Phase:
+    path = STATE / "phase.toml"
+    if not path.exists():
+        die(f"{path} does not exist; the harness has no desired state to reconcile against")
+    raw = tomllib.loads(path.read_text())
+    result = Phase(phase=raw["phase"])
+    for owner, table in raw.get("loop", {}).items():
+        result.loops[owner] = LoopConfig(
+            owner=owner,
+            status=table.get("status", "paused"),
+            prompt=table["prompt"],
+            docs=table.get("docs", []),
+            crates=table.get("crates", []),
+            write=table.get("write", []),
+            stall_n=table.get("stall_n", 3),
+            rotation=table.get("rotation", 6),
+            splice_sections=table.get("splice_sections", 3),
+            budget_usd=table.get("budget_usd"),
+            model=table.get("model"),
+            language=table.get("language"),
+            server=table.get("server"),
+        )
+    return result
+
+
+def loop_config(owner: str) -> tuple[Phase, LoopConfig]:
+    phase = load_phase()
+    if owner not in phase.loops:
+        die(f"no loop named {owner!r} in state/phase.toml (have: {', '.join(sorted(phase.loops))})")
+    return phase, phase.loops[owner]
+
+
+# --------------------------------------------------------------------------
+# Design documents: the section list is parsed, never authored
+
+
+# Level 2 and 3. The design documents put most of their checkable claims under
+# `###`, and a denominator of ten sections for a 1700-line document is one the
+# numerator can barely move — "sections clean over sections total" is only a
+# useful number at a granularity where a campaign can finish one. Each body
+# runs to the next heading of any level, so the sections partition the document
+# rather than nesting.
+HEADING = re.compile(r"^#{2,3}\s+(?P<text>\S.*?)\s*$")
+
+
+def anchor_of(heading: str) -> str:
+    """GitHub's slug: lowercase, drop everything but word characters, spaces
+    and hyphens, then spaces to hyphens."""
+    slug = heading.strip().lower()
+    slug = re.sub(r"[^a-z0-9 _-]", "", slug)
+    return re.sub(r"\s+", "-", slug).strip("-")
+
+
+@dataclass
+class Section:
+    doc: str
+    anchor: str
+    heading: str
+    start: int  # line index of the heading
+    end: int  # line index one past the last line of the body
+
+    @property
+    def key(self) -> str:
+        return f"{self.doc}#{self.anchor}"
+
+
+def doc_path(doc: str) -> Path:
+    path = DESIGN / doc
+    if not path.exists():
+        die(f"no such design document: {doc}")
+    return path
+
+
+def sections_of(doc: str) -> list[Section]:
+    lines = doc_path(doc).read_text().splitlines()
+    found: list[Section] = []
+    in_fence = False
+    for index, line in enumerate(lines):
+        if line.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        match = HEADING.match(line)
+        if match:
+            heading = match.group("text")
+            found.append(Section(doc, anchor_of(heading), heading, index, len(lines)))
+    for earlier, later in zip(found, found[1:]):
+        earlier.end = later.start
+    seen: dict[str, int] = {}
+    for section in found:
+        count = seen.get(section.anchor, 0)
+        seen[section.anchor] = count + 1
+        if count:
+            section.anchor = f"{section.anchor}-{count}"  # GitHub's own tie-break
+    return found
+
+
+def section_index(docs: list[str]) -> dict[str, Section]:
+    return {s.key: s for doc in docs for s in sections_of(doc)}
+
+
+def section_text(section: Section) -> str:
+    lines = doc_path(section.doc).read_text().splitlines()
+    body = "\n".join(lines[section.start : section.end]).rstrip()
+    return f"<!-- {section.key} -->\n{body}\n"
+
+
+# --------------------------------------------------------------------------
+# The audit record
+
+
+@dataclass
+class Gap:
+    claim: str
+    found: str
+    where: str
+
+
+@dataclass
+class Minor:
+    claim: str
+    note: str
+    where: str
+
+
+@dataclass
+class SectionVerdict:
+    key: str
+    state: str  # clean | gaps | unjudged
+    last_audited: str | None
+    gaps: list[Gap] = field(default_factory=list)
+    minors: list[Minor] = field(default_factory=list)
+
+
+VALID_STATES = ("clean", "gaps", "unjudged")
+
+
+def audit_path(doc: str) -> Path:
+    return STATE / "audit" / f"{doc.removesuffix('.md')}.toml"
+
+
+def read_audit(doc: str) -> dict[str, SectionVerdict]:
+    path = audit_path(doc)
+    if not path.exists():
+        return {}
+    raw = tomllib.loads(path.read_text())
+    out: dict[str, SectionVerdict] = {}
+    for key, table in raw.get("section", {}).items():
+        out[key] = SectionVerdict(
+            key=key,
+            state=table.get("state", "unjudged"),
+            last_audited=table.get("last_audited"),
+            gaps=[Gap(g.get("claim", ""), g.get("found", ""), g.get("where", "")) for g in table.get("gap", [])],
+            minors=[Minor(m.get("claim", ""), m.get("note", ""), m.get("where", "")) for m in table.get("minor", [])],
+        )
+    return out
+
+
+def toml_string(value: str) -> str:
+    if "\n" in value:
+        escaped = value.replace("\\", "\\\\").replace('"""', '\\"\\"\\"')
+        return f'"""\n{escaped}"""'
+    return json.dumps(value)
+
+
+def write_audit(doc: str, verdicts: dict[str, SectionVerdict], order: list[str]) -> None:
+    lines = [
+        f"# Audit of design/{doc}. Written by harness/audit, never by hand.",
+        "# `design/loops.md` section 3. The section list is parsed out of the",
+        "# document, so it follows the document rather than drifting from it.",
+        "",
+    ]
+    for key in order:
+        verdict = verdicts[key]
+        lines.append(f"[section.{toml_string(key)}]")
+        lines.append(f"state = {toml_string(verdict.state)}")
+        if verdict.last_audited:
+            lines.append(f"last_audited = {toml_string(verdict.last_audited)}")
+        for gap in verdict.gaps:
+            lines.append("")
+            lines.append(f"  [[section.{toml_string(key)}.gap]]")
+            lines.append(f"  claim = {toml_string(gap.claim)}")
+            lines.append(f"  found = {toml_string(gap.found)}")
+            lines.append(f"  where = {toml_string(gap.where)}")
+        for minor in verdict.minors:
+            lines.append("")
+            lines.append(f"  [[section.{toml_string(key)}.minor]]")
+            lines.append(f"  claim = {toml_string(minor.claim)}")
+            lines.append(f"  note = {toml_string(minor.note)}")
+            lines.append(f"  where = {toml_string(minor.where)}")
+        lines.append("")
+    path = audit_path(doc)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines))
+
+
+def audit_counts(docs: list[str]) -> dict[str, int]:
+    clean = total = gaps = minors = unjudged = 0
+    for doc in docs:
+        known = {s.key for s in sections_of(doc)}
+        verdicts = read_audit(doc)
+        total += len(known)
+        for key in known:
+            verdict = verdicts.get(key)
+            if verdict is None or verdict.state == "unjudged":
+                unjudged += 1
+                continue
+            if verdict.state == "clean":
+                clean += 1
+            gaps += len(verdict.gaps)
+            minors += len(verdict.minors)
+    return {
+        "sections_clean": clean,
+        "sections_total": total,
+        "sections_unjudged": unjudged,
+        "open_gaps": gaps,
+        "audit_minors": minors,
+    }
+
+
+def open_gaps(docs: list[str]) -> list[tuple[str, Gap]]:
+    out: list[tuple[str, Gap]] = []
+    for doc in docs:
+        known = {s.key for s in sections_of(doc)}
+        for key, verdict in read_audit(doc).items():
+            if key in known:
+                out.extend((key, gap) for gap in verdict.gaps)
+    return out
+
+
+# --------------------------------------------------------------------------
+# Git
+
+
+def git(*args: str, check: bool = True) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(REPO), *args], capture_output=True, text=True, check=False
+    )
+    if check and result.returncode != 0:
+        die(f"git {' '.join(args)} failed: {result.stderr.strip()}")
+    return result.stdout
+
+
+def head_sha() -> str:
+    return git("rev-parse", "HEAD").strip()
+
+
+def trailers_of(rev: str) -> dict[str, str]:
+    body = git("log", "-1", "--format=%B", rev)
+    parsed = subprocess.run(
+        ["git", "interpret-trailers", "--parse"],
+        input=body,
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout
+    out: dict[str, str] = {}
+    for line in parsed.splitlines():
+        if ":" in line:
+            name, _, value = line.partition(":")
+            out[name.strip().lower()] = value.strip()
+    return out
+
+
+def working_tree_paths() -> list[str]:
+    """Everything the next commit could contain: staged, unstaged, untracked."""
+    raw = git("status", "--porcelain=v1", "-z", "--untracked-files=all")
+    fields = raw.split("\0")
+    paths: list[str] = []
+    index = 0
+    while index < len(fields):
+        entry = fields[index]
+        index += 1
+        if not entry:
+            continue
+        status, path = entry[:2], entry[3:]
+        paths.append(path)
+        if "R" in status or "C" in status:
+            if index < len(fields):
+                paths.append(fields[index])
+                index += 1
+    return sorted(set(paths))
+
+
+def commit_paths(rev: str) -> list[str]:
+    raw = git("show", "--name-only", "--pretty=format:", "-z", rev)
+    return sorted({p for p in raw.split("\0") if p})
+
+
+def commits_for_campaign(campaign_id: str) -> list[str]:
+    raw = git("log", "--format=%H", f"--grep=campaign: {campaign_id}", "HEAD")
+    return [line for line in raw.splitlines() if line]
+
+
+# --------------------------------------------------------------------------
+# The append-only records
+
+
+def append_jsonl(path: Path, row: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as handle:
+        handle.write(json.dumps(row, sort_keys=True) + "\n")
+
+
+def read_jsonl(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    rows = []
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if line:
+            rows.append(json.loads(line))
+    return rows
+
+
+def sessions_path() -> Path:
+    return STATE / "sessions.jsonl"
+
+
+def campaigns_of(owner: str) -> list[dict]:
+    """Latest row per campaign id, oldest campaign first."""
+    latest: dict[str, dict] = {}
+    for row in read_jsonl(sessions_path()):
+        if row.get("loop") == owner:
+            merged = latest.setdefault(row["campaign"], {})
+            merged.update(row)
+    return list(latest.values())
+
+
+def metrics_path(owner: str) -> Path:
+    return STATE / "metrics" / f"{owner}.jsonl"
+
+
+# --------------------------------------------------------------------------
+# Cheap measurements that go in every metrics row
+
+
+def workspace_members() -> set[str]:
+    if not (REPO / "Cargo.toml").exists():
+        return set()
+    result = subprocess.run(
+        ["cargo", "metadata", "--no-deps", "--format-version", "1"],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return set()
+    return {package["name"] for package in json.loads(result.stdout)["packages"]}
+
+
+def owned_members(config: LoopConfig) -> list[str]:
+    """The ownership table names crates that may not exist yet; the gate
+    builds the intersection with what the workspace actually has."""
+    members = workspace_members()
+    return sorted({m for m in members if matches_any(m, config.crates)})
+
+
+def loc_per_crate() -> dict[str, int]:
+    """Non-test Rust only. `tokei` when it is installed, a line count when it
+    is not — LOC is reported and never gated (`design/loops.md` section 11), so
+    an approximate number is not load-bearing."""
+    roots = [REPO / "crates", REPO / "vendor"]
+    counts: dict[str, int] = {}
+    for root in roots:
+        if not root.exists():
+            continue
+        for crate in sorted(p for p in root.iterdir() if p.is_dir()):
+            total = 0
+            for source in crate.rglob("*.rs"):
+                relative = source.relative_to(crate).parts
+                if "tests" in relative or "target" in relative:
+                    continue
+                total += sum(1 for line in source.read_text(errors="replace").splitlines() if line.strip())
+            if total:
+                counts[crate.name] = total
+    return counts
+
+
+def test_count(members: list[str]) -> int | None:
+    if not members:
+        return None
+    args = ["cargo", "nextest", "list", "--message-format", "json"]
+    for member in members:
+        args += ["-p", member]
+    result = subprocess.run(args, cwd=REPO, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        return None
+    try:
+        listing = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    return sum(len(suite.get("testcases", {})) for suite in listing.get("rust-suites", {}).values())
+
+
+def provisional_decisions() -> int:
+    """Sites still running on a provisional choice. Its count is a health
+    metric — rising steadily means the loop is running ahead of its decisions
+    and the work is getting speculative (`design/loops.md` section 6).
+
+    Scoped to code rather than the whole tree: the decision records and the
+    prompts talk *about* the tag, and counting those would make the number
+    start at thirty and never mean anything.
+    """
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(REPO),
+            "grep",
+            "-c",
+            "-E",
+            r"DECISION-[A-Za-z0-9_-]+: provisional",
+            "--",
+            "crates",
+            "vendor",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    total = 0
+    for line in result.stdout.splitlines():
+        _, _, count = line.rpartition(":")
+        if count.isdigit():
+            total += int(count)
+    return total
+
+
+# --------------------------------------------------------------------------
+# Commands
+
+
+def cmd_sections(args: argparse.Namespace) -> int:
+    for doc in args.doc:
+        for section in sections_of(doc):
+            print(f"{section.key}\t{section.heading}")
+    return 0
+
+
+def cmd_section_text(args: argparse.Namespace) -> int:
+    doc, _, anchor = args.key.partition("#")
+    index = section_index([doc])
+    section = index.get(f"{doc}#{anchor}")
+    if section is None:
+        die(f"no section {args.key}")
+    print(section_text(section))
+    return 0
+
+
+def cmd_audit_plan(args: argparse.Namespace) -> int:
+    """Coverage by rotation, not by checklist (`design/loops.md` section 3):
+    the sections the last campaign touched, plus the least recently audited
+    slice of the rest."""
+    _, config = loop_config(args.loop)
+    targets: list[str] = []
+    for campaign in campaigns_of(args.loop):
+        if campaign.get("target"):
+            targets.append(campaign["target"])
+    recent_targets = set(targets[-1:])
+
+    planned: list[str] = []
+    for doc in config.docs:
+        verdicts = read_audit(doc)
+        known = sections_of(doc)
+        touched = [s.key for s in known if s.key in recent_targets]
+
+        def staleness(section: Section) -> tuple[str, str]:
+            verdict = verdicts.get(section.key)
+            return (verdict.last_audited or "" if verdict else "", section.anchor)
+
+        rotation = [s.key for s in sorted(known, key=staleness) if s.key not in touched]
+        planned += touched + rotation[: config.rotation]
+    for key in planned:
+        print(key)
+    return 0
+
+
+TOML_FENCE = re.compile(r"```toml\s*\n(.*?)\n```", re.DOTALL)
+
+
+def cmd_audit_merge(args: argparse.Namespace) -> int:
+    """Take the auditor's verdict and write it into `state/audit/`.
+
+    The auditor cannot edit anything (`design/loops.md` section 5), so the
+    file is written here, from what it reported, after validation. A verdict
+    naming a section that does not exist is rejected rather than recorded —
+    a hallucinated anchor would otherwise become a permanent work item.
+    """
+    _, config = loop_config(args.loop)
+    raw = Path(args.transcript).read_text()
+    blocks = TOML_FENCE.findall(raw)
+    if not blocks:
+        die("the auditor produced no ```toml block; nothing to merge")
+    try:
+        reported = tomllib.loads(blocks[-1])
+    except tomllib.TOMLDecodeError as error:
+        die(f"the auditor's toml block does not parse: {error}")
+
+    index = section_index(config.docs)
+    stamp = now()
+    problems: list[str] = []
+    fresh: dict[str, SectionVerdict] = {}
+    for key, table in reported.get("section", {}).items():
+        if key not in index:
+            problems.append(f"unknown section {key!r}")
+            continue
+        state = table.get("state")
+        if state not in VALID_STATES:
+            problems.append(f"{key}: state {state!r} is not one of {VALID_STATES}")
+            continue
+        gaps = [Gap(g.get("claim", ""), g.get("found", ""), g.get("where", "")) for g in table.get("gap", [])]
+        minors = [Minor(m.get("claim", ""), m.get("note", ""), m.get("where", "")) for m in table.get("minor", [])]
+        if state == "gaps" and not gaps:
+            problems.append(f"{key}: state is 'gaps' but no gap is listed")
+            continue
+        if state == "clean" and gaps:
+            problems.append(f"{key}: state is 'clean' but gaps are listed")
+            continue
+        fresh[key] = SectionVerdict(key, state, stamp, gaps, minors)
+
+    if problems:
+        for problem in problems:
+            print(f"hj audit-merge: rejected: {problem}", file=sys.stderr)
+        if not args.partial:
+            return 1
+
+    for doc in config.docs:
+        known = sections_of(doc)
+        verdicts = read_audit(doc)
+        for section in known:
+            if section.key in fresh:
+                verdicts[section.key] = fresh[section.key]
+            elif section.key not in verdicts:
+                verdicts[section.key] = SectionVerdict(section.key, "unjudged", None)
+        order = [s.key for s in known]
+        write_audit(doc, {k: verdicts[k] for k in order}, order)
+
+    counts = audit_counts(config.docs)
+    print(
+        f"audit: {counts['sections_clean']}/{counts['sections_total']} sections clean, "
+        f"{counts['sections_unjudged']} unjudged, {counts['open_gaps']} open gaps, "
+        f"{counts['audit_minors']} minor items"
+    )
+    return 0
+
+
+def cmd_check_audit(args: argparse.Namespace) -> int:
+    """Gate step: every open gap names a document anchor that exists."""
+    phase = load_phase()
+    docs = sorted({doc for config in phase.loops.values() for doc in config.docs})
+    failures = 0
+    for doc in docs:
+        known = {s.key for s in sections_of(doc)}
+        for key, verdict in read_audit(doc).items():
+            if key not in known:
+                print(f"audit: {key} no longer exists in design/{doc}", file=sys.stderr)
+                failures += 1
+    return 1 if failures else 0
+
+
+def cmd_check_scope(args: argparse.Namespace) -> int:
+    _, config = loop_config(args.loop)
+    paths = commit_paths(args.rev) if args.rev else working_tree_paths()
+    violations = []
+    for path in paths:
+        if matches_any(path, DENIED_ALWAYS):
+            violations.append((path, "denied to every loop"))
+        elif not matches_any(path, config.write):
+            violations.append((path, f"outside {args.loop}'s owned paths"))
+    for path, reason in violations:
+        print(f"scope: {path}: {reason}", file=sys.stderr)
+    if violations:
+        print(
+            f"scope: {len(violations)} path(s) this loop does not own. "
+            "Revert them, or escalate as a decision (design/loops.md section 6).",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"scope: {len(paths)} path(s), all owned by {args.loop}")
+    return 0
+
+
+def cmd_check_metrics(args: argparse.Namespace) -> int:
+    """Gate step: the previous iteration recorded its row.
+
+    Checked against HEAD rather than the pending commit, because the row
+    keys on a commit that does not exist until after the gate passes. A
+    commit carrying this loop's `campaign:` trailer and no metrics row means
+    `harness/hj record` was skipped, and the history has a hole in it.
+    """
+    _, config = loop_config(args.loop)
+    head = head_sha()
+    trailers = trailers_of(head)
+    if trailers.get("loop") != args.loop:
+        print("metrics: HEAD is not this loop's commit; nothing to check")
+        return 0
+    recorded = {row.get("commit") for row in read_jsonl(metrics_path(config.owner))}
+    if head in recorded:
+        print("metrics: HEAD is recorded")
+        return 0
+    print(f"metrics: no row for HEAD ({head[:12]}); run `harness/hj record {args.loop}`", file=sys.stderr)
+    return 1
+
+
+def cmd_record(args: argparse.Namespace) -> int:
+    phase, config = loop_config(args.loop)
+    members = owned_members(config)
+    row = {
+        "commit": head_sha(),
+        "ts": now(),
+        "phase": phase.phase,
+        "loop": config.owner,
+        "campaign": trailers_of("HEAD").get("campaign"),
+        **audit_counts(config.docs),
+        "loc": loc_per_crate(),
+        "tests": test_count(members),
+        "provisional_decisions": provisional_decisions(),
+    }
+    append_jsonl(metrics_path(config.owner), row)
+    print(json.dumps(row, sort_keys=True))
+    return 0
+
+
+def render(template: str, values: dict[str, str]) -> str:
+    """`{{name}}` is substituted at launch, from the source file, so there is
+    one copy of every rule and it is the original
+    (`design/loops.md` section 14)."""
+    missing: list[str] = []
+
+    def replace(match: re.Match[str]) -> str:
+        name = match.group(1).strip()
+        if name not in values:
+            missing.append(name)
+            return match.group(0)
+        return values[name]
+
+    out = re.sub(r"\{\{([^}]+)\}\}", replace, template)
+    if missing:
+        die(f"prompt template has no value for: {', '.join(sorted(set(missing)))}")
+    return out
+
+
+def trailing_without_progress(owner: str) -> int:
+    trailing = 0
+    for campaign in reversed([c for c in campaigns_of(owner) if c.get("outcome")]):
+        if campaign.get("progress"):
+            break
+        trailing += 1
+    return trailing
+
+
+def prompt_values(phase: Phase, config: LoopConfig, campaign_id: str) -> dict[str, str]:
+    gaps = open_gaps(config.docs)
+    counts = audit_counts(config.docs)
+
+    gap_lines = [
+        f"- {key}\n  claim: {gap.claim}\n  found: {gap.found}\n  where: {gap.where}"
+        for key, gap in gaps
+    ] or ["- (none recorded; the audit has not run, or every audited section is clean)"]
+
+    index = section_index(config.docs)
+    unjudged = [
+        key
+        for doc in config.docs
+        for key, verdict in sorted(read_audit(doc).items())
+        if verdict.state == "unjudged" and key in index
+    ]
+    never_audited = [s.key for doc in config.docs for s in sections_of(doc) if s.key not in read_audit(doc)]
+    unjudged = sorted(set(unjudged) | set(never_audited))
+
+    spliced_keys: list[str] = []
+    for key, _ in gaps:
+        if key not in spliced_keys:
+            spliced_keys.append(key)
+    spliced = [section_text(index[key]) for key in spliced_keys[: config.splice_sections] if key in index]
+
+    campaign_lines = []
+    for campaign in campaigns_of(config.owner):
+        campaign_lines.append(
+            f"- {campaign.get('campaign', '?')[:8]} {campaign.get('target') or '(no target recorded)'} "
+            f"-> {campaign.get('outcome') or 'open'}"
+        )
+
+    decisions = []
+    for path in sorted((STATE / "decisions").glob("*.md")):
+        text = path.read_text()
+        status = re.search(r"^status:\s*(.+)$", text, re.MULTILINE)
+        title = re.search(r"^#\s+(.+)$", text, re.MULTILINE)
+        if status and status.group(1).strip() in ("open", "provisional"):
+            decisions.append(f"- {path.stem}: {title.group(1) if title else path.stem} [{status.group(1).strip()}]")
+
+    findings = []
+    for path in sorted((STATE / "findings").glob("*.md")):
+        if path.stem != config.owner:
+            findings.append(f"### {path.stem}\n\n{path.read_text().strip()}")
+
+    stalled = trailing_without_progress(config.owner)
+    if stalled >= config.stall_n:
+        stall_notice = (
+            f"**This loop has stalled**: {stalled} campaigns have closed in a row with no\n"
+            f"progress, and N is {config.stall_n}. Do not pick a new target. Write\n"
+            "`state/handoff.md` instead — what you were trying, what you tried, what you\n"
+            "believe is blocking it, and the one question whose answer would unblock it —\n"
+            "then close with `OUTCOME: no-movement`."
+        )
+    else:
+        stall_notice = f"Not stalled: {stalled} campaign(s) without progress, of {config.stall_n} that would stop this loop."
+
+    return {
+        "loop": config.owner,
+        "owner": config.owner,
+        "phase": phase.phase,
+        "stall_notice": stall_notice,
+        "language": config.language or "n/a",
+        "server": config.server or "n/a",
+        "campaign_id": campaign_id,
+        "campaign_record": f"state/campaigns/{config.owner}/{campaign_id}.md",
+        "owned_paths": "\n".join(f"- `{p}`" for p in config.write),
+        "denied_paths": "\n".join(f"- `{p}`" for p in DENIED_ALWAYS),
+        "gate_command": f"harness/gate {config.owner}",
+        "docs": ", ".join(f"`design/{d}`" for d in config.docs) or "(none)",
+        "trailer_format": (HARNESS / "trailer-format.md").read_text().strip(),
+        "decision_template": (HARNESS / "decision-template.md").read_text().strip(),
+        "stall_n": str(config.stall_n),
+        "audit_summary": (
+            f"{counts['sections_clean']}/{counts['sections_total']} sections clean, "
+            f"{counts['sections_unjudged']} unjudged, {counts['open_gaps']} open gaps, "
+            f"{counts['audit_minors']} minor items"
+        ),
+        "open_gaps": "\n".join(gap_lines),
+        "unjudged_sections": "\n".join(f"- {key}" for key in unjudged) or "- (none)",
+        "spliced_sections": "\n\n".join(spliced) or "(no open gaps, so no section is spliced)",
+        "campaigns_so_far": "\n".join(campaign_lines) or "- (none; this is the first campaign)",
+        "open_decisions": "\n".join(decisions) or "- (none open)",
+        "other_findings": "\n\n".join(findings) or "(no other loop has published a digest)",
+        "self_summary": (
+            (STATE / "findings" / f"{config.owner}.md").read_text().strip()
+            if (STATE / "findings" / f"{config.owner}.md").exists()
+            else "(none yet)"
+        ),
+    }
+
+
+def cmd_render_prompt(args: argparse.Namespace) -> int:
+    phase, config = loop_config(args.loop)
+    template = (HARNESS / "prompts" / config.prompt).read_text()
+    rendered = render(template, prompt_values(phase, config, args.campaign or "(unassigned)"))
+    if args.out:
+        Path(args.out).write_text(rendered)
+    else:
+        sys.stdout.write(rendered)
+    return 0
+
+
+def cmd_render_auditor(args: argparse.Namespace) -> int:
+    """The auditor's prompt is rendered by the harness and never seen by the
+    implementer (`design/loops.md` section 5): a loop that knows exactly how
+    it is judged optimises for the judgement."""
+    phase, config = loop_config(args.loop)
+    index = section_index(config.docs)
+    keys = [key.strip() for key in Path(args.plan).read_text().splitlines() if key.strip()]
+    unknown = [key for key in keys if key not in index]
+    if unknown:
+        die(f"audit plan names sections that do not exist: {', '.join(unknown)}")
+    template = (HARNESS / "prompts" / "auditor.md").read_text()
+    rendered = render(
+        template,
+        {
+            "phase": phase.phase,
+            "loop": config.owner,
+            "docs": ", ".join(f"`design/{d}`" for d in config.docs) or "(none)",
+            "section_list": "\n".join(f"- {key}" for key in keys),
+            "section_count": str(len(keys)),
+            "spliced_sections": "\n\n".join(section_text(index[key]) for key in keys),
+            "owned_paths": "\n".join(f"- `{p}`" for p in config.write),
+        },
+    )
+    if args.out:
+        Path(args.out).write_text(rendered)
+    else:
+        sys.stdout.write(rendered)
+    return 0
+
+
+def cmd_crates(args: argparse.Namespace) -> int:
+    """The crates the gate builds: the ownership table intersected with what
+    the workspace actually contains, so a table row for a crate that does not
+    exist yet costs nothing."""
+    _, config = loop_config(args.loop)
+    for member in owned_members(config):
+        print(member)
+    return 0
+
+
+CAMPAIGN_STUB = """# Campaign {campaign_id}
+
+- loop: {owner}
+- phase: {phase}
+- opened: {opened}
+- commit at open: {commit}
+- session: `claude --resume {campaign_id}`
+
+## Target
+
+<!-- One target. For a conformance loop: an open gap, or an unjudged
+     section, named by its document anchor. Fill this in first. -->
+
+## Hypothesis
+
+<!-- Why the target is in the state it is in, and what you expect to
+     change. A campaign is one hypothesis. -->
+
+## Experiments
+
+<!-- One line per experiment: what changed, what the gate said, committed
+     or reverted. Reverts are results. -->
+
+## Outcome
+
+<!-- Written at close, when the shape of the result is known. If the
+     hypothesis died, say why in enough detail that nobody retries it. -->
+"""
+
+
+def cmd_campaign_open(args: argparse.Namespace) -> int:
+    phase, config = loop_config(args.loop)
+    campaign_id = args.id or str(uuid.uuid4())
+    template = (HARNESS / "prompts" / config.prompt).read_text()
+    rendered = render(template, prompt_values(phase, config, campaign_id))
+    prompt_sha = hashlib.sha256(rendered.encode()).hexdigest()
+
+    record = STATE / "campaigns" / config.owner / f"{campaign_id}.md"
+    record.parent.mkdir(parents=True, exist_ok=True)
+    if not record.exists():
+        record.write_text(
+            CAMPAIGN_STUB.format(
+                campaign_id=campaign_id,
+                owner=config.owner,
+                phase=phase.phase,
+                opened=now(),
+                commit=head_sha(),
+            )
+        )
+
+    append_jsonl(
+        sessions_path(),
+        {
+            "campaign": campaign_id,
+            "loop": config.owner,
+            "phase": phase.phase,
+            "language": config.language,
+            "server": config.server,
+            "prompt": config.prompt,
+            "prompt_sha": prompt_sha,
+            "started": now(),
+            "start_commit": head_sha(),
+            "record": str(record.relative_to(REPO)),
+            **audit_counts(config.docs),
+        },
+    )
+
+    if args.prompt_out:
+        Path(args.prompt_out).write_text(rendered)
+    print(campaign_id)
+    return 0
+
+
+def cmd_campaign_close(args: argparse.Namespace) -> int:
+    phase, config = loop_config(args.loop)
+    rows = [row for row in read_jsonl(sessions_path()) if row.get("campaign") == args.id]
+    if not rows:
+        die(f"no campaign {args.id} in state/sessions.jsonl")
+    opened = rows[0]
+    before = {k: opened.get(k, 0) for k in ("sections_clean", "open_gaps")}
+    after = audit_counts(config.docs)
+    commits = commits_for_campaign(args.id)
+    tests_before = None
+    metrics = read_jsonl(metrics_path(config.owner))
+    if metrics:
+        tests_before = metrics[0].get("tests")
+    tests_after = metrics[-1].get("tests") if metrics else None
+
+    progress = (
+        after["sections_clean"] > before["sections_clean"]
+        or after["open_gaps"] < before["open_gaps"]
+        or (tests_before is not None and tests_after is not None and tests_after > tests_before)
+    )
+
+    append_jsonl(
+        sessions_path(),
+        {
+            "campaign": args.id,
+            "loop": config.owner,
+            "phase": phase.phase,
+            "target": args.target,
+            "ended": now(),
+            "end_commit": head_sha(),
+            "commits": len(commits),
+            "outcome": args.outcome,
+            "progress": progress,
+            **after,
+        },
+    )
+    print(f"campaign {args.id[:8]} closed: {args.outcome}, {len(commits)} commit(s), progress={progress}")
+    return 0
+
+
+def cmd_stall(args: argparse.Namespace) -> int:
+    """`design/loops.md` section 7: stall is judged per campaign, not per
+    experiment. N consecutive closed campaigns with no progress stops the
+    loop and asks for a human."""
+    _, config = loop_config(args.loop)
+    closed = [c for c in campaigns_of(config.owner) if c.get("outcome")]
+    trailing = 0
+    for campaign in reversed(closed):
+        if campaign.get("progress"):
+            break
+        trailing += 1
+    empty = sum(1 for c in closed[-config.stall_n :] if c.get("commits") == 0)
+    print(f"stall: {trailing} campaign(s) without progress (N={config.stall_n}); {empty} of the last {config.stall_n} produced no commit")
+    return 1 if trailing >= config.stall_n else 0
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    phase = load_phase()
+    print(f"phase {phase.phase}   ({now()})")
+    for owner, config in sorted(phase.loops.items()):
+        counts = audit_counts(config.docs)
+        campaigns = campaigns_of(owner)
+        closed = [c for c in campaigns if c.get("outcome")]
+        trailing = 0
+        for campaign in reversed(closed):
+            if campaign.get("progress"):
+                break
+            trailing += 1
+        print()
+        print(f"  {owner}  [{config.status}]")
+        print(f"    docs        {', '.join(config.docs) or '(none)'}")
+        print(
+            f"    audit       {counts['sections_clean']}/{counts['sections_total']} clean, "
+            f"{counts['sections_unjudged']} unjudged, {counts['open_gaps']} gaps, "
+            f"{counts['audit_minors']} minor"
+        )
+        print(f"    campaigns   {len(campaigns)} opened, {len(closed)} closed, {trailing} without progress (stall N={config.stall_n})")
+        for campaign in campaigns[-5:]:
+            print(
+                f"      {campaign.get('campaign', '?')[:8]}  "
+                f"{(campaign.get('target') or '-'):<48.48}  {campaign.get('outcome') or 'open'}"
+            )
+    print()
+    print(f"  provisional DECISION- tags: {provisional_decisions()}")
+    decisions = sorted((STATE / "decisions").glob("*.md"))
+    waiting = [p for p in decisions if re.search(r"^status:\s*open\s*$", p.read_text(), re.MULTILINE)]
+    print(f"  decisions: {len(decisions)} recorded, {len(waiting)} waiting on a human")
+    return 0
+
+
+def cmd_intervene(args: argparse.Namespace) -> int:
+    """`design/loops.md` section 16: the log is the mechanism, not a record of
+    it. Answering a decision means appending here."""
+    if not args.rationale.strip():
+        die("rationale is required; a decision with no recorded reason gets re-litigated")
+    append_jsonl(
+        STATE / "interventions.jsonl",
+        {
+            "ts": now(),
+            "kind": args.kind,
+            "target": args.target,
+            "answer": args.answer,
+            "rationale": args.rationale,
+            "commit": head_sha(),
+        },
+    )
+    print(f"logged: {args.kind} on {args.target}")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog="hj", description=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("sections", help="list a design document's sections and their anchors")
+    p.add_argument("doc", nargs="+")
+    p.set_defaults(run=cmd_sections)
+
+    p = sub.add_parser("section-text", help="print one section's body, for splicing into a prompt")
+    p.add_argument("key", help="e.g. core.md#7-measurement")
+    p.set_defaults(run=cmd_section_text)
+
+    p = sub.add_parser("audit-plan", help="which sections the next audit covers")
+    p.add_argument("loop")
+    p.set_defaults(run=cmd_audit_plan)
+
+    p = sub.add_parser("audit-merge", help="merge an auditor's verdict into state/audit/")
+    p.add_argument("loop")
+    p.add_argument("transcript", help="file holding the auditor's output")
+    p.add_argument("--partial", action="store_true", help="merge the valid sections even if some were rejected")
+    p.set_defaults(run=cmd_audit_merge)
+
+    p = sub.add_parser("check-audit", help="gate step: every gap names an anchor that exists")
+    p.set_defaults(run=cmd_check_audit)
+
+    p = sub.add_parser("check-scope", help="gate step: only owned paths were touched")
+    p.add_argument("loop")
+    p.add_argument("--rev", help="check a commit instead of the working tree")
+    p.set_defaults(run=cmd_check_scope)
+
+    p = sub.add_parser("check-metrics", help="gate step: the previous iteration recorded its row")
+    p.add_argument("loop")
+    p.set_defaults(run=cmd_check_metrics)
+
+    p = sub.add_parser("record", help="append the metrics row for HEAD")
+    p.add_argument("loop")
+    p.set_defaults(run=cmd_record)
+
+    p = sub.add_parser("render-prompt", help="render a loop's prompt")
+    p.add_argument("loop")
+    p.add_argument("--campaign")
+    p.add_argument("--out")
+    p.set_defaults(run=cmd_render_prompt)
+
+    p = sub.add_parser("render-auditor", help="render the auditor's prompt for a plan")
+    p.add_argument("loop")
+    p.add_argument("plan", help="file holding the section keys to audit")
+    p.add_argument("--out")
+    p.set_defaults(run=cmd_render_auditor)
+
+    p = sub.add_parser("crates", help="the workspace members this loop owns and the gate builds")
+    p.add_argument("loop")
+    p.set_defaults(run=cmd_crates)
+
+    p = sub.add_parser("campaign-open", help="allocate a campaign, write its record, render its prompt")
+    p.add_argument("loop")
+    p.add_argument("--id", help="uuid; generated when omitted")
+    p.add_argument("--prompt-out")
+    p.set_defaults(run=cmd_campaign_open)
+
+    p = sub.add_parser("campaign-close", help="close a campaign and judge whether it made progress")
+    p.add_argument("loop")
+    p.add_argument("--id", required=True)
+    p.add_argument("--outcome", required=True, choices=OUTCOMES)
+    p.add_argument("--target", default=None)
+    p.set_defaults(run=cmd_campaign_close)
+
+    p = sub.add_parser("stall", help="exit 1 when the loop has stalled")
+    p.add_argument("loop")
+    p.set_defaults(run=cmd_stall)
+
+    p = sub.add_parser("status", help="the operator view, until there is a dashboard")
+    p.set_defaults(run=cmd_status)
+
+    p = sub.add_parser("intervene", help="append to the intervention log")
+    p.add_argument("--kind", required=True)
+    p.add_argument("--target", required=True)
+    p.add_argument("--answer", default="")
+    p.add_argument("--rationale", required=True)
+    p.set_defaults(run=cmd_intervene)
+
+    args = parser.parse_args()
+    return args.run(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

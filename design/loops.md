@@ -509,14 +509,16 @@ something off. Specifically, always escalate when the change touches:
 * licensing, or `vendor/`
 * one of the numbered open questions in any document
 
-The escalation is a file, `state/decisions/NNN.md`, in **MADR** format
+The escalation is a file, `state/decisions/<owner>-NNN.md`
+([section 13](#parallel-loops-and-what-they-share) says why the owner
+prefix), in **MADR** format
 (context / options / decision / consequences — the usual architecture
 decision record template, which already has the immutability discipline
 this wants: a record's status changes, its text does not). It states
 the question, the options, the evidence available, a recommendation,
 and — critically — **what the loop is doing meanwhile.** The loop picks
 the most reversible option, tags every affected site with
-`// DECISION-017: provisional`, and continues. It never idles waiting
+`// DECISION-<owner>-017: provisional`, and continues. It never idles waiting
 for an answer.
 
 When the answer arrives, reconciling the tagged sites is a normal
@@ -539,22 +541,23 @@ That is the trade being taken deliberately, and the outstanding count is
 what makes it visible rather than silent. If reconciliation starts
 dominating, the threshold is too high.
 
-**Seed the queue from what already exists.** `open-questions.md` is a
-numbered list of exactly these, and `resolution.md` ends in a second
-one of its own; both are already Class B items in everything but
-format.
-Converting them to decision files before the first loop runs means the
-loop starts with its uncertainties enumerated rather than discovering
-them one stall at a time — and several have recommendations attached
-already, which the loop can adopt as its provisional choice with no
-further reasoning.
+**The queue starts empty, and is not seeded from `open-questions.md`.** An
+earlier revision said the opposite — that document and `resolution.md`'s
+own list are numbered Class B items in everything but format, so converting
+them to decision files looked like free enumeration of the loop's
+uncertainties.
 
-Enumerate them by reading the documents, not from a count recorded here.
-The lists grow, questions get resolved in place, and a number written
-down in a second document is wrong shortly afterwards without anything
-failing to notice. Some are already marked resolved with their decision;
-those are seeded as settled rather than skipped, since the reasoning is
-what stops them being reopened.
+It is not free, and it inverts what a decision record is for. **Those
+questions are the author's**, waiting on measurements and product judgement
+that no campaign has; a record exists because a campaign hit something and
+could not proceed without choosing. Seeding a hundred of them hands the loop
+provisional choices it has no evidence to make, in code it has not written
+yet, and destroys the one signal the mechanism produces: a rising
+outstanding-`DECISION-` count means the loop is running ahead of its
+decisions, and it cannot mean that if the count started at a hundred.
+
+The loop still meets those questions — by reading the document a gap points
+it at, where they sit in context with the reasoning around them.
 
 ## 7. Progress, stall, and the ways it is faked
 
@@ -1622,7 +1625,7 @@ Spec changes: fix contradictions in design/, record them in
 state/spec-changelog.md.
 Anything that trades something off is a decision — write
 state/decisions/{owner}-NNN.md, pick the reversible option, tag the
-sites `// DECISION-NNN: provisional`, and keep going. Never wait.
+sites `// DECISION-{owner}-NNN: provisional`, and keep going. Never wait.
 ---
 Open gaps: {from the last audit, with their document anchors}
 Your campaigns so far: {one line each — target, outcome}
@@ -2000,7 +2003,7 @@ markdown file" panel would make you go find it yourself:
 
 | Escalation | What the panel must show |
 |---|---|
-| Class B decision | options, recommendation, the provisional choice in force, and the sites tagged `DECISION-<n>` |
+| Class B decision | options, recommendation, the provisional choice in force, and the sites tagged `DECISION-<owner>-<n>` |
 | Phase 3 behaviour change | the exact replay diff: which queries changed, in which stratum, from what location to what location |
 | Frontier selection | the chart, candidates with their held-out numbers, per-stratum breakdown of what each point trades |
 | Stall handoff | what was tried, the campaign record, the journal excerpt |

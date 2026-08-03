@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# The auditor. `design/loops.md` section 5.
+#
+# A separate session with no memory of writing the code is given the spec and
+# the implementation and asked one question: is this implemented, and where is
+# it not? It cannot edit anything — `--tools` leaves it Read, Grep and Glob —
+# so the verdict comes back as text and *this* script writes state/audit/.
+# That is why nobody authors those files by hand.
+#
+# Coverage is by rotation, not by checklist: `hj audit-plan` picks the
+# sections the last campaign touched plus the least recently audited slice of
+# the rest, so every section is revisited within a bounded number of
+# campaigns.
+#
+#   harness/audit <loop> [--dry-run]
+
+set -uo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo="$(dirname "$here")"
+hj="$here/hj"
+
+loop="${1:-}"
+if [ -z "$loop" ]; then
+	echo "usage: harness/audit <loop> [--dry-run]" >&2
+	exit 2
+fi
+dry_run=""
+[ "${2:-}" = "--dry-run" ] && dry_run=1
+
+cd "$repo" || exit 2
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+
+"$hj" audit-plan "$loop" >"$work/plan" || exit 2
+if [ ! -s "$work/plan" ]; then
+	echo "audit: nothing to audit — this loop has no documents in state/phase.toml" >&2
+	exit 0
+fi
+
+echo "audit: $(wc -l <"$work/plan") section(s):"
+sed 's/^/  /' "$work/plan"
+
+"$hj" render-auditor "$loop" "$work/plan" --out "$work/prompt" || exit 2
+
+if [ -n "$dry_run" ]; then
+	cat "$work/prompt"
+	exit 0
+fi
+
+session="$(cat /proc/sys/kernel/random/uuid)"
+transcripts="${HJ_TRANSCRIPTS:-$repo/../heuristic-jump-transcripts}/$loop"
+mkdir -p "$transcripts"
+
+# A fresh session of the same model is enough: the failure being caught is
+# attention-based, not capability-based, and a fresh context already destroys
+# the shared premise. HJ_AUDIT_MODEL is the cheap experiment section 5
+# describes, for when the auditor is observed rubber-stamping.
+model_args=()
+[ -n "${HJ_AUDIT_MODEL:-}" ] && model_args=(--model "$HJ_AUDIT_MODEL")
+
+claude -p \
+	--session-id "$session" \
+	--tools "Read,Grep,Glob" \
+	--permission-mode dontAsk \
+	"${model_args[@]}" \
+	<"$work/prompt" |
+	tee "$transcripts/audit-$session.md"
+status=${PIPESTATUS[0]}
+
+if [ "$status" -ne 0 ]; then
+	echo "audit: the auditor session exited $status; state/audit/ is unchanged" >&2
+	exit "$status"
+fi
+
+"$hj" audit-merge "$loop" "$transcripts/audit-$session.md"

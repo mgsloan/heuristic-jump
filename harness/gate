@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+# The gate. `design/loops.md` section 4.
+#
+# Run in this order, all mandatory. It is scoped to the crates the loop owns,
+# per CLAUDE.md's rule against routinely building the workspace: a Rust tuning
+# iteration builds lang_rust and measure_rust and nothing else. The
+# full-workspace gate runs once per phase gate, not once per iteration.
+#
+# Owned by nobody. A loop that could edit this could weaken the thing that
+# scores it.
+#
+#   harness/gate <loop> [--rev <sha>]
+#
+# Without --rev the pending commit is checked: staged, unstaged and untracked
+# paths together, since any of them can end up in it. With --rev an existing
+# commit is checked after the fact.
+
+set -uo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo="$(dirname "$here")"
+hj="$here/hj"
+
+loop="${1:-}"
+if [ -z "$loop" ]; then
+	echo "usage: harness/gate <loop> [--rev <sha>]" >&2
+	exit 2
+fi
+shift
+
+rev=""
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--rev)
+		rev="${2:-}"
+		shift 2
+		;;
+	*)
+		echo "gate: unknown argument: $1" >&2
+		exit 2
+		;;
+	esac
+done
+
+cd "$repo" || exit 2
+
+step=0
+fail() {
+	echo >&2
+	echo "GATE FAILED at step $step: $1" >&2
+	echo "Fix it, or revert to green and write what you learned into the journal." >&2
+	exit 1
+}
+
+crates_listing="$("$hj" crates "$loop")" || exit 2
+crates=()
+package_args=()
+while IFS= read -r crate; do
+	[ -n "$crate" ] || continue
+	crates+=("$crate")
+	package_args+=(-p "$crate")
+done <<<"$crates_listing"
+
+phase="$(sed -n 's/^phase[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' state/phase.toml | head -1)"
+
+echo "gate: loop=$loop phase=$phase crates=${crates[*]:-none}"
+
+# --- 1. formatting.
+#
+# Never bare `cargo fmt`, which would reformat vendor/ and destroy the
+# upstream re-sync property (CLAUDE.md, design/rope-modifications.md).
+step=$((step + 1))
+printf '\n--- %d. cargo fmt --check\n' "$step"
+if [ ${#crates[@]} -eq 0 ]; then
+	echo "skipped: no owned crate exists yet"
+else
+	cargo fmt "${package_args[@]}" --check || fail "cargo fmt --check"
+fi
+
+# --- 2. lints.
+step=$((step + 1))
+printf '\n--- %d. cargo clippy\n' "$step"
+if [ ${#crates[@]} -eq 0 ]; then
+	echo "skipped: no owned crate exists yet"
+else
+	cargo clippy "${package_args[@]}" --all-targets -- -D warnings || fail "cargo clippy"
+fi
+
+# --- 3. tests.
+step=$((step + 1))
+printf '\n--- %d. cargo nextest run\n' "$step"
+if [ ${#crates[@]} -eq 0 ]; then
+	echo "skipped: no owned crate exists yet"
+elif ! command -v cargo-nextest >/dev/null 2>&1; then
+	fail "cargo-nextest is not installed (design/loops.md section 17 adopts it for the machine-readable listing the test-count ratchet needs). Install it with: cargo install cargo-nextest --locked"
+else
+	cargo nextest run "${package_args[@]}" || fail "cargo nextest run"
+fi
+
+# --- 4. diff scope. This is the enforcement, not the PreToolUse hook:
+# it inspects the result rather than trusting the actor.
+step=$((step + 1))
+printf '\n--- %d. diff scope\n' "$step"
+if [ -n "$rev" ]; then
+	"$hj" check-scope "$loop" --rev "$rev" || fail "diff scope"
+else
+	"$hj" check-scope "$loop" || fail "diff scope"
+fi
+
+# --- 5. ratchets. Phase 3 only (design/loops.md section 11): a size ratchet
+# running during exploration suppresses exactly the expensive experiments that
+# establish what coverage is available.
+step=$((step + 1))
+printf '\n--- %d. ratchets\n' "$step"
+case "$phase" in
+3 | 7) fail "the phase $phase ratchets are not implemented; design/loops.md section 18 defers them past phase 1.5" ;;
+*) echo "skipped: ratchets are a cost-phase gate, and this is phase $phase" ;;
+esac
+
+# --- 6. audit consistency.
+step=$((step + 1))
+printf '\n--- %d. audit consistency\n' "$step"
+"$hj" check-audit || fail "audit consistency"
+
+# --- 7. metrics row.
+step=$((step + 1))
+printf '\n--- %d. metrics row\n' "$step"
+"$hj" check-metrics "$loop" || fail "metrics row"
+
+echo
+echo "GATE PASSED ($step steps). Commit, then run: harness/hj record $loop"

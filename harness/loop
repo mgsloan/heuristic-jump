@@ -1,0 +1,184 @@
+#!/usr/bin/env bash
+# The loop runner. `design/loops.md` section 14.
+#
+# Deliberately boring: a bash loop around headless `claude -p` with a fixed
+# prompt per loop type. One campaign per session, and the session id is
+# assigned rather than discovered, so it is also the campaign id and
+# `claude --resume <id>` works without a correlation step.
+#
+# There is no supervisor here, on purpose: with one loop, one bash loop is
+# not a fleet (design/loops.md section 18). What this does do is the part
+# that has to survive a fresh context — open the campaign record, run the
+# auditor at close, and stop when the loop has stalled.
+#
+#   harness/loop <loop> [--max <n>] [--once]
+
+set -uo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo="$(dirname "$here")"
+hj="$here/hj"
+
+loop="${1:-}"
+if [ -z "$loop" ]; then
+	echo "usage: harness/loop <loop> [--max <n>] [--once]" >&2
+	exit 2
+fi
+shift
+
+max=0
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--max)
+		max="${2:-0}"
+		shift 2
+		;;
+	--once)
+		max=1
+		shift
+		;;
+	*)
+		echo "loop: unknown argument: $1" >&2
+		exit 2
+		;;
+	esac
+done
+
+cd "$repo" || exit 2
+
+status_of() {
+	python3 - "$1" <<-'PY'
+		import sys, tomllib, pathlib
+		phase = tomllib.loads(pathlib.Path("state/phase.toml").read_text())
+		print(phase.get("loop", {}).get(sys.argv[1], {}).get("status", "missing"))
+	PY
+}
+
+budget_of() {
+	python3 - "$1" <<-'PY'
+		import sys, tomllib, pathlib
+		phase = tomllib.loads(pathlib.Path("state/phase.toml").read_text())
+		print(phase.get("loop", {}).get(sys.argv[1], {}).get("budget_usd", "") or "")
+	PY
+}
+
+model_of() {
+	python3 - "$1" <<-'PY'
+		import sys, tomllib, pathlib
+		phase = tomllib.loads(pathlib.Path("state/phase.toml").read_text())
+		print(phase.get("loop", {}).get(sys.argv[1], {}).get("model", "") or "")
+	PY
+}
+
+transcripts="${HJ_TRANSCRIPTS:-$repo/../heuristic-jump-transcripts}/$loop"
+mkdir -p "$transcripts"
+
+count=0
+while :; do
+	desired="$(status_of "$loop")"
+	if [ "$desired" != "running" ]; then
+		echo "loop: state/phase.toml says $loop is '$desired'; stopping."
+		exit 0
+	fi
+
+	if ! git diff --quiet || ! git diff --cached --quiet; then
+		echo "loop: the working tree is dirty. Green-or-revert means a campaign starts" >&2
+		echo "      from a committed tree; the next session cannot tell deliberate" >&2
+		echo "      breakage from an accident. Commit or revert, then start again." >&2
+		exit 1
+	fi
+
+	prompt="$(mktemp)"
+	campaign="$("$hj" campaign-open "$loop" --prompt-out "$prompt")" || exit 2
+	transcript="$transcripts/$campaign.jsonl"
+	echo
+	echo "=== campaign $campaign  ($loop, $(date -u +%FT%TZ))"
+	echo "    record:     state/campaigns/$loop/$campaign.md"
+	echo "    transcript: $transcript"
+	echo "    resume:     claude --resume $campaign"
+
+	extra_args=()
+	budget="$(budget_of "$loop")"
+	[ -n "$budget" ] && extra_args+=(--max-budget-usd "$budget")
+	model="$(model_of "$loop")"
+	[ -n "$model" ] && extra_args+=(--model "$model")
+
+	claude -p \
+		--session-id "$campaign" \
+		--output-format stream-json \
+		--verbose \
+		--permission-mode acceptEdits \
+		"${extra_args[@]}" \
+		<"$prompt" >"$transcript"
+	exit_status=$?
+	rm -f "$prompt"
+
+	# The campaign reports its own outcome and target on the last lines it
+	# writes; the harness does not infer either. `progress` is computed from
+	# the repository, which is the number that actually gates the stall.
+	summary="$(python3 - "$transcript" <<-'PY'
+		import json, sys
+		text = []
+		for line in open(sys.argv[1], errors="replace"):
+		    line = line.strip()
+		    if not line:
+		        continue
+		    try:
+		        event = json.loads(line)
+		    except json.JSONDecodeError:
+		        continue
+		    if event.get("type") == "result" and isinstance(event.get("result"), str):
+		        text.append(event["result"])
+		    elif event.get("type") == "assistant":
+		        for block in event.get("message", {}).get("content", []):
+		            if block.get("type") == "text":
+		                text.append(block["text"])
+		blob = "\n".join(text)
+		outcome = target = ""
+		for line in blob.splitlines():
+		    if line.startswith("OUTCOME:"):
+		        outcome = line.split(":", 1)[1].strip()
+		    elif line.startswith("TARGET:"):
+		        target = line.split(":", 1)[1].strip()
+		print(outcome)
+		print(target)
+	PY
+	)"
+	outcome="$(printf '%s\n' "$summary" | sed -n 1p)"
+	target="$(printf '%s\n' "$summary" | sed -n 2p)"
+
+	if [ "$exit_status" -ne 0 ]; then
+		outcome="crashed"
+	fi
+	case "$outcome" in
+	confirmed | falsified | no-movement | budget | crashed | error) ;;
+	*)
+		echo "loop: the campaign reported no OUTCOME line; recording 'error'." >&2
+		outcome="error"
+		;;
+	esac
+
+	# An uncommitted experiment is a failed one. Green-or-revert, applied by
+	# someone else (design/loops.md section 14, crash recovery).
+	if ! git diff --quiet || ! git diff --cached --quiet; then
+		echo "loop: uncommitted changes at close; reverting to HEAD."
+		git reset --hard HEAD
+		git clean -fd -- crates vendor 2>/dev/null
+	fi
+
+	"$here/audit" "$loop" || echo "loop: the audit did not complete; state/audit/ is stale." >&2
+	"$hj" campaign-close "$loop" --id "$campaign" --outcome "$outcome" ${target:+--target "$target"}
+
+	if ! "$hj" stall "$loop"; then
+		echo
+		echo "loop: stalled. See state/handoff.md, then answer and set the loop"
+		echo "      back to 'running' in state/phase.toml."
+		exit 1
+	fi
+
+	count=$((count + 1))
+	if [ "$max" -gt 0 ] && [ "$count" -ge "$max" ]; then
+		echo "loop: ran $count campaign(s), which was the limit."
+		exit 0
+	fi
+done
