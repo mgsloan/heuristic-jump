@@ -29,12 +29,12 @@ use std::path::Path;
 use serde::Serialize;
 use serde_json::json;
 use shared::proto::{
-    CancelParams, ContentChange, DefinitionParams, DefinitionProvider, DefinitionResult,
-    DidChangeTextDocumentParams, DidOpenTextDocumentParams, ErrorCode, InitializeParams,
-    InitializeResult, MessageType, PositionEncoding, ProgressParams, ProgressToken, Response,
-    ResponseError, ShowMessageParams, StandaloneInitializeResult, StandaloneServerCapabilities,
-    StandaloneServerInfo, TextDocumentSync, TextDocumentSyncKind, WireLocation, WirePosition,
-    WireRange,
+    CancelParams, ContentChange, DefinitionOptions, DefinitionParams, DefinitionProvider,
+    DefinitionResult, DidChangeTextDocumentParams, DidOpenTextDocumentParams, ErrorCode,
+    InitializeParams, InitializeResult, MessageType, PositionEncoding, ProgressParams,
+    ProgressToken, Response, ResponseError, ShowMessageParams, StandaloneInitializeResult,
+    StandaloneServerCapabilities, StandaloneServerInfo, TextDocumentSync, TextDocumentSyncKind,
+    TextDocumentSyncOptions, WireLocation, WireLocationLink, WirePosition, WireRange,
 };
 use shared::{DocumentUri, EditorRequestId, Rope};
 
@@ -379,6 +379,22 @@ fn a_null_range_is_refused_rather_than_read_as_a_full_change() {
     );
 }
 
+/// The other direction on §8.5's fifth union: `text` is required in *both*
+/// shapes, so a change carrying only a range is neither and must not become a
+/// `Full` with an empty document.
+#[test]
+fn a_change_with_no_text_is_neither_shape() {
+    let refused = serde_json::from_value::<ContentChange>(json!({
+        "range": {"start": {"line": 1, "character": 0}, "end": {"line": 1, "character": 2}}
+    }));
+
+    assert!(
+        refused.is_err(),
+        "a change with no text was read as one, and the only text it could \
+         have is none — which is the whole document deleted"
+    );
+}
+
 #[test]
 fn the_definition_result_union_discriminates_on_required_fields() {
     let location = json!({
@@ -411,6 +427,65 @@ fn the_definition_result_union_discriminates_on_required_fields() {
     // finds a decision rather than an accident.
     let empty: DefinitionResult = serde_json::from_value(json!([])).unwrap();
     assert!(matches!(empty, DefinitionResult::Many(found) if found.is_empty()));
+
+    // The negative half, which is the half that makes the positive one mean
+    // anything. §8.5 permits untagged here *because* each shape fails the
+    // others' deserialization on a missing required field — so the assertion
+    // is against the variant payloads directly, where a reordering of
+    // `DefinitionResult` cannot hide the answer.
+    assert!(
+        serde_json::from_value::<WireLocation>(link.clone()).is_err(),
+        "a LocationLink parsed as a Location, so the union discriminates by \
+         declaration order and a reordering silently changes what we read"
+    );
+    assert!(
+        serde_json::from_value::<WireLocationLink>(location.clone()).is_err(),
+        "a Location parsed as a LocationLink, so `targetUri` is not the required \
+         field §8.5 relies on"
+    );
+    assert!(serde_json::from_value::<Vec<WireLocation>>(json!([link])).is_err());
+    assert!(serde_json::from_value::<Vec<WireLocationLink>>(json!([location])).is_err());
+}
+
+/// The two capability unions §8.5 clears as "disjoint by JSON kind", asserted
+/// as the kind rather than as the order: each variant's payload is fed the
+/// other's shape and has to refuse it.
+///
+/// Without this, `definitionProvider` and `textDocumentSync` read correctly
+/// today for the reason §8.5 says is not acceptable — the variant that happens
+/// to be declared first is the one that happens to fit.
+#[test]
+fn the_capability_unions_refuse_each_others_shapes() {
+    let options = json!({"workDoneProgress": true});
+    assert!(
+        serde_json::from_value::<bool>(options).is_err(),
+        "an options object read as a boolean would make an unsupported server \
+         look like a supporting one, or the reverse"
+    );
+    assert!(serde_json::from_value::<DefinitionOptions>(json!(false)).is_err());
+
+    assert!(
+        serde_json::from_value::<TextDocumentSyncKind>(json!({"openClose": true})).is_err(),
+        "an options object read as a sync kind decides whether contentChanges \
+         carry ranges at all"
+    );
+    assert!(serde_json::from_value::<TextDocumentSyncOptions>(json!(2)).is_err());
+}
+
+/// §8.5's first union, in the one place it is modelled as an enum rather than
+/// normalized into text. A progress token is a number or a string, and the
+/// two must not be readable as each other — a token we match against one we
+/// minted is useless if `7` and `"7"` can both land in the same variant.
+#[test]
+fn the_progress_token_union_is_disjoint_by_json_kind() {
+    let number: ProgressToken = serde_json::from_value(json!(7)).unwrap();
+    assert!(matches!(number, ProgressToken::Number(7)));
+
+    let text: ProgressToken = serde_json::from_value(json!("7")).unwrap();
+    assert!(matches!(text, ProgressToken::Text(token) if &*token == "7"));
+
+    assert!(serde_json::from_value::<Box<str>>(json!(7)).is_err());
+    assert!(serde_json::from_value::<i64>(json!("7")).is_err());
 }
 
 #[test]
