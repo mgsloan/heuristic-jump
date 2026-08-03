@@ -18,7 +18,7 @@
 //! crate that may not, and `driver` is one (`rustc-hash`, `shared`, `tracing`,
 //! and no rope).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use shared::{
     ByteColumn, ByteLen, ByteRange, CharCount, LanguageHandler, LineIndex, Offset, Utf16Column,
@@ -317,6 +317,161 @@ fn the_lsp_types_oracle_never_leaves_the_dev_dependencies() {
     );
 }
 
+/// `deps.md` §5's licensing subsection, whose per-crate table is the whole
+/// content of the claim: our crates are MIT even though the binary is GPL,
+/// because vendoring GPL code does not transfer copyright in code we wrote and
+/// MIT is GPL-3.0-compatible. What that buys is an option — a taker who
+/// supplies a different text layer can lift the permissive part — and an
+/// option is exactly the kind of thing that is lost silently.
+///
+/// §14 asks for a `cargo-deny` config to hold this: "asserting that `GPL`
+/// reaches the graph only through `vendor/rope` and `crates/similarity` is
+/// worth having from the start… the check is what notices a *third* arriving
+/// without anyone deciding, which is how a licence surface grows — not by a
+/// decision but by a dependency." A root `deny.toml` is not a path this loop
+/// may write, so the claim is asserted here instead, against the manifests,
+/// which is the same evidence `cargo-deny` would read.
+#[test]
+fn every_member_declares_the_licence_section_5_assigns_it() {
+    let members = workspace_members();
+    assert!(
+        !members.is_empty(),
+        "no workspace members parsed out of Cargo.toml, so this test would pass vacuously"
+    );
+
+    for member in &members {
+        let manifest = workspace_file(&format!("{member}/Cargo.toml"));
+        assert!(
+            !manifest.is_empty(),
+            "no manifest for {member}, so every assertion below is vacuous"
+        );
+
+        let declared = licence_of(&manifest);
+        assert_eq!(
+            declared.as_deref(),
+            Some(expected_licence(member)),
+            "{member} declares license = {declared:?}: deps.md §5's table assigns it \
+             {expected}, and the two answers differ for a reason — GPL is carried by \
+             vendor/rope and crates/similarity, and a third source arriving without a \
+             decision is what widens the licence surface",
+            expected = expected_licence(member)
+        );
+    }
+}
+
+/// The other half of §14's licensing convention, and the half that was
+/// actually missing: "License texts live once at the workspace root and are
+/// symlinked into each crate. Zed does this without exception — 245 symlinks
+/// and not one regular copy."
+///
+/// Six of the seven `crates/*` had no licence text beside them at all, which
+/// is the failure §14 describes with the copies absent rather than stale. The
+/// symlink is asserted rather than the file, because a regular copy satisfies
+/// "a crate directory that declares `license = "MIT"` should carry the text"
+/// and fails the reason the convention exists: N copies drift, and a stale one
+/// is a licensing problem rather than a formatting one.
+///
+/// It also guards the vendored crates, where §14 notes the practical
+/// consequence: they *arrive* with these symlinks and `../../LICENSE-GPL`
+/// resolves after the copy because `vendor/rope/` sits at the same depth
+/// `crates/rope/` did — "provided the copy preserves them. Use `cp -a`; plain
+/// `cp -r` dereferences, which silently turns each one into a 34 KB duplicate
+/// and loses the property on the first re-sync."
+#[test]
+fn the_licence_text_is_symlinked_into_every_member() {
+    let members = workspace_members();
+    assert!(
+        !members.is_empty(),
+        "no workspace members parsed out of Cargo.toml, so this test would pass vacuously"
+    );
+
+    for member in &members {
+        let manifest = workspace_file(&format!("{member}/Cargo.toml"));
+        let declared = licence_of(&manifest);
+        let text = match declared.as_deref() {
+            Some("MIT") => "LICENSE-MIT",
+            Some("GPL-3.0-or-later") => "LICENSE-GPL",
+            Some("Apache-2.0") => "LICENSE-APACHE",
+            _ => "",
+        };
+        assert!(
+            !text.is_empty(),
+            "{member} declares license = {declared:?}, which names no text at the workspace \
+             root: deps.md §14 keeps one copy of each and symlinks it, so a fourth licence \
+             needs a fourth file at the root before it needs a fourth crate"
+        );
+
+        let path = workspace_path(&format!("{member}/{text}"));
+        assert!(
+            std::fs::symlink_metadata(&path)
+                .ok()
+                .is_some_and(|meta| meta.is_symlink()),
+            "{member}/{text} is missing, or is a regular file rather than a symlink: \
+             deps.md §14 keeps one copy of each licence text at the workspace root, \
+             because N copies drift and a stale one is a licensing problem rather than a \
+             formatting one"
+        );
+        assert!(
+            path.exists(),
+            "{member}/{text} is a symlink that does not resolve: §14's note on re-syncing \
+             is that the link survives the copy only if it is copied as a link, and one \
+             that points nowhere carries no licence text at all"
+        );
+    }
+}
+
+/// §5's table, as a rule rather than a list, because six more `lang_*` and six
+/// more `measure_*` arrive by copying the template and a hardcoded list would
+/// stop applying the moment one did.
+///
+/// The rule is narrower than "reaches a GPL input", and §5's own layout in §14
+/// is what shows it: `heuristic_jump` depends on every `lang_*` and so on
+/// `similarity`, and is listed `MIT -- binary crate; the artifact it builds is
+/// GPL`. So the marking describes copyright in the crate's own text, and GPL
+/// marks exactly two things — `similarity`, which is ported, and `lang_*`,
+/// which §5 calls the handler layer beside it.
+///
+/// That reading is why `measure_rust` moved to MIT and is tagged
+/// `DECISION-conformance-014`: it is `heuristic_jump`'s case exactly, a binary
+/// crate whose artifact is GPL, and its manifest previously reasoned "GPL
+/// through `lang_rust`" from a dependency rule `heuristic_jump` falsifies.
+fn expected_licence(member: &str) -> &'static str {
+    const GPL: &str = "GPL-3.0-or-later";
+
+    match member {
+        "vendor/rope" => GPL,
+        "vendor/sum_tree" => "Apache-2.0",
+        "crates/similarity" => GPL,
+        _ if member.starts_with("crates/lang_") => GPL,
+        _ => "MIT",
+    }
+}
+
+/// A member's `license` field, and only the literal form. §14 sets it "per
+/// crate rather than in `[workspace.package]`, because the two answers differ",
+/// so a `license.workspace = true` is not a value this returns — it comes back
+/// `None` and the caller reports it as a missing declaration, which is what it
+/// would be.
+fn licence_of(manifest: &str) -> Option<String> {
+    manifest.lines().find_map(|line| {
+        let rest = line.trim().strip_prefix("license")?.trim_start();
+        Some(rest.strip_prefix('=')?.trim().trim_matches('"').to_owned())
+    })
+}
+
+/// Every `[workspace] members` entry, as its path from the workspace root.
+/// `crate_members` above is the `crates/*` half of this; the licensing and
+/// manifest-shape rules quantify over the vendored crates too, and in §14's
+/// case the vendored ones are where the rule *differs*.
+fn workspace_members() -> Vec<String> {
+    workspace_file("Cargo.toml")
+        .lines()
+        .map(|line| line.trim().trim_matches(['"', ',']))
+        .filter(|line| line.starts_with("crates/") || line.starts_with("vendor/"))
+        .map(str::to_owned)
+        .collect()
+}
+
 /// Whether a manifest declares `name` in any table. Comments are skipped,
 /// which is the whole reason this is not a `contains`.
 fn declares(text: &str, name: &str) -> bool {
@@ -459,9 +614,12 @@ fn manifest_text(crate_name: &str) -> String {
 /// `#[test]` — and it is not a silent pass: every caller asserts that something
 /// is *present* in what comes back, so an empty string fails them all.
 fn workspace_file(relative: &str) -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+    std::fs::read_to_string(workspace_path(relative)).unwrap_or_default()
+}
+
+fn workspace_path(relative: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
-        .join(relative);
-    std::fs::read_to_string(&path).unwrap_or_default()
+        .join(relative)
 }
