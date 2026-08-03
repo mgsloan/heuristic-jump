@@ -1522,3 +1522,75 @@ omission.
   `measure_core` is not a workspace member and that `Outcome` carries one
   `stratum`, and neither has been true for several campaigns. Checked, not
   worked.
+
+---
+
+## Campaign 0a979e94 — `core.md#86-modelling-errors-must-fail-closed`, then `#85[081351da0e]`
+
+**Outcome: confirmed.** §8.6 goes from one gap to clean; §85's negative-test
+gap closes but its section cannot (see below). Two commits plus one for tests.
+
+The previous campaign's journal entry says §8.6 "needs a document map that does
+not exist" and calls it a full campaign. That was right about the size and
+wrong about the blocker. There is still no actor, no transport and no channel,
+and none of it was needed: `Documents` is an owned `FxHashMap` with `&mut self`
+mutators, fed by its caller, tested exactly the way `TreeCache` and
+`PendingQueries` already are. The missing-subsystem clause in a `found:` has
+now been the wrong reason three campaigns running.
+
+**What the design work actually was.** Not the map — the map is thirty lines of
+`match`. It was deciding where "queries against an untrusted document abstain
+unconditionally" lives. A checked rule (`if untrusted { abstain }`) is a rule
+somebody can decline to follow, and the whole audit is about claims that are
+true today because someone remembered. So distrust *drops the rope*:
+`Open::Untrusted` carries the `DocumentError` and nothing else. Then
+`query` cannot produce a `Trusted` for it (there is no text to borrow),
+`OpenDocument::new` takes a `Trusted` and is now the only constructor, and
+`TreeCache::seed`/`dispatch` are reachable only through that. The abstention is
+not enforced; it is the absence of any other path. Dropping the text is also
+free — every route back to trust is a `didOpen`, which carries the whole
+document.
+
+**Reading the notifications inside the map, from raw JSON, was the other
+non-obvious call.** §8.6's rule begins "any failure *while deserializing*", so a
+caller that deserialized first has nowhere to report one: by the time it holds
+a `serde_json::Error` it no longer holds the params, and the document a message
+named is exactly what the rule needs. Hence `changed(&RawValue, encoding)`,
+and `proto::NotifiedDocument` — a one-field projection that recovers
+`textDocument.uri` out of a message whose other half is malformed. When even
+that fails, every open document is distrusted; "we do not know which one" is
+not a reason to keep trusting all of them. That last rule is the most inventive
+thing in the campaign and is the one to revisit if it ever bites.
+
+**Approaches considered and dropped:**
+
+* *Adding an `AbstainReason::Untrusted` variant.* This was the first design and
+  it is a Class B escalation — `Outcome` is on the frozen-seam list — for a
+  variant no handler could ever return. Dropped once the map stopped producing
+  an `Outcome` at all: the untrusted path never reaches a handler, so it never
+  reaches `Outcome`. Worth remembering as the general move — if satisfying a
+  claim seems to need a seam change, check whether the claim's path crosses the
+  seam at all.
+* *Tracking the edit log in `Documents`, so `OpenDocument` could supply its own
+  `edits`.* Correct incremental reparse needs the edits *since the cached
+  tree's version*, which means tagging each `InputEdit` with the version it
+  produced and handing back a filtered subset — which cannot be an `&Arc<Vec<_>>`
+  without allocating. That is `core.md` §2's business, §2 is clean, and it was
+  not worth reopening. `OpenDocument::new` takes the edits from its caller.
+* *Comparing only the rope's length on `didSave`.* §8.6 offers "our rope's
+  length — or a hash of it". Length alone is the check that a whole broken
+  pipeline passes: two texts of the same length are precisely the drift. The
+  length is kept as a short-circuit and the bytes are compared. The
+  same-length-different-bytes case is a test, and reverting to a length
+  comparison fails it.
+* *Trying to close §8.5 as a section.* Its other gap (`3530047a3c`) wants a
+  golden corpus of traffic captured from Zed and VS Code against
+  rust-analyzer/pyright/gopls. That is an intervention, not a campaign. The
+  negative-test gap was taken anyway because `proto.rs` and `tests/proto.rs`
+  were already open — a gap closed, but no section moved.
+* *Mutating a required field to optional, to check the union negatives.* Does
+  not compile: every caller depends on the field. Two of the four checks needed
+  `#[serde(alias = "...")]` instead, and one had no compiling mutation at all
+  and was checked by inverting the assertion. Also: two fields aliasing the same
+  JSON name do not both bind — serde gives the name to the first field only, so
+  that mutation silently does nothing and reads as a surviving test.
