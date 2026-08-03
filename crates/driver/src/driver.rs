@@ -10,6 +10,7 @@
 mod config;
 mod dispatch;
 mod files;
+mod pending;
 mod trees;
 
 pub use config::{
@@ -17,6 +18,7 @@ pub use config::{
 };
 pub use dispatch::{Answer, Completed, Dispatched, Parsed, Registry, Request, dispatch, hard_cap};
 pub use files::{DID_CHANGE_WATCHED_FILES, FileListCache, Rescan};
+pub use pending::{Divergence, PendingQueries, PendingQuery, Resolution};
 pub use trees::{OpenDocument, TreeCache};
 
 /// The whole of `heuristic_jump`'s `main` after argument parsing, and the
