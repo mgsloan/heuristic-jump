@@ -139,6 +139,7 @@ summary)
 		import json, sys
 
 		text = []
+		terminal = ""
 		for line in open(sys.argv[1], errors="replace"):
 		    line = line.strip()
 		    if not line:
@@ -147,6 +148,8 @@ summary)
 		        event = json.loads(line)
 		    except json.JSONDecodeError:
 		        continue
+		    if event.get("type") == "result" and event.get("subtype"):
+		        terminal = event["subtype"]
 		    if event.get("type") == "result" and isinstance(event.get("result"), str):
 		        text.append(event["result"])
 		    elif event.get("type") == "assistant":
@@ -162,6 +165,9 @@ summary)
 		        target = line.split(":", 1)[1].strip()
 		print(outcome)
 		print(target)
+		# Third line: how the session ended, which the campaign cannot report
+		# because the conditions that end it that way also stop it writing.
+		print("max_budget" if terminal == "error_max_budget_usd" else "")
 	PY
 	;;
 

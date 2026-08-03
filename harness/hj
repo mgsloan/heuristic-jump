@@ -60,7 +60,11 @@ DENIED_ALWAYS = [
 WHOLE_REPOSITORY_PHASES = ("3", "7")
 PHASE_DEPENDENT_DENIALS = ["crates/similarity/**"]
 
-OUTCOMES = ("confirmed", "falsified", "no-movement", "budget", "crashed", "error")
+# What a campaign may report about itself: the first four. The last three are
+# the harness's, because each is a way of ending that also stops the campaign
+# writing its closing line (`budget` exits non-zero with
+# `error_max_budget_usd`, and the other two are the runner's own verdicts).
+OUTCOMES = ("confirmed", "falsified", "no-movement", "partial", "budget", "crashed", "error")
 
 
 def now() -> str:

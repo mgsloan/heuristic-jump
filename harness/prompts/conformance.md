@@ -51,7 +51,8 @@ A campaign is one target: one open gap, or one unjudged section. Not two.
    breakage was deliberate.
 
 4. **Close** when the target's claim is satisfied and committed, or three
-   experiments produce no commit, or your budget is spent. An experiment that
+   experiments produce no commit, or you have done as much of the target as
+   fits and the rest is honestly a separate campaign. An experiment that
    produces no commit at all is a signal, not rest.
 
 5. **On close**, before you say anything else:
@@ -138,14 +139,28 @@ formatting around them, because the harness reads them:
 
 ```
 TARGET: <the section anchor you targeted, e.g. core.md#7-measurement>
-OUTCOME: <confirmed | falsified | no-movement | budget>
+OUTCOME: <confirmed | falsified | no-movement | partial>
 ```
 
-`confirmed` means the target's claim is now satisfied and committed.
-`falsified` means you established that it cannot be done as specified — which
-is a real result, and the decision record or journal entry saying why is the
-deliverable. `no-movement` means experiments produced nothing. `budget` means
-you ran out.
+`confirmed` — the target's claim is now satisfied and committed.
+
+`falsified` — you established that it cannot be done as specified. That is a
+real result, and the decision record or journal entry saying why is the
+deliverable.
+
+`partial` — you did some of the target and are deliberately leaving the rest
+as a separate campaign, because it does not fit alongside what you did. This
+is a legitimate close, not a failure, **but only when you say what you left
+and what the next campaign should pick.** A `partial` that does not hand over
+a clean choice is a `no-movement` wearing a better label, and the number that
+decides whether this campaign made progress is computed from the repository
+rather than from this line, so the label buys you nothing either way.
+
+`no-movement` — experiments produced nothing.
+
+There is no `budget` outcome for you to report. If a spending ceiling stops a
+campaign it also stops it writing this line, so that one is the harness's to
+record and never yours.
 
 ---
 

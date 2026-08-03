@@ -127,12 +127,20 @@ while :; do
 	summary="$("$adapter" summary "$transcript")"
 	outcome="$(printf '%s\n' "$summary" | sed -n 1p)"
 	target="$(printf '%s\n' "$summary" | sed -n 2p)"
+	terminal="$(printf '%s\n' "$summary" | sed -n 3p)"
 
-	if [ "$exit_status" -ne 0 ]; then
+	# A ceiling stop exits non-zero and cuts the session before the campaign
+	# can write its closing line, so `budget` is the harness's to assign and
+	# never the campaign's to report. Recording it as `crashed` would be worse
+	# than cosmetic: crashed campaigns are excluded from the stall count, so a
+	# loop that kept hitting its ceiling would look like it was not trying.
+	if [ "$terminal" = "max_budget" ]; then
+		outcome="budget"
+	elif [ "$exit_status" -ne 0 ]; then
 		outcome="crashed"
 	fi
 	case "$outcome" in
-	confirmed | falsified | no-movement | budget | crashed | error) ;;
+	confirmed | falsified | no-movement | partial | budget | crashed | error) ;;
 	*)
 		echo "loop: the campaign reported no OUTCOME line; recording 'error'." >&2
 		outcome="error"
