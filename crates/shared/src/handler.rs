@@ -6,14 +6,16 @@
 //! it a whole phase before a shim exists (`core.md` §9's dependency graph), so
 //! a language can be measured before there is anything to proxy.
 
+use std::collections::BTreeMap;
+
 use tree_sitter::Language;
 
 use crate::deadline::Deadline;
 use crate::document::DocumentSnapshot;
 use crate::error::Error;
-use crate::project::ProjectView;
+use crate::project::{FileCount, ProjectView};
 use crate::vocabulary::{Confidence, FileExtension, LanguageId, Location, ServerId};
-use rope::ByteOffset;
+use rope::{ByteLen, ByteOffset};
 
 pub trait LanguageHandler: Send + Sync {
     /// LSP `languageId` values, for open documents.
@@ -68,17 +70,281 @@ pub struct ServerProfile {
 /// Not `Result`. Abstention is a normal, expected, frequently correct outcome
 /// — the query genuinely had nothing to return, or the deadline expired — and
 /// it does not share a type with "something went wrong".
+///
+/// `strata` and `trace` are everything `core.md` §7 calls handler-reported:
+/// "only it knows which resolution path produced the answer and what it cost".
+/// They are on both arms, because a stratum with no coverage and a stratum
+/// whose searches all cost 40ms before abstaining are different findings and
+/// the abstaining one is the more interesting.
+// DECISION-conformance-013: provisional. The reporting channel is the value a
+// handler already returns, rather than an out-parameter on `goto_definition`.
 #[derive(Debug)]
 pub enum Outcome {
     Committed {
         locations: Vec<Location>,
         confidence: Confidence,
-        stratum: Stratum,
+        strata: Strata,
+        trace: Trace,
     },
     Abstain {
         reason: AbstainReason,
-        stratum: Stratum,
+        strata: Strata,
+        trace: Trace,
     },
+}
+
+/// `core.md` §7's `stratum_prior` and `stratum_final`, which are two fields
+/// and not one.
+///
+/// `resolution.md` §8 assigns a stratum a-priori from the reference, then
+/// permits one refinement during the search. Coverage is reported on the prior
+/// so the denominator is fixed by the reference and does not move when the
+/// implementation changes; precision on the settled one, so an answer is
+/// judged against the class it turned out to be. Collapsing them makes
+/// `high-level.md`'s central table non-comparable across versions, which is
+/// the one property it needs.
+// DECISION-conformance-013: provisional.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub struct Strata {
+    prior: Stratum,
+    settled: Stratum,
+}
+
+impl Strata {
+    /// Before the search: the two agree, because nothing has refined anything.
+    pub fn from_reference(stratum: Stratum) -> Self {
+        Self {
+            prior: stratum,
+            settled: stratum,
+        }
+    }
+
+    /// The one refinement the search may make. It takes a [`Refinement`]
+    /// rather than a `Stratum` so that refining to a class which *is* knowable
+    /// before the search does not compile.
+    pub fn refine(self, refinement: Refinement) -> Self {
+        Self {
+            prior: self.prior,
+            settled: refinement.stratum(),
+        }
+    }
+
+    pub fn prior(self) -> Stratum {
+        self.prior
+    }
+
+    /// §7's `stratum_final`, spelled `settled` because `final` is reserved.
+    pub fn settled(self) -> Stratum {
+        self.settled
+    }
+}
+
+/// The only two strata a search may refine *to*: neither is knowable before it
+/// runs, which is the whole reason `resolution.md` §8 permits a refinement at
+/// all.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub enum Refinement {
+    AmbiguousName,
+    ExternalDependency,
+}
+
+impl Refinement {
+    fn stratum(self) -> Stratum {
+        match self {
+            Refinement::AmbiguousName => Stratum::AmbiguousName,
+            Refinement::ExternalDependency => Stratum::ExternalDependency,
+        }
+    }
+}
+
+/// One ordered entry of `core.md` §7's `stages`: "which role the reference
+/// got, what each stage found or missed, how many candidates survived
+/// verification". The vocabulary is entirely the handler's — this is the
+/// sanctioned channel §1 means when it says the detail a handler knows reaches
+/// the metrics through the trace record rather than through the seam.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct StageLabel(Box<str>);
+
+impl StageLabel {
+    pub fn new(label: &str) -> Self {
+        Self(label.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// A key of §7's `stage_us`, which is a different vocabulary from
+/// [`StageLabel`] and is meant to stay one: the section's example pairs
+/// `stages: ["ref:Type", "scope:miss", ...]` with
+/// `stage_us: {"reference": 12, "scope": 40, ...}`. One is an account of what
+/// happened and the other is a fixed set of pipeline stages to attribute cost
+/// to, and a single type would invite the two to drift into each other.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct StageName(Box<str>);
+
+impl StageName {
+    pub fn new(name: &str) -> Self {
+        Self(name.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Microseconds of wall clock. An *observation*: §7 says it does not have to
+/// be reproducible the way the rest of the record does, and that nothing is
+/// ever gated on it.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct Micros(pub u64);
+
+/// §7's `margin`: the gap between the top-ranked candidate and the runner-up,
+/// and one of the two features a precision floor would be set on.
+///
+/// Non-negative and finite, which is all that can be required of it: the
+/// scores it is a difference of are the handler's own, so unlike
+/// [`Confidence`] there is no upper bound to check against.
+#[derive(Copy, Clone, PartialEq, PartialOrd, Debug)]
+pub struct Margin(f32);
+
+impl Margin {
+    pub const ZERO: Self = Self(0.0);
+
+    /// `None` for a negative margin — the runner-up cannot outrank the top —
+    /// and for a NaN, which is neither.
+    pub fn new(value: f32) -> Option<Self> {
+        (value.is_finite() && value >= 0.0).then_some(Self(value))
+    }
+
+    pub fn get(self) -> f32 {
+        self.0
+    }
+}
+
+/// §7's `considered`: how many candidates the ranking chose between. The other
+/// feature a floor would be set on, and meaningless without the margin.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct CandidateCount(pub u32);
+
+/// Everything `core.md` §7 calls handler-reported and `Outcome` did not
+/// previously carry: `margin`, `considered`, `stages`, `stage_us`,
+/// `bytes_scanned`, `files_parsed`.
+///
+/// **Write-only from a handler's side.** §7 gives `stages` three rules — it is
+/// bounded, it is stable across runs for the same input, and *nothing branches
+/// on it, ever*. The third is the one a type can hold: the fields are private
+/// and the only reader is [`Trace::into_parts`], which consumes the trace a
+/// handler still has to return. A handler that read its own account back would
+/// have to give up the thing it is building.
+///
+/// `bytes_scanned` and `files_parsed` are counters and not limits — nothing
+/// compares them against a budget and no search stops because of them
+/// (`resolution.md` §1.3). They are here so a latency regression can be
+/// attributed to a diff rather than guessed at.
+///
+/// **Boxed, and not allocated until something is reported.** A `Trace` is one
+/// pointer wide, so widening `Outcome` with one did not widen every `Result`
+/// that carries an outcome — `driver`'s `Dispatched` crossed clippy's
+/// `result_large_err` threshold when this was six fields inline. The `None`
+/// case is not only an optimisation: the commonest abstention on the query
+/// path is `NotAnIdentifier`, decided from the tree before any work happens,
+/// and it should not pay for a reporting channel it never writes to.
+// DECISION-conformance-013: provisional.
+#[derive(Debug)]
+pub struct Trace(Option<Box<TraceParts>>);
+
+impl Default for Trace {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Trace {
+    /// §7's "a small fixed maximum number of short labels, truncated rather
+    /// than grown". A bound rather than a budget: exceeding it costs the tail
+    /// of the account and nothing else, because nothing reads it back.
+    pub const MAX_STAGES: usize = 32;
+
+    pub fn new() -> Self {
+        Self(None)
+    }
+
+    /// Appends to the ordered account, silently dropping past
+    /// [`Trace::MAX_STAGES`]. Dropping the tail rather than the head keeps the
+    /// prefix stable across runs, which is what lets failures be *grouped* by
+    /// `stages` rather than merely listed.
+    pub fn stage(&mut self, label: StageLabel) {
+        let parts = self.parts();
+        if parts.stages.len() < Self::MAX_STAGES {
+            parts.stages.push(label);
+        }
+    }
+
+    /// Attributes wall clock to a pipeline stage. Accumulates, because a stage
+    /// re-entered during a fan-out is one stage that cost more.
+    pub fn timed(&mut self, stage: StageName, elapsed: Micros) {
+        let total = self.parts().stage_us.entry(stage).or_insert(Micros(0));
+        total.0 = total.0.saturating_add(elapsed.0);
+    }
+
+    pub fn scanned(&mut self, bytes: ByteLen) {
+        let parts = self.parts();
+        parts.bytes_scanned = ByteLen(parts.bytes_scanned.0.saturating_add(bytes.0));
+    }
+
+    pub fn parsed(&mut self, files: FileCount) {
+        let parts = self.parts();
+        parts.files_parsed = FileCount(parts.files_parsed.0.saturating_add(files.0));
+    }
+
+    /// The two together, because a margin without the count it was measured
+    /// over cannot be read: a margin of 0.6 over two candidates and over two
+    /// hundred are different claims.
+    pub fn ranked(&mut self, margin: Margin, considered: CandidateCount) {
+        let parts = self.parts();
+        parts.margin = Some(margin);
+        parts.considered = Some(considered);
+    }
+
+    /// The one reader, and it consumes. See the type's own documentation for
+    /// why that is the signature rather than a set of getters.
+    pub fn into_parts(self) -> TraceParts {
+        self.0.map_or_else(TraceParts::empty, |parts| *parts)
+    }
+
+    fn parts(&mut self) -> &mut TraceParts {
+        self.0.get_or_insert_with(|| Box::new(TraceParts::empty()))
+    }
+}
+
+/// A [`Trace`] taken apart, for the one consumer that assembles §7's record.
+/// Public fields because it is a destructuring and nothing more; the
+/// invariants it was built under were enforced on the way in.
+#[derive(Debug)]
+pub struct TraceParts {
+    pub stages: Vec<StageLabel>,
+    pub stage_us: BTreeMap<StageName, Micros>,
+    pub bytes_scanned: ByteLen,
+    pub files_parsed: FileCount,
+    pub margin: Option<Margin>,
+    pub considered: Option<CandidateCount>,
+}
+
+impl TraceParts {
+    /// What a handler that reported nothing produces, and what a `Err` return
+    /// produces: §7's columns at the values that say "no account was given".
+    fn empty() -> Self {
+        Self {
+            stages: Vec::new(),
+            stage_us: BTreeMap::new(),
+            bytes_scanned: ByteLen::ZERO,
+            files_parsed: FileCount(0),
+            margin: None,
+            considered: None,
+        }
+    }
 }
 
 /// One per row of `high-level.md`'s stratification list, plus a placeholder.
@@ -150,14 +416,16 @@ impl CommitPolicy {
 
     pub fn decide(
         &self,
-        stratum: Stratum,
+        strata: Strata,
         confidence: Confidence,
         locations: Vec<Location>,
+        trace: Trace,
     ) -> Outcome {
         Outcome::Committed {
             locations,
             confidence,
-            stratum,
+            strata,
+            trace,
         }
     }
 }

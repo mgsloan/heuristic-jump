@@ -14,7 +14,7 @@ use std::fmt::Write as _;
 use std::time::Duration;
 
 use serde::Serialize;
-use shared::{Agreement, Stratum};
+use shared::{Agreement, Strata, Stratum};
 
 use crate::cli::Format;
 use crate::record::{Decision, StratumName};
@@ -61,10 +61,20 @@ impl Row {
         ratio(self.committed, self.queries)
     }
 
-    /// `match_top1` over committed. The number that gets optimised: a top-1
-    /// match cannot be improved by returning more.
+    /// `match_top1` over the rows that were judged. The number that gets
+    /// optimised: a top-1 match cannot be improved by returning more.
+    ///
+    /// The denominator is the three agreement counters and not `committed`,
+    /// because §7 reports coverage on `stratum_prior` and precision on
+    /// `stratum_final` — so on a refined query the two live in different rows,
+    /// and `committed` is the wrong row's number. The three partition the
+    /// judged commits exactly (`Agreement::classify` returns one of them for
+    /// every committed row), so where nothing refined this is the old value.
     pub(crate) fn precision(&self) -> f64 {
-        ratio(self.match_top1, self.committed)
+        ratio(
+            self.match_top1,
+            self.match_top1 + self.match_contained + self.mismatch,
+        )
     }
 }
 
@@ -83,9 +93,16 @@ impl Table {
         }
     }
 
+    /// The two halves of a row land in **two** rows when the search refined
+    /// its stratum, which is the whole reason `core.md` §7 makes the stratum
+    /// two fields: the coverage counters go under `strata.prior()`, so the
+    /// denominator is fixed by the reference and does not move when the
+    /// implementation changes, and the agreement counters go under
+    /// `strata.settled()`, so an answer is judged against the class it turned
+    /// out to be.
     pub(crate) fn observe(
         &mut self,
-        stratum: Stratum,
+        strata: Strata,
         decision: Decision,
         agreement: Agreement,
         elapsed: Duration,
@@ -93,26 +110,36 @@ impl Table {
         self.latencies
             .push(u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX));
 
-        let Some(index) = STRATA.iter().position(|known| *known == stratum) else {
-            return;
-        };
-        let Some(row) = self.rows.get_mut(index) else {
-            return;
-        };
+        if let Some(row) = self.row(strata.prior()) {
+            row.queries += 1;
+            match decision {
+                Decision::Committed => row.committed += 1,
+                Decision::Abstained => row.abstained += 1,
+                Decision::Failed => row.failed += 1,
+            }
+        }
 
-        row.queries += 1;
         match decision {
             Decision::Committed => {
-                row.committed += 1;
+                let Some(row) = self.row(strata.settled()) else {
+                    return;
+                };
                 match agreement {
                     Agreement::MatchTop1 => row.match_top1 += 1,
                     Agreement::MatchContained => row.match_contained += 1,
                     Agreement::Mismatch { .. } => row.mismatch += 1,
                 }
             }
-            Decision::Abstained => row.abstained += 1,
-            Decision::Failed => row.failed += 1,
+            // There is nothing to judge, so the settled stratum has nothing to
+            // say. Written out rather than wildcarded: a fourth decision would
+            // have to state which of the two rows it belongs in.
+            Decision::Abstained | Decision::Failed => {}
         }
+    }
+
+    fn row(&mut self, stratum: Stratum) -> Option<&mut Row> {
+        let index = STRATA.iter().position(|known| *known == stratum)?;
+        self.rows.get_mut(index)
     }
 
     pub(crate) fn render(&self, format: Format) -> Result<String, shared::Error> {

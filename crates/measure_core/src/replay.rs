@@ -23,11 +23,11 @@ use shared::proto::DefinitionResult;
 use shared::{
     Agreement, ByteOffset, Clock, CommitPolicy, DefinitionSite, DocumentUri, DocumentVersion,
     Error, FileList, LanguageHandler, Location, Outcome, ProjectView, Query, Rope, ServerProfile,
-    SnapshotSeed, Stratum,
+    SnapshotSeed, Strata, Stratum, Trace,
 };
 
 use crate::corpus::{Corpus, Repository, verify_checkout};
-use crate::record::{self, Decision, HandlerReport, Mode, QueryRecord, StratumName};
+use crate::record::{self, Decision, Mode, QueryRecord, StratumName};
 use crate::table::Table;
 use crate::truth::{self, Truth};
 
@@ -150,52 +150,66 @@ impl Replay<'_> {
         let child = serde_json::from_str::<DefinitionResult>(row.answer.get())
             .unwrap_or(DefinitionResult::Null);
 
-        let (decision, failure, stratum, locations, confidence, stages) = match &answered {
+        // `answered` is consumed here rather than borrowed: a `Trace` is
+        // write-only until it is taken apart, and taking it apart is what
+        // `into_parts` does — so the record can only be assembled from an
+        // outcome nobody is going to read again.
+        let (decision, failure, strata, locations, confidence, parts, extra) = match answered {
             Ok(Outcome::Committed {
                 locations,
                 confidence,
-                stratum,
+                strata,
+                trace,
             }) => (
                 Decision::Committed,
                 None,
-                *stratum,
-                locations.clone(),
+                strata,
+                locations,
                 Some(confidence.get()),
-                Vec::new(),
+                trace.into_parts(),
+                None,
             ),
-            Ok(Outcome::Abstain { reason, stratum }) => (
+            Ok(Outcome::Abstain {
+                reason,
+                strata,
+                trace,
+            }) => (
                 Decision::Abstained,
                 None,
-                *stratum,
+                strata,
                 Vec::new(),
                 None,
-                vec![record::abstain_label(reason)],
+                trace.into_parts(),
+                // The reason goes into `stages` rather than into a column of
+                // its own, because `stages` is the field §7 makes the
+                // handler's account of what it did and a second reason column
+                // would be two vocabularies for one question.
+                Some(record::abstain_label(&reason)),
             ),
             // A failure is served as an abstention on the wire and recorded as
             // a failure here, or the per-stratum table cannot tell a hard
-            // stratum from a broken handler.
+            // stratum from a broken handler. There is no outcome and therefore
+            // no trace: a handler that returned `Err` reported nothing, and an
+            // empty account is the honest record of that.
             Err(error) => (
                 Decision::Failed,
-                Some(failure_class(error)),
-                Stratum::Unimplemented,
+                Some(failure_class(&error)),
+                Strata::from_reference(Stratum::Unimplemented),
                 Vec::new(),
                 None,
-                Vec::new(),
+                Trace::new().into_parts(),
+                None,
             ),
         };
+        let mut stages = record::stage_labels(parts.stages);
+        stages.extend(extra);
 
         let ours: Vec<DefinitionSite<'_>> = locations.iter().map(DefinitionSite::of).collect();
         let agreement = Agreement::classify(&ours, &child);
         let (agreement_label, severity) = record::agreement_labels(agreement);
 
-        table.observe(stratum, decision, agreement, elapsed);
+        table.observe(strata, decision, agreement, elapsed);
 
-        let mut report = HandlerReport::default();
-        // The handler-reported half of the record is empty because the seam
-        // does not carry it — see `HandlerReport`. Merging into it here rather
-        // than assembling the record from two places means the widening, when
-        // it lands, changes one struct.
-        report.stages.extend(stages);
         Ok(QueryRecord {
             uri: document.uri.to_string().into(),
             position: record::position_of(ByteOffset(row.offset)),
@@ -204,16 +218,16 @@ impl Replay<'_> {
             server_health: None,
             decision,
             failure,
-            stratum_prior: StratumName(stratum),
-            stratum_final: StratumName(stratum),
+            stratum_prior: StratumName(strata.prior()),
+            stratum_final: StratumName(strata.settled()),
             confidence,
-            margin: report.margin,
-            considered: report.considered,
-            stages: report.stages,
-            bytes_scanned: report.bytes_scanned.0,
-            files_parsed: report.files_parsed,
+            margin: parts.margin.map(shared::Margin::get),
+            considered: parts.considered.map(|considered| considered.0),
+            stages,
+            bytes_scanned: parts.bytes_scanned.0,
+            files_parsed: record::file_count(parts.files_parsed),
             queued_us: 0,
-            stage_us: report.stage_us,
+            stage_us: record::stage_timings(parts.stage_us),
             heuristic_latency_us: micros(elapsed),
             heuristic_locations: locations.iter().map(label).collect(),
             returned: locations.len(),

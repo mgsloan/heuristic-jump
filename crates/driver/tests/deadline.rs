@@ -20,7 +20,8 @@ use driver::{
     Answer, Config, DeadlineMs, DeadlineOverride, Dispatched, Heuristics, Mode, hard_cap,
 };
 use shared::{
-    Clock, Confidence, Deadline, Error, HandlerError, Outcome, ParseError, Stratum, SystemClock,
+    Clock, Confidence, Deadline, Error, HandlerError, Outcome, ParseError, Strata, Stratum,
+    SystemClock, Trace,
 };
 
 /// The one clock a test may read, since `clippy.toml` bans `Instant::now` and
@@ -43,7 +44,8 @@ fn an_answer() -> Dispatched {
     let outcome = Outcome::Committed {
         locations: Vec::new(),
         confidence: Confidence::ONE,
-        stratum: Stratum::LocalBinding,
+        strata: Strata::from_reference(Stratum::LocalBinding),
+        trace: Trace::new(),
     };
     Dispatched::Decided(
         Answer::without_locations(outcome).expect("a commit with no locations has no wire form"),
@@ -83,11 +85,13 @@ fn an_answer_that_arrives_in_time_is_kept() {
             Outcome::Committed {
                 locations: _,
                 confidence: _,
-                stratum: _,
+                strata: _,
+                trace: _,
             } => {}
             other @ Outcome::Abstain {
                 reason: _,
-                stratum: _,
+                strata: _,
+                trace: _,
             } => panic!("a commit came back through the cap as {other:?}"),
         },
         other @ (Dispatched::DeadlineExpired | Dispatched::Failed(_)) => {

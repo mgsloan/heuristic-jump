@@ -38,7 +38,9 @@ use std::process::Command;
 
 use clap::Parser;
 use shared::{
-    AbstainReason, Error, FileExtension, LanguageHandler, LanguageId, Outcome, Query, Stratum,
+    AbstainReason, ByteLen, CandidateCount, Confidence, Error, FileCount, FileExtension,
+    LanguageHandler, LanguageId, Margin, Micros, Outcome, Query, Refinement, StageLabel, StageName,
+    Strata, Stratum, Trace,
 };
 use tree_sitter::Language;
 
@@ -101,8 +103,57 @@ impl LanguageHandler for TestHandler {
         };
         Ok(Outcome::Abstain {
             reason,
-            stratum: Stratum::Unimplemented,
+            strata: Strata::from_reference(Stratum::Unimplemented),
+            trace: Trace::new(),
         })
+    }
+}
+
+/// A handler that *reports*, which the template deliberately does not.
+///
+/// It refines its stratum and fills a `Trace` with one of everything §7 calls
+/// handler-reported. It commits with an empty location list, which is legal
+/// and is what keeps the fixture's expected table computable by hand: the
+/// oracle answered `null` everywhere, so an empty commit is the mutual "no
+/// definition here" §6 calls a match.
+struct ReportingHandler;
+
+impl LanguageHandler for ReportingHandler {
+    fn language_ids(&self) -> &'static [LanguageId] {
+        const IDS: &[LanguageId] = &[LanguageId::new("rust")];
+        IDS
+    }
+
+    fn file_extensions(&self) -> &'static [FileExtension] {
+        const EXTENSIONS: &[FileExtension] = &[FileExtension::new("rs")];
+        EXTENSIONS
+    }
+
+    fn grammar(&self) -> Language {
+        tree_sitter_rust::LANGUAGE.into()
+    }
+
+    fn goto_definition(&self, query: &Query<'_>) -> Result<Outcome, Error> {
+        let mut trace = Trace::new();
+        trace.stage(StageLabel::new("ref:Type"));
+        trace.stage(StageLabel::new("scope:miss"));
+        trace.timed(StageName::new("search"), Micros(900));
+        trace.scanned(ByteLen(1234));
+        trace.parsed(FileCount(3));
+        trace.ranked(
+            Margin::new(0.5).expect("a finite, non-negative margin"),
+            CandidateCount(7),
+        );
+
+        Ok(query.policy.decide(
+            // The one refinement §8 permits, and the reason §7 makes the
+            // stratum two fields: the reference said `explicitly_imported` and
+            // the search found the name to be ambiguous.
+            Strata::from_reference(Stratum::ExplicitImport).refine(Refinement::AmbiguousName),
+            Confidence::ONE,
+            Vec::new(),
+            trace,
+        ))
     }
 }
 
@@ -128,6 +179,55 @@ fn a_replay_row_carries_section_7s_field_set_in_section_7s_order() {
          for one record type is that a replay row is byte-comparable with a \
          field row, and a renamed or dropped field breaks that silently"
     );
+}
+
+/// §7: "everything from `stratum_prior` through `files_parsed` is reported
+/// *by the handler*, since only it knows which resolution path produced the
+/// answer and what it cost". Until `conformance-013` widened the seam, every
+/// one of those columns was written at its empty value and no test could tell
+/// the difference between a handler that reported nothing and a seam that
+/// could not carry it.
+///
+/// Half of this is a compile-time claim already — `ReportingHandler` does not
+/// build without a `Strata` and a `Trace` — and the assertions are the other
+/// half: that what it reported arrives in the record rather than being
+/// dropped between the seam and the JSON.
+#[test]
+fn the_handler_reported_half_of_the_record_crosses_the_seam() {
+    let corpus = fixture("handler_report");
+    enumerate(&corpus);
+    write_truth(&corpus);
+
+    let records = corpus.scratch.join("records.jsonl");
+    replay_with(&ReportingHandler, &corpus, Some(&records));
+
+    let text = fs::read_to_string(&records).expect("replay wrote the records file");
+    let first = text
+        .lines()
+        .next()
+        .expect("at least one query was replayed");
+
+    for expected in [
+        // Two fields, not one, and they differ — which is the property a
+        // single `Stratum` could not express at all.
+        "\"stratum_prior\":\"explicitly_imported\"",
+        "\"stratum_final\":\"ambiguous_name\"",
+        "\"margin\":0.5",
+        "\"considered\":7",
+        "\"stages\":[\"ref:Type\",\"scope:miss\"]",
+        "\"bytes_scanned\":1234",
+        "\"files_parsed\":3",
+        "\"stage_us\":{\"search\":900}",
+    ] {
+        assert!(
+            first.contains(expected),
+            "the handler reported {expected} and the record does not carry it. \
+             core.md §7 makes these the handler's own account of which \
+             resolution path produced the answer and what it cost, and a \
+             column written at its empty value is indistinguishable in the \
+             metrics from a handler that did no work.\nrecord: {first}"
+        );
+    }
 }
 
 #[test]
@@ -266,6 +366,14 @@ fn enumerate(corpus: &Fixture) {
 }
 
 fn replay(corpus: &Fixture, records: Option<&Path>) {
+    replay_with(&TestHandler, corpus, records);
+}
+
+/// The handler is a parameter for the same reason the file writes its own
+/// rather than taking `lang_rust`'s: `measure_core` takes a
+/// `&dyn LanguageHandler` and depends on no language, so what a replay does
+/// with what a handler reports has to be assertable against any handler.
+fn replay_with(handler: &dyn LanguageHandler, corpus: &Fixture, records: Option<&Path>) {
     let mut arguments = vec![
         "replay".to_owned(),
         "--corpus".to_owned(),
@@ -281,7 +389,7 @@ fn replay(corpus: &Fixture, records: Option<&Path>) {
     }
     let cli =
         measure_core::Cli::parse_from(std::iter::once("measure-test".to_owned()).chain(arguments));
-    measure_core::run(&TestHandler, cli).expect("replay");
+    measure_core::run(handler, cli).expect("replay");
 }
 
 /// A truth file whose oracle answered `null` everywhere. The handler abstains

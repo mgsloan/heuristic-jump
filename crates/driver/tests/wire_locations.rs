@@ -35,7 +35,7 @@ use shared::{
     AbstainReason, ByteOffset, CommitPolicy, Confidence, Deadline, DocumentUri, DocumentVersion,
     Error, FileExtension, FileList, LanguageHandler, LanguageId, Location, Outcome, ProjectError,
     ProjectPath, ProjectRoot, ProjectView, Query, RelPath, Rope, ServerProfile, SnapshotSeed,
-    Stratum,
+    Strata, Stratum, Trace,
 };
 use tree_sitter::Language;
 
@@ -78,7 +78,8 @@ fn a_decided_query_comes_back_in_both_forms() {
         Outcome::Committed {
             locations,
             confidence: _,
-            stratum: _,
+            strata: _,
+            trace: _,
         } => assert_eq!(
             locations, &expected,
             "the byte-space locations did not survive the conversion, and they are the \
@@ -87,7 +88,8 @@ fn a_decided_query_comes_back_in_both_forms() {
         ),
         other @ Outcome::Abstain {
             reason: _,
-            stratum: _,
+            strata: _,
+            trace: _,
         } => panic!("a commit came back as {other:?}"),
     }
 
@@ -176,12 +178,14 @@ fn an_abstention_carries_no_wire_locations() {
     match answer.outcome() {
         Outcome::Abstain {
             reason: _,
-            stratum: _,
+            strata: _,
+            trace: _,
         } => {}
         other @ Outcome::Committed {
             locations: _,
             confidence: _,
-            stratum: _,
+            strata: _,
+            trace: _,
         } => panic!("an abstention came back as {other:?}"),
     }
     assert!(
@@ -250,9 +254,10 @@ impl LanguageHandler for Committing {
 
     fn goto_definition(&self, query: &Query<'_>) -> Result<Outcome, Error> {
         Ok(query.policy.decide(
-            Stratum::LocalBinding,
+            Strata::from_reference(Stratum::LocalBinding),
             Confidence::ONE,
             self.locations.clone(),
+            Trace::new(),
         ))
     }
 }
@@ -275,7 +280,8 @@ impl LanguageHandler for Declining {
     fn goto_definition(&self, _query: &Query<'_>) -> Result<Outcome, Error> {
         Ok(Outcome::Abstain {
             reason: AbstainReason::NoCandidates,
-            stratum: Stratum::LocalBinding,
+            strata: Strata::from_reference(Stratum::LocalBinding),
+            trace: Trace::new(),
         })
     }
 }

@@ -32,7 +32,8 @@ pub use error::{
     ProjectError, ProtocolError,
 };
 pub use handler::{
-    AbstainReason, CommitPolicy, LanguageHandler, Outcome, Query, ServerProfile, Stratum,
+    AbstainReason, CandidateCount, CommitPolicy, LanguageHandler, Margin, Micros, Outcome, Query,
+    Refinement, ServerProfile, StageLabel, StageName, Strata, Stratum, Trace, TraceParts,
 };
 pub use identifier::{Identifiers, identifier_at, identifiers};
 pub use project::{

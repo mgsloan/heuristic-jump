@@ -33,7 +33,7 @@ use shared::proto::PositionEncoding;
 use shared::{
     ByteOffset, Clock, CommitPolicy, Confidence, Deadline, DocumentUri, DocumentVersion, Error,
     FileExtension, FileList, InputEdit, LanguageHandler, LanguageId, Outcome, ParseKind,
-    ProjectView, Query, Rope, ServerProfile, SnapshotSeed, Stratum, SystemClock,
+    ProjectView, Query, Rope, ServerProfile, SnapshotSeed, Strata, Stratum, SystemClock, Trace,
 };
 use tree_sitter::{Language, Point};
 
@@ -349,9 +349,12 @@ impl LanguageHandler for Recording {
         self.called.store(true, Ordering::Relaxed);
         self.spanned
             .store(query.doc.tree().root_node().end_byte(), Ordering::Relaxed);
-        Ok(query
-            .policy
-            .decide(Stratum::LocalBinding, Confidence::ONE, Vec::new()))
+        Ok(query.policy.decide(
+            Strata::from_reference(Stratum::LocalBinding),
+            Confidence::ONE,
+            Vec::new(),
+            Trace::new(),
+        ))
     }
 }
 

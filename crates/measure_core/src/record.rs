@@ -15,7 +15,10 @@
 use std::collections::BTreeMap;
 
 use serde::Serialize;
-use shared::{AbstainReason, Agreement, ByteLen, ByteOffset, DocumentUri, LineIndex, Stratum};
+use shared::{
+    AbstainReason, Agreement, ByteOffset, DocumentUri, FileCount, LineIndex, Micros, StageLabel,
+    StageName, Stratum,
+};
 
 #[derive(Debug, Serialize)]
 pub struct QueryRecord {
@@ -195,24 +198,32 @@ pub(crate) fn agreement_labels(agreement: Agreement) -> (Box<str>, Option<Box<st
 }
 
 /// The handler-reported half of the record — everything from `margin` through
-/// `files_parsed`, plus `stage_us`.
+/// `files_parsed`, plus `stage_us` — spelled the way the record writes it.
 ///
-/// It is all absent, and that is a seam gap rather than an oversight:
-/// `Outcome` carries `locations`, `confidence` and one `Stratum`, so a driver
-/// or a replay cannot obtain `margin`, `considered`, `stages`, `stage_us`,
-/// `bytes_scanned`, `files_parsed`, or `stratum_prior` separately from
-/// `stratum_final`. Widening `Outcome` is a Class B escalation on the frozen
-/// seam and therefore its own campaign; until it lands, these fields are
-/// written at their empty values so the *shape* of the record is already the
-/// one §7 specifies and a later widening changes values rather than columns.
-#[derive(Debug, Default)]
-pub(crate) struct HandlerReport {
-    pub margin: Option<f32>,
-    pub considered: Option<u32>,
-    pub stages: Vec<Box<str>>,
-    pub stage_us: BTreeMap<Box<str>, u64>,
-    pub bytes_scanned: ByteLen,
-    pub files_parsed: u32,
+/// A translation and not a second model: `shared::Trace` is the seam's type
+/// and these three functions are its JSON. The direction matters, because the
+/// alternative is a `Serialize` derive on types inside the seam
+/// `state/phase.toml` freezes, and a wire spelling is not a reason to reach
+/// into it — the same argument [`StratumName`] makes for `Stratum`.
+pub(crate) fn stage_labels(stages: Vec<StageLabel>) -> Vec<Box<str>> {
+    stages
+        .into_iter()
+        .map(|label| label.as_str().into())
+        .collect()
+}
+
+pub(crate) fn stage_timings(stage_us: BTreeMap<StageName, Micros>) -> BTreeMap<Box<str>, u64> {
+    stage_us
+        .into_iter()
+        .map(|(name, elapsed)| (name.as_str().into(), elapsed.0))
+        .collect()
+}
+
+/// Saturating rather than fallible: `files_parsed` is a counter nothing gates
+/// on, so a repository that somehow parsed four billion files is worth
+/// reporting as `u32::MAX` and not worth failing a whole replay over.
+pub(crate) fn file_count(files: FileCount) -> u32 {
+    u32::try_from(files.0).unwrap_or(u32::MAX)
 }
 
 /// The position, spelled the one way `data-collection.md` and §7 agree on.

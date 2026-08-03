@@ -27,7 +27,8 @@
 //! default.
 
 use shared::{
-    AbstainReason, Error, FileExtension, LanguageHandler, LanguageId, Outcome, Query, Stratum,
+    AbstainReason, Error, FileExtension, LanguageHandler, LanguageId, Outcome, Query, StageLabel,
+    Strata, Stratum, Trace,
 };
 use tree_sitter::Language;
 
@@ -84,9 +85,18 @@ impl LanguageHandler for Handler {
             Some(_) => AbstainReason::UnsupportedRole,
         };
 
+        // A trace with one label rather than an empty one. It is the template's
+        // demonstration of §7's sanctioned channel: the account of what a
+        // handler did is where its own vocabulary goes, and a language author
+        // copying this directory should find the field already in use rather
+        // than discover it from the section.
+        let mut trace = Trace::new();
+        trace.stage(StageLabel::new("template:abstain"));
+
         Ok(Outcome::Abstain {
             reason,
-            stratum: Stratum::Unimplemented,
+            strata: Strata::from_reference(Stratum::Unimplemented),
+            trace,
         })
     }
 }

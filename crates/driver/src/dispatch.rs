@@ -158,7 +158,8 @@ impl Answer {
             Outcome::Committed {
                 locations,
                 confidence: _,
-                stratum: _,
+                strata: _,
+                trace: _,
             } if !locations.is_empty() => None,
             Outcome::Committed { .. } | Outcome::Abstain { .. } => Some(Self {
                 outcome,
@@ -421,11 +422,13 @@ fn encode(
         Outcome::Committed {
             locations,
             confidence: _,
-            stratum: _,
+            strata: _,
+            trace: _,
         } => locations.as_slice(),
         Outcome::Abstain {
             reason: _,
-            stratum: _,
+            strata: _,
+            trace: _,
         } => &[],
     };
 
