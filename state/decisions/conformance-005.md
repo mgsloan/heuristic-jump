@@ -1,6 +1,6 @@
 ---
 id: conformance-005
-status: open
+status: accepted
 opened: 2026-08-03T05:20:00+00:00
 campaign: e3b8dbf4-56aa-48fc-9a4d-4018d7464f4d
 kind: class-b
@@ -85,3 +85,14 @@ decision is monotonically increasing in the number of `lang_*` crates.
 If the answer is A stands, `resolution.md` §3's "each file is read at most
 once" is wrong as written and should say what it means instead, since
 `bytes_scanned`'s definition depends on it.
+
+## Answer — 2026-08-03T05:13:34+00:00
+
+**Ruling:** accepted
+
+Option A stands: no read cache. resolution.md section 3 is what is wrong — "each file is read at most once" is not implementable behind a Sync &Query without a primitive this project does not have, and it should say what it means instead. That correction is a Class A edit and a normal campaign target. bytes_scanned is defined as bytes actually read.
+
+**Rationale:** CLAUDE.md line 112 decides it: no new caching or indexing until the corpus harness shows the change is worth it and there is a benchmark, and ask before adding caching. There is no corpus, so nothing could justify B or C yet, and both commit a signature — B changes every fan-out signature, C changes what a read is and forces measure_core to diverge from the shim, which is the divergence the shared ProjectView exists to prevent. One correction to the record, in A`s favour: A does not make bytes_scanned over-count, it makes it honest. That counter`s job is to be a deterministic machine-independent proxy for latency between gates; a re-read costs latency, so counting bytes actually read is what correlates, and a deduplicated count would systematically under-predict. Writing a decision record instead of reaching for a lock was exactly the right move.
+
+Reconciling the sites tagged `// DECISION-conformance-005: provisional` is a
+normal campaign target, not an interrupt.
