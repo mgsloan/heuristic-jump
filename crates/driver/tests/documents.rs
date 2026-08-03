@@ -127,6 +127,32 @@ fn a_range_outside_the_document_stops_it_being_trusted() {
     assert_abstains(&documents, &uri);
 }
 
+/// The same check in the half no encoding conversion can catch: both ends
+/// resolve to real offsets and the range is still not a range.
+///
+/// Worth its own test because it is the one that does not merely lose the
+/// document: `Rope::replace` takes a `Range<usize>`, and an inverted one is a
+/// panic on the notification path rather than an abstention on the query path.
+#[test]
+fn a_range_that_ends_before_it_starts_stops_the_document_being_trusted() {
+    let mut documents = Documents::new();
+    let registry = registry();
+    let uri = uri();
+    documents.opened(&did_open(&uri, TEXT, 1), &registry);
+
+    let change =
+        r#"{"range":{"start":{"line":0,"character":7},"end":{"line":0,"character":3}},"text":"x"}"#;
+    assert_eq!(
+        documents.changed(&did_change(&uri, 2, change), PositionEncoding::Utf16),
+        Synced::Distrusted
+    );
+    match documents.distrust(&uri) {
+        Some(DocumentError::RangeInverted { .. }) => {}
+        other => panic!("a range that ends before it starts was accepted: {other:?}"),
+    }
+    assert_abstains(&documents, &uri);
+}
+
 /// §8.6's second self-check: "a version that does not increase ... means we
 /// and the editor disagree about what is open".
 ///
