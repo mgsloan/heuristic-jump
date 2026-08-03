@@ -119,27 +119,27 @@ last_audited = "2026-08-03T06:33:47+00:00"
   where = "crates/heuristic_jump/tests/deadline_flag.rs:38"
 
 [section."core.md#6-the-agreement-predicate"]
-state = "gaps"
-last_audited = "2026-08-03T06:33:47+00:00"
+state = "clean"
+last_audited = "2026-08-03T07:56:16+00:00"
 
-  [[section."core.md#6-the-agreement-predicate".gap]]
-  claim = "both sides normalize to a set of Location, the predicate compares (uri, line) with a 3-line tolerance and reads nothing, and severity is the exact string written to the record"
-  found = "no code exists: grep for agreement/severity/near_module/same_file/unrelated across crates/ returns nothing, and proto.rs models no Location, Location[] or LocationLink[]. Location does carry the line the predicate needs (vocabulary.rs:279). MECHANICAL CHECK AVAILABLE: one enum whose Display is the string written to the record, so the classifier and the metric cannot acquire separate vocabularies"
-  where = "crates/shared/src/proto.rs:36"
+  [[section."core.md#6-the-agreement-predicate".minor]]
+  claim = "the module-tree reading is provisional pending state/decisions/conformance-009.md"
+  note = "conformance-009 was answered `accepted` on 2026-08-03, but the code still carries `// DECISION-conformance-009: provisional` at both tagged sites, which pollutes the `grep -r DECISION-` outstanding-choice report"
+  where = "crates/shared/src/agreement.rs:173"
+
+  [[section."core.md#6-the-agreement-predicate".minor]]
+  claim = "both sides are normalized into DefinitionSite before comparison"
+  note = "`DefinitionSite::new` is public, so the shim's side can be built from an arbitrary (uri, line) pair rather than from a committed `Location`; only `of` derives it. Justified in the doc comment while `Location::at_node` needs a grammar, worth revisiting once handlers exist"
+  where = "crates/shared/src/agreement.rs:65"
 
 [section."core.md#both-sides-are-sets"]
 state = "gaps"
-last_audited = "2026-08-03T05:10:16+00:00"
+last_audited = "2026-08-03T07:56:16+00:00"
 
   [[section."core.md#both-sides-are-sets".gap]]
-  claim = "agreement holds exactly one of match_top1, match_contained, mismatch; severity is classified from the shim's top-ranked location only when agreement is mismatch; divergence is reported on mismatch only; and the pending-query record holds the shim's ranked list preserving order"
-  found = "none of it exists \u2014 grep across crates/ for agreement, match_top1, match_contained, mismatch, severity, top1 and contained returns two unrelated prose hits (handler.rs:54, error.rs:53). No pending-query record, no classifier, no reporting path; driver is `mod dispatch` alone (driver.rs:10). MECHANICAL CHECK AVAILABLE: one three-variant Agreement enum in shared with severity carried inside the mismatch variant makes 'severity is undefined otherwise' unrepresentable rather than asserted"
-  where = "crates/driver/src/driver.rs:10"
-
-  [[section."core.md#both-sides-are-sets".minor]]
-  claim = "the shim's answer is a ranked list whose order is load-bearing, and must not collapse to a set"
-  note = "the only existing code for this is Outcome::Committed { locations: Vec<Location> }, which preserves order but is an unannotated Vec that CommitPolicy::decide passes straight through (handler.rs:151-162); the ranking contract is satisfied by the incidental choice of container, and a handler that sorted or deduplicated on the way out would break top1 with nothing to notice"
-  where = "crates/shared/src/handler.rs:74"
+  claim = "divergence is reported to the user on mismatch only, and the pending-query record holds the shim's ranked list with its order load-bearing so top1 can be computed when the child replies"
+  found = "driver exposes only Config and dispatch \u2014 there is no run loop, no pending-query record, and no construction site for ShowMessageParams outside tests \u2014 so neither the mismatch-only rule nor the rank-preserving record exists. The classifier half (match_top1/match_contained/mismatch, severity from the top-ranked location) is complete, and replay preserves rank at crates/measure_core/src/replay.rs:179"
+  where = "crates/driver/src/driver.rs:13"
 
 [section."core.md#7-observability-and-the-corpus-scan"]
 state = "gaps"
@@ -266,49 +266,54 @@ last_audited = "2026-08-03T06:54:58+00:00"
 
 [section."core.md#84-location-is-byte-based-and-this-fixes-a-real-inconsistency"]
 state = "gaps"
-last_audited = "2026-08-03T05:10:16+00:00"
+last_audited = "2026-08-03T07:56:16+00:00"
 
   [[section."core.md#84-location-is-byte-based-and-this-fixes-a-real-inconsistency".gap]]
-  claim = "there are two types: Location (byte offsets, plus the row) and WireLocation { uri, range: WireRange }, constructed only by the driver at the edge"
-  found = "Location exists and is byte-based (vocabulary.rs:128-152), but WireLocation and WireRange exist nowhere. The name appears only in a doc comment referring to proto::WireLocation (vocabulary.rs:116), and shared declares no proto module (shared.rs:12-17). The half of the distinction the section calls load-bearing is the absent half"
-  where = "crates/shared/src/shared.rs:12"
+  claim = "the dispatch wrapper converts Location to WireLocation on the worker thread, the dispatch result carries both forms, and PositionEncoding is handed to the wrapper alongside the query and stops there"
+  found = "`dispatch` takes only (handler, query) and `Dispatched::Decided` carries a bare `Outcome`; no encoding reaches the wrapper and no `Location -> WireLocation` conversion exists in the workspace \u2014 the only `WireLocation::new` call site is crates/shared/tests/proto.rs:522. Mechanizable: seam.rs already scans manifests and type names, so `WireLocation` being named only in driver/shared, and `Dispatched::Decided` carrying both forms, are exact checks rather than judgement"
+  where = "crates/driver/src/dispatch.rs:133"
 
   [[section."core.md#84-location-is-byte-based-and-this-fixes-a-real-inconsistency".gap]]
-  claim = "the dispatch wrapper converts on the worker thread after the handler returns, the dispatch result carries both forms, and PositionEncoding reaches the wrapper and stops there"
-  found = "driver::dispatch takes (&dyn LanguageHandler, &Query) with no PositionEncoding and returns Dispatched::Decided(Outcome), carrying the handler's byte-space Vec<Location> unchanged (dispatch.rs:113-144). No conversion, no second form, and no PositionEncoding type anywhere in crates/. MECHANICAL CHECK AVAILABLE: give WireLocation one constructor taking PositionEncoding and keep both private to the driver module that owns the encoding, so 'handlers cannot construct one' fails to compile rather than being reviewed"
-  where = "crates/driver/src/dispatch.rs:131"
+  claim = "measure_core puts nothing on a wire and does none of this, which is why the conversion lives in driver rather than shared"
+  found = "measure_core is a JSON-RPC client that settles a negotiated encoding and applies it to build the wire position it sends; the conclusion about driver survives but the premise is false against the code"
+  where = "crates/measure_core/src/collect.rs:271"
 
   [[section."core.md#84-location-is-byte-based-and-this-fixes-a-real-inconsistency".minor]]
-  claim = "Location is printed with three pub fields, while the prose says it is constructed only through Location::at_node"
-  note = "the code takes the prose reading \u2014 private fields, three accessors, tagged DECISION-conformance-004: provisional. Stronger than the printed struct, but a visible divergence from the printed block that its own author marked provisional, so it wants a human ruling"
-  where = "crates/shared/src/vocabulary.rs:135"
+  claim = "handlers never see a WireLocation and cannot construct one"
+  note = "`WireLocation::new` is public; what blocks a handler is the unavailability of a `WirePosition`, not visibility. Disclosed in the doc comment, but the sentence reads as a visibility property"
+  where = "crates/shared/src/proto.rs:274"
 
 [section."core.md#85-the-untagged-unions-are-the-actual-risk"]
 state = "gaps"
-last_audited = "2026-08-03T05:10:16+00:00"
+last_audited = "2026-08-03T07:56:16+00:00"
 
   [[section."core.md#85-the-untagged-unions-are-the-actual-risk".gap]]
-  claim = "the five unions are modelled with untagged permitted only for the three kind-disjoint cases, contentChanges gets a hand-written Deserialize dispatching on the presence of range, and each union has negative tests plus a golden corpus and an lsp-types dev-dependency oracle"
-  found = "none of the five types exist; no crate in the workspace derives or implements Deserialize, and neither serde nor serde_json is declared (crates/shared/Cargo.toml:20-27, root Cargo.toml:24-65). No corpus directory and no lsp-types dev-dependency, so the two mitigations the section calls the condition for dropping lsp-types are also absent. MECHANICAL CHECK AVAILABLE: once proto exists, a test grepping its sources for serde(untagged) against an explicit allowlist of the three kind-disjoint unions turns 'never by declaration order' into a failing test"
-  where = "crates/shared/Cargo.toml:20"
+  claim = "two mitigations are the condition on which dropping lsp-types is acceptable: a checked-in golden corpus of real initialize/document traffic, and lsp-types as a dev-dependency oracle asserting the modelled fields agree per message"
+  found = "no crate lists lsp-types in [dev-dependencies] and the workspace deps table does not contain it; no captured-traffic fixture exists under any tests/ directory. The unions are exercised only by hand-written json! literals"
+  where = "crates/shared/Cargo.toml:38"
+
+  [[section."core.md#85-the-untagged-unions-are-the-actual-risk".gap]]
+  claim = "for each union, assert that each shape parses as the intended variant *and* that it fails to parse as each of the others"
+  found = "the definition-result test asserts only the positive half; nothing asserts that a Location object fails WireLocationLink's deserialization or that a LocationLink fails WireLocation's, which is the property that makes the variant order irrelevant. The contentChanges negative case is present at :368"
+  where = "crates/shared/tests/proto.rs:382"
+
+  [[section."core.md#85-the-untagged-unions-are-the-actual-risk".minor]]
+  claim = "untagged appears only on the unions 8.5 clears, checked mechanically"
+  note = "the check is a line scan of proto.rs's text: single-line derives only, `impl Serialize for {name} ` matched with a trailing space, `pub struct`/`pub enum` at line start. A wrapped derive or a formatting change narrows it silently, and the failure mode is a vacuous pass"
+  where = "crates/shared/tests/proto.rs:156"
 
 [section."core.md#86-modelling-errors-must-fail-closed"]
 state = "gaps"
-last_audited = "2026-08-03T05:10:16+00:00"
+last_audited = "2026-08-03T07:56:16+00:00"
 
   [[section."core.md#86-modelling-errors-must-fail-closed".gap]]
-  claim = "any failure or detected inconsistency deserializing a state-bearing message marks the document untrusted, queries against it abstain unconditionally until a didClose/didOpen resync, and three O(1) self-checks (range outside our rope, non-increasing version or didChange for an unopened document, didSave checksum) turn drift into a detectable event"
-  found = "no trust state exists. driver is `mod dispatch` alone with no document map (driver.rs:10), DocumentSnapshot carries a version but no trust flag and no path that can refuse a query (document.rs:44-52), AbstainReason has no variant for it (handler.rs:112-128), and error.rs:10-15 states that the Document and Codec sub-enums arrive with their producers. MECHANICAL CHECK AVAILABLE: model the document map's value as an enum whose untrusted variant yields no SnapshotSeed, making 'an untrusted document cannot be queried' a type property"
-  where = "crates/driver/src/driver.rs:10"
+  claim = "any failure or detected inconsistency while deserializing a state-bearing message marks that document untrusted, and queries against an untrusted document abstain unconditionally until didClose/didOpen resyncs it \u2014 plus the three O(1) self-checks (range outside the rope, non-increasing version, didSave checksum)"
+  found = "no trust state exists anywhere: DocumentSnapshot/SnapshotSeed carry uri/text/version/language_id/tree and nothing else, driver holds no document map, and DidChangeTextDocumentParams and DidSaveTextDocumentParams have no reader. Only the detection half exists (fractional id, fourth sync kind, `range: null` all refused), which the section says is explicitly not the plan"
+  where = "crates/shared/src/document.rs:44"
 
 [section."core.md#87-where-it-lives"]
-state = "gaps"
-last_audited = "2026-08-03T05:10:16+00:00"
-
-  [[section."core.md#87-where-it-lives".gap]]
-  claim = "the wire types live in shared::proto rather than a separate crate"
-  found = "shared declares deadline, document, error, handler, project and vocabulary, and no proto (shared.rs:12-17); there are no wire types in the workspace to place. The satisfied halves were needed anyway \u2014 Location and DocumentUri are in shared (vocabulary.rs:82,128) and url is declared, but the manifest attributes it to the vocabulary rather than to the wire types the section says bring it (crates/shared/Cargo.toml:27)"
-  where = "crates/shared/src/shared.rs:12"
+state = "clean"
+last_audited = "2026-08-03T07:56:16+00:00"
 
 [section."core.md#9-workspace-layout"]
 state = "gaps"
@@ -359,12 +364,17 @@ last_audited = "2026-08-03T06:33:47+00:00"
 
 [section."core.md#adding-a-language"]
 state = "gaps"
-last_audited = "2026-08-03T05:10:16+00:00"
+last_audited = "2026-08-03T07:56:16+00:00"
 
   [[section."core.md#adding-a-language".gap]]
-  claim = "Phase 1a builds the language-crate template as an instantiable template: crates/lang_<x>/{Cargo.toml, src/lang_<x>.rs} depending on shared + similarity + its grammar, and crates/measure_<x>/{Cargo.toml, src/measure_<x>.rs} depending on measure_core + lang_<x>, plus one line in heuristic_jump"
-  found = "neither directory exists, nor do measure_core or similarity, which the template's manifests must depend on; Cargo.toml:3-9 lists only crates/driver, crates/heuristic_jump, crates/shared and the two vendored crates. Stratum::Unimplemented exists as the template's designated return value (handler.rs:103) with no template to return it, and heuristic_jump is `fn main() {}` (heuristic_jump.rs:6), so the one enumerating line has nowhere to go. These paths are in the loop's own write list (state/phase.toml:72-74), so this is not blocked by ownership"
-  where = "Cargo.toml:3"
+  claim = "adding a language is the two crate directories plus one line in heuristic_jump, and nothing else in the workspace changes"
+  found = "heuristic_jump depends on clap/driver/tracing/tracing-subscriber and not on lang_rust; main resolves a Config and exits without building a Registry, so the shipped binary links no handler and the crate's claim to be the one place the language list is enumerated is unbacked. Mechanizable: seam.rs already parses manifests, so `heuristic_jump depends on every lang_* member` is a scan-time assertion"
+  where = "crates/heuristic_jump/Cargo.toml:19"
+
+  [[section."core.md#adding-a-language".minor]]
+  claim = "lang_<x>/Cargo.toml is shared, similarity, tree-sitter-<x>, nothing else; measure_<x>/Cargo.toml is measure_core, lang_<x>"
+  note = "lang_rust adds tree-sitter (forced by `grammar() -> Language`) under a comment claiming the template manifest verbatim with nothing else, and measure_rust adds clap and shared (forced by the four lines). Both are necessary; the manifests assert a fidelity they exceed"
+  where = "crates/lang_rust/Cargo.toml:30"
 
 [section."core.md#what-the-templates-handler-does"]
 state = "gaps"
