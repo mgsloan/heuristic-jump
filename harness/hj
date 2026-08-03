@@ -30,7 +30,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent
+# The tree being operated on, which is not always the tree this script lives
+# in. A loop that may write `harness/` has to be judged by a reviewed copy of
+# it rather than by its own, so the reviewed copy runs with `HJ_REPO` pointing
+# at the loop's worktree (`design/loops.md` §13 — the pinned checkout that
+# path ownership made unnecessary, and that giving one loop write access to
+# `harness/` makes necessary again).
+REPO = Path(os.environ.get("HJ_REPO") or Path(__file__).resolve().parent.parent).resolve()
 HARNESS = REPO / "harness"
 STATE = REPO / "state"
 DESIGN = REPO / "design"

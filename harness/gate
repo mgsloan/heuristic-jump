@@ -18,7 +18,7 @@
 set -uo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo="$(dirname "$here")"
+repo="${HJ_REPO:-$(dirname "$here")}"
 hj="$here/hj"
 
 loop="${1:-}"
