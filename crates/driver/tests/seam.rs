@@ -420,6 +420,108 @@ fn the_licence_text_is_symlinked_into_every_member() {
     }
 }
 
+/// `deps.md` §1, "Async runtime: none", which `CLAUDE.md` restates as a hard
+/// constraint: "Do not add `async fn`, `.await`, or any executor."
+///
+/// The manifest half is `no_member_declares_a_crate_section_13_rejects` above,
+/// since §13 carries `tokio` forward from here. This is the source half, and
+/// it exists because the two failures look nothing alike. A `tokio` line in a
+/// manifest is a decision someone made; an `async fn` is a shape that spreads
+/// — §1's whole argument is structural rather than about crate count:
+///
+/// > The five pipe threads each do a blocking read or write on one fd forever.
+/// > A dedicated OS thread is the natural expression of that; `async` buys
+/// > nothing when a task never yields for any reason other than the one fd it
+/// > owns.
+///
+/// `std::sync::mpsc` is scanned for too, which is the entry most likely to be
+/// reached for innocently. §1 rejects it not on principle but on two specific
+/// capabilities: "we need `select!` over (editor events, child events, worker
+/// results, timer) in one loop, and std has no select. Also crossbeam gives
+/// `Receiver::len()`, which `shim.md` §10's 'no heuristic work while `core` is
+/// behind' rule needs to be able to read."
+///
+/// The `.await` scan requires a non-identifier character after it. Written
+/// without that, it matches `frame.awaiting_reply()` in
+/// `measure_core/src/client.rs` — found on the first run, and the kind of
+/// false positive that gets a scan deleted rather than fixed.
+#[test]
+fn no_crate_of_ours_is_async_shaped() {
+    const EXECUTORS: &[&str] = &[
+        "tokio",
+        "smol",
+        "async-std",
+        "futures",
+        "futures-util",
+        "async-lsp",
+        "tower-lsp",
+        "tower-lsp-server",
+    ];
+
+    let members = crate_members();
+    assert!(
+        !members.is_empty(),
+        "no crates/* workspace member, so this test would pass vacuously"
+    );
+
+    for member in &members {
+        let manifest = manifest_text(member);
+        assert!(
+            !manifest.is_empty(),
+            "no manifest for {member}, so every assertion below is vacuous"
+        );
+        for (table, key, _) in dependency_entries(&manifest) {
+            let name = key.strip_suffix(".workspace").unwrap_or(&key);
+            assert!(
+                !EXECUTORS.contains(&name),
+                "{member} declares {name} in [{table}]: deps.md §1 has no async runtime, and \
+                 an executor between our bytes and the pipe is the class of 'why is this 3ms \
+                 late' question a blocking read on a dedicated thread does not have"
+            );
+        }
+
+        for (file, source) in sources_of(member) {
+            assert!(
+                !source.is_empty(),
+                "{file} is missing or empty, so the scan below would pass vacuously"
+            );
+            for shape in ["async fn", "async move", "async {"] {
+                assert!(
+                    !source.contains(shape),
+                    "{file} contains `{shape}`: deps.md §1 is six long-lived threads and a \
+                     CPU-bound pool, and nothing in it is async-shaped — `core` is a single \
+                     thread in a recv loop whose whole point is that it is serial"
+                );
+            }
+            assert!(
+                !awaits(&source),
+                "{file} contains `.await`: CLAUDE.md names this a hard constraint, and \
+                 deps.md §1's reason is that a task here never yields for anything but the \
+                 one fd it owns"
+            );
+            assert!(
+                !source.contains("sync::mpsc"),
+                "{file} uses std::sync::mpsc: deps.md §1 rejects it for two capabilities \
+                 rather than on principle — `select!` over four receivers in one loop, which \
+                 std has none of, and `Receiver::len()`, which shim.md §10's shed-load rule \
+                 has to be able to read"
+            );
+        }
+    }
+}
+
+/// Whether the source contains a real `.await`, as opposed to a method whose
+/// name merely starts that way. `frame.awaiting_reply()` is one, and is why
+/// this is not a `contains`.
+fn awaits(source: &str) -> bool {
+    source.match_indices(".await").any(|(at, _)| {
+        source[at + ".await".len()..]
+            .chars()
+            .next()
+            .is_none_or(|next| !next.is_alphanumeric() && next != '_')
+    })
+}
+
 /// `deps.md` §15 is not prose about the lint configuration — it *is* the lint
 /// configuration, printed as a `toml` block that `Cargo.toml`'s
 /// `[workspace.lints]` tables are meant to be. So the document is the fixture
