@@ -8,8 +8,8 @@
 # of code (`design/loops.md` section 7).
 
 phase = "1a"
-taken = "2026-08-03T21:06:34+00:00"
-commit = "fd75a3aa8fcbaab9813d8f19e6a0ae4a3e2654b6"
+taken = "2026-08-03T22:05:49+00:00"
+commit = "ef56eb06b230a293da4c2b142411f5be8a6b92d0"
 
 [doc."core.md"]
 anchors = [
@@ -47,6 +47,28 @@ anchors = [
   "what-the-templates-handler-does",
   "vendoring-the-zed-crates",
   "10-testing",
+]
+
+[doc."deps.md"]
+anchors = [
+  "0-summary-table",
+  "1-async-runtime-none",
+  "2-channels",
+  "3-lsp-types-our-own-not-lsp-types",
+  "4-json",
+  "5-text-vendored-zed-rope",
+  "licensing-our-crates-are-mit-the-binary-is-gpl",
+  "6-tree-sitter",
+  "7-file-enumeration-and-watching",
+  "8-parse-cache",
+  "fxhashmap-and-fxhashset-are-the-default",
+  "9-logging-and-tracing",
+  "10-errors-one-enumerated-type-no-anyhow",
+  "11-cli-parsing-clap",
+  "12-testing",
+  "13-explicitly-not-depended-on",
+  "14-workspace-cargotoml-shape",
+  "15-clippy-in-workspace-toml",
 ]
 
 [doc."rope-modifications.md"]

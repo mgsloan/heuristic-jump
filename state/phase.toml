@@ -71,7 +71,7 @@ turn_target = "about 150"
 # so conforming to it would be optimising the wrong thing
 # (`design/loops.md` section 3). `shim.md` joins this list at phase 2b, and
 # `loops.md` when the loop turns around and builds the phase-2 machinery.
-docs = ["core.md", "rope-modifications.md"]
+docs = ["core.md", "rope-modifications.md", "deps.md"]
 
 # Cargo packages, matched as globs against the workspace members that
 # actually exist. A row for a crate not yet created costs nothing.
