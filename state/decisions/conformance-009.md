@@ -1,6 +1,6 @@
 ---
 id: conformance-009
-status: open
+status: accepted
 opened: 2026-08-03T07:40:00+00:00
 campaign: 5314b0c3-326e-415a-9eb6-1d9e7fad4378
 kind: class-b
@@ -104,3 +104,20 @@ answer late.
 
 If the answer is C, §9's dependency graph has to change, which is a much
 larger question than this one.
+
+## Answer — 2026-08-03T07:17:15+00:00
+
+**Ruling:** accepted
+
+Option A: same containing directory. The second ruling folded into the record is accepted with it -- severity lifts over the child's set by taking the mildest class. And the rider that matters more than the boundary itself: core.md section 7 must keep storing both heuristic_locations and lsp_locations in every record. That is what makes severity recomputable from stored rows, and what makes this decision cheap to revisit rather than irreversible.
+
+**Rationale:** A over B because B needs a depth parameter nobody can set without corpus data, and it makes the class depend on how deeply a project nests -- the same error would be near_module in a flat crate and unrelated in a deep one, which is not a property a budget can be measured against. A over C because C requires changing section 9's dependency graph to put a language crate on measure_core's edge, which is a much larger question, and it would make the predicate per-language -- the exact fork section 6 exists to prevent.
+
+A's error direction is known and safe: it can only move an error out of near_module into unrelated, so the trust-destroying budget is measured pessimistically rather than flatteringly.
+
+The deciding argument is in the record's consequences rather than in its options list: as long as both location lists are in the record, the classification is recomputable from stored rows. That stops this being an irreversible pre-corpus decision and makes it a cheap late one -- so the storage requirement is the real ruling here, and it is an auditable claim about section 7 rather than a note.
+
+Folding the set-lifting ruling in was right: it moves the same two budgets, and taking the mildest class follows from section 6's own rule that matching any of the child's locations is a match -- the LSP is expressing its own ambiguity, and charging the shim for its least convenient candidate would contradict that.
+
+Reconciling the sites tagged `// DECISION-conformance-009: provisional` is a
+normal campaign target, not an interrupt.
