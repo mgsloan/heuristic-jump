@@ -15,6 +15,13 @@ Collect repos for the following languages: C, CPP, Go, Javascript, Typescript/TS
 
 These should be medium sized, popular, and trustworthy. Ideally they should also be across a variety of domains and code styles in order to increase coverage.
 
+# 1: LSP installation
+
+Install LSPs, potentially with human intervention. Let's also document all of
+these in a "external-dependencies.md"
+
+Install all trustworthy / popular LSPs for this set of languages that Zed supports.
+
 # 1.5: Ground truth collection
 
 Collect the ground truth for every language server on every repo.
@@ -40,6 +47,10 @@ This should effectively be a refactor. The deterministic responses should not ch
 # 4: Repo collection for all languages built into Zed
 
 Same as "1: Repo collection" but for all of these languages.
+
+# 4: LSP installation
+
+Need to install lsps for all these languages too.
 
 # 5: Ground truth collection for all languages built into Zed
 
