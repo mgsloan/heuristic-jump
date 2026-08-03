@@ -31,5 +31,6 @@ pub use handler::{
 pub use project::{FileChunks, FileList, FileText, ProjectPath, ProjectRoot, ProjectView, RelPath};
 pub use rope::{ByteLen, ByteOffset, ByteRange, LineIndex, Rope};
 pub use vocabulary::{
-    Confidence, DocumentUri, DocumentVersion, FileExtension, LanguageId, Location, ServerId,
+    Confidence, DocumentUri, DocumentVersion, EditorRequestId, FileExtension, LanguageId, Location,
+    ServerId,
 };
