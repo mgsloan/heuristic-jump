@@ -1594,3 +1594,79 @@ thing in the campaign and is the one to revisit if it ever bites.
   and was checked by inverting the assertion. Also: two fields aliasing the same
   JSON name do not both bind — serde gives the name to the first field only, so
   that mutation silently does nothing and reads as a surviving test.
+
+## acb37d9b — `core.md#10-testing` (all three gaps), then `#85`'s corpus and `#84`
+
+Took a whole section rather than a gap: §10 had three, and the number moves
+per section. All three were the *test* side of machinery that already existed,
+which is the pattern worth carrying forward — every `found:` in that section's
+audit entry dates from 06:33 and says a subsystem is missing (**"there is no
+frame codec"**, **"no test constructs a SnapshotSeed"**), and all three were
+false by the time I read them. That is the fourth campaign running for which
+"a `found:` naming a missing subsystem is a stale audit, not a blocker".
+
+Then two more in the same neighbourhood: §8.5's captured corpus, and §8.4.
+
+### What was tried and did not work
+
+* *Fuzzing the codec where it was.* `Client::read_frame` was a `pub(crate)`
+  method over `BufReader<ChildStdout>`, so the only way to call it was to spawn
+  a language server. Extracted to a free function over `&mut dyn BufRead`. The
+  precedent is in the same crate — `replay_table` is public because "a property
+  nothing can hold is a property nothing can assert" — and it is worth reusing
+  that sentence when a test needs an internal made reachable.
+* *Asserting the snapshot invariant against a from-scratch parse, expecting it
+  to pin `input_edit`.* **It does not, and this is the trap in §10's first
+  bullet.** Comparing the reparsed tree against a full parse — node kinds, byte
+  ranges *and point ranges*, over randomised edits — passes with all three of
+  `InputEdit`'s `Point` fields wrong. `realise`'s read callback is byte-based
+  (`document.rs` ignores the `Point` it is handed) and tree-sitter recomputes
+  the position of everything it re-lexes, so the point fields are unobservable
+  through any tree this design produces. Found by mutating each of the six
+  fields in turn and watching the test pass four times. They are pinned against
+  a slow reference implementation in `shared/tests/document.rs` instead. Do not
+  try to test them through a tree.
+* *`to_sexp()` as a tree fingerprint.* Prints kinds and nesting and **no
+  offsets**, so a reparse producing the right shape in the wrong place compares
+  equal. Replaced with a cursor walk hashing kind, byte range and point range.
+* *An `#[expect(clippy::wildcard_enum_match_arm)]` on a `_` arm over a foreign
+  `#[non_exhaustive]` enum.* Unfulfilled — the lint does not fire when every
+  variant the compiler can see is already named, because the arm covers nothing
+  visible. So the `_` rustc *requires* on `CodecError` from another crate costs
+  no suppression. Same run: a file-level `#![expect(expect_used, panic)]` is
+  unfulfilled when every use is inside a `#[test]` body, and *required* when
+  any is in a free function. Both are `-D warnings` failures, in opposite
+  directions.
+* *Assuming the captured golden corpus was unreachable.* Three campaigns
+  recorded `3530047a3c` as needing an intervention. `rust-analyzer` is on the
+  `PATH`. Driving it over stdio with sixty lines of throwaway python produced a
+  real `initializeResult`, a real `LocationLink[]` and four real `$/progress`
+  notifications. **Check for the tool before recording a blocker.** The trap
+  that cost one capture: a `textDocument/definition` sent before the indexing
+  token's `$/progress` end is answered `null`, which looks like a real answer.
+* *Counting a dependency as declared with `text.contains("lsp-types")`.* The
+  manifest comment beside the dev-dependency names it, so the check survived
+  deleting the oracle outright. Caught only because I ran the negative control.
+  Every manifest scan in `seam.rs` should read declarations, not text.
+* *Implementing §8.4's read-free conversion.* Do not. The section says a row
+  costs "a whole-file line index" without one, and that only "that one line's
+  text is needed" with one. Both are false against the vendored rope:
+  `offset_to_point` is a sum-tree seek on the `Point` dimension, and a caller
+  cannot read one line without the very index it was avoiding. The gap is
+  answered by giving the carried row the job it can uniquely do — detecting
+  that the target file moved between the handler's read and the driver's, which
+  `conformance-005`'s no-cache ruling makes reachable — not by a faster encode.
+  CHANGE-conformance-014.
+
+### Left for a fresh session, with the reading named
+
+**Nothing in the driver builds an `InputEdit`.** `Documents::changed` applies
+a change to the rope and records nothing, so the only edit logs in the
+workspace are hand-written in tests — one of them with `Point::new(800, 0)`
+literals that are right for exactly one fixture. `shared::input_edit` now
+exists and is correct, and its only callers are tests. Wiring it in is
+`Documents::changed` plus a version-tagged log, and the reason it was not done
+here is the one the previous campaign gave for the same thing: the log has to
+be truncated at the *cached tree's* version, which `TreeCache::version` knows
+and `Documents` does not, and reconciling that is designing `core`'s actor. No
+audit gap names it. Files: `driver/src/documents.rs`, `driver/src/trees.rs`.
