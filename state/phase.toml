@@ -188,3 +188,54 @@ permission_mode = "bypassPermissions"
 #   "state/findings/lang-rust.md",
 #   "state/shared-proposals/rust-*.md",
 # ]
+
+# ---------------------------------------------------------------------------
+# The harness loop: `design/loops.md` §18, "The conformance loop builds the
+# followup". It audits `loops.md` and builds the phase-2 machinery.
+#
+# §18 puts this after phase 1a's gate — every section of `core.md` clean —
+# on the argument that a loop which has not proved itself should not build the
+# thing that will run six more loops. It starts earlier than that by a human's
+# decision, logged as an intervention.
+#
+# `writes_harness` is the whole of the exception. Every other loop is denied
+# `harness/**` absolutely; this one is not, and the invariant it would
+# otherwise break — a loop must not weaken the gate that judges it — is held
+# by the pinned gate instead: `harness/loop` exports the reviewed harness's
+# path, `hj` renders the gate command as an absolute path into it, and the
+# campaign is graded by the copy on the integration branch rather than the one
+# in its worktree. Read the comment on `HARNESS_PATHS` in `harness/hj` before
+# changing either half; they are only safe together.
+#
+# `clippy.toml` and `state/phase.toml` stay denied even here, because both are
+# read from the tree being checked rather than from the harness — editing them
+# *would* change how this loop is scored.
+[loop.harness]
+status = "paused" # running | paused | blocked | done
+prompt = "conformance.md"
+writes_harness = true
+worktree = "../heuristic-jump-harness"
+branch = "loop/harness"
+stall_n = 3
+rotation = 18
+splice_sections = 3
+detail_gaps = 8
+turn_target = "about 150"
+docs = ["loops.md"]
+
+# Only what it builds and its own state. `harness/**` is granted by
+# `writes_harness` rather than listed, so that the grant and its justification
+# stay in one place.
+crates = []
+write = [
+  "harness/**",
+  "design/loops.md",
+  "state/campaigns/harness/**",
+  "state/journal/harness.md",
+  "state/decisions/harness-*.md",
+  "state/metrics/harness.jsonl",
+  "state/findings/harness.md",
+  "state/spec-changelog/harness.md",
+  "state/handoff.md",
+]
+permission_mode = "bypassPermissions"

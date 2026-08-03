@@ -8,8 +8,8 @@
 # of code (`design/loops.md` section 7).
 
 phase = "1a"
-taken = "2026-08-03T22:05:49+00:00"
-commit = "ef56eb06b230a293da4c2b142411f5be8a6b92d0"
+taken = "2026-08-03T22:57:54+00:00"
+commit = "615e89244a93cd7cfab39033a9d7928a73617d82"
 
 [doc."core.md"]
 anchors = [
@@ -69,6 +69,84 @@ anchors = [
   "13-explicitly-not-depended-on",
   "14-workspace-cargotoml-shape",
   "15-clippy-in-workspace-toml",
+]
+
+[doc."loops.md"]
+anchors = [
+  "0-the-shape-of-the-idea",
+  "1-current-state-and-what-it-forces",
+  "2-two-loops-two-oracles",
+  "3-where-the-work-comes-from",
+  "the-audit-produces-the-queue",
+  "sections-clean-is-the-number",
+  "who-uses-it",
+  "what-the-ledger-was-carrying-and-where-it-went",
+  "4-the-iteration-contract",
+  "campaigns-are-the-unit-of-fresh-context",
+  "campaigns-compare-notes-asymmetrically",
+  "what-a-loop-remembers-about-itself",
+  "5-the-auditor-and-the-conformance-loops-number",
+  "sections-clean-is-the-metric",
+  "making-the-count-mean-something",
+  "properties-worth-keeping",
+  "6-spec-changes-what-the-loop-may-decide-alone",
+  "7-progress-stall-and-the-ways-it-is-faked",
+  "8-sequencing-and-gates",
+  "why-2a-and-2b-in-parallel-is-safe",
+  "9-the-inner-loop-is-a-replay-and-its-cost-is-measured",
+  "there-is-no-replay-time-target-and-that-is-deliberate",
+  "determinism-is-a-precondition-not-a-description",
+  "10-objectives-phases-and-the-frontier",
+  "phase-3-is-a-refactor-under-an-exact-oracle",
+  "the-metrics-history",
+  "what-cannot-be-measured-in-isolation",
+  "measure_lang-size-covers-the-size-gap",
+  "the-frontier-and-why-it-stays-two-dimensional",
+  "several-servers-do-not-mean-several-loops",
+  "selecting-a-version-at-a-phase-gate",
+  "going-back-is-not-a-reset",
+  "what-this-retires",
+  "11-size-and-loc-as-objectives",
+  "12-held-out-integrity",
+  "13-shared-code-and-when-it-may-exist",
+  "three-tiers",
+  "why-no-shared-resolution-code-during-phase-2",
+  "extraction-is-phase-3-work",
+  "lang_-is-free",
+  "mechanics-isolation-in-four-layers",
+  "parallel-loops-and-what-they-share",
+  "branches-exist-for-one-commit-at-a-time",
+  "14-what-runs-the-loops",
+  "the-supervisor-is-a-reconciler-not-a-scheduler",
+  "prompts-as-starting-points",
+  "one-prompt-per-variety-of-phase",
+  "rules-are-inlined-subject-matter-is-read",
+  "15-cost-and-timing",
+  "three-resources-not-one",
+  "the-unit-of-accounting-is-the-campaign",
+  "cost-per-unit-of-progress",
+  "budgets-at-three-scopes",
+  "estimates-and-replacing-them-with-measurements",
+  "levers-by-which-resource-they-move",
+  "16-the-operator-view",
+  "a-single-generated-html-file-auto-refreshing",
+  "what-is-on-it",
+  "decisions-carry-their-evidence",
+  "every-intervention-is-logged",
+  "sessions-assign-the-id-own-the-transcript",
+  "reading-a-transcript",
+  "17-tooling-adopt-steal-reject",
+  "the-largest-dependency-in-this-project-is-not-a-crate",
+  "three-rejections-worth-recording",
+  "18-scope-phases-1-and-15-first",
+  "what-the-initial-implementation-is",
+  "what-that-needs-from-this-document",
+  "what-is-deliberately-not-built-yet",
+  "the-conformance-loop-builds-the-followup",
+  "what-the-followup-will-know-that-this-document-does-not",
+  "19-how-this-goes-wrong",
+  "decided",
+  "open-questions",
 ]
 
 [doc."rope-modifications.md"]

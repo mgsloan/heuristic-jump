@@ -1405,7 +1405,17 @@ def prompt_values(phase: Phase, config: LoopConfig, campaign_id: str) -> dict[st
         "campaign_record": f"state/campaigns/{config.owner}/{campaign_id}.md",
         "owned_paths": "\n".join(f"- `{p}`" for p in config.write),
         "denied_paths": "\n".join(f"- `{p}`" for p in denied_paths(phase, config.owner)),
-        "gate_command": f"harness/gate {config.owner}",
+        # A loop that may write `harness/` must not be able to run its own
+        # gate. `harness/loop` exports the reviewed harness's absolute path,
+        # and the command points there; `HJ_REPO` still aims it at this
+        # worktree, so it checks the right code with the right rules. Without
+        # this the relative path resolves inside the worktree and the whole
+        # pinned-gate argument for `HARNESS_PATHS` evaporates.
+        "gate_command": (
+            f"{os.environ['HJ_PINNED_HARNESS']}/gate {config.owner}"
+            if config.writes_harness and os.environ.get("HJ_PINNED_HARNESS")
+            else f"harness/gate {config.owner}"
+        ),
         "docs": ", ".join(f"`design/{d}`" for d in config.docs) or "(none)",
         "trailer_format": (HARNESS / "trailer-format.md").read_text().strip(),
         # Two blocks that differ by loop rather than by value. They are files

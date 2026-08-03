@@ -45,7 +45,88 @@ while [ $# -gt 0 ]; do
 	esac
 done
 
+# The reviewed harness. `harness/loop` is always started from the integration
+# checkout, so `$here` is the copy a human has read — and a loop that may write
+# `harness/` must be judged by this one rather than by the copy in its own
+# worktree. `hj` renders the gate command as an absolute path into here when
+# the loop declares `writes_harness`, so the campaign cannot reach its own.
+export HJ_PINNED_HARNESS="$here"
+
+integration="$(dirname "$here")"
+
+worktree_of() {
+	python3 - "$1" <<-'PY'
+		import sys, tomllib, pathlib
+		phase = tomllib.loads(pathlib.Path("state/phase.toml").read_text())
+		print(phase.get("loop", {}).get(sys.argv[1], {}).get("worktree", "") or "")
+	PY
+}
+
+branch_of() {
+	python3 - "$1" <<-'PY'
+		import sys, tomllib, pathlib
+		phase = tomllib.loads(pathlib.Path("state/phase.toml").read_text())
+		loop = phase.get("loop", {}).get(sys.argv[1], {})
+		print(loop.get("branch", "") or f"loop/{sys.argv[1]}")
+	PY
+}
+
+# A loop with a worktree runs in it; every other loop runs where it always did.
+# `design/loops.md` §13: git refuses the same branch in two worktrees, and
+# sharing one tree between concurrent loops is worse than the branch it avoids
+# — loop B would compile loop A's half-written files, so A's transient
+# breakage becomes B's gate failure and green-or-revert stops meaning anything.
+cd "$integration" || exit 2
+worktree="$(worktree_of "$loop")"
+branch="$(branch_of "$loop")"
+
+if [ -n "$worktree" ]; then
+	case "$worktree" in
+	/*) ;;
+	*) worktree="$integration/$worktree" ;;
+	esac
+	if [ ! -d "$worktree/.git" ] && [ ! -f "$worktree/.git" ]; then
+		echo "loop: creating worktree $worktree on $branch"
+		if git show-ref --verify --quiet "refs/heads/$branch"; then
+			git worktree add "$worktree" "$branch" || exit 2
+		else
+			git worktree add -b "$branch" "$worktree" || exit 2
+		fi
+	fi
+	repo="$worktree"
+	export HJ_REPO="$repo"
+	echo "loop: $loop runs in $worktree on $branch, judged by $here"
+fi
+
 cd "$repo" || exit 2
+
+# Merge after every green campaign rather than at a phase gate, so no long-lived
+# branch accumulates (`design/loops.md` §13). Code and state are partitioned by
+# owner, so the rebase is conflict-free by construction and the fast-forward
+# touches nothing the other loop has open.
+merge_back() {
+	[ -n "$worktree" ] || return 0
+	if ! git -C "$worktree" diff --quiet || ! git -C "$worktree" diff --cached --quiet; then
+		echo "loop: worktree is dirty at merge time; not merging." >&2
+		return 1
+	fi
+	if [ -z "$(git -C "$worktree" log --oneline "main..$branch" 2>/dev/null)" ]; then
+		return 0
+	fi
+	if ! git -C "$worktree" rebase main; then
+		git -C "$worktree" rebase --abort 2>/dev/null
+		echo "loop: rebase onto main failed. Code and state are supposed to be" >&2
+		echo "      partitioned by owner, so a conflict here is a real finding:" >&2
+		echo "      two loops wrote the same file. Left unmerged on $branch." >&2
+		return 1
+	fi
+	if git -C "$integration" merge --ff-only "$branch"; then
+		echo "loop: merged $branch into main."
+	else
+		echo "loop: main would not fast-forward from $branch; left unmerged." >&2
+		return 1
+	fi
+}
 
 status_of() {
 	python3 - "$1" <<-'PY'
@@ -193,6 +274,8 @@ while :; do
 	"$hj" campaign-close "$loop" --id "$campaign" --outcome "$outcome" ${target:+--target "$target"}
 
 	"$hj" cost "$loop"
+
+	merge_back || true
 
 	# Consecutive sessions that ended without the campaign speaking are their
 	# own stop condition. They are excluded from the stall count on purpose — a
