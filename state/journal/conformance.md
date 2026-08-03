@@ -1368,3 +1368,78 @@ only covered the text table would guard the wrong artifact.
 before comparing. Two empty strings are equal; without that line the test would
 pass against a corpus that produced nothing, which is exactly the failure a
 fixture change would introduce silently.
+
+## 2fdda442 — `core.md#the-oracle-is-the-server-being-proxied[eb6f4618da]` — confirmed
+
+**The gap in one sentence.** `ServerId` was a newtype nobody built: `new` had
+zero callers, and all nine `ServerProfile`s in the workspace were the literal
+`ServerProfile { id: None }` — including the one on `measure replay`'s real
+query path, which had `--server <name>` in hand and threw it away.
+
+**Why it had stalled, and it is not the reason the audit implies.** The audit
+points at `driver` never mapping `ServerCommand::program()` to an id, which
+reads as "blocked on the driver actor". It is not. The actual obstruction is
+that `ServerId(&'static str)` cannot be built from a runtime string without a
+table of the servers that exist, and writing that table is a decision nobody
+had made. Once you see it as "where does the canonical list live", the answer
+is already in the repository: `servers.toml`, which is deliberately in no
+loop's write list precisely because it names the oracle each loop is scored
+against. So `ServerId::KNOWN` is a compile-time copy of its eight table keys,
+and `driver/tests/oracle.rs` asserts the copy against the file in both
+directions. That two-copies-plus-a-test shape is normally the thing `core.md`
+refuses ("a directory tree in two documents will disagree with itself") — it is
+justified here only because the test makes the disagreement a build failure,
+and it is worth saying that out loud in any future case that looks similar.
+
+**The spec claim is wrong in a way worth knowing about, and I did not change
+the document.** §7 says the id is "resolved from the child's **command name**".
+Four of the eight servers in `servers.toml` are launched as
+`node .../<server>/.../langserver.index.js --stdio`, so their command *name* is
+`node`. A resolver reading only the program would fail on exactly the servers a
+profile is most likely to be wanted for. `from_command` therefore matches over
+the path components of every word of the argv, which strictly subsumes reading
+the program and needs no spec edit — "command name" broadened to "command line"
+gives up nothing. The one thing it does introduce is ambiguity, so two
+*distinct* matches resolve to `None` rather than to whichever came first;
+`basedpyright` ships npm bin names `pyright` and `pyright-langserver` beside
+its own, so a tree holding both is ordinary rather than contrived.
+
+**What made it structural rather than asserted.** `ServerProfile.id` went
+private behind `standalone()`, `proxying_command()` and `proxying_named()`.
+With a public `Option<ServerId>` there are three states and only two of them
+are real: no oracle, an oracle we cannot identify, and — the one that was
+actually in the tree — a call site that *knows* its server and passes `None`
+anyway. The third stops being expressible when the constructor takes the name.
+This is the same move `Location` (conformance-004) and `Strata` already make in
+this seam, which is why it was not escalated as a Class B seam change: private
+fields with named constructors is the established idiom here, and it narrows
+rather than trades.
+
+**Six mutations, all fire.** Drop `vtsls` from `KNOWN`; make `from_command`
+read the program only; drop the ambiguity rule so the first match wins; make
+`matrix()` return nothing; make `from_name` return the first entry regardless.
+Each kills a different assertion, and the `matrix.len() >= 8` guard is what
+stops an empty scan from passing the whole loop vacuously — the same trap as
+comparing two empty tables in 576c2c6f.
+
+**A process mistake that cost real time, and it will recur.** The mutation loop
+restored files with `git checkout <path>` — which restores from HEAD, not from
+before the mutation, so it silently deleted the campaign's own uncommitted work
+in that file. The next three mutations then "passed" by failing to compile, and
+the empty output looked like a run. **Use `cp` to a backup, and read the actual
+output rather than the absence of a FAILED line.** Better still: commit the
+green state first, then mutate.
+
+**Found and deliberately not fixed — the next campaign should know.**
+`measure_core`'s `manifest::parse` (`corpus.rs`) cannot read the real
+`servers.toml`. It expects a `[[server]]` array of tables with `name` and
+`language` keys and one `key = value` per line; the file has `[server.<name>]`
+tables with a `languages` list and `command` arrays spread over several lines.
+The first `[server.rust-analyzer]` line has no `=`, so `parse` returns
+`ManifestMalformed` and `measure collect --server <anything>` cannot resolve a
+server at all. Nothing catches this because no test reads the real file — the
+pipeline fixture writes its own truth with server `"oracle"` and never calls
+`resolve_server`. `driver/tests/oracle.rs` now reads the real file, but with
+its own scan, on purpose. This belongs to `#where-the-corpus-lives` /
+`#two-modes-collect-and-replay`, and it is a genuine open gap that the audit
+has not noticed.
