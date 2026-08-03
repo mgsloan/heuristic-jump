@@ -84,3 +84,86 @@ reads `provisional_decisions: 0` with one provisional choice in force. Do not
 repair that by adding a tagged comment somewhere inside `crates/` — the number
 would be right and the site would be fiction. It is written up in
 `conformance-002` where the tag actually is.
+
+## 4ba19af5 — core.md#vendoring-the-zed-crates
+
+**Why an unjudged section was picked over nine open gaps.** Because all nine
+were the same gap wearing different hats. `core.md` §1 defines the seam's text
+vocabulary as *defined in* `vendor/rope` and re-exported by `shared`, so §1's
+`Location`, §2's `DocumentSnapshot`, §3's `WirePosition::resolve(enc, &Rope)`
+and §10's first two suites were unwritable; §4 and §5 each need a dispatch
+site, which needs the seam, which needs the same thing. If you are reading this
+because you are about to pick "the gap whose section is closest to going
+clean", check first whether it is blocked on something no gap names — that
+check is cheap and it is what this campaign is.
+
+The block had just cleared: `conformance-002` was answered and a human placed
+`LICENSE-GPL`, which `vendor/rope`'s `LICENSE-GPL -> ../../LICENSE-GPL`
+symlink needs a target for. `cp -a` preserved it, as `deps.md` §14 says.
+
+**The vendoring is much smaller than 7,400 lines suggests.** `deps.md` §5's
+four patches are the whole of it and each is genuinely small: three `util`
+items (one `const fn`, one macro, one test iterator), three `ztracing` imports,
+nine `#[gpui::test]` attributes, one deleted `#[ctor]` logger per crate. Two
+hours, most of it reading. It compiled and all 29 upstream tests passed on the
+first run. Do not budget a whole campaign for the copy itself — budget it for
+the newtype sweep, which is the part that is actually large.
+
+**The `#[gpui::test]` substitution is a nothing-burger, as the spec says.**
+`seeded(N, f)` — twenty lines reading `SEED`/`ITERATIONS` and looping
+`StdRng::seed_from_u64` — is a faithful replacement, because rope's randomised
+tests take `mut rng: StdRng` and nothing else. Verified against gpui's
+`calculate_seeds` (`../zed/crates/gpui/src/test.rs`) rather than guessed.
+
+**The benchmark is a sixth `util` import site and the spec's list of five is
+wrong.** `benches/rope_benchmark.rs:10` is `use util::RandomCharIter;`, and a
+bench is compiled as its own crate, so it can see neither `util` (not vendored)
+nor rope's `#[cfg(test)]` module. Upstream gets away with it only because rope
+dev-depends on `util = { features = ["test-support"] }`, which patch 1 deletes.
+`cargo build -p rope` is *green* while `--all-targets` fails, so this is
+invisible unless you build all targets — do that on any vendored crate that
+has a bench. Fixed by making `test_support` a file and `#[path]`-including it
+from the bench: one copy, no public API change, no dependency moved out of
+dev. CHANGE-conformance-002.
+
+**Approaches considered and dropped:**
+
+* *Targeting `core.md#5-deadlines-and-abstention` instead*, which looked like
+  the cheapest gap on the board — `Deadline { at: Instant, cancelled:
+  Arc<AtomicBool> }` needs no dependency at all. Dropped because the section's
+  *other* gap is "the driver hard-caps by dropping the result of any handler
+  that returns after the deadline", and a dispatch site needs `LanguageHandler`
+  and `Outcome`, which need `Location`, which needs `ByteRange`. Half a section
+  does not move the number. The same reasoning kills §4: its watcher-tee gap
+  needs message routing that does not exist before phase 2b.
+* *Doing the newtype sweep in the same campaign.* Costed rather than assumed:
+  ~51 public signatures, 54 `Point::new` call sites, all 17 of `ChunkSlice`'s
+  public functions, plus `TextSummary`'s nine fields, plus the test bodies that
+  follow. `rope-modifications.md` §3 forbids the shortcut that would make it
+  cheap — no `Add<u32>`/`PartialEq<u32>` on the newtypes — so every site is a
+  real edit. It is a campaign, and starting it with a third of a context left
+  would have ended in a revert.
+* *Making `shared` depend on `rope` in this campaign*, so that the gate would
+  at least compile the vendored crates. Dropped: the only honest thing to
+  re-export today is `Rope` itself, and `core.md` §1's claim is about
+  `ByteOffset` and friends appearing in rope's signatures — which they do not
+  yet. A dependency edge added to make a gate greener, with a re-export that
+  asserts something untrue, is worse than the gap it papers over.
+* *Adding `rope`/`sum_tree` to the loop's gate crate list.* Not possible
+  (`state/phase.toml` is denied) and, more usefully, **not desirable as
+  stated**: gate step 2 is `cargo clippy --all-targets -- -D warnings`, and
+  `deps.md` §14 deliberately withholds the workspace lints from `vendor/*`
+  while the root `clippy.toml` still applies. Measured: five errors on
+  unedited upstream code. So the request has to be "build and test but do not
+  lint", which the gate has no notion of — `conformance-003`.
+
+**The gate does not touch `vendor/` at all.** Not fmt, not clippy, not tests.
+A green `harness/gate conformance` says nothing about the 29 tests that are
+the *only* check on the newtype sweep. Until `conformance-003` is answered,
+run `cargo nextest run -p rope -p sum_tree` by hand in any campaign that
+touches `vendor/`, and say in your journal entry that you did.
+
+**One small trap in the folding.** `debug_panic!` must be defined *before*
+`mod chunk;` in `rope.rs`, because `macro_rules!` scoping is textual and
+`chunk.rs` is its only caller. Putting it at the bottom of the crate root
+compiles as a definition and then fails at every call site.
