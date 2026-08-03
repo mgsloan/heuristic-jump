@@ -21,6 +21,11 @@ mod test_support;
 
 use test_support::RandomCharIter;
 
+/// The three modules §2 puts the vocabulary newtypes in. Every claim about
+/// what they do and do not implement is scoped to these: an `impl` elsewhere
+/// in the crate is rope's own code using them, which is what they are for.
+const NEWTYPE_MODULES: [&str; 3] = ["offset.rs", "point.rs", "point_utf16.rs"];
+
 /// §6: **CI asserts that no `pub fn` signature in `vendor/rope` mentions bare
 /// `usize` or `u32`**, outside `allowed-primitives.txt`.
 ///
@@ -136,7 +141,7 @@ fn no_public_field_names_a_bare_primitive() {
 /// passing if someone added the impls and deleted the unwraps.
 #[test]
 fn no_newtype_implements_a_trait_against_a_bare_primitive() {
-    let offenders: Vec<String> = ["offset.rs", "point.rs", "point_utf16.rs"]
+    let offenders: Vec<String> = NEWTYPE_MODULES
         .into_iter()
         .flat_map(|file| {
             let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(file);
@@ -155,6 +160,118 @@ fn no_newtype_implements_a_trait_against_a_bare_primitive() {
          is the half-transparent type `design/rope-modifications.md` §4 \
          refuses:\n{}",
         offenders.join("\n")
+    );
+}
+
+/// §4 prints an operator table — five rows that exist and one that must not —
+/// and the scan above holds none of it. That scan rejects an impl naming a
+/// bare integer, which is the *half-transparent* mistake; this one holds the
+/// table itself, where the mistake is a missing row or an extra one between
+/// two newtypes, and no bare integer appears in either case.
+///
+/// | `Offset + ByteLen` | `Offset` | advance a position |
+/// | `Offset - ByteLen` | `Offset` | retreat a position |
+/// | `Offset - Offset` | `ByteLen` | distance between positions |
+/// | `ByteLen ± ByteLen` | `ByteLen` | accumulate |
+/// | `Offset + Offset` | — | **not implemented**; meaningless |
+///
+/// The last row is the one that catches real mistakes and is the reason this
+/// is an inventory rather than a list of things to look for: a prohibition
+/// can only be checked by naming everything that *is* allowed. The comparison
+/// therefore fails in both directions — an operator that disappears is as much
+/// a change to the table as one that arrives.
+///
+/// `From` is scanned with the operators for the same reason. §4:
+/// "There is deliberately **no `From<ByteLen> for Offset`**. Turning a length
+/// into a position means measuring from somewhere, so it is spelled
+/// `Offset::ZERO + len`, which names the origin." A `From` between two of
+/// these types is an operator by another spelling, and would put back exactly
+/// what the position/quantity split buys.
+#[test]
+fn the_operator_table_is_exactly_what_the_document_prints() {
+    // §4, in order: the byte pair's five rows and the matching assigns, then
+    // `Point` and `PointUtf16` keeping the `Add`/`Sub`/`AddAssign` impls
+    // rope's internals rely on -- which §4 flags as a compromise rather than
+    // leaving implicit, since `Point + Point` is the same conflation being
+    // refused for `LineIndex` one paragraph up.
+    //
+    // `LineIndex`, `ByteColumn`, `Utf16Column` and `CharCount` are absent on
+    // purpose, and their absence is the point of the whole test: "Adding two
+    // line numbers is meaningless; there is no length interpretation to
+    // rescue it."
+    let expected = [
+        "impl Add<ByteLen> for Offset",
+        "impl Sub<ByteLen> for Offset",
+        "impl Sub for Offset",
+        "impl AddAssign<ByteLen> for Offset",
+        "impl SubAssign<ByteLen> for Offset",
+        "impl Add for ByteLen",
+        "impl Sub for ByteLen",
+        "impl AddAssign for ByteLen",
+        "impl SubAssign for ByteLen",
+        "impl<'a> Add<&'a Self> for Point",
+        "impl Add for Point",
+        "impl<'a> Sub<&'a Self> for Point",
+        "impl Sub for Point",
+        "impl<'a> AddAssign<&'a Self> for Point",
+        "impl AddAssign<Self> for Point",
+        "impl<'a> Add<&'a Self> for PointUtf16",
+        "impl Add for PointUtf16",
+        "impl<'a> Sub<&'a Self> for PointUtf16",
+        "impl Sub for PointUtf16",
+        "impl<'a> AddAssign<&'a Self> for PointUtf16",
+        "impl AddAssign<Self> for PointUtf16",
+    ];
+
+    let mut found = Vec::new();
+    for file in NEWTYPE_MODULES {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(file);
+        let text = fs::read_to_string(path).expect("reading a newtype module");
+        found.extend(operator_impls(&text));
+    }
+
+    let mut expected: Vec<&str> = expected.to_vec();
+    let mut found: Vec<&str> = found.iter().map(String::as_str).collect();
+    expected.sort_unstable();
+    found.sort_unstable();
+
+    assert_eq!(
+        found, expected,
+        "the operator impls on the vocabulary newtypes are no longer the table \
+         `design/rope-modifications.md` §4 prints. An extra one is a row the \
+         document does not have -- `Offset + Offset` and any arithmetic at all \
+         on `LineIndex`, `ByteColumn`, `Utf16Column` or `CharCount` are the \
+         ones it names as meaningless. A missing one is the table changing \
+         underneath the document. Either way, change both or neither"
+    );
+}
+
+/// The negative control for the inventory, and it has to plant *both*
+/// directions: the extractor must see an operator impl that the table does not
+/// have, and must not mistake `Display` or an inherent block for one.
+#[test]
+fn the_operator_scan_sees_an_impl_the_table_does_not_have() {
+    let planted = "
+        impl Add for Offset { }
+        impl From<ByteLen> for Offset { }
+        impl AddAssign<u32> for LineIndex { }
+        impl std::ops::Add for LineIndex { }
+        impl fmt::Display for Offset { }
+        impl Offset { pub const ZERO: Self = Self(0); }
+        impl<'a> Add<&'a Self> for Point { }
+    ";
+
+    assert_eq!(
+        operator_impls(planted),
+        vec![
+            "impl Add for Offset",
+            "impl From<ByteLen> for Offset",
+            "impl AddAssign<u32> for LineIndex",
+            "impl std::ops::Add for LineIndex",
+            "impl<'a> Add<&'a Self> for Point",
+        ],
+        "the scan must see an arithmetic or conversion impl however it is \
+         spelled, must not see `Display`, and must not see an inherent block"
     );
 }
 
@@ -303,6 +420,70 @@ fn public_fields(text: &str) -> Vec<String> {
         fields.push(format!("{name}:{}", kind.trim_end_matches(',')));
     }
     fields
+}
+
+/// Every operator or conversion impl in `text`, normalized. `Display` and the
+/// inherent blocks are not these: an operator is what lets two of these types
+/// combine, and a `From` is one by another spelling
+/// (`design/rope-modifications.md` §4).
+fn operator_impls(text: &str) -> Vec<String> {
+    const OPERATORS: [&str; 13] = [
+        "Add",
+        "Sub",
+        "Mul",
+        "Div",
+        "Rem",
+        "Neg",
+        "AddAssign",
+        "SubAssign",
+        "MulAssign",
+        "DivAssign",
+        "RemAssign",
+        "From",
+        "Into",
+    ];
+
+    impl_headers(text)
+        .into_iter()
+        .filter(|header| {
+            implemented_trait(header).is_some_and(|name| OPERATORS.contains(&name))
+        })
+        .collect()
+}
+
+/// The trait a normalized `impl` header implements, as its last path segment,
+/// or `None` for an inherent block. The header may open with a lifetime or
+/// type parameter list, which is not the trait — `impl<'a> Add<&'a Self> for
+/// Point` implements `Add`.
+///
+/// The last segment rather than the whole path, because `impl std::ops::Add
+/// for LineIndex` is the same lenient operator as `impl Add for LineIndex` and
+/// spelling it out must not be a way past the inventory. That is not
+/// hypothetical: written the first way, it walked through this scan.
+fn implemented_trait(header: &str) -> Option<&str> {
+    if !header.contains(" for ") {
+        return None;
+    }
+    let rest = header.strip_prefix("impl")?;
+    let rest = match rest.strip_prefix('<') {
+        None => rest,
+        Some(parameters) => {
+            let mut depth = 1usize;
+            let end = parameters.char_indices().find_map(|(index, character)| {
+                match character {
+                    '<' => depth += 1,
+                    '>' => depth -= 1,
+                    _ => {}
+                }
+                (depth == 0).then_some(index)
+            })?;
+            &parameters[end + 1..]
+        }
+    };
+    let rest = rest.trim_start();
+    let end = rest.find(['<', ' ']).unwrap_or(rest.len());
+    let path = &rest[..end];
+    Some(path.rsplit("::").next().unwrap_or(path))
 }
 
 /// Every `impl` header in `text`, from `impl` to the opening brace. The
