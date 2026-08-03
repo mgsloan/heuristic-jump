@@ -189,10 +189,17 @@ HEADING = re.compile(r"^#{2,3}\s+(?P<text>\S.*?)\s*$")
 
 def anchor_of(heading: str) -> str:
     """GitHub's slug: lowercase, drop everything but word characters, spaces
-    and hyphens, then spaces to hyphens."""
+    and hyphens, then **each** space to a hyphen.
+
+    Runs are not collapsed, which is the part that is easy to get wrong. A
+    heading like `pyright, basedpyright — Python` loses the em dash and keeps
+    the spaces that surrounded it, so the anchor has a double hyphen.
+    Collapsing them produced anchors that did not match the document's own
+    cross-references, and reported those references as dangling.
+    """
     slug = heading.strip().lower()
     slug = re.sub(r"[^a-z0-9 _-]", "", slug)
-    return re.sub(r"\s+", "-", slug).strip("-")
+    return slug.replace(" ", "-").strip("-")
 
 
 @dataclass
@@ -242,6 +249,35 @@ def sections_of(doc: str) -> list[Section]:
 
 def section_index(docs: list[str]) -> dict[str, Section]:
     return {s.key: s for doc in docs for s in sections_of(doc)}
+
+
+ANY_HEADING = re.compile(r"^#{2,}\s+(?P<text>\S.*?)\s*$")
+
+
+def anchors_of(doc: str) -> set[str]:
+    """Every anchor a link or a gap may legitimately name, at any heading depth.
+
+    Distinct from [`sections_of`], which stops at `###` because that is the
+    granularity the *score* is counted at. Anchor validity is a different
+    question from what the denominator is: `shim.md` links to two `####`
+    headings, and treating those as dangling reported real cross-references as
+    spec drift.
+    """
+    found: set[str] = set()
+    in_fence = False
+    for line in doc_path(doc).read_text().splitlines():
+        if line.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        match = ANY_HEADING.match(line)
+        if match:
+            anchor = anchor_of(match.group("text"))
+            while anchor in found:
+                anchor += "-1"
+            found.add(anchor)
+    return found
 
 
 # --------------------------------------------------------------------------
@@ -968,12 +1004,34 @@ def cmd_check_audit(args: argparse.Namespace) -> int:
     docs = sorted({doc for config in phase.loops.values() for doc in config.docs})
     failures = 0
     for doc in docs:
-        known = {s.key for s in sections_of(doc)}
+        known = {f"{doc}#{anchor}" for anchor in anchors_of(doc)}
         for key, verdict in read_audit(doc).items():
             if key not in known:
                 print(f"audit: {key} no longer exists in design/{doc}", file=sys.stderr)
                 failures += 1
     return 1 if failures else 0
+
+
+def cmd_check_links(args: argparse.Namespace) -> int:
+    """Every `](#anchor)` in a design document reaches a heading in it.
+
+    A dangling cross-reference is Class A spec drift, and the cheapest kind to
+    find mechanically — which is what `design/loops.md` section 5 means by
+    converting an audit finding into a permanent check.
+    """
+    docs = args.doc or sorted(path.name for path in DESIGN.glob("*.md"))
+    failures = 0
+    for doc in docs:
+        known = anchors_of(doc)
+        text = doc_path(doc).read_text()
+        for anchor in sorted(set(re.findall(r"\]\(#([a-z0-9_-]+)\)", text))):
+            if anchor not in known:
+                print(f"links: design/{doc} points at #{anchor}, which is not a heading", file=sys.stderr)
+                failures += 1
+    if failures:
+        return 1
+    print(f"links: every internal link resolves, across {len(docs)} document(s)")
+    return 0
 
 
 def cmd_check_scope(args: argparse.Namespace) -> int:
@@ -1873,6 +1931,10 @@ def main() -> int:
     p.add_argument("transcript", help="file holding the auditor's output")
     p.add_argument("--partial", action="store_true", help="merge the valid sections even if some were rejected")
     p.set_defaults(run=cmd_audit_merge)
+
+    p = sub.add_parser("check-links", help="every internal link in the design documents resolves")
+    p.add_argument("doc", nargs="*")
+    p.set_defaults(run=cmd_check_links)
 
     p = sub.add_parser("check-audit", help="gate step: every gap names an anchor that exists")
     p.set_defaults(run=cmd_check_audit)

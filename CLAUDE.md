@@ -72,7 +72,7 @@ These are the ones that cost the most to get wrong.
   a required field the others lack.** Never by an optional field, and never by
   declaration order — serde tries variants in order and takes the first that
   succeeds, so a lenient variant silently swallows values meant for another.
-  `design/core.md` §18.5 has the worked example, where getting this wrong
+  `design/core.md` §8.5 has the worked example, where getting this wrong
   destroys documents.
 
 * **One system-wide error enum**, not `anyhow`. Sub-enums are

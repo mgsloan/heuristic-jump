@@ -131,10 +131,16 @@ case "$phase" in
 *) echo "skipped: ratchets are a cost-phase gate, and this is phase $phase" ;;
 esac
 
-# --- 6. audit consistency.
+# --- 6. audit consistency, and the design's own cross-references.
+#
+# A dangling `](#anchor)` is Class A spec drift and the cheapest kind to find
+# mechanically, which is what `design/loops.md` section 5 means by converting
+# an audit finding into a permanent check — it moves the claim off the
+# auditor's judgement onto an exact one.
 step=$((step + 1))
 printf '\n--- %d. audit consistency\n' "$step"
 "$hj" check-audit || fail "audit consistency"
+"$hj" check-links || fail "design cross-references"
 
 # --- 7. metrics row.
 step=$((step + 1))
