@@ -196,6 +196,75 @@ impl LanguageHandler for ReportingHandler {
     }
 }
 
+/// A handler that fails rather than answering. `replay` files it under
+/// `Unimplemented` for want of anywhere honest to put a query whose handler
+/// reported no stratum at all, which is why the template check cannot be the
+/// presence of that row.
+struct FailingHandler;
+
+impl LanguageHandler for FailingHandler {
+    fn language_ids(&self) -> &'static [LanguageId] {
+        const IDS: &[LanguageId] = &[LanguageId::new("rust")];
+        IDS
+    }
+
+    fn file_extensions(&self) -> &'static [FileExtension] {
+        const EXTENSIONS: &[FileExtension] = &[FileExtension::new("rs")];
+        EXTENSIONS
+    }
+
+    fn grammar(&self) -> Language {
+        tree_sitter_rust::LANGUAGE.into()
+    }
+
+    fn goto_definition(&self, _query: &Query<'_>) -> Result<Outcome, Error> {
+        Err(shared::ProjectError::Read {
+            path: PathBuf::from("/nonexistent"),
+            source: std::io::Error::from(std::io::ErrorKind::NotFound),
+        }
+        .into())
+    }
+}
+
+/// `core.md`: the placeholder "reports `Stratum::Unimplemented`, which no real
+/// handler may return, and its presence in a metrics table means the template
+/// has not been replaced — **a gate check** rather than something anybody has
+/// to notice".
+///
+/// A gate check needs something to read, and the two obvious readings are both
+/// wrong: the row is printed whatever the corpus held, and its `queries` count
+/// includes handlers that returned `Err` and reported no stratum at all. The
+/// third handler here is the one that matters — it is as far from a template as
+/// a handler gets, and every one of its queries lands in that row.
+#[test]
+fn the_unimplemented_stratum_identifies_the_template_and_not_a_broken_handler() {
+    let corpus = fixture("template_state");
+    enumerate(&corpus);
+    write_truth(&corpus);
+
+    for (expected, handler) in [
+        ("unreplaced", &TestHandler as &dyn LanguageHandler),
+        ("replaced", &ReportingHandler),
+        ("replaced", &FailingHandler),
+    ] {
+        let report = measure_core::replay_table(
+            handler,
+            &shared::SystemClock,
+            &replay_arguments(&corpus, measure_core::Format::Json),
+        )
+        .expect("replay");
+
+        assert!(
+            report.contains(&format!("\"template\": \"{expected}\"")),
+            "the table should read {expected} for this handler, and a gate that \
+             cannot read it off the report is a gate somebody has to remember \
+             to run. core.md makes Stratum::Unimplemented self-identifying, \
+             which a handler that merely failed must not be able to \
+             counterfeit.\n{report}"
+        );
+    }
+}
+
 #[test]
 fn a_replay_row_carries_section_7s_field_set_in_section_7s_order() {
     let corpus = fixture("field_set");

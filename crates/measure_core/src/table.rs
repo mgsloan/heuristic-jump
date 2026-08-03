@@ -137,6 +137,36 @@ impl Table {
         }
     }
 
+    /// `core.md`'s template section: the placeholder "reports
+    /// `Stratum::Unimplemented`, which no real handler may return
+    /// (`resolution.md` §8), and its presence in a metrics table means the
+    /// template has not been replaced — **a gate check** rather than something
+    /// anybody has to notice".
+    ///
+    /// Presence cannot be the printed row, which is printed whatever the corpus
+    /// held, and it cannot be that row's `queries` either: a handler that
+    /// returned `Err` reported no stratum at all and is filed there for want of
+    /// anywhere honest to put it, so a thoroughly broken handler would read as
+    /// an unreplaced template. What identifies the template is the queries it
+    /// **abstained** under that stratum, which is the one thing no real handler
+    /// produces.
+    pub(crate) fn template(&self) -> TemplateState {
+        let unimplemented = StratumName(Stratum::Unimplemented);
+        if self
+            .rows
+            .iter()
+            .any(|row| &*row.stratum == unimplemented.as_str() && row.abstained > 0)
+        {
+            return TemplateState::Unreplaced;
+        }
+        // Nothing was measured is not evidence of a replaced template, and a
+        // gate that read it as one would pass every empty corpus.
+        if self.rows.iter().all(|row| row.queries == 0) {
+            return TemplateState::NothingMeasured;
+        }
+        TemplateState::Replaced
+    }
+
     fn row(&mut self, stratum: Stratum) -> Option<&mut Row> {
         let index = STRATA.iter().position(|known| *known == stratum)?;
         self.rows.get_mut(index)
@@ -148,6 +178,7 @@ impl Table {
             Format::Json => serde_json::to_string_pretty(&Report {
                 strata: &self.rows,
                 uncollected: self.uncollected,
+                template: self.template(),
             })
             .map_err(|source| {
                 shared::CodecError::NotSerializable {
@@ -189,7 +220,30 @@ impl Table {
             "positions the oracle never answered: {}",
             self.uncollected
         );
+        let _ = writeln!(text, "template handler: {}", self.template().as_str());
         text
+    }
+}
+
+/// What the `unimplemented` row says about the handler that produced the
+/// table. Three states rather than a `bool` because "nothing was measured" is
+/// not the same answer as "the template is gone", and a gate given a `bool`
+/// would have to decide which of the two it had.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum TemplateState {
+    Unreplaced,
+    Replaced,
+    NothingMeasured,
+}
+
+impl TemplateState {
+    fn as_str(self) -> &'static str {
+        match self {
+            TemplateState::Unreplaced => "unreplaced",
+            TemplateState::Replaced => "replaced",
+            TemplateState::NothingMeasured => "nothing measured",
+        }
     }
 }
 
@@ -197,6 +251,7 @@ impl Table {
 struct Report<'a> {
     strata: &'a [Row],
     uncollected: u64,
+    template: TemplateState,
 }
 
 #[expect(
