@@ -231,6 +231,15 @@ pub enum ProjectError {
         #[source]
         source: ignore::Error,
     },
+    /// A URI the project view cannot turn back into one of its own files.
+    ///
+    /// Reached from the wire conversion (`core.md` §8.4), which is handed a
+    /// `Location` and has to find the target file's text again. A handler holds
+    /// a `ProjectPath` for every file it read, so a URI that fails to resolve
+    /// means the file list moved under the query — not that a handler reached
+    /// outside its scope, which `ProjectPath` makes unspellable.
+    #[error("{uri} is not a file this project view can resolve")]
+    Unresolvable { uri: DocumentUri },
 }
 
 /// A wire position that does not name a place in the document it arrived

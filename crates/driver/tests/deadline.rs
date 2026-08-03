@@ -2,16 +2,23 @@
 //! to, and that the driver drops a result that arrives after it.
 //!
 //! The cap is asserted against `hard_cap` rather than through `dispatch`,
-//! because there is no handler double in phase 1a: `LanguageHandler::grammar`
-//! returns a `tree_sitter::Language`, which cannot be constructed without a
-//! grammar crate, and a `Query` needs a `DocumentSnapshot` that needs the same
-//! grammar. The first end-to-end dispatch test arrives with `lang_rust`.
+//! deliberately: what §5 claims is that a late answer is dropped, and driving
+//! that through `dispatch` would mean building a fixture, a document and a
+//! project view to reach one `expired()` check. `tests/wire_locations.rs` is
+//! the end-to-end path.
+
+#![expect(
+    clippy::expect_used,
+    reason = "`clippy.toml`'s allow-expect-in-tests reaches only `#[test]` bodies, and `an_answer` below is a free function. Failing loudly is the point: it asserts the one thing that makes an `Answer` buildable without a document."
+)]
 
 use std::ffi::OsString;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use driver::{Config, DeadlineMs, DeadlineOverride, Dispatched, Heuristics, Mode, hard_cap};
+use driver::{
+    Answer, Config, DeadlineMs, DeadlineOverride, Dispatched, Heuristics, Mode, hard_cap,
+};
 use shared::{
     Clock, Confidence, Deadline, Error, HandlerError, Outcome, ParseError, Stratum, SystemClock,
 };
@@ -28,15 +35,19 @@ impl Clock for FrozenClock {
     }
 }
 
-/// An answer, in the only shape phase 1a can build one: `Location::at_node`
-/// needs a tree-sitter node, so the list is empty. What the cap does with a
-/// `Decided` does not depend on what is inside it.
+/// An answer with no locations, which is the only `Answer` reachable without
+/// a document to encode against (`core.md` §8.4): the wire form of no
+/// locations is no locations, so nothing here needs a rope or an encoding.
+/// What the cap does with a `Decided` does not depend on what is inside it.
 fn an_answer() -> Dispatched {
-    Dispatched::Decided(Outcome::Committed {
+    let outcome = Outcome::Committed {
         locations: Vec::new(),
         confidence: Confidence::ONE,
         stratum: Stratum::LocalBinding,
-    })
+    };
+    Dispatched::Decided(
+        Answer::without_locations(outcome).expect("a commit with no locations has no wire form"),
+    )
 }
 
 #[test]
@@ -68,17 +79,20 @@ fn an_answer_that_arrives_in_time_is_kept() {
     let deadline = Deadline::new(Arc::new(clock), arrived_at, budget);
 
     match hard_cap(&deadline, an_answer()) {
-        Dispatched::Decided(Outcome::Committed {
-            locations: _,
-            confidence: _,
-            stratum: _,
-        }) => {}
-        other @ (Dispatched::Decided(Outcome::Abstain {
-            reason: _,
-            stratum: _,
-        })
-        | Dispatched::DeadlineExpired
-        | Dispatched::Failed(_)) => panic!("an answer inside its deadline was dropped: {other:?}"),
+        Dispatched::Decided(answer) => match answer.outcome() {
+            Outcome::Committed {
+                locations: _,
+                confidence: _,
+                stratum: _,
+            } => {}
+            other @ Outcome::Abstain {
+                reason: _,
+                stratum: _,
+            } => panic!("a commit came back through the cap as {other:?}"),
+        },
+        other @ (Dispatched::DeadlineExpired | Dispatched::Failed(_)) => {
+            panic!("an answer inside its deadline was dropped: {other:?}")
+        }
     }
 }
 

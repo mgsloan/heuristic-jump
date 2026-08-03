@@ -257,6 +257,8 @@ dependencies = [
  "rustc-hash",
  "shared",
  "tracing",
+ "tree-sitter",
+ "tree-sitter-rust",
 ]
 
 [[package]]

@@ -17,3 +17,14 @@ doctest = false
 rustc-hash.workspace = true
 shared.workspace = true
 tracing.workspace = true
+
+# `core.md` §8.4's conversion is asserted end to end, which needs a handler that
+# commits — and a `LanguageHandler` impl has to name `tree_sitter::Language`,
+# while a `Query` needs a `DocumentSnapshot` that needs a grammar to parse. Both
+# are dev-only and neither is an edge §9's graph forbids: `shared` and
+# `measure_core` take a grammar the same way and for the same reason, and
+# `tests/seam.rs` asserts the `[dependencies]`/`[dev-dependencies]` distinction
+# rather than assuming it. A `lang_*` edge stays banned in every table.
+[dev-dependencies]
+tree-sitter.workspace = true
+tree-sitter-rust.workspace = true
