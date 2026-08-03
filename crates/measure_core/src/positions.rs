@@ -15,8 +15,8 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use shared::{
-    ByteOffset, CodecError, ConfigError, DocumentUri, DocumentVersion, Error, LanguageHandler,
-    LanguageId, ProjectPath, Rope, SnapshotSeed,
+    ByteOffset, CodecError, ConfigError, Deadline, DocumentUri, DocumentVersion, Error,
+    LanguageHandler, LanguageId, ProjectPath, Rope, SnapshotSeed,
 };
 
 /// `(file, byte offset, text, node kind, class)`.
@@ -112,6 +112,11 @@ pub(crate) fn enumerate(
     non_identifiers_wanted: usize,
 ) -> Result<Vec<Position>, Error> {
     let language = first_language_id(handler);
+    // Enumeration is offline corpus work with no user waiting on it, and a
+    // wall-clock deadline here would make the *position set* depend on machine
+    // load — which is the one thing `data-collection.md` §2 needs stable, since
+    // every server run afterwards is joined on it.
+    let deadline = Deadline::none();
     let mut found = Vec::new();
     let mut non_identifiers = 0;
 
@@ -136,7 +141,7 @@ pub(crate) fn enumerate(
             language,
             handler.grammar(),
         )
-        .realise()?;
+        .realise(&deadline)?;
 
         for node in shared::identifiers(&document) {
             let Some(slice) = text.get(node.start_byte()..node.end_byte()) else {

@@ -99,6 +99,11 @@ impl Replay<'_> {
             return Ok(None);
         };
         let language = self.corpus.language();
+        // The same `Deadline::none()` the query below runs under, and for the
+        // same reason: a parse abandoned on a slow machine would drop the row
+        // entirely, so *coverage* — not just latency — would vary with load
+        // (`core.md` §7, "replay enforces no deadline at all").
+        let deadline = shared::Deadline::none();
         Ok(Some(
             SnapshotSeed::fresh(
                 uri,
@@ -107,7 +112,7 @@ impl Replay<'_> {
                 language,
                 self.handler.grammar(),
             )
-            .realise()?,
+            .realise(&deadline)?,
         ))
     }
 

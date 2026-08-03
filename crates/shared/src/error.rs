@@ -274,7 +274,14 @@ pub enum HandlerError {
     /// because a deadline expiry is a decision rather than a failure
     /// (`core.md` §1, §5). Produced by `ProjectView` refusing to start I/O
     /// that cannot be used, so a handler doing ordinary `?` propagation
-    /// surfaces it here.
+    /// surfaces it here — and by `SnapshotSeed::realise` abandoning a parse,
+    /// which is the one expiry no handler can report because it happens
+    /// before there is a handler.
+    ///
+    /// In `HandlerError` rather than in `ParseError` for that second case
+    /// deliberately: the arm decides what the record says, and an abandoned
+    /// parse is a query that ran out of time, not a document that would not
+    /// parse (`core.md` §7).
     #[error("deadline expired")]
     DeadlineExpired,
 }

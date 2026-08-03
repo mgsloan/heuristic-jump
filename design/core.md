@@ -416,7 +416,11 @@ pub struct DocumentSnapshot {
 impl SnapshotSeed {
     /// Reparses incrementally from `base`, or parses from scratch if there
     /// is none. Called by the worker, never by `core`.
-    pub fn realise(self) -> Result<DocumentSnapshot, Error>;
+    ///
+    /// The deadline is how "inside the deadline" above is paid for: the
+    /// parse is the one piece of work on the query path that no handler
+    /// can poll around, because it happens before there is a handler.
+    pub fn realise(self, deadline: &Deadline) -> Result<DocumentSnapshot, Error>;
 }
 
 impl DocumentSnapshot {
@@ -475,6 +479,23 @@ handler — `Err(Error::Parse)`, recorded as a failure
 ([section 7](#7-observability-and-the-corpus-scan)) rather than as a decision
 the handler made. `tree()` is then infallible, which deletes a `Result` from
 the busiest call in every handler.
+
+**A parse abandoned on the deadline is the other return, and is emphatically
+not that one.** `realise` breaks out through tree-sitter's parse progress
+callback and reports `HandlerError::DeadlineExpired`, which the dispatch
+wrapper maps back to `Abstain { reason: Deadline }` like any other expiry
+([section 1](#the-trait)). Recording it as `Error::Parse` would put "this
+repository has a file too large to parse in 40ms" and "this grammar is broken"
+in the same row of the metrics table, which is exactly the distinction
+[section 7](#7-observability-and-the-corpus-scan) is built to keep.
+
+It is best-effort rather than tight. tree-sitter checks the callback once per
+100 parser operations (`OP_COUNT_PER_PARSER_CALLBACK_CHECK`, `src/parser.c`),
+so a document small enough to finish inside one interval observes no deadline
+at all and returns a tree however expired the query was. That is not a hole:
+[section 5](#5-deadlines-and-abstention)'s hard cap is what makes a late
+answer harmless, and this only stops the *work* — the CPU a cancelled query
+would otherwise keep burning while the proper LSP waits for it.
 
 ### Text and tree can never disagree
 

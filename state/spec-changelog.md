@@ -504,3 +504,59 @@ auditor recorded against this sentence was that the sentence is false about
 `measure_core`, not that the code disagreed with it.
 
 **Campaign:** b62bf25e-f5da-47f8-8c6e-00f19d0ab13c
+
+## CHANGE-conformance-013 — core.md#snapshots-are-o1-to-take-and-are-parsed-before-a-handler-sees-one — `realise` cannot parse inside a deadline it is not given
+
+**Contradiction:** the section's prose puts the parse under the deadline
+
+> the split is what keeps `core` doing O(1) work while the parse still
+> happens inside the worker and **inside the deadline**
+
+and the signature printed nine lines below it takes no deadline and has no
+other route to one:
+
+> ```rust
+> impl SnapshotSeed {
+>     pub fn realise(self) -> Result<DocumentSnapshot, Error>;
+> }
+> ```
+
+`SnapshotSeed`'s fields are `uri`, `text`, `version`, `language_id`, `base`
+and `grammar`, so the printed type cannot observe a clock, a cancellation flag
+or anything else that would let the parse stop early. "Inside the deadline"
+was true only of the *thread* the parse runs on, which is what the same
+sentence's first clause already says.
+
+**Resolution:** the signature becomes
+`realise(self, deadline: &Deadline) -> Result<DocumentSnapshot, Error>`, and
+the section gains two paragraphs: an abandoned parse reports
+`HandlerError::DeadlineExpired` rather than `Error::Parse`, and the
+abandonment is best-effort at tree-sitter's own granularity.
+
+This is the reading that trades nothing off. The alternative — deleting "and
+inside the deadline" — would have made the document consistent by giving up
+the property, and the property is one the design needs: a query cancelled by
+`$/cancelRequest` would otherwise keep a worker parsing at full speed while
+the proper LSP waits behind it, which is the exact failure `deadline.rs`'s own
+module comment says cooperative cancellation exists to avoid.
+
+The error arm matters as much as the parameter. A parse abandoned on time is a
+*decision* and belongs with every other expiry (§1's one error class mapped
+back to an abstention); a parse that fails is a *failure*. Merging them would
+put "this file is too large to parse in 40ms" and "this grammar is broken" in
+one row of §7's table, which is the distinction the record exists to make.
+
+The granularity paragraph is new information rather than a repair: the
+callback fires once per 100 parser operations
+(`OP_COUNT_PER_PARSER_CALLBACK_CHECK`, `tree-sitter/src/parser.c:81`), so
+small parses are uninterruptible. Measured, not assumed —
+`crates/shared/tests/document.rs` asserts both directions, including that a
+60-byte document parses to completion under a cancelled deadline.
+
+**Same-campaign disclosure.** This campaign also wrote the code the changed
+signature describes. What moved in the document is a signature that could not
+express a claim the same paragraph made; the claim itself is unchanged, and
+the edit makes the section *harder* to satisfy rather than easier — before it,
+a `realise` that ignored deadlines conformed.
+
+**Campaign:** e017e797-a44c-4aae-8906-3ce8a4004a7d

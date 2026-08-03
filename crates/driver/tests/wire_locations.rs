@@ -371,7 +371,7 @@ fn snapshot(root: &Path) -> DocumentSnapshot {
         LanguageId::new("rust"),
         grammar(),
     )
-    .realise()
+    .realise(&Deadline::none())
     .expect("parsing the document")
 }
 

@@ -9,12 +9,14 @@
 //! `measure_core` builds its snapshots through this constructor exactly as the
 //! driver does.
 
+use std::ops::ControlFlow;
 use std::sync::Arc;
 
 use rope::Rope;
-use tree_sitter::{InputEdit, Language, Parser, Point, Tree};
+use tree_sitter::{InputEdit, Language, ParseOptions, ParseState, Parser, Point, Tree};
 
-use crate::error::{Error, ParseError};
+use crate::deadline::Deadline;
+use crate::error::{Error, HandlerError, ParseError};
 use crate::vocabulary::{DocumentUri, DocumentVersion, LanguageId};
 
 /// What `core` builds at dispatch.
@@ -97,7 +99,22 @@ impl SnapshotSeed {
     ///
     /// An unparseable document therefore fails at dispatch and never reaches a
     /// handler, which is what makes `DocumentSnapshot::tree` infallible.
-    pub fn realise(self) -> Result<DocumentSnapshot, Error> {
+    ///
+    /// The `Deadline` is the whole of "inside the deadline" in `core.md` §2:
+    /// tree-sitter's parse is the one piece of work on the query path that a
+    /// handler cannot poll around, because it happens before the handler
+    /// exists. It is abandoned through `ParseOptions`' progress callback and
+    /// reported as `HandlerError::DeadlineExpired`, which is the one class the
+    /// dispatch wrapper maps back to an abstention — a document too large to
+    /// parse inside the budget costs coverage, and must not be recorded as the
+    /// parse *failing* (§1, §7).
+    ///
+    /// Best-effort rather than tight: the callback fires once per 100 parser
+    /// operations (`OP_COUNT_PER_PARSER_CALLBACK_CHECK`,
+    /// `tree-sitter/src/parser.c:81`), so a small document finishes inside one
+    /// interval and observes no deadline at all. `driver`'s `hard_cap` is what
+    /// makes the resulting late answer harmless; this only stops the *work*.
+    pub fn realise(self, deadline: &Deadline) -> Result<DocumentSnapshot, Error> {
         let mut parser = Parser::new();
         parser
             .set_language(&self.grammar)
@@ -126,14 +143,35 @@ impl SnapshotSeed {
                 .next()
                 .unwrap_or("")
         };
-        // `ParseOptions` carries tree-sitter's own progress callback, which is
-        // where a deadline check belongs once a parse is long enough to need
-        // one. Nothing measures that yet.
-        let tree = parser
-            .parse_with_options(&mut read, base.as_ref(), None)
-            .ok_or(ParseError::NoTree {
-                uri: self.uri.clone(),
-            })?;
+        // Set from inside the callback rather than re-read afterwards: a
+        // deadline that expires between the parse returning and the check
+        // would otherwise be reported as an expiry that did not stop
+        // anything, and the two are different facts about the same query.
+        let mut abandoned = false;
+        let mut progress = |_state: &ParseState| {
+            if deadline.expired() {
+                abandoned = true;
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        };
+        let tree = parser.parse_with_options(
+            &mut read,
+            base.as_ref(),
+            Some(ParseOptions::new().progress_callback(&mut progress)),
+        );
+
+        let tree = match (tree, abandoned) {
+            (Some(tree), _) => tree,
+            (None, true) => return Err(HandlerError::DeadlineExpired.into()),
+            (None, false) => {
+                return Err(ParseError::NoTree {
+                    uri: self.uri.clone(),
+                }
+                .into());
+            }
+        };
 
         Ok(DocumentSnapshot {
             uri: self.uri,
