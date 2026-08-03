@@ -401,12 +401,18 @@ def line_chart(
 ) -> str:
     """A small multi-series line chart, inline SVG, no dependencies.
 
-    Two series maximum here on purpose: `design/loops.md` section 10 keeps the
-    frontier to two axes because non-domination becomes free past that, and the
-    same discipline is worth applying to a chart nobody asked to be busy. Hues
-    are categorical slots 1 and 2, validated for both surfaces and for CVD;
-    identity is never colour alone — every series is directly labelled at its
-    last point and named in the legend.
+    Hues are the categorical slots in fixed order — blue, orange, aqua — never
+    cycled, and validated against both surfaces for CVD rather than chosen.
+    Identity is never colour alone: every series is directly labelled at its
+    last point and named in the legend, which is also what discharges aqua's
+    sub-3:1 contrast on the light surface.
+
+    Two series was the cap here, on the argument that `design/loops.md` §10
+    keeps the frontier to two axes because non-domination becomes free past
+    that. That argument is about the frontier and does not generalise: three
+    languages on a size chart are three facts, not a busy chart. The cap that
+    does still hold is the palette's — a fourth series takes slot 4, and a
+    ninth is not a generated hue but a reason to facet.
     """
     points = max(len(values) for _, _, values in series)
     if points < 2:
@@ -931,6 +937,50 @@ def panel_audit_table() -> str:
     )
 
 
+def panel_size() -> str:
+    """How much code and prose exist, one point per campaign close.
+
+    Counted at close rather than continuously, because a campaign's tree is
+    only meaningful once it is green — mid-campaign the count includes an
+    experiment that may be reverted.
+
+    `reference/` is left out. It is 15,000 lines of generated LSP
+    specification, which would be four fifths of the markdown and would never
+    move: the chart would be a flat line with one step where the vendoring
+    landed. `vendor/` is counted, because it is ours to edit and the rope
+    newtype sweep is real work.
+    """
+    points: list[tuple[str, dict]] = []
+    for row in hj.read_jsonl(hj.sessions_path()):
+        counts = row.get("lines")
+        if counts:
+            points.append((row.get("ended") or "", counts))
+    points.sort(key=lambda pair: pair[0])
+    if len(points) < 2:
+        return panel("Size", empty("Not enough closed campaigns yet to draw a trend."))
+
+    series = [
+        ("rust", "var(--series-1)", [float(counts.get("rust") or 0) for _, counts in points]),
+        ("markdown", "var(--series-2)", [float(counts.get("markdown") or 0) for _, counts in points]),
+        ("python", "var(--series-3)", [float(counts.get("python") or 0) for _, counts in points]),
+    ]
+    latest = points[-1][1]
+    first = points[0][1]
+    deltas = " · ".join(
+        f"{kind} {latest.get(kind, 0) - first.get(kind, 0):+,}" for kind in ("rust", "markdown", "python")
+    )
+    total = sum(latest.get(kind, 0) for kind in ("rust", "markdown", "python"))
+    return panel(
+        "Size",
+        f'<p class="headline"><strong>{total:,}</strong> tracked lines'
+        f'<span class="note">{latest.get("rust", 0):,} rust · '
+        f'{latest.get("markdown", 0):,} markdown · {latest.get("python", 0):,} python</span></p>'
+        + line_chart(series, "Tracked lines by language", "one point per campaign close"),
+        note=f"over {len(points)} campaigns: {deltas}. Excludes `reference/`, which is generated; "
+        "includes `vendor/`, which is ours to edit",
+    )
+
+
 def audit_series() -> tuple[list[float], list[float]]:
     """Cumulative found and closed, one point per audit."""
     found: set[str] = set()
@@ -1364,6 +1414,7 @@ def fragment(view: str = "overview") -> str:
         + panel_cost()
         + panel_campaign_table()
         + panel_audit_table()
+        + panel_size()
     )
 
 
@@ -1536,11 +1587,11 @@ th { color:var(--dim); font-weight:500; white-space:nowrap; }
 /* Categorical slots 1 and 2, validated for both surfaces and for CVD
    (scripts/validate_palette.js: all six checks pass in each mode). Dark is
    selected against the dark surface, not an automatic flip. */
-.panel { --series-1:#2a78d6; --series-2:#eb6834; }
+.panel { --series-1:#2a78d6; --series-2:#eb6834; --series-3:#1baf7a; }
 @media (prefers-color-scheme: dark) {
-  :root:where(:not([data-theme="light"])) .panel { --series-1:#3987e5; --series-2:#d95926; }
+  :root:where(:not([data-theme="light"])) .panel { --series-1:#3987e5; --series-2:#d95926; --series-3:#199e70; }
 }
-:root[data-theme="dark"] .panel { --series-1:#3987e5; --series-2:#d95926; }
+:root[data-theme="dark"] .panel { --series-1:#3987e5; --series-2:#d95926; --series-3:#199e70; }
 
 .charts { display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:10px 22px; margin:10px 0 2px; }
 .chart { margin:0; min-width:0; }

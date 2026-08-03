@@ -1642,6 +1642,88 @@ def line_counts() -> dict[str, int]:
     return counts
 
 
+def line_counts_at(commit: str) -> dict[str, int]:
+    """The same counts at an arbitrary commit, for backfilling closed rows.
+
+    One `ls-tree` and one batched `cat-file` per commit rather than a read per
+    file: the shebang test needs contents, and a `cat-file` per blob would be
+    a couple of hundred processes per campaign.
+    """
+    counts = {"rust": 0, "python": 0, "markdown": 0}
+    wanted: list[tuple[str, str]] = []
+    for line in git("ls-tree", "-r", commit).split("\n"):
+        if not line or "\t" not in line:
+            continue
+        meta, name = line.split("\t", 1)
+        parts = meta.split()
+        if len(parts) != 3 or parts[1] != "blob" or name.startswith("reference/"):
+            continue
+        if name.endswith((".rs", ".md", ".py")) or "/" in name:
+            wanted.append((parts[2], name))
+    if not wanted:
+        return counts
+    result = subprocess.run(
+        ["git", "-C", str(REPO), "cat-file", "--batch"],
+        input=("\n".join(sha for sha, _ in wanted) + "\n").encode(),
+        capture_output=True,
+        text=False,
+        check=False,
+    )
+    stream, offset = result.stdout, 0
+    for _, name in wanted:
+        newline = stream.find(b"\n", offset)
+        if newline < 0:
+            break
+        header = stream[offset:newline].split()
+        if len(header) < 3:
+            break
+        size = int(header[2])
+        body = stream[newline + 1 : newline + 1 + size]
+        offset = newline + 1 + size + 1
+        if name.endswith(".rs"):
+            kind = "rust"
+        elif name.endswith(".py") or PYTHON_SHEBANG.match(body[:64]):
+            kind = "python"
+        elif name.endswith(".md"):
+            kind = "markdown"
+        else:
+            continue
+        counts[kind] += body.count(b"\n") + (1 if body and not body.endswith(b"\n") else 0)
+    return counts
+
+
+def cmd_backfill_lines(args: argparse.Namespace) -> int:
+    """Give already-closed campaigns their line counts, so the chart has a
+    history rather than starting at whatever runs next."""
+    rows = read_jsonl(sessions_path())
+    have = {row["campaign"] for row in rows if row.get("lines")}
+    todo = [
+        row
+        for row in rows
+        if row.get("outcome") and row.get("end_commit") and row["campaign"] not in have
+    ]
+    if not todo:
+        print("backfill-lines: every closed campaign already has counts")
+        return 0
+    for row in todo:
+        counts = line_counts_at(row["end_commit"])
+        append_jsonl(
+            sessions_path(),
+            {
+                "campaign": row["campaign"],
+                "loop": row.get("loop"),
+                "ended": row.get("ended"),
+                "outcome": row.get("outcome"),
+                "lines": counts,
+                "backfilled": True,
+            },
+        )
+        print(f"  {row['campaign'][:8]}  {counts}")
+    commit_harness_state([sessions_path()], f"line counts for {len(todo)} closed campaign(s)")
+    print(f"backfill-lines: {len(todo)} campaign(s)")
+    return 0
+
+
 def cmd_campaign_close(args: argparse.Namespace) -> int:
     phase, config = loop_config(args.loop)
     rows = [row for row in read_jsonl(sessions_path()) if row.get("campaign") == args.id]
@@ -2108,6 +2190,9 @@ def main() -> int:
     p = sub.add_parser("check-metrics", help="gate step: the previous iteration recorded its row")
     p.add_argument("loop")
     p.set_defaults(run=cmd_check_metrics)
+
+    p = sub.add_parser("backfill-lines", help="line counts for already-closed campaigns")
+    p.set_defaults(run=cmd_backfill_lines)
 
     p = sub.add_parser("record", help="append the metrics row for HEAD")
     p.add_argument("loop")
