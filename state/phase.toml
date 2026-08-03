@@ -29,7 +29,21 @@ audit_every = 3
 status = "running" # running | paused | blocked | done
 prompt = "conformance.md"
 stall_n = 3        # campaigns without progress before the loop stops and asks
-rotation = 6       # sections per audit beyond the ones the last campaign touched
+# Sections per audit beyond the ones the last campaign touched. It is an
+# absolute count, so it does not scale with the document set: at 6 it swept
+# 34 sections in ~18 campaigns, and adding `rope-modifications.md` stretched
+# the same setting to ~27. That interval is how long a section waits to be
+# looked at a *second* time, which is the only thing that catches one wrongly
+# called clean — the failure `harness/prompts/auditor.md` calls the worst
+# available to it, and the reason `persisted` had been 0 on every run.
+#
+# 18 sweeps 53 sections in 3 audits, so ~9 campaigns. Cost per sweep is
+# roughly flat — three larger audits instead of nine small ones — and the
+# splice grows to about 12k tokens of section text, which is small against
+# the 45-59 turns an audit already runs. What is being spent is attention
+# per section rather than money, so an auditor that starts rubber-stamping
+# is the thing to watch: `HJ_AUDIT_MODEL` is the lever if it does.
+rotation = 18
 splice_sections = 3
 
 # How many gaps carry full claim/found/where in the prompt. The rest are one
