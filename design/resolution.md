@@ -1147,10 +1147,15 @@ pub enum Stratum {
     ExternalDependency,
     MacroGenerated,
     TypeInferenceRequired,
+    /// The language crate template, unmodified. No real handler may return
+    /// this -- see `core.md` §9. Its presence in a metrics table means the
+    /// template has not been replaced, which is a gate check rather than
+    /// something anybody has to notice.
+    Unimplemented,
 }
 ```
 
-One per row of `high-level.md`'s stratification list.
+One per row of `high-level.md`'s stratification list, plus the placeholder.
 
 ### Assignment is a-priori, with one refinement
 

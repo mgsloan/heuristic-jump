@@ -201,6 +201,11 @@ Notes on the shape:
   the deadline expired —and it should not share a type with "something went
   wrong." Under the future precision floor it also becomes the mechanism that
   holds the floor, which is a further reason not to model it as an error.
+* **`Stratum` and `AbstainReason` are defined in `resolution.md` §8**, not
+  here, even though they are seam types that `shared` must contain. Phase 1a
+  therefore reads that section too — it is the one place the seam's definition
+  crosses documents, and the split is worth knowing about rather than
+  discovering.
 *  ** `Stratum` is reported on both arms**, because coverage per stratum is
   meaningless without knowing which stratum the abstentions belonged to.
 *  ** `Confidence` exists now** even though nothing compares it against a
@@ -1555,20 +1560,28 @@ Beyond that it implements exactly one thing, and it is the one thing that is
 genuinely language-independent: **deciding whether the cursor is on an
 identifier at all.** Is the byte offset inside a named leaf node whose text is
 identifier-shaped? That is a grammar-level question with a grammar-level
-answer, it needs no resolution logic, and it is the same rule
-`data-collection.md` §2 uses to enumerate corpus positions — so using it here
-keeps the tool and the corpus agreeing about what a query even is. A fresh
-language therefore starts out already correct on the `NotAnIdentifier`
-abstention path and zero everywhere else, which is an honest starting position
-rather than a flat one.
+answer and it needs no resolution logic. A fresh language therefore starts out
+already correct on the `NotAnIdentifier` abstention path and zero everywhere
+else, which is an honest starting position rather than a flat one.
+
+**That rule is one function in `shared`, not two implementations that agree.**
+`measure_core` uses it to enumerate corpus positions
+(`data-collection.md` §2) and a handler uses it to answer
+`NotAnIdentifier` — and if those two ever disagree, the corpus contains
+positions the tool does not consider queries, or the reverse, and the
+resulting miscount looks like a resolution failure rather than a definitional
+one. This is the same reasoning that puts `ProjectView` and the agreement
+predicate in `shared`: where the measurement and the measured must agree, they
+share the code rather than the intention.
 
 Everything else abstains, and the abstention is **self-identifying**. A
 template that abstained as `NoCandidates` would be indistinguishable in the
 metrics from a real handler that searched and found nothing, so a
 half-migrated language would look like a language that was merely bad at its
-job. The placeholder reports a stratum no real handler may return, and its
-presence in a metrics table means the template has not been replaced — a gate
-check rather than something anybody has to notice.
+job. The placeholder reports `Stratum::Unimplemented`, which no real handler may
+return (`resolution.md` §8), and its presence in a metrics table means the
+template has not been replaced — a gate check rather than something anybody
+has to notice.
 
 **It is deliberately not a baseline.** A template that did same-file name
 search would give every language a non-zero starting point and would be
