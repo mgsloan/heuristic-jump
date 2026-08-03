@@ -923,6 +923,24 @@ def cmd_check_scope(args: argparse.Namespace) -> int:
     return 0
 
 
+def last_loop_commit(owner: str, limit: int = 40) -> str | None:
+    """The most recent commit this loop authored.
+
+    Not `HEAD`: the harness commits its own rows, the dashboard commits an
+    answer, and either can land between a campaign's `git commit` and its
+    `harness/hj record`. `record` and `check-metrics` both need the same
+    answer to the same question, and keying one on `HEAD` and the other on
+    this walk-back is what made them disagree (`conformance-007`). Deriving
+    both from here makes an interleaved commit harmless rather than something
+    to be careful about — which matters because no amount of care helps: the
+    interleaving commit may be a human answering a decision.
+    """
+    for sha in git("log", "--format=%H", f"-{limit}", "HEAD").split():
+        if trailers_of(sha).get("loop") == owner:
+            return sha
+    return None
+
+
 def cmd_check_path(args: argparse.Namespace) -> int:
     """One path, for the `PreToolUse` hook. Fast feedback and **not a
     boundary**: deny rules cover Claude's file tools and not bash
@@ -963,23 +981,16 @@ def cmd_check_metrics(args: argparse.Namespace) -> int:
     `harness/hj record` was skipped, and the history has a hole in it.
     """
     _, config = loop_config(args.loop)
-    # Walk back past the harness's own untrailered commits — its metrics rows
-    # and audit verdicts land between a loop's commits, so HEAD is often not
-    # the last thing the loop wrote.
-    last_loop_commit = None
-    for sha in git("log", "--format=%H", "-20", "HEAD").split():
-        if trailers_of(sha).get("loop") == args.loop:
-            last_loop_commit = sha
-            break
-    if last_loop_commit is None:
+    target = last_loop_commit(config.owner)
+    if target is None:
         print("metrics: this loop has no commit in recent history; nothing to check")
         return 0
     recorded = {row.get("commit") for row in read_jsonl(metrics_path(config.owner))}
-    if last_loop_commit in recorded:
-        print(f"metrics: {last_loop_commit[:12]} is recorded")
+    if target in recorded:
+        print(f"metrics: {target[:12]} is recorded")
         return 0
     print(
-        f"metrics: no row for {last_loop_commit[:12]}; run `harness/hj record {args.loop}`",
+        f"metrics: no row for {target[:12]}; run `harness/hj record {args.loop}`",
         file=sys.stderr,
     )
     return 1
@@ -987,20 +998,24 @@ def cmd_check_metrics(args: argparse.Namespace) -> int:
 
 def cmd_record(args: argparse.Namespace) -> int:
     phase, config = loop_config(args.loop)
+    target = last_loop_commit(config.owner) or head_sha()
+    if target in {row.get("commit") for row in read_jsonl(metrics_path(config.owner))}:
+        print(f"metrics: {target[:12]} is already recorded; nothing appended")
+        return 0
     members = owned_members(config)
     row = {
-        "commit": head_sha(),
+        "commit": target,
         "ts": now(),
         "phase": phase.phase,
         "loop": config.owner,
-        "campaign": trailers_of("HEAD").get("campaign"),
+        "campaign": trailers_of(target).get("campaign"),
         **audit_counts(config.docs),
         "loc": loc_per_crate(),
         "tests": test_count(members),
         "provisional_decisions": provisional_decisions(),
     }
     append_jsonl(metrics_path(config.owner), row)
-    commit_harness_state([metrics_path(config.owner)], f"metrics row for {row['commit'][:8]}")
+    commit_harness_state([metrics_path(config.owner)], f"metrics row for {target[:8]}")
     print(json.dumps(row, sort_keys=True))
     return 0
 
