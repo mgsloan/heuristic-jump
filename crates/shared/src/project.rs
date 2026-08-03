@@ -8,6 +8,13 @@
 //! one that ships. `measure_core` also exists a whole phase before `driver`
 //! does.
 //!
+//! There is also no per-query read cache, which `resolution.md` §3 asks for.
+//! The view is reached through `&Query` from several fan-out threads at once,
+//! so a cache on it is shared mutable state behind `&self` — a lock, in a
+//! design that has none. `conformance-005` has the three shapes that avoid
+//! one; until it is answered a repeat read is a repeat syscall, which is why
+//! `bytes_scanned` is not counted here yet either.
+//!
 //! `candidates`, `parse` and `scan` are not here yet. Their parameter types
 //! (`SearchOrigin`, `ScanRequest`, `ScanOutcome`) are `resolution.md` §4's and
 //! their implementations need the parse LRU and the bounded worker pool that
