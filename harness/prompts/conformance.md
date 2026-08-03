@@ -63,6 +63,21 @@ A campaign is one target: one open gap, or one unjudged section. Not two.
      being rediscovered three campaigns from now — approaches abandoned and
      the reason are worth more than a summary of what worked, which the diff
      already says.
+   - **Rewrite `state/findings/{{loop}}.md`, in at most 512 words.** Your
+     current theory of this implementation: where the gaps are concentrated
+     and why, what you have ruled out and on what evidence, which claims in
+     the spec have turned out to be load-bearing, and what the next campaign
+     should not waste time on. It is spliced into the next prompt verbatim,
+     which the journal is not.
+
+     **Rewritten, not appended, and capped rather than budgeted.** The cap is
+     the mechanism: to add something you have to decide what no longer earns
+     its place, which is synthesis rather than accumulation. An appended log
+     grows until it gets truncated by recency, and recency is the wrong axis —
+     the finding that matters may be from campaign three. That is also the
+     failure mode to watch for in yourself: the journal is long and you will
+     be reading its tail, so a conclusion you reached ten campaigns ago
+     survives only if it is in this file.
 
 The auditor runs after you exit. You will never see its prompt, and its gap
 list is your next campaign's most likely target.
@@ -185,7 +200,19 @@ purpose.
 
 ## Your campaigns so far
 
+One line each. Coverage, not depth: enough to know whether something has been
+tried, not why it failed. The journal has the why.
+
 {{campaigns_so_far}}
+
+## Your summary
+
+What the last campaign concluded, carried forward. This is the one thing a
+fresh context most lacks and would otherwise spend a whole campaign
+rebuilding — and it is only as good as the last close made it, so if it is
+thin or wrong, fixing it is part of your own close.
+
+{{self_summary}}
 
 ## Decisions affecting you
 
