@@ -8,22 +8,17 @@ last_audited = "2026-08-03T05:34:51+00:00"
 
 [section."core.md#vocabulary-types"]
 state = "gaps"
-last_audited = "2026-08-03T06:13:37+00:00"
+last_audited = "2026-08-03T06:54:58+00:00"
 
   [[section."core.md#vocabulary-types".gap]]
-  claim = "EditorRequestId(Box<str>) \u2014 the editor's request id, stored in normalized text form, distinct from the shim's outgoing ids"
-  found = "the type does not exist: grep for EditorRequestId across all .rs in the workspace returns nothing, and shared's re-export list names Confidence, DocumentUri, DocumentVersion, FileExtension, LanguageId, Location and ServerId only"
-  where = "crates/shared/src/shared.rs:33"
-
-  [[section."core.md#vocabulary-types".gap]]
-  claim = "these are the deserialization targets, not wrappers applied after the fact \u2014 DocumentUri normalizes during deserialization, not afterwards"
-  found = "none of shared's own vocabulary types implement Deserialize; the only two in the workspace are proto::PositionEncoding and proto::WirePosition (proto.rs:36,53). DocumentUri::parse (vocabulary.rs:85) is exactly the after-the-fact wrapper the sentence rules out, and the type's doc concedes the deserialization half arrives later"
-  where = "crates/shared/src/vocabulary.rs:82"
+  claim = "ByteColumn, Utf16Column and CharCount are defined in the vendored rope and re-exported by shared, like ByteOffset/ByteLen/ByteRange/LineIndex, so every other crate says shared::\u2026 and never has to know"
+  found = "rope defines and exports all seven (vendor/rope/src/rope.rs:36-40) but shared re-exports four plus Rope, so shared::ByteColumn, shared::Utf16Column and shared::CharCount are not nameable by a crate that may not depend on rope \u2014 which is the reason the section gives for the re-export. MECHANICAL CHECK AVAILABLE: one `use shared::{\u2026}` naming all seven in an existing test makes the re-export list a compile error rather than a reading"
+  where = "crates/shared/src/shared.rs:32"
 
   [[section."core.md#vocabulary-types".minor]]
-  claim = "Location is printed with pub uri, pub range and pub line, while the same paragraph says it is constructed only via Location::at_node"
-  note = "the code takes the prose reading \u2014 private fields, three accessors, tagged DECISION-conformance-004: provisional. Stronger than the printed struct, but a visible divergence from it that its own author flagged for a human ruling"
-  where = "crates/shared/src/vocabulary.rs:135"
+  claim = "only ids some registered handler declared exist, so an unknown language cannot be constructed at all"
+  note = "LanguageId::new is a public const fn over any &'static str, and the type's doc says the registry 'produces an Option<LanguageId>' while Registry::for_language_id returns Option<&dyn LanguageHandler> (dispatch.rs:91) and nothing ever produces a LanguageId from a wire string. The impossibility holds for wire input by the &'static bound, not by the registry the doc names"
+  where = "crates/shared/src/vocabulary.rs:45"
 
 [section."core.md#the-trait"]
 state = "gaps"
@@ -148,12 +143,17 @@ last_audited = "2026-08-03T05:10:16+00:00"
 
 [section."core.md#7-observability-and-the-corpus-scan"]
 state = "gaps"
-last_audited = "2026-08-03T04:41:48+00:00"
+last_audited = "2026-08-03T06:54:58+00:00"
 
   [[section."core.md#7-observability-and-the-corpus-scan".gap]]
-  claim = "the driver emits one JSONL record per query carrying the named fields \u2014 decision with three values, failure naming the Error sub-enum, stratum_prior and stratum_final, margin/considered, the four latency fields, bounded stages, byte-offset position, ordered heuristic_locations with returned and truncated_list, and mode nulling server_health/lsp_latency_us/lsp_locations/agreement/severity in standalone"
-  found = "no record type, no serialization and no emission site exist; crates/driver/src/driver.rs has no items, and measure_core \u2014 the other consumer the mode/replay split is defined against \u2014 is not a workspace member (Cargo.toml:3-9). MECHANICAL CHECK AVAILABLE: an insta snapshot of one serialized record pins the field set and the standalone-nulls rule, and an exhaustive match from Error sub-enum to the failure string makes a new sub-enum a compile error rather than a silently absent class"
-  where = "crates/driver/src/driver.rs:1"
+  claim = "each query emits one JSONL record once both answers are known, with decision's three values, failure naming the Error sub-enum, stratum_prior and stratum_final, margin/considered, the four latency fields, bounded stages, a byte-offset position, ordered heuristic_locations with returned and truncated_list, and mode nulling server_health/lsp_latency_us/lsp_locations/agreement/severity in standalone"
+  found = "no record type, no serialization and no emission site exists: driver is `mod config; mod dispatch;` (driver.rs:10-14), grep across crates/ for stratum_prior, stages, bytes_scanned, queued_us and stage_us returns prose only, and measure_core is not a workspace member (Cargo.toml:3-10). MECHANICAL CHECK AVAILABLE: an insta snapshot of one serialized record pins the field set and the standalone-nulls rule, and deriving the failure string from an exhaustive match on Error's sub-enums (error.rs:27-38) makes a new sub-enum a compile error \u2014 Error already has five, where the section names three"
+  where = "crates/driver/src/driver.rs:10"
+
+  [[section."core.md#7-observability-and-the-corpus-scan".gap]]
+  claim = "everything from stratum_prior through files_parsed is reported by the handler, and the stratum is two fields, not one"
+  found = "the seam carries none of it: Outcome::Committed is { locations, confidence, stratum } and Outcome::Abstain is { reason, stratum } \u2014 one stratum, and no margin, considered, stages, stage_us, bytes_scanned or files_parsed \u2014 so the driver cannot obtain the handler-reported half of the record nor recover stratum_prior and stratum_final from a single returned Stratum. This is inside the seam state/phase.toml:21-27 freezes"
+  where = "crates/shared/src/handler.rs:72"
 
 [section."core.md#the-corpus-scan-is-a-separate-program"]
 state = "gaps"
@@ -234,40 +234,35 @@ last_audited = "2026-08-03T05:34:51+00:00"
   where = "Cargo.toml:3"
 
 [section."core.md#8-protocol-types"]
-state = "gaps"
-last_audited = "2026-08-03T04:41:48+00:00"
-
-  [[section."core.md#8-protocol-types".gap]]
-  claim = "shared::proto defines every LSP message and field the shim touches"
-  found = "there is no proto module; crates/shared/src/shared.rs is a doc comment with no mod and no items, and crates/shared/Cargo.toml declares no [dependencies], so no serde-derived wire type is expressible in the crate as it stands"
-  where = "crates/shared/src/shared.rs:1"
+state = "clean"
+last_audited = "2026-08-03T06:54:58+00:00"
 
 [section."core.md#81-why-not-lsp-types"]
-state = "gaps"
-last_audited = "2026-08-03T04:41:48+00:00"
+state = "clean"
+last_audited = "2026-08-03T06:54:58+00:00"
 
-  [[section."core.md#81-why-not-lsp-types".gap]]
-  claim = "the vocabulary newtypes are what deserialization produces, not what a conversion layer produces afterwards, and there is no lsp-types dependency"
-  found = "nothing in crates/ derives or implements Deserialize (grep for serde/Deserialize returns no matches under crates/), and the newtypes that exist \u2014 ByteOffset/ByteLen/ByteRange at vendor/rope/src/byte_offset.rs:17-28 \u2014 have no serde impls and no wire type referencing them, so there is no deserialization to produce them. The absence of lsp-types in Cargo.lock is vacuous: no crate declares any dependency beyond the vendored graph. MECHANICAL CHECK AVAILABLE: a cargo metadata assertion that lsp-types appears only as a dev-dependency, which is the line CLAUDE.md draws and which clippy.toml's disallowed-types cannot express"
-  where = "crates/shared/src/shared.rs:1"
+  [[section."core.md#81-why-not-lsp-types".minor]]
+  claim = "the newtypes are what deserialization produces \u2014 DocumentUri, DocumentVersion, EditorRequestId, LanguageId, ByteOffset \u2014 rather than what a conversion layer produces afterwards"
+  note = "three of them are genuine deserialization targets and ByteOffset is produced only by WirePosition::resolve, but language_id deserializes as Box<str> and is laundered by a registry lookup afterwards, which is the conversion layer the section objects to. \u00a71's interning requirement makes the two sentences unsatisfiable together; the code states the exception and picks interning, and a human should rule which gives"
+  where = "crates/shared/src/proto.rs:496"
 
 [section."core.md#82-what-replaces-it-and-why-it-is-smaller-than-it-sounds"]
-state = "gaps"
-last_audited = "2026-08-03T04:41:48+00:00"
+state = "clean"
+last_audited = "2026-08-03T06:54:58+00:00"
 
-  [[section."core.md#82-what-replaces-it-and-why-it-is-smaller-than-it-sounds".gap]]
-  claim = "roughly thirty small structs: read-only partial projections for InitializeParams, InitializeResult, didOpen/didChange/didClose/didSave params, definition params, $/cancelRequest, $/progress and the definition result union, plus a small constructed set (response envelope, showMessage/showMessageRequest/showDocument, standalone InitializeResult)"
-  found = "none of them exist; crates/shared/src/shared.rs has no items and no crate in the workspace depends on serde or serde_json. MECHANICAL CHECK AVAILABLE: 'the incoming types are read-only projections' becomes exact if the read structs are required not to implement Serialize \u2014 a static assertion or one test over the module, rather than a property maintained by attention"
-  where = "crates/shared/src/shared.rs:1"
+  [[section."core.md#82-what-replaces-it-and-why-it-is-smaller-than-it-sounds".minor]]
+  claim = "the incoming types are read-only projections and only a small set is ever constructed \u2014 a two-way split, with nothing round-tripped"
+  note = "the code and its test add a third category, BOTH, holding PositionEncoding, TextDocumentSyncKind, WireLocation, WirePosition and WireRange, each deriving Deserialize and Serialize. It is defensible \u2014 \u00a78.3 requires WirePosition::encode \u2014 and the list is enumerated deliberately, but the third category is the code's invention asserted by a test as though it were the section's"
+  where = "crates/shared/tests/proto.rs:101"
 
 [section."core.md#83-the-wire-position-type-is-inert"]
-state = "gaps"
-last_audited = "2026-08-03T04:41:48+00:00"
+state = "clean"
+last_audited = "2026-08-03T06:54:58+00:00"
 
-  [[section."core.md#83-the-wire-position-type-is-inert".gap]]
-  claim = "WirePosition has private fields and no accessors, resolve(PositionEncoding, &Rope) -> Result<ByteOffset, EncodingError> is the only way out, WirePosition::encode is the only constructor, and encoding is therefore applied in exactly two functions"
-  found = "none of WirePosition, PositionEncoding, EncodingError, resolve or encode exists anywhere in crates/; the ingredients the sketch names are present but unused (LineIndex at vendor/rope/src/point.rs:165, ByteOffset at vendor/rope/src/byte_offset.rs:17), so the failure mode the section says 'does not compile' is currently prevented by nothing"
-  where = "crates/shared/src/shared.rs:1"
+  [[section."core.md#83-the-wire-position-type-is-inert".minor]]
+  claim = "PositionEncoding is set once from InitializeResult and never inferred"
+  note = "the inert type, resolve/encode as the only doors and 'encoding applied in exactly two functions' all hold \u2014 point_to_offset/point_utf16_to_offset/clip_point* appear nowhere in crates/ outside those two. But nothing settles a PositionEncoding: it appears only in proto.rs, error.rs and tests, nothing reads ServerCapabilities::position_encoding, and that field's comment defers the LSP default to a settling site that does not exist. Unexercised rather than upheld; \u00a78.4's logged gap carries the plumbing"
+  where = "crates/shared/src/proto.rs:411"
 
 [section."core.md#84-location-is-byte-based-and-this-fixes-a-real-inconsistency"]
 state = "gaps"
@@ -317,16 +312,16 @@ last_audited = "2026-08-03T05:10:16+00:00"
 
 [section."core.md#9-workspace-layout"]
 state = "gaps"
-last_audited = "2026-08-03T04:41:48+00:00"
+last_audited = "2026-08-03T06:54:58+00:00"
 
   [[section."core.md#9-workspace-layout".gap]]
-  claim = "the workspace has crates/ holding shared, similarity, lang_rust, lang_python, lang_typescript, driver, heuristic_jump, measure_core, measure_rust, measure_python, measure_typescript, plus vendor/{rope,sum_tree}"
-  found = "eight of the eleven crates/ entries do not exist on disk (similarity, lang_rust, lang_python, lang_typescript, measure_core, measure_rust, measure_python, measure_typescript); [workspace] members lists only crates/driver, crates/heuristic_jump, crates/shared and the two vendored crates, and no manifest exists under any missing path. measure_core, measure_rust and lang_rust are inside this loop's own write list (state/phase.toml:72-74), so they are not blocked by ownership. The parts that are built are correct: driver is named driver, and the [[bin]] rename produces heuristic-jump"
+  claim = "crates/ holds shared, similarity, lang_rust, lang_python, lang_typescript, driver, heuristic_jump, measure_core, measure_rust, measure_python, measure_typescript, beside vendor/{rope,sum_tree}"
+  found = "seven of the eleven do not exist on disk (lang_rust, lang_python, lang_typescript, measure_core, measure_rust, measure_python, measure_typescript); [workspace] members lists crates/driver, crates/heuristic_jump, crates/shared, crates/similarity and the two vendored crates, and crates/*/Cargo.toml returns four manifests. measure_core, measure_rust and lang_rust are in this loop's write list (state/phase.toml:93-97), so this is not blocked by ownership. The rest holds: driver is named driver, similarity is present, publish = false is workspace-wide, and the [[bin]] rename produces heuristic-jump"
   where = "Cargo.toml:3"
 
   [[section."core.md#9-workspace-layout".minor]]
   claim = "the produced binary is heuristic-jump, held in place by the [[bin]] rename"
-  note = "the test's runtime assert_eq! compares the file stem of env!(\"CARGO_BIN_EXE_heuristic-jump\") to \"heuristic-jump\", which is true by construction and cannot fail; the real check is the compile-time env! resolution, so the assertion reads as evidence of something it does not test"
+  note = "the runtime assert_eq! compares the file stem of env!(\"CARGO_BIN_EXE_heuristic-jump\") to \"heuristic-jump\", which is true by construction; the load-bearing check is the compile-time env! resolution plus the is_file assert, so the equality reads as evidence of something it cannot fail on"
   where = "crates/heuristic_jump/tests/binary_name.rs:11"
 
 [section."core.md#the-dependency-graph"]
