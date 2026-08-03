@@ -251,6 +251,43 @@ fn replay_is_deterministic_byte_for_byte() {
     );
 }
 
+/// The sibling of the test above, and the one §7's command line actually
+/// states: "**`replay` is deterministic.** Same corpus, same commit, same
+/// table, byte for byte — which is what makes it usable as a gate rather than
+/// a report."
+///
+/// The records file is not the table, and the assertion above has to mask a
+/// field to hold at all. This one masks nothing, in both formats, because
+/// `--format json` is the one the harness consumes and a wall clock in the
+/// table would take the property away there first.
+#[test]
+fn the_printed_table_is_byte_identical_across_runs() {
+    let corpus = fixture("table_determinism");
+    enumerate(&corpus);
+    write_truth(&corpus);
+
+    for format in [measure_core::Format::Table, measure_core::Format::Json] {
+        let once = table_of(&corpus, format);
+        let twice = table_of(&corpus, format);
+
+        // Two empty strings are equal, and the assertion below would pass on a
+        // corpus that produced no rows at all.
+        assert!(
+            once.contains("unimplemented"),
+            "the {format:?} table named no stratum, so the comparison below \
+             would hold whatever the replay did.\n{once}"
+        );
+        assert_eq!(
+            once, twice,
+            "two replays of the same corpus at the same commit printed \
+             different {format:?} tables. core.md §7's command line makes this \
+             the property that lets replay be a gate rather than a report; a \
+             clock reading in the rendered artifact is what usually takes it \
+             away, which is why `Table` holds counters and no `Duration`"
+        );
+    }
+}
+
 #[test]
 fn a_run_given_one_split_cannot_reach_its_sibling() {
     let corpus = fixture("isolation");
@@ -390,6 +427,32 @@ fn replay_with(handler: &dyn LanguageHandler, corpus: &Fixture, records: Option<
     let cli =
         measure_core::Cli::parse_from(std::iter::once("measure-test".to_owned()).chain(arguments));
     measure_core::run(handler, cli).expect("replay");
+}
+
+/// The rendered table, as a value. `measure_core::run` prints it to a `stdout`
+/// handle that `cargo test` does not capture, which is why `replay_table` is
+/// public at all.
+fn table_of(corpus: &Fixture, format: measure_core::Format) -> String {
+    let cli = measure_core::Cli::parse_from([
+        "measure-test",
+        "replay",
+        "--corpus",
+        &corpus.split.to_string_lossy(),
+        "--server",
+        "oracle",
+        "--format",
+        match format {
+            measure_core::Format::Table => "table",
+            measure_core::Format::Json => "json",
+        },
+    ]);
+    let arguments = match cli.command {
+        measure_core::Command::Replay(arguments) => arguments,
+        measure_core::Command::Enumerate(_) | measure_core::Command::Collect(_) => {
+            panic!("`replay` parsed as another subcommand")
+        }
+    };
+    measure_core::replay_table(&TestHandler, &shared::SystemClock, &arguments).expect("replay")
 }
 
 /// A truth file whose oracle answered `null` everywhere. The handler abstains

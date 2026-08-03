@@ -9,9 +9,20 @@
 //! Exit status is about whether the run happened, not about whether the
 //! numbers are good: `replay` exits zero having printed a table full of
 //! zeroes. Judging the table is the gate's job, not the measurement's.
+//!
+//! **Nothing here reads a clock, and that is the point.** `core.md` §7's
+//! command line makes the table byte-identical across two runs of the same
+//! corpus at the same commit, "which is what makes it usable as a gate rather
+//! than a report" — so a wall-clock number in it takes the property away, in
+//! both formats at once, since `--format json` is the one the harness
+//! consumes. This type holds counters and no `Duration`, so `render` cannot
+//! vary by inattention; putting the clock back means adding a field, not
+//! forgetting one. Where the latency numbers live instead is §7's per-query
+//! record — the section says the record "covers ... latency percentiles" and
+//! it carries `heuristic_latency_us` per row, which is what `loops.md` §10's
+//! *per-stratum* percentiles need and a global p50/p99 could never give.
 
 use std::fmt::Write as _;
-use std::time::Duration;
 
 use serde::Serialize;
 use shared::{Agreement, Strata, Stratum};
@@ -39,7 +50,6 @@ pub(crate) struct Table {
     /// Positions whose truth row was `error` or `timeout`. Reported beside the
     /// table as a quality signal about the corpus, never folded into it.
     pub(crate) uncollected: u64,
-    latencies: Vec<u64>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -89,7 +99,6 @@ impl Table {
                 })
                 .collect(),
             uncollected: 0,
-            latencies: Vec::new(),
         }
     }
 
@@ -100,16 +109,7 @@ impl Table {
     /// implementation changes, and the agreement counters go under
     /// `strata.settled()`, so an answer is judged against the class it turned
     /// out to be.
-    pub(crate) fn observe(
-        &mut self,
-        strata: Strata,
-        decision: Decision,
-        agreement: Agreement,
-        elapsed: Duration,
-    ) {
-        self.latencies
-            .push(u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX));
-
+    pub(crate) fn observe(&mut self, strata: Strata, decision: Decision, agreement: Agreement) {
         if let Some(row) = self.row(strata.prior()) {
             row.queries += 1;
             match decision {
@@ -148,7 +148,6 @@ impl Table {
             Format::Json => serde_json::to_string_pretty(&Report {
                 strata: &self.rows,
                 uncollected: self.uncollected,
-                heuristic_latency_us: Percentiles::of(&self.latencies),
             })
             .map_err(|source| {
                 shared::CodecError::NotSerializable {
@@ -182,17 +181,9 @@ impl Table {
             );
         }
 
-        let percentiles = Percentiles::of(&self.latencies);
+        // A count of corpus rows rather than a measurement of this run, so it
+        // is as reproducible as the table it sits under.
         let _ = writeln!(text);
-        let _ = writeln!(
-            text,
-            "heuristic latency: p50 {}us  p99 {}us",
-            percentiles.p50, percentiles.p99
-        );
-        // Reported beside the table rather than in it: `replay` also reports
-        // its own wall clock, and what to do about the number is decided when
-        // there is one rather than against a target set before a handler and a
-        // corpus both existed.
         let _ = writeln!(
             text,
             "positions the oracle never answered: {}",
@@ -206,34 +197,6 @@ impl Table {
 struct Report<'a> {
     strata: &'a [Row],
     uncollected: u64,
-    heuristic_latency_us: Percentiles,
-}
-
-#[derive(Copy, Clone, Debug, Default, Serialize)]
-struct Percentiles {
-    p50: u64,
-    p99: u64,
-}
-
-impl Percentiles {
-    fn of(samples: &[u64]) -> Self {
-        if samples.is_empty() {
-            return Self::default();
-        }
-        let mut sorted = samples.to_vec();
-        sorted.sort_unstable();
-        Self {
-            p50: at(&sorted, 50),
-            p99: at(&sorted, 99),
-        }
-    }
-}
-
-fn at(sorted: &[u64], percentile: usize) -> u64 {
-    // Nearest-rank, which is exact on integers and has no interpolation to
-    // disagree about between two implementations of the same number.
-    let rank = (sorted.len() * percentile).div_ceil(100).max(1) - 1;
-    sorted.get(rank).copied().unwrap_or_default()
 }
 
 #[expect(

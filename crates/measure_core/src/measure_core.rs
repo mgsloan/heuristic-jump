@@ -37,7 +37,7 @@ use std::sync::Arc;
 
 use shared::{Error, FileList, LanguageHandler, ProjectPath, SystemClock};
 
-pub use cli::{Cli, Command, Format};
+pub use cli::{Cli, Command, Format, Replay};
 pub use record::{Decision, Mode, QueryRecord, StratumName};
 
 /// The whole of a `measure_<lang>` binary, after `Cli::parse()`.
@@ -49,11 +49,7 @@ pub use record::{Decision, Mode, QueryRecord, StratumName};
 /// ```
 pub fn run(handler: &dyn LanguageHandler, cli: Cli) -> Result<(), Error> {
     let clock = SystemClock;
-    let language = handler
-        .language_ids()
-        .first()
-        .copied()
-        .ok_or(shared::HandlerError::DeadlineExpired)?;
+    let language = first_language_id(handler)?;
 
     match cli.command {
         Command::Enumerate(arguments) => {
@@ -93,29 +89,70 @@ pub fn run(handler: &dyn LanguageHandler, cli: Cli) -> Result<(), Error> {
             Ok(())
         }
 
-        Command::Replay(arguments) => {
-            let corpus = corpus::Corpus::open(&arguments.corpus.corpus, language)?;
-            let replay = replay::Replay {
-                handler,
-                corpus: &corpus,
-                server: &arguments.server,
-                clock: &clock,
-            };
-
-            let mut table = table::Table::new();
-            let mut records = Vec::new();
-            for repository in &corpus.repositories(&arguments.corpus.repositories)? {
-                replay.run(repository, &mut table, &mut records)?;
-            }
-
-            // With no `--records` this writes nothing, so the default stays a
-            // pure function of its inputs.
-            if let Some(path) = &arguments.records {
-                replay::write_records(path, &records)?;
-            }
-            report(&table.render(arguments.format)?)
-        }
+        Command::Replay(arguments) => report(&replay_table(handler, &clock, &arguments)?),
     }
+}
+
+/// A whole `replay` run, returning the rendered table rather than printing it.
+///
+/// It is public because the table's one non-negotiable property is that it is
+/// **byte-identical across two runs of the same corpus at the same commit**
+/// (`core.md` §7's command line), and a property nothing can hold is a property
+/// nothing can assert: `run` hands the text straight to a `stdout` handle that
+/// `cargo test` does not capture. `tests/pipeline.rs` compares two returned
+/// strings instead, in both formats.
+///
+/// Writing `--records` stays inside here rather than moving to the caller,
+/// because the records are what the run produced and not what it printed —
+/// with no `--records` this writes nothing, which is what keeps the default a
+/// pure function of its inputs.
+pub fn replay_table(
+    handler: &dyn LanguageHandler,
+    clock: &dyn shared::Clock,
+    arguments: &Replay,
+) -> Result<String, Error> {
+    let language = first_language_id(handler)?;
+    let corpus = corpus::Corpus::open(&arguments.corpus.corpus, language)?;
+    let replay = replay::Replay {
+        handler,
+        corpus: &corpus,
+        server: &arguments.server,
+        clock,
+    };
+
+    let started = clock.now();
+    let mut table = table::Table::new();
+    let mut records = Vec::new();
+    for repository in &corpus.repositories(&arguments.corpus.repositories)? {
+        replay.run(repository, &mut table, &mut records)?;
+    }
+
+    // `loops.md` §9: "`measure replay` reports its own wall clock", recorded
+    // as an ordinary metric from the very first run because no replay-time
+    // target exists or should. It goes on the log stream and not into the
+    // table, which is the whole of the difference between a number that is
+    // read as a trend and an artifact that has to compare byte for byte.
+    tracing::info!(
+        wall_clock_us =
+            u64::try_from(clock.now().duration_since(started).as_micros()).unwrap_or(u64::MAX),
+        queries = records.len(),
+        "replayed"
+    );
+
+    if let Some(path) = &arguments.records {
+        replay::write_records(path, &records)?;
+    }
+    table.render(arguments.format)
+}
+
+/// The binary is per-language, so the language is the handler's rather than an
+/// argument, and there is no flag that could disagree with it (`core.md` §7).
+fn first_language_id(handler: &dyn LanguageHandler) -> Result<shared::LanguageId, Error> {
+    handler
+        .language_ids()
+        .first()
+        .copied()
+        .ok_or_else(|| shared::HandlerError::DeadlineExpired.into())
 }
 
 /// The repository's files, filtered to the handler's own extensions and

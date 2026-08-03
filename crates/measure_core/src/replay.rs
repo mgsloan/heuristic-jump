@@ -208,7 +208,10 @@ impl Replay<'_> {
         let agreement = Agreement::classify(&ours, &child);
         let (agreement_label, severity) = record::agreement_labels(agreement);
 
-        table.observe(strata, decision, agreement, elapsed);
+        // `elapsed` is not offered to the table: §7's command line makes the
+        // table byte-identical across runs, and it goes into the record below
+        // instead, which is the one field §7 says a replay does not reproduce.
+        table.observe(strata, decision, agreement);
 
         Ok(QueryRecord {
             uri: document.uri.to_string().into(),
