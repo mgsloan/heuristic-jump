@@ -1,59 +1,68 @@
-# Findings — conformance, after ec5303a7
+# Findings — conformance, after 5314b0c3
 
-**Target selection, in order. Four `confirmed` closes now.** (1) Check the
-code before believing a gap: `last_audited` stamps in `state/audit/core.toml`
-vary by hours and the oldest describe a repository that no longer exists —
-expect one or two "gaps" to be already satisfied. (2) The `write` list in
-`state/phase.toml`. (3) Gaps per *section*, since the number moves per
-section: a one-gap section in files that exist beats five gaps spread across
-crates nobody has written.
+**Target selection, in order. Five `confirmed` closes now.** (1) Check the
+code before believing a gap — this has paid off three campaigns running. Right
+now `#vocabulary-types`, `#87-where-it-lives`, `#84` and `#85` are all stale:
+`shared` re-exports all seven rope newtypes and `shared::proto` is 800+ lines
+with `WireLocation`, `WireRange`, `WireLocationLink` and the untagged
+`DefinitionResult`. Those four are a re-judge, not work. (2) The `write` list
+in `state/phase.toml`. (3) Gaps per *section*, since the number moves per
+section.
 
-**Where the gaps are.** The concentration is `measure_core`/`measure_rust`:
-~12 gaps across §2, §6, §7, §9 and their subsections, all one fact — the
-crates do not exist — and both are ours to create. `crates/similarity/` was
-placed by a human (`conformance-008`), so `crates/lang_rust/` and the §9
-cluster (`#the-dependency-graph`, `#adding-a-language`,
-`#what-the-templates-handler-does`) are unblocked and can take the
-`similarity` dependency the spec asks for.
+**Where the gaps are.** ~12 across §2, §6.1, §7, §9 are one fact:
+`measure_core`/`measure_rust` do not exist. Both are ours. Four one-gap
+sections (`#one-measurement-library`, `#where-the-corpus-lives`,
+`#the-command-line`, `#the-table-is-not-enough`) go clean together and only
+together, which makes "create `measure_core`" the highest-yield campaign left
+— and it is large. `crates/lang_rust/` is unblocked (`similarity` was placed
+by a human, `conformance-008`) and would also close §9's `#adding-a-language`
+/ `#what-the-templates-handler-does` cluster.
 
-**One-gap sections left.** `#the-trait` wants
-`ProjectView::{candidates, parse, scan}` — the parse LRU and the bounded scan
-pool; `resolution.md` §3 has the signatures. It is a whole campaign and it is
-inside the frozen seam, so plan for a Class B record. `#87-where-it-lives` and
-`#83` are believed already satisfied by `shared::proto`: re-judge, do not
-re-implement.
+**The wall that keeps costing campaigns: no test can construct a `Location`
+or a `DocumentSnapshot`.** `Location::at_node` and `SnapshotSeed::fresh` both
+need a `tree_sitter::Language`, and no grammar crate is in the graph. Three
+campaigns have hit it. Do not solve it with a `tree-sitter-*` dev-dependency —
+that is Class B twice over (dependency set, and grammars pinned to Zed's
+revisions) and puts a grammar on the one crate §9 keeps language-free. Two
+things that do work: ask whether the function needs the *type* or only a
+projection of it (§6 needed `(uri, line)`, never a range — hence
+`DefinitionSite`), or factor the testable part out of the caller. The real fix
+is `lang_rust`, which brings a grammar legitimately.
 
-**The pattern that keeps sections reopening.** Every §1 claim that stays clean
-has a test that fails *at compile time*; the ones that reopen are checked by
-reading. A where-claim ("X lives in A so B can name it") has no runtime
-behaviour, so a test is the only thing holding it up — and it must live in a
-crate that cannot take the shortcut. `shared` cannot test its own re-export of
-rope's vocabulary, because `shared` depends on rope; `driver` can, and does
-(`crates/driver/tests/seam.rs`: `use shared::{..}` plus
-`type_name().starts_with("rope::")`).
+**The pattern that keeps sections reopening.** Claims that stay clean have a
+test that fails *at compile time*; the ones that reopen were checked by
+reading. A where-claim has no runtime behaviour, so a test is the only thing
+holding it up, and it must live in a crate that cannot take the shortcut —
+`driver/tests/seam.rs` tests `shared`'s re-exports because `driver` may not
+name `rope`.
 
-**Ruled out, with evidence.** No handler double is possible until a grammar
-crate is in the graph (`grammar()` returns `tree_sitter::Language`); factor
-the testable part out of dispatch instead. The rope public-API newtype sweep
-has eaten one whole campaign without landing — it is its own campaign, never a
-step inside another. §8.5's golden corpus is captured editor/server traffic,
-closer to an intervention than a campaign: settle that before writing a
-differential harness. §8.6 needs `driver`'s document map, which does not
-exist.
+**Spec method, learned in §6.** Where two claims in one section conflict,
+check whether the section already says which is load-bearing before inventing
+a resolution — §6 said "`Location.range` … is simply not an input to
+agreement" four paragraphs after contradicting itself. That makes the fix
+Class A rather than a judgement call.
 
-**Clippy traps.** `unwrap`/`expect`/`panic` are denied in a free `fn` in
-`tests/*.rs` (the lint looks for an enclosing `#[test]`).
-`extra_unused_type_parameters` kills `fn f<T: Bound>()` for asserting a bound
-— return `PhantomData<T>`.
+**Ruled out, with evidence.** The rope public-API newtype sweep has eaten a
+whole campaign without landing; it is its own campaign, never a step inside
+another. §8.5's golden corpus is captured editor/server traffic, closer to an
+intervention than a campaign. §8.6 needs `driver`'s document map, which does
+not exist. `#9-workspace-layout` can never go clean under this loop —
+`lang_python`/`lang_typescript` are outside every owned path by design.
 
-**Gate, mid-intervention.** `harness/gate <loop>` inspects untracked paths, so
-a denied directory appearing in the working tree makes the pending run
-un-greenable. Commit only your own paths and verify with `--rev HEAD`. Never
-revert or stash someone else's files.
+**Clippy traps.** `serde_json::Value` is a `disallowed_types` entry, so a test
+helper that *returns* one fails the gate though inline `json!(…)` is fine; use
+a `macro_rules!` helper. `let _ = (a, b);` fails `let_underscore_drop`.
+`unwrap`/`expect`/`panic` are denied in a free `fn` in `tests/*.rs` (the lint
+wants an enclosing `#[test]`). `extra_unused_type_parameters` kills
+`fn f<T: Bound>()` — return `PhantomData<T>`.
+
+**Gate, mid-intervention.** It inspects untracked paths, so a denied directory
+appearing in the working tree makes the run un-greenable. Commit only your own
+paths; never revert or stash someone else's files.
 
 **Load-bearing spec claims.** §8.1's "the newtypes *are* the deserialization
-targets" decides `proto`'s field types; the one exception is `languageId`,
-which stays `Box<str>` because interning must be able to fail. §9's `shared`
-dependency list calls itself authoritative and is treated as binding, but
-`shared`, `driver` and `heuristic_jump` all declare `tracing`, which it omits,
-and no changelog entry records it — fix that once, in `#the-dependency-graph`.
+targets" decides `proto`'s field types, except `languageId`, which stays
+`Box<str>` because interning must fail. §9's `shared` dependency list calls
+itself authoritative and is treated as binding, but `shared`, `driver` and
+`heuristic_jump` all declare `tracing`, which it omits, with no changelog
+entry — fix that once, inside `#the-dependency-graph`.

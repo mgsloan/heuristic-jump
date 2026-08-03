@@ -706,3 +706,93 @@ has no runtime behaviour to assert, so it has nothing else holding it up.
 the guidance about the pending-tree gate from `25be160b` was not exercised
 again — `crates/similarity/` is committed now and the working tree was clean
 at open.
+
+---
+
+## 5314b0c3 — `core.md#6-the-agreement-predicate` — confirmed
+
+**Why this target, since the reasoning is the reusable part.** The gap list
+had 41 entries across 27 dirty sections, and the number moves per *section*.
+Ranking one-gap sections by whether their work is reachable: four of them
+(`#vocabulary-types`, `#87-where-it-lives`, `#84`, `#85`) turned out to have
+**stale gaps** — `shared` already re-exports all seven rope newtypes and
+`shared::proto` is 809 lines with `WireLocation`, `WireRange`,
+`WireLocationLink` and an untagged `DefinitionResult`. That is the standing
+finding paying for itself a third time; check the code before believing the
+audit. Four more (`#one-measurement-library`, `#where-the-corpus-lives`,
+`#the-command-line`, `#the-table-is-not-enough`) are all blocked behind
+`measure_core` existing, and creating it would move none of them alone.
+`#the-trait` is inside the frozen seam. That left §6, which is pure logic and
+whose one prerequisite had landed since the audit ran.
+
+**The obstruction that shaped the whole campaign: a test cannot build a
+`Location`.** `Location::at_node` is the only constructor since the ruling on
+`conformance-004`, it needs a `tree_sitter::Node`, and no grammar crate is in
+the workspace. This is the *third* campaign to hit it (`driver/tests/deadline.rs`
+says so at its head, and `#10-testing`'s snapshot gap is the same wall). §6 is
+the one section where an untested reading corrupts the numbers a precision
+floor would later be derived from, so shipping it untested was not an option.
+
+Three ways out were considered and two rejected:
+
+* **A `tree-sitter-rust` dev-dependency on `shared`.** Rejected. It is a Class
+  B escalation on its own (dependency set, plus grammar revisions are pinned
+  to Zed's), and it would put a grammar on `shared`, which is the one crate
+  §9's graph keeps language-free. It also solves the problem in the most
+  expensive possible place: `lang_rust` is coming and will bring a grammar
+  legitimately.
+* **Test only what needs no `Location`** — the `Display` strings and the
+  empty-shim rows. Rejected: that is nine of thirteen assertions gone,
+  including the whole `top1`/`contained` lift, which is the part §6 says the
+  obvious implementation gets wrong.
+* **Take the normalised pair as the input.** Taken.
+  `Agreement::classify(&[DefinitionSite], &DefinitionResult)`, with
+  `DefinitionSite::of(&Location)` as the projection. This is *not* a
+  testability hack bolted on: §6 already had to stop normalising into byte
+  space (see CHANGE-conformance-005 below), so the pair is what the section
+  now says both sides collapse to, and the type names it. The tolerance, the
+  severity table and the set lift all stay in the one function.
+
+  **Generalise this.** When a type's invariant makes it unconstructible in a
+  test, look at whether the function actually needs the *type* or only a
+  projection of it. §6 needed `(uri, line)`; it never needed a range. Taking
+  the projection is not weakening the predicate, and it is much cheaper than
+  the dependency the type would otherwise force.
+
+**The spec contradiction is worth knowing about because it will recur.** §6
+says both sides collapse to a set of `Location` — `(DocumentUri, ByteRange)` —
+and three paragraphs later says the predicate *reads nothing*. Those cannot
+both hold: a wire range's `character` is in the negotiated encoding, and
+converting it to a byte offset needs the target document's text. The section
+resolves itself, though — it *also* says "`Location.range` … simply is not an
+input to agreement". The pattern: where two claims in one section conflict,
+check whether the section already says which one is load-bearing before
+inventing a resolution. It usually does.
+
+**What §6 genuinely does not decide, and is now `conformance-009`.** What
+makes two files "the same module tree". It cannot be answered from `shared`:
+the predicate reads nothing and has no handler, so it has two URIs and no
+language. `resolution.md` §10.2's declared module tree — the right answer — is
+unreachable from here by construction. Provisional reading is "same containing
+directory". A future campaign should **not** try to make this better inside
+`shared`; the only improvements are a tunable path-prefix depth (needs corpus
+data nobody has) or reaching a handler (forbidden by §9's graph). The one
+thing worth checking is the consequence noted in the record: as long as §7's
+record keeps both `heuristic_locations` and `lsp_locations`, severity is
+recomputable from stored rows and this decision is cheap to answer late.
+
+**Two clippy traps, both new.**
+
+* `serde_json::Value` is in `clippy.toml`'s `disallowed_types`, so a test
+  helper *returning* one fails the gate even though `json!(…)` used inline is
+  fine — the lint is on the written path, not the value. `-> impl Serialize`
+  does not work either, because `from_value` wants the concrete type. The way
+  through is a `macro_rules!` helper: it builds the value without naming the
+  type. `tests/proto.rs` avoids this only by never factoring the helper out.
+* `let_underscore_drop` is denied workspace-wide, so the `let _ = (a, b);`
+  idiom for silencing unused bindings in a test fails the build. Delete the
+  bindings.
+
+**Cost.** One commit. The two non-committing detours were the `Location`
+constructor wall and the `Value` ban, both diagnosed and worked around without
+a revert; the gate was red once, at step 2, on the second of them.
