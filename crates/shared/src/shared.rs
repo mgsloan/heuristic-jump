@@ -35,7 +35,10 @@ pub use handler::{
     AbstainReason, CommitPolicy, LanguageHandler, Outcome, Query, ServerProfile, Stratum,
 };
 pub use identifier::{Identifiers, identifier_at, identifiers};
-pub use project::{FileChunks, FileList, FileText, ProjectPath, ProjectRoot, ProjectView, RelPath};
+pub use project::{
+    CandidateFiles, FileChunks, FileCount, FileList, FileText, Generation, ProjectPath,
+    ProjectRoot, ProjectView, RelPath, SearchOrigin,
+};
 // All seven of §1's text-shaped newtypes, not just the four `shared` itself
 // uses: `ByteColumn`, `Utf16Column` and `CharCount` are on the same list, and
 // the reason the list is re-exported is that a crate which may not depend on

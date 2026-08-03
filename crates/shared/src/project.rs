@@ -15,13 +15,14 @@
 //! one; until it is answered a repeat read is a repeat syscall, which is why
 //! `bytes_scanned` is not counted here yet either.
 //!
-//! `candidates`, `parse` and `scan` are not here yet. Their parameter types
-//! (`SearchOrigin`, `ScanRequest`, `ScanOutcome`) are `resolution.md` §4's and
-//! their implementations need the parse LRU and the bounded worker pool that
-//! `shim.md` owns, so they arrive with the first handler that searches. What
-//! is here is what makes `ProjectPath` unforgeable, which is the property the
-//! seam depends on.
+//! Neither the parse LRU nor the bounded worker pool that `resolution.md` §3
+//! routes `parse` and `scan` through exists, and neither turned out to be
+//! load-bearing: `conformance-005` already ruled that this type gets no cache
+//! until a corpus justifies one, `CLAUDE.md`'s performance posture says the
+//! same about the pool, and what is left after dropping both is a fresh parse
+//! and a sequential scan. Both are the slow simple version on purpose.
 
+use std::cmp::{Ordering, Reverse};
 use std::fmt;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -33,7 +34,7 @@ use rustc_hash::FxHashSet;
 
 use crate::deadline::Deadline;
 use crate::error::{Error, HandlerError, ProjectError};
-use crate::vocabulary::DocumentUri;
+use crate::vocabulary::{DocumentUri, FileExtension};
 
 /// One workspace folder. Search scope is these and nothing else — external
 /// dependency sources are out of scope per `high-level.md`, and that is also
@@ -105,6 +106,20 @@ impl ProjectPath {
     }
 }
 
+/// Which enumeration of the file list a [`CandidateFiles`] was drawn from, so
+/// that a caller holding one can say how stale it is (`resolution.md` §3).
+///
+/// Nothing bumps it. A refreshing owner would mint the next one, and there is
+/// no owner — that is `core.md` §4's own gap, not this one's. The field is
+/// here rather than added later because `candidates` is specified to carry it,
+/// and a return type that acquires a field is a change to every call site.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct Generation(pub u64);
+
+impl Generation {
+    pub const FIRST: Self = Self(0);
+}
+
 /// The cached list `core.md` §4 describes. Built lazily on first need and
 /// refreshed in the background by whoever owns it — a stale list costs recall
 /// on files created in the last few seconds, which is a miss rather than a
@@ -113,6 +128,7 @@ impl ProjectPath {
 pub struct FileList {
     roots: Vec<ProjectRoot>,
     files: FxHashSet<ProjectPath>,
+    generation: Generation,
 }
 
 impl FileList {
@@ -158,7 +174,12 @@ impl FileList {
         Ok(Self {
             roots: enumerated,
             files,
+            generation: Generation::FIRST,
         })
+    }
+
+    pub fn generation(&self) -> Generation {
+        self.generation
     }
 
     /// Every file the walk found.
@@ -175,6 +196,120 @@ impl FileList {
     /// does.
     pub fn paths(&self) -> impl Iterator<Item = &ProjectPath> {
         self.files.iter()
+    }
+}
+
+/// A number of files. Distinct from [`ByteLen`], which is the other counter a
+/// scan reports and is the one that is easy to reach for by mistake.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct FileCount(pub usize);
+
+/// Where a search starts, which is the whole of what orders the candidate
+/// list: `resolution.md` §4's four tiers are a function of the requesting
+/// document's path and of whether an import already resolved to a file.
+///
+/// A handler builds one; `ProjectView` reads it. The tiers are cheapest and
+/// most likely first, so a search that finds its answer early has read the
+/// fewest files, and an exhaustive one gets the same set in a stable order
+/// either way — which is what `resolution.md` §1.3 needs for replay to be
+/// deterministic.
+#[derive(Clone, Debug)]
+pub struct SearchOrigin {
+    document: ProjectPath,
+    /// Tier 1. Not an argument to `candidates`, because "there is a resolved
+    /// import" and "there is not" are two different searches and a `None` at
+    /// the call site says neither.
+    resolved: Option<ProjectPath>,
+}
+
+impl SearchOrigin {
+    /// A search with nothing resolved yet: tiers 2 through 4 only.
+    pub fn from_document(document: ProjectPath) -> Self {
+        Self {
+            document,
+            resolved: None,
+        }
+    }
+
+    /// An import already resolved to `resolved`, so that file is tier 1 and is
+    /// searched before anything else.
+    pub fn from_import(document: ProjectPath, resolved: ProjectPath) -> Self {
+        Self {
+            document,
+            resolved: Some(resolved),
+        }
+    }
+
+    pub fn document(&self) -> &ProjectPath {
+        &self.document
+    }
+
+    /// `resolution.md` §4's tiers, low first. Tier 4 — other workspace roots —
+    /// is `open-questions.md` question 8, and the ordering within it here is
+    /// the root path, which is deterministic and nothing more.
+    fn tier(&self, path: &ProjectPath) -> u8 {
+        if self.resolved.as_ref().is_some_and(|first| first == path) {
+            return 1;
+        }
+        if path.root() != self.document.root() {
+            return 4;
+        }
+        if path.rel().as_path().parent() == self.document.rel().as_path().parent() {
+            return 2;
+        }
+        3
+    }
+
+    /// Path proximity within a tier: how many leading directory components the
+    /// candidate shares with the requesting document. Zero across roots, where
+    /// the components are not comparable.
+    fn proximity(&self, path: &ProjectPath) -> usize {
+        if path.root() != self.document.root() {
+            return 0;
+        }
+        path.rel()
+            .as_path()
+            .components()
+            .zip(self.document.rel().as_path().components())
+            .take_while(|(candidate, document)| candidate == document)
+            .count()
+    }
+
+    fn order(&self, left: &ProjectPath, right: &ProjectPath) -> Ordering {
+        (self.tier(left), Reverse(self.proximity(left)))
+            .cmp(&(self.tier(right), Reverse(self.proximity(right))))
+            // A total order, not just a tier order: two files in the same tier
+            // at the same proximity must still come back in the same sequence
+            // on every run, or replay stops being byte-comparable.
+            .then_with(|| left.root().path().cmp(right.root().path()))
+            .then_with(|| left.rel().as_path().cmp(right.rel().as_path()))
+    }
+}
+
+/// The ordered candidate set a search runs over. Borrows the file list rather
+/// than cloning out of it, since the whole-project stage hands every matching
+/// file in the workspace to `scan`.
+#[derive(Debug)]
+pub struct CandidateFiles<'a> {
+    generation: Generation,
+    ordered: Vec<&'a ProjectPath>,
+}
+
+impl<'a> CandidateFiles<'a> {
+    pub fn generation(&self) -> Generation {
+        self.generation
+    }
+
+    pub fn count(&self) -> FileCount {
+        FileCount(self.ordered.len())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ordered.is_empty()
+    }
+
+    pub fn paths(&self) -> impl Iterator<Item = &'a ProjectPath> {
+        self.ordered.iter().copied()
     }
 }
 
@@ -213,6 +348,41 @@ impl ProjectView {
     pub fn lookup(&self, root: &ProjectRoot, rel: &RelPath) -> Option<ProjectPath> {
         let probe = ProjectPath::new(root.clone(), rel.clone());
         self.files.files.get(&probe).cloned()
+    }
+
+    /// Files with any of `extensions`, ordered by `origin`.
+    ///
+    /// With `lookup`, one of the two ways a handler can come to hold a
+    /// [`ProjectPath`] — which is what makes "search scope is the project's
+    /// own tracked source" a property of the type rather than a rule every
+    /// language author remembers (`resolution.md` §3).
+    ///
+    /// Every matching file is returned. There is no cap and no cheaper
+    /// prefilter: `resolution.md` §1.3's exhaustive search is what earns the
+    /// uniqueness signal that stages 4 and 5 rank on, and a clipped list
+    /// cannot tell "the only definition of this name" from "the first of
+    /// eleven".
+    pub fn candidates(
+        &self,
+        extensions: &[FileExtension],
+        origin: &SearchOrigin,
+    ) -> CandidateFiles<'_> {
+        let mut ordered: Vec<&ProjectPath> = self
+            .files
+            .files
+            .iter()
+            .filter(|path| {
+                extensions
+                    .iter()
+                    .any(|extension| extension.matches(path.rel().as_path()))
+            })
+            .collect();
+        ordered.sort_unstable_by(|left, right| origin.order(left, right));
+
+        CandidateFiles {
+            generation: self.files.generation,
+            ordered,
+        }
     }
 
     /// Text of a project file.
