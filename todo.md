@@ -1,9 +1,3 @@
-* Pin the Claude Code version in `external-dependencies.md` alongside the
-  language servers, when that file is written in phase 1c, and treat an
-  upgrade as the intervention it is (`design/loops.md` §17). Each campaign
-  already records the version it ran under, so the join exists; what is
-  missing is the decision to treat a version change as one.
-
 * The dashboard's cost panel is empty until `state/cost/<loop>.jsonl` exists.
   The join is `ccusage` against the session ids already in
   `state/sessions.jsonl`, run after the fact — a small script, not a

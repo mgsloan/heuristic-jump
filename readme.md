@@ -93,11 +93,8 @@ description of anything anyone is building now.
 | `loops.md` | partly now | How the autonomous coding loops run: where work comes from, the gate, campaigns, isolation between languages, the Pareto frontier and phase gates, cost accounting, and the operator dashboard |
 | `deps.md` | now | Every dependency chosen and every one rejected, with the reasoning. Consult before adding anything |
 | `rope-modifications.md` | **now** — phase 1a | What changes in the vendored Zed rope, and what deliberately does not |
+| `external-dependencies.md` | **now** — phase 1c | Every language server the corpus is collected against, how it was installed and pinned, and what each needs from a repository. Also the Claude Code CLI pin |
 | `open-questions.md` | now | Numbered, and referenced by number from everywhere else |
-
-One more joins them later: `external-dependencies.md`, written during phase 1c,
-recording every language server the corpus is collected against and how to
-install and pin it.
 
 Two conventions worth knowing before editing any of them. Decisions are
 recorded with the reasoning that produced them, including the arguments

@@ -312,15 +312,22 @@ installed server's version and compares it against the manifest:
 
 The set is "every trustworthy server Zed supports for the language",
 which is what makes the list below a starting point rather than a
-closed set.
+closed set. Phase 1c installed it and the rule moved it twice, in both
+directions:
 
 | Language | Servers |
 |---|---|
 | Rust | rust-analyzer |
 | Go | gopls |
-| Python | pyright, pylsp |
+| Python | pyright, basedpyright, pylsp |
 | TS/JS | typescript-language-server, vtsls |
-| C / C++ | clangd, ccls |
+| C / C++ | clangd |
+
+`ccls` was here and is gone: Zed has no adapter for it, built in or as an
+extension, so it fails the rule this table is an expression of.
+`basedpyright` is Zed built-in and postdates the original list.
+`external-dependencies.md` §4 records both, along with the two Zed
+supports that were considered and declined.
 
 ### Readiness is the correctness crux
 
