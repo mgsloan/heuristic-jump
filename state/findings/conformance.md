@@ -1,68 +1,68 @@
-# Findings — conformance, after 5314b0c3
+# Findings — conformance, after ff3e1a40
 
-**Target selection, in order. Five `confirmed` closes now.** (1) Check the
-code before believing a gap — this has paid off three campaigns running. Right
-now `#vocabulary-types`, `#87-where-it-lives`, `#84` and `#85` are all stale:
-`shared` re-exports all seven rope newtypes and `shared::proto` is 800+ lines
-with `WireLocation`, `WireRange`, `WireLocationLink` and the untagged
-`DefinitionResult`. Those four are a re-judge, not work. (2) The `write` list
-in `state/phase.toml`. (3) Gaps per *section*, since the number moves per
-section.
+**Check the code before believing a gap.** Four campaigns running. The audit
+you are given predates the last campaign or two, and `measure_core`,
+`measure_rust`, `lang_rust`, `shared::identifier`, `shared::proto`'s client
+half and `Deadline::none` all now exist. Anything in the gap list whose
+`found:` says "does not exist on disk" for one of those is a re-judge, not
+work.
 
-**Where the gaps are.** ~12 across §2, §6.1, §7, §9 are one fact:
-`measure_core`/`measure_rust` do not exist. Both are ours. Four one-gap
-sections (`#one-measurement-library`, `#where-the-corpus-lives`,
-`#the-command-line`, `#the-table-is-not-enough`) go clean together and only
-together, which makes "create `measure_core`" the highest-yield campaign left
-— and it is large. `crates/lang_rust/` is unblocked (`similarity` was placed
-by a human, `conformance-008`) and would also close §9's `#adding-a-language`
-/ `#what-the-templates-handler-does` cluster.
+**Target selection, in order.** (1) The stale ones above. (2) The `write` list
+in `state/phase.toml`. (3) Gaps per *section* — the number moves per section,
+so a section with one gap left beats a gap in a section with three.
 
-**The wall that keeps costing campaigns: no test can construct a `Location`
-or a `DocumentSnapshot`.** `Location::at_node` and `SnapshotSeed::fresh` both
-need a `tree_sitter::Language`, and no grammar crate is in the graph. Three
-campaigns have hit it. Do not solve it with a `tree-sitter-*` dev-dependency —
-that is Class B twice over (dependency set, and grammars pinned to Zed's
-revisions) and puts a grammar on the one crate §9 keeps language-free. Two
-things that do work: ask whether the function needs the *type* or only a
-projection of it (§6 needed `(uri, line)`, never a range — hence
-`DefinitionSite`), or factor the testable part out of the caller. The real fix
-is `lang_rust`, which brings a grammar legitimately.
+**What is actually left, best first.**
 
-**The pattern that keeps sections reopening.** Claims that stay clean have a
-test that fails *at compile time*; the ones that reopen were checked by
-reading. A where-claim has no runtime behaviour, so a test is the only thing
-holding it up, and it must live in a crate that cannot take the shortcut —
-`driver/tests/seam.rs` tests `shared`'s re-exports because `driver` may not
-name `rope`.
+* `#the-dependency-graph` — three gaps, all cheap now. `heuristic_jump::main`
+  is `fn main() {}` and §9 prints the registry plus `driver::run(registry,
+  Cli::parse())` it should be; `driver` exports no `run`. Closing that also
+  closes `#adding-a-language`'s "one line in `heuristic_jump`", which is the
+  only thing left in that section. The third gap is `tracing` missing from
+  §9's self-described *authoritative* `shared` dependency list, which
+  `shared`, `driver` and `heuristic_jump` all declare — a one-line Class A fix
+  plus a manifest test, and the journal already treats that list as binding.
+* `#7-observability[c4505d900b]` — the handler-reported half of the record.
+  `Outcome` carries `locations`, `confidence` and *one* `Stratum`; §7 needs
+  `margin`, `considered`, `stages`, `stage_us`, `bytes_scanned`,
+  `files_parsed`, and `stratum_prior` distinct from `stratum_final`. Class B on
+  the frozen seam, so it is a decision record first. `record::HandlerReport` is
+  where it lands, and the record's shape is already §7's, so this changes
+  values rather than columns.
+* `#the-trait[93f2f340e6]` — `ProjectView` has no `candidates`/`parse`/`scan`.
+  Also seam, also Class B.
+* `#86-modelling-errors-must-fail-closed`, `#4-project-file-enumeration`,
+  `#text-and-tree-can-never-disagree` — all need `driver`'s document map and
+  channels, which do not exist. Bigger than they look.
 
-**Spec method, learned in §6.** Where two claims in one section conflict,
-check whether the section already says which is load-bearing before inventing
-a resolution — §6 said "`Location.range` … is simply not an input to
-agreement" four paragraphs after contradicting itself. That makes the fix
-Class A rather than a judgement call.
+**Rules that keep paying off.**
 
-**Ruled out, with evidence.** The rope public-API newtype sweep has eaten a
-whole campaign without landing; it is its own campaign, never a step inside
-another. §8.5's golden corpus is captured editor/server traffic, closer to an
-intervention than a campaign. §8.6 needs `driver`'s document map, which does
-not exist. `#9-workspace-layout` can never go clean under this loop —
-`lang_python`/`lang_typescript` are outside every owned path by design.
+* A claim that stays clean has a test that fails at *compile* time, or reads
+  the source or a manifest. `driver/tests/seam.rs` is the pattern: it asserts
+  about `shared` because `driver` may not name `rope`, and now about the
+  measurement crates' `[dependencies]` because an extra edge only shows up as
+  a slow build.
+* In `shared::proto`, **a new direction of travel is a new type, never a new
+  derive.** `read_projections_are_never_serialized` enforces it and the
+  inventory lists make it a decision somebody writes down.
+* When a seam type blocks you, ask whether you need the *type* or a projection
+  (`DefinitionSite`), or whether the thing belongs on a non-seam neighbour
+  (`FileList::paths`, not `ProjectView::candidates`).
 
-**Clippy traps.** `serde_json::Value` is a `disallowed_types` entry, so a test
-helper that *returns* one fails the gate though inline `json!(…)` is fine; use
-a `macro_rules!` helper. `let _ = (a, b);` fails `let_underscore_drop`.
-`unwrap`/`expect`/`panic` are denied in a free `fn` in `tests/*.rs` (the lint
-wants an enclosing `#[test]`). `extra_unused_type_parameters` kills
-`fn f<T: Bound>()` — return `PhantomData<T>`.
+**Clippy traps.** `unwrap`/`expect`/`panic` are denied in *free* `fn`s in
+`tests/*.rs` — a file-level `#![expect(..., reason = "...")]` is the way
+through. `unreachable_pub` means writing `pub(crate)` from the start in a crate
+with private modules. `integer_division` fires on `/`; `div_ceil` passes.
+`serde_json::Value` is a disallowed type. `Instant::now`, `read_dir`,
+`Command::output` and `io::stdout` are disallowed methods — `measure_core`
+carries a documented `#[expect]` for the last three, since §7's table gives
+`measure` no deadline and no wire on stdout.
 
-**Gate, mid-intervention.** It inspects untracked paths, so a denied directory
-appearing in the working tree makes the run un-greenable. Commit only your own
-paths; never revert or stash someone else's files.
+**Ruled out, with evidence.** The rope public-API newtype sweep is its own
+campaign, never a step inside another. §8.5's golden corpus is captured
+editor/server traffic, closer to an intervention. `#9-workspace-layout` can
+never go clean here — `lang_python`/`lang_typescript` are outside every owned
+path by design.
 
-**Load-bearing spec claims.** §8.1's "the newtypes *are* the deserialization
-targets" decides `proto`'s field types, except `languageId`, which stays
-`Box<str>` because interning must fail. §9's `shared` dependency list calls
-itself authoritative and is treated as binding, but `shared`, `driver` and
-`heuristic_jump` all declare `tracing`, which it omits, with no changelog
-entry — fix that once, inside `#the-dependency-graph`.
+**Gate.** It inspects untracked and unstaged paths, so a concurrent human edit
+to `harness/**` makes the no-argument form un-greenable. Commit only your own
+paths, then `harness/gate conformance --rev <sha>`.

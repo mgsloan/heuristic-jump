@@ -796,3 +796,90 @@ recomputable from stored rows and this decision is cheap to answer late.
 **Cost.** One commit. The two non-committing detours were the `Location`
 constructor wall and the `Value` ban, both diagnosed and worked around without
 a revert; the gate was red once, at step 2, on the second of them.
+
+## ff3e1a40 — the corpus scan exists
+
+**Target: eleven sections, one fact.** `measure_core` and `measure_rust` did
+not exist, and neither did any `lang_*`. Twelve gaps across §2, §7 and §9 were
+that one fact seen from different sides. They were taken together because none
+can be closed alone: every claim about `measure_core` names the four-line
+`measure_<lang>` binary, which needs a handler to pass, which is the language
+template. Two commits: `864661d` (`lang_rust` + `shared::identifier`),
+`7c89f8d` (`measure_core` + `measure_rust`).
+
+**The wall three campaigns hit is gone.** `lang_rust` brings
+`tree-sitter-rust`, so a test can now build a `DocumentSnapshot` and a
+`Location`. The pin is Zed's `0.24.2` from `../zed/Cargo.toml`; the runtime
+stays ours and the two meet through `tree-sitter-language`'s ABI rather than a
+version constraint, so they can differ. The registry cache already had the
+crate, so this needed no network.
+
+**The `proto` question that shaped the campaign, and the answer.** An LSP
+client has to *construct* `initialize`, `didOpen` and definition requests —
+which are exactly the messages the shim *reads*. `shared/tests/proto.rs` has
+`read_projections_are_never_serialized` asserting that a Read projection has no
+`Serialize`, because §8.2's forward compatibility rests on nothing writing an
+incoming message back. So adding a derive was not available. The route is a
+parallel `Client*` set with `Serialize` only, which is the split
+`StandaloneInitializeResult` already makes against the read `InitializeResult`.
+**Generalise this**: in `proto`, a new direction of travel is a new type, never
+a new derive — and the inventory test makes that a decision somebody has to
+write down rather than one that can be slipped in.
+
+**Approaches considered and rejected, so nobody re-derives them.**
+
+* **`serde_json::json!` for the outgoing frames**, avoiding the proto question
+  entirely. Rejected: it puts untyped JSON on the one path whose job is to
+  agree with the shim, and §8.7 says the wire types live in `shared::proto`.
+* **Storing the oracle's answer as a re-serialized `DefinitionResult` in
+  `truth.jsonl`.** Rejected for the same rule, and the alternative is better
+  anyway: the row keeps the server's `result` bytes as a `RawValue`, so replay
+  deserializes the oracle's answer with the same code the shim reads a live one
+  with. That is what §6's "must not fork" actually asks for.
+* **`ProjectView::candidates` for the file walk `enumerate` needs.** Rejected:
+  `ProjectView` is inside the frozen seam. `FileList::paths()` is not, and is
+  the honest home — a *handler* reaches files through `candidates`, which
+  filters and ranks; `measure_core` wants the whole list precisely because it
+  is not searching.
+* **`Serialize` on `DocumentVersion` and `Stratum`.** Rejected: both are
+  vocabulary/seam types, and a wire spelling is not a reason to reach into the
+  seam. `serialize_with` and a `StratumName` newtype cost three lines each.
+
+**`servers.toml` has no parser and there is no TOML crate.** Escalated as
+`conformance-010`; the provisional choice is a ~90-line reader for the two
+shapes the manifest is documented to have, confined to one private module so
+answering it the other way is a deletion. Note that `servers.toml` does not
+exist and is in no loop's write list, so the reader has nothing to test
+against — a fixture is a follow-up campaign the day the file lands.
+
+**Three clippy traps, one of them new and expensive.**
+
+* `panic!`, `expect` and `unwrap` are denied in **free functions** in
+  `tests/*.rs` — `clippy.toml`'s `allow-*-in-tests` reaches only `#[test]`
+  bodies. The findings already said this; what is new is that a fixture
+  builder is exactly such a free function, so a file-level `#![expect(...)]`
+  with a reason is the way through, not restructuring.
+* `integer_division` fires on `len() / 16`. `div_ceil` passes.
+* `unreachable_pub` is denied workspace-wide, so a crate with private modules
+  needs `pub(crate)` on everything not re-exported. Writing a crate with `pub`
+  throughout and fixing it afterwards cost a whole build cycle; write
+  `pub(crate)` from the start and promote what the lib root re-exports.
+
+**A determinism test must exclude `heuristic_latency_us`.** §7 says so in
+words — "the one field in the record that a replay does not reproduce exactly"
+— and the test failed the first time for exactly that reason. Masking anything
+else would be hiding a bug; masking this one is what leaves the claim testable.
+
+**What was left, deliberately.** The handler-reported half of §7's record
+(`margin`, `considered`, `stages`, `stage_us`, `bytes_scanned`, `files_parsed`,
+and `stratum_prior` distinct from `stratum_final`) is written at empty values,
+because `Outcome` carries none of it and widening the seam is Class B. The
+record's *shape* is already §7's, so that campaign changes values rather than
+columns — which is the cheap order to do it in.
+
+**Gate, again mid-intervention.** `harness/hj` was modified in the working tree
+by a concurrent human session, which makes `harness/gate conformance` (no
+`--rev`) unusable — it inspects the pending commit including untracked and
+unstaged paths. `harness/gate conformance --rev <sha>` after committing only
+one's own paths is the way through, and it is worth reaching for immediately
+rather than diagnosing twice.
