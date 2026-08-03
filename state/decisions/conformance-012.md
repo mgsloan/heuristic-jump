@@ -1,6 +1,6 @@
 ---
 id: conformance-012
-status: open
+status: accepted
 opened: 2026-08-03T08:30:00+00:00
 campaign: 0faab934-4ecd-4a55-b992-c112e0bfcb4d
 kind: class-b
@@ -88,3 +88,16 @@ If the answer is A stands, `resolution.md` §3 should say so where it
 introduces the struct, since "the pool is handed to it at construction" is
 already the pattern and the grammar is the second thing handed over the same
 way.
+
+## Answer — 2026-08-03T19:00:32+00:00
+
+**Ruling:** accepted
+
+Option B: parse takes the grammar as a parameter.
+
+**Rationale:** Option B: `parse` takes the grammar as a parameter. Not the provisional choice, so this one has real reconciliation work -- three files are tagged against A.
+
+B is chosen because A makes an assertion the printed struct never made: one language per view. That is true of every construction the design has today, and a type that asserts it forecloses a view that has to parse a second language without anyone deciding to foreclose it. B's cost is repetition at the call site -- a handler passing self.grammar() three times -- which is visible, local, and cheap to fix later with a helper on the handler side. A's cost is a structural claim that is invisible until something needs to violate it.
+
+Reconciling the sites tagged `// DECISION-conformance-012: provisional` is a
+normal campaign target, not an interrupt.
