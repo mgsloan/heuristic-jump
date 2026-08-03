@@ -1,6 +1,6 @@
 ---
 id: conformance-007
-status: open
+status: accepted
 opened: 2026-08-03T06:07:00+00:00
 campaign: f08773ec-615a-4226-be82-7968f4ab0db9
 kind: harness-request
@@ -83,3 +83,14 @@ and no campaign work has to be redone. If the answer is "do nothing", then
 it should filter them, which is worth saying out loud in `design/loops.md`
 §15 — cost accounting joins `ccusage` output to commits on the session id,
 and a row keyed to a harness commit has no session to join to.
+
+## Answer — 2026-08-03T06:11:31+00:00
+
+**Ruling:** accepted
+
+Option 1, applied: record now keys on last_loop_commit, the same walk-back check-metrics uses, and is idempotent. The two stray campaign=null rows and the missing row for 9e4a777 are repaired separately once the loop quiesces — the series is a cache and section 10 says any row can be recomputed from its commit, so a human may repair it even though a loop must not.
+
+**Rationale:** The report is right and the diagnosis is exact. It also understates the frequency: there are two campaign=null rows in the series, not one. And the specific incident was mine — a7e7f8b is a manual hj cost run I made at 00:05:02, four seconds after the loop committed at 00:04:58, which is logged separately. Option 1 over 2 because it needs nothing from the campaign, and the ritual step option 2 adds is the part a campaign under pressure drops first. Option 1 over 3 because a permanent hole in a series the dashboard reads is not something to design in. The deciding point is one the record could not know: answering a decision in the dashboard also commits and also moves HEAD, so this race is reachable by a human doing exactly what the dashboard is for. That makes operational discipline no defence and the structural fix the only one.
+
+Reconciling the sites tagged `// DECISION-conformance-007: provisional` is a
+normal campaign target, not an interrupt.
