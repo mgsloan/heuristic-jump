@@ -668,6 +668,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "measure_core"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "serde",
+ "serde_json",
+ "shared",
+ "tracing",
+ "tree-sitter",
+ "tree-sitter-rust",
+]
+
+[[package]]
+name = "measure_rust"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "lang_rust",
+ "measure_core",
+ "shared",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

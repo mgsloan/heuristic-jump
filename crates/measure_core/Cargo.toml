@@ -1,0 +1,40 @@
+[package]
+name = "measure_core"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+license = "MIT"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/measure_core.rs"
+doctest = false
+
+# `core.md` §9: "depends on `shared` and nothing else of ours" — not on
+# `driver`, not on any language. It is an LSP client rather than a proxy, so
+# none of the driver applies to it, and it takes its handler as
+# `&dyn LanguageHandler`, so it is compiled once and is generic over the
+# language without monomorphising over it.
+#
+# `clap` is here rather than in `measure_rust` because `measure_<lang>` is four
+# lines and one of them is `Cli::parse()` — the argument surface is the same
+# for every language, and duplicating it per language is how seven binaries
+# acquire seven command lines.
+[dependencies]
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+shared.workspace = true
+tracing.workspace = true
+
+# The tests build a fixture corpus and drive `run` end to end, which needs a
+# grammar and an argv. Both are dev-only and neither is a graph edge §9 forbids:
+# the claim is that `measure_core` depends on no *language crate*, and taking a
+# grammar directly rather than reaching for `lang_rust` is what keeps the test
+# honest about `&dyn LanguageHandler`.
+[dev-dependencies]
+tree-sitter.workspace = true
+tree-sitter-rust.workspace = true

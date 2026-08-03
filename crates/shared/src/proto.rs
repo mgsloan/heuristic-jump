@@ -49,7 +49,7 @@ use serde_json::value::RawValue;
 use std::fmt;
 
 use crate::error::EncodingError;
-use crate::vocabulary::{DocumentUri, DocumentVersion, EditorRequestId};
+use crate::vocabulary::{DocumentUri, DocumentVersion, EditorRequestId, LanguageId};
 
 /// What the child negotiated, which is not necessarily what we would prefer
 /// (`core.md` §3). Settled once from `InitializeResult` and never inferred, so
@@ -817,4 +817,248 @@ fn raw_json_id<S: Serializer>(id: &EditorRequestId, serializer: S) -> Result<S::
 
 fn uri_text<S: Serializer>(uri: &DocumentUri, serializer: S) -> Result<S::Ok, S::Error> {
     serializer.serialize_str(uri.as_str())
+}
+
+// ---------------------------------------------------------------------------
+// The client half: what `measure_core` sends to a language server.
+//
+// §8.2's inventory was written for the shim, which sits between an editor and
+// a server and *reads* every request. `measure_core` is a plain LSP client
+// (§7's table: "plain LSP client, no editor"), so it constructs the same
+// messages the shim reads — and §8.2's rule is that a projection which can be
+// written back is the round trip the design removes. These are therefore
+// separate types with `Serialize` only, exactly as `StandaloneInitializeResult`
+// is separate from the read `InitializeResult` and for the same reason.
+//
+// They live here rather than in `measure_core` because §8.7 puts the wire
+// types in `shared::proto`, and because the alternative is a second vocabulary
+// for the same protocol in the one crate whose job is to agree with the shim.
+// ---------------------------------------------------------------------------
+
+/// A request we originate. The id is a plain integer and deliberately not an
+/// [`EditorRequestId`]: that type is the *editor's* id space, and these are
+/// minted by us — the two must not be able to alias.
+#[derive(Debug, Serialize)]
+pub struct ClientRequest<T> {
+    jsonrpc: JsonRpcVersion,
+    id: i64,
+    method: &'static str,
+    params: T,
+}
+
+impl<T> ClientRequest<T> {
+    pub fn new(id: i64, method: &'static str, params: T) -> Self {
+        Self {
+            jsonrpc: JsonRpcVersion,
+            id,
+            method,
+            params,
+        }
+    }
+}
+
+/// A notification we originate. No id, which is the whole difference, and
+/// therefore no response to correlate.
+#[derive(Debug, Serialize)]
+pub struct ClientNotification<T> {
+    jsonrpc: JsonRpcVersion,
+    method: &'static str,
+    params: T,
+}
+
+impl<T> ClientNotification<T> {
+    pub fn new(method: &'static str, params: T) -> Self {
+        Self {
+            jsonrpc: JsonRpcVersion,
+            method,
+            params,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientInitializeParams {
+    pub process_id: Option<u32>,
+    #[serde(serialize_with = "uri_text")]
+    pub root_uri: DocumentUri,
+    pub workspace_folders: Vec<ClientWorkspaceFolder>,
+    pub capabilities: ClientOfferedCapabilities,
+    pub client_info: ClientIdentity,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ClientWorkspaceFolder {
+    #[serde(serialize_with = "uri_text")]
+    pub uri: DocumentUri,
+    pub name: Box<str>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ClientIdentity {
+    pub name: &'static str,
+    pub version: &'static str,
+}
+
+/// What the corpus scan asks a server for, which is much less than an editor
+/// asks: one request kind, and the encoding it will read positions in.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientOfferedCapabilities {
+    pub general: ClientGeneralCapabilities,
+    pub text_document: ClientTextDocumentCapabilities,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientGeneralCapabilities {
+    /// Preference order, most preferred first — LSP's rule, and the reason
+    /// this is a list rather than a value.
+    pub position_encodings: Vec<PositionEncoding>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientTextDocumentCapabilities {
+    pub definition: ClientDefinitionCapabilities,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientDefinitionCapabilities {
+    /// Declared `true`, so a server that prefers `LocationLink[]` sends it —
+    /// §6's predicate reads all four shapes, and refusing links here would
+    /// silently change what the oracle says rather than what we can read.
+    pub link_support: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientDidOpenParams {
+    pub text_document: ClientTextDocumentItem,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientTextDocumentItem {
+    #[serde(serialize_with = "uri_text")]
+    pub uri: DocumentUri,
+    /// A [`LanguageId`](crate::LanguageId) rather than the read side's
+    /// `Box<str>`: an id we *send* is one a registered handler declared, so
+    /// unlike an incoming one there is nothing to fail at the boundary.
+    #[serde(serialize_with = "language_id_text")]
+    pub language_id: LanguageId,
+    #[serde(serialize_with = "version_number")]
+    pub version: DocumentVersion,
+    pub text: Box<str>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientDidCloseParams {
+    pub text_document: ClientTextDocumentIdentifier,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ClientTextDocumentIdentifier {
+    #[serde(serialize_with = "uri_text")]
+    pub uri: DocumentUri,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientDefinitionParams {
+    pub text_document: ClientTextDocumentIdentifier,
+    pub position: WirePosition,
+}
+
+/// One frame from a child, triaged. A server interleaves its own requests and
+/// notifications with the responses we are waiting for, and a client that
+/// ignored the requests would hang the ones a server blocks on — so the reader
+/// has to tell the three apart, and it has to do it without a second pass over
+/// the frame.
+///
+/// `id` is raw rather than an `i64` because a *server's* request ids are in
+/// the server's own space and need not be integers, and re-serializing the
+/// text is how a reply echoes one back. That is not a round trip in §8.2's
+/// sense: nothing is projected out of it and put back.
+///
+/// `result` and `error` are both optional even though JSON-RPC says exactly
+/// one is present on a response, because deciding that is the reader's job —
+/// where it can name the method that failed, which §8.6 wants and a derive
+/// cannot do.
+#[derive(Debug, Deserialize)]
+pub struct ChildFrame<T> {
+    pub id: Option<Box<RawValue>>,
+    pub method: Option<Box<str>>,
+    pub result: Option<T>,
+    pub error: Option<ChildResponseError>,
+}
+
+impl<T> ChildFrame<T> {
+    /// A response to the request we minted, matched on the id's JSON text so
+    /// that `7` and `"7"` cannot alias — the same rule
+    /// [`EditorRequestId`] applies in the other direction.
+    pub fn answers(&self, id: i64) -> bool {
+        self.method.is_none()
+            && self
+                .id
+                .as_ref()
+                .is_some_and(|raw| raw.get().trim() == id.to_string())
+    }
+
+    /// A request *from* the server: it has both a method and an id, and it is
+    /// waiting. Returns the id to echo back.
+    pub fn awaiting_reply(&self) -> Option<&RawValue> {
+        match (&self.method, &self.id) {
+            (Some(_), Some(id)) => Some(id),
+            (None, _) | (_, None) => None,
+        }
+    }
+}
+
+/// The reply a client owes a server request it does not implement. LSP has no
+/// "unhandled" for a request a client advertised no capability for, and a
+/// server that gets no answer at all blocks; a null result is what leaves it
+/// free to continue.
+#[derive(Debug, Serialize)]
+pub struct ClientReply<'a> {
+    jsonrpc: JsonRpcVersion,
+    #[serde(serialize_with = "raw_passthrough")]
+    id: &'a RawValue,
+    result: Option<()>,
+}
+
+impl<'a> ClientReply<'a> {
+    pub fn nothing(id: &'a RawValue) -> Self {
+        Self {
+            jsonrpc: JsonRpcVersion,
+            id,
+            result: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ChildResponseError {
+    pub code: i64,
+    pub message: Box<str>,
+}
+
+fn raw_passthrough<S: Serializer>(raw: &&RawValue, serializer: S) -> Result<S::Ok, S::Error> {
+    raw.serialize(serializer)
+}
+
+fn language_id_text<S: Serializer>(id: &LanguageId, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(id.as_str())
+}
+
+/// Written here rather than as a `Serialize` derive on [`DocumentVersion`]
+/// itself: the vocabulary newtypes are the seam `state/phase.toml` freezes,
+/// and a wire concern is not a reason to reach into it.
+fn version_number<S: Serializer>(
+    version: &DocumentVersion,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_i32(version.0)
 }

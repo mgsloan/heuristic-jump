@@ -265,3 +265,71 @@ written from it. A human reading this should still treat the `unrelated`
 choice as provisional; it is the one line here with no prior claim behind it.
 
 **Campaign:** 5314b0c3-326e-415a-9eb6-1d9e7fad4378
+
+## CHANGE-conformance-007 — core.md#the-command-line — `servers.toml` is at the code repository's root, not the corpus's
+
+**Contradiction:** `core.md` §7's command line says
+
+> "**`collect`** drives the server named in the corpus root's `servers.toml`,
+> which carries its command and pinned version."
+
+while `data-collection.md` §0 puts the same file somewhere else, and says why:
+
+> "`servers.toml` … lives at the root of the *code* repository rather than
+> here. What the corpus holds is the several hundred megabytes of installed
+> binaries it points at; which servers were chosen is a decision, and it is
+> versioned beside the code that is scored against them."
+
+`external-dependencies.md` §1 agrees with `data-collection.md`, prints the
+file at the repository root in its layout, and adds the reason that settles
+it: "`servers.toml` is not in any loop's write list … this manifest names the
+oracle a language loop is measured against, and a loop that could edit it
+could choose its own examiner." A file in the corpus root is outside every
+loop's write list too, so that alone does not decide it — but the corpus root
+is also outside the repository's history, and a decision that is not in the
+history is not reviewable.
+
+**Resolution:** §7 now says the file is at the root of the code repository and
+names the two documents that own the placement. Two against one, the two carry
+the argument, and the third had no argument attached — so this trades nothing
+off. `measure_core` resolves it from its own manifest directory rather than
+from `--corpus`, which is what makes the placement observable in code.
+
+**Campaign:** ff3e1a40-5639-4c57-ac81-66ea1144762f
+
+## CHANGE-conformance-008 — core.md#82-what-replaces-it-and-why-it-is-smaller-than-it-sounds — the Construct list gains `measure_core`'s outgoing half
+
+**Contradiction:** not a contradiction — an omission that becomes one the
+moment `measure_core` exists. §8.2 says
+
+> "**Only a small set is ever constructed.** Definition responses, error
+> responses, `window/showMessage`, `window/showMessageRequest`,
+> `window/showDocument`, and — in standalone — one `InitializeResult`."
+
+and §7 says the corpus scan is a "plain LSP client, no editor" that "spawns a
+fresh language server per repository, opens documents … asks both sides". A
+plain LSP client constructs `initialize`, `didOpen`, `didClose` and definition
+requests. Under §8.2 as written those are Read projections, and §8.2's own
+rule — "a field we did not model cannot be lost, because nothing writes it
+back" — forbids giving a Read projection a `Serialize`.
+
+**Resolution:** two rows are added to the Construct table for `measure_core`'s
+request and notification envelopes and its four params types, together with
+the reading that makes both halves true at once: the shim reads these because
+it sits between an editor and a server, and `measure_core` writes them because
+it *is* the client. They are separate types with `Serialize` only, which is
+the split `StandaloneInitializeResult` already makes against the read
+`InitializeResult`, so the Read and Construct lists stay disjoint and the
+no-round-trip property is untouched. `shared::proto` rather than
+`measure_core` follows from §8.7.
+
+**This campaign edited §8.2 and wrote the code it describes, and says so here
+because that is the shape being watched for.** What limits it: the edit adds
+rows to an inventory and changes no rule, the disjointness rule it is
+constrained by is the one already enforced mechanically by
+`crates/shared/tests/proto.rs::read_projections_are_never_serialized`, and
+that test was not touched except to list the new names. The alternative
+considered and rejected was keeping the outgoing types in `measure_core`,
+which needs no spec edit and violates §8.7 instead.
+
+**Campaign:** ff3e1a40-5639-4c57-ac81-66ea1144762f

@@ -160,6 +160,22 @@ impl FileList {
             files,
         })
     }
+
+    /// Every file the walk found.
+    ///
+    /// Not on `ProjectView`: a *handler* reaches candidate files through
+    /// `candidates`, which filters and ranks them and does not exist yet
+    /// (`resolution.md` §4). This is the other consumer — `measure_core`
+    /// enumerating corpus positions — which wants the whole list precisely
+    /// because it is not searching. Keeping it here rather than widening the
+    /// seam is what stops it becoming a way for a handler to see everything.
+    ///
+    /// The order is the walk's, which is a hash-set order and therefore not
+    /// stable; a caller that needs determinism sorts, and every caller here
+    /// does.
+    pub fn paths(&self) -> impl Iterator<Item = &ProjectPath> {
+        self.files.iter()
+    }
 }
 
 /// Instantiated per query, which is what makes the deadline check on every

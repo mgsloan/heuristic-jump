@@ -179,7 +179,16 @@ fn call(handler: &dyn LanguageHandler, query: &Query<'_>) -> Dispatched {
             // has nothing to convert. If one ever appears here it is the
             // wrapper's own failure surfacing through the same `Result`, which
             // is a failure and not an abstention.
-            Error::Encoding(_)
+            // `Config`, `Codec` and `Child` are `measure_core`'s classes —
+            // the corpus root, the JSON-RPC framing, the language server as a
+            // process. A handler cannot reach any of them, and they are listed
+            // rather than wildcarded because this match is the mechanism
+            // `deps.md` §10 relies on: a new sub-enum must fail to compile
+            // until somebody says which side of the decision it falls on.
+            Error::Child(_)
+            | Error::Codec(_)
+            | Error::Config(_)
+            | Error::Encoding(_)
             | Error::Handler(_)
             | Error::Parse(_)
             | Error::Project(_)

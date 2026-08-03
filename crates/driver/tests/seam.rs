@@ -83,3 +83,91 @@ fn the_text_vocabulary_is_nameable_through_shared_and_defined_in_rope() {
         );
     }
 }
+
+/// `core.md` §9's graph, for the two crates whose edges are claims rather than
+/// conveniences.
+///
+/// `measure_core` "depends on `shared` and nothing else of ours" — not on
+/// `driver`, because it is an LSP client and not a proxy, and not on any
+/// language, because it takes its handler as `&dyn LanguageHandler`. And
+/// `measure_rust` is a **separate crate rather than a `[[bin]]`** inside
+/// `lang_rust`, because a `[[bin]]` shares its crate's dependency list:
+/// `lang_rust` would acquire `measure_core`, and `heuristic_jump` would then
+/// link an LSP client into the shipped binary.
+///
+/// Both are invisible to the build if broken — an extra edge only shows up as
+/// a slower compile — which is why they are asserted against the manifests.
+/// `[dev-dependencies]` are excluded deliberately: the claim is about the
+/// crate graph the shipped artifacts are built from, and a test needing a
+/// grammar is not an edge in it.
+#[test]
+fn the_measurement_crates_have_the_edges_section_9_gives_them() {
+    let forbidden: &[(&str, &[&str])] = &[
+        ("measure_core", &["driver", "lang_"]),
+        // `lang_rust` must not know `measure_core` exists; the dependency
+        // points the other way, which is the whole reason `measure_rust` is a
+        // crate of its own.
+        ("lang_rust", &["measure_"]),
+    ];
+
+    for (crate_name, banned) in forbidden {
+        for dependency in dependencies_in(&manifest_text(crate_name)) {
+            for prefix in *banned {
+                assert!(
+                    !dependency.starts_with(prefix),
+                    "{crate_name} depends on {dependency}: core.md §9's graph \
+                     has no edge from {crate_name} to anything named {prefix}*"
+                );
+            }
+        }
+    }
+
+    let measure_core = dependencies_in(&manifest_text("measure_core"));
+    let measure_rust = dependencies_in(&manifest_text("measure_rust"));
+    assert!(
+        measure_core.iter().any(|name| name == "shared"),
+        "measure_core does not depend on shared, and core.md §9 says it depends \
+         on shared and nothing else of ours"
+    );
+    assert!(
+        measure_rust.iter().any(|name| name == "measure_core")
+            && measure_rust.iter().any(|name| name == "lang_rust"),
+        "measure_rust is the one crate depending on both measure_core and a \
+         language, and it is not depending on both"
+    );
+}
+
+/// The `[dependencies]` table only. A hand-rolled scan rather than
+/// `cargo metadata`, which is a subprocess this suite may not spawn.
+///
+/// Pure, and taking the text rather than the crate name, because `panic` is
+/// denied outside a `#[test]` and a helper that swallowed a missing manifest
+/// would make every assertion below pass vacuously.
+fn dependencies_in(text: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut inside = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            inside = line == "[dependencies]";
+            continue;
+        }
+        if !inside || line.starts_with('#') || line.is_empty() {
+            continue;
+        }
+        if let Some(name) = line.split(['.', ' ', '=']).next() {
+            found.push(name.trim().to_owned());
+        }
+    }
+    found
+}
+
+fn manifest_text(crate_name: &str) -> String {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join(crate_name)
+        .join("Cargo.toml");
+    // `unwrap_or_default` would be a silent pass; the emptiness is asserted by
+    // every caller, which all require a dependency to be present.
+    std::fs::read_to_string(&manifest).unwrap_or_default()
+}

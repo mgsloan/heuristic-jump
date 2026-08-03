@@ -27,7 +27,10 @@ pub mod proto;
 pub use agreement::{Agreement, DefinitionSite, Severity};
 pub use deadline::{Clock, Deadline, SystemClock};
 pub use document::{DocumentSnapshot, SnapshotSeed};
-pub use error::{EncodingError, Error, HandlerError, ParseError, ProjectError, ProtocolError};
+pub use error::{
+    ChildError, CodecError, ConfigError, EncodingError, Error, HandlerError, ParseError,
+    ProjectError, ProtocolError,
+};
 pub use handler::{
     AbstainReason, CommitPolicy, LanguageHandler, Outcome, Query, ServerProfile, Stratum,
 };

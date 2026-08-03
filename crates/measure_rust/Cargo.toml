@@ -1,0 +1,33 @@
+[package]
+name = "measure_rust"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+# GPL through `lang_rust`, which is GPL through `similarity` (`deps.md` §5).
+license = "GPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+# `core.md` §9: cargo names a binary target after the package verbatim, so the
+# artifact this crate exists to produce needs the rename — the same one
+# `heuristic_jump` needs (CHANGE-conformance-001).
+[[bin]]
+name = "measure-rust"
+path = "src/measure_rust.rs"
+
+# The only crate that depends on both `measure_core` and a language, and it
+# contains four lines. A `[[bin]]` inside `lang_rust` would share that crate's
+# dependency list, so `lang_rust` would acquire `measure_core` and
+# `heuristic_jump` would then link an LSP client into the shipped binary. The
+# dependency has to point this way, which means a separate crate.
+#
+# What it buys: **a language can be measured without any other language
+# building** (`core.md` §7).
+[dependencies]
+clap.workspace = true
+lang_rust.workspace = true
+measure_core.workspace = true
+shared.workspace = true

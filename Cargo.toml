@@ -4,6 +4,8 @@ members = [
   "crates/driver",
   "crates/heuristic_jump",
   "crates/lang_rust",
+  "crates/measure_core",
+  "crates/measure_rust",
   "crates/shared",
   "crates/similarity",
   "vendor/rope",
@@ -26,6 +28,7 @@ rust-version = "1.95.0"
 [workspace.dependencies]
 driver = { path = "crates/driver" }
 lang_rust = { path = "crates/lang_rust" }
+measure_core = { path = "crates/measure_core" }
 shared = { path = "crates/shared" }
 similarity = { path = "crates/similarity" }
 rope = { path = "vendor/rope" }

@@ -39,9 +39,30 @@ impl Clock for SystemClock {
 /// than a late answer.
 #[derive(Clone, Debug)]
 pub struct Deadline {
-    at: Instant,
+    budget: Budget,
     cancelled: Arc<AtomicBool>,
-    clock: Arc<dyn Clock>,
+}
+
+/// An explicit unbounded form, because `core.md` §7 makes "replay enforces no
+/// deadline at all" a *requirement* rather than a default, and the obvious
+/// implementation gets it wrong: a wall-clock deadline makes abstention depend
+/// on machine load, so coverage — not just latency — becomes a property of
+/// what else was running, and metrics that move with background load cannot be
+/// compared across runs.
+///
+/// A variant rather than a far-future `Instant`, so a replay can assert on the
+/// value rather than on a convention, and so nothing can arrive at "no
+/// deadline" by arithmetic.
+#[derive(Clone, Debug)]
+enum Budget {
+    Until {
+        at: Instant,
+        clock: Arc<dyn Clock>,
+    },
+    /// Sound because a search is exhaustive: it reads every candidate file and
+    /// stops when it runs out of them (`resolution.md` §1.3), so with the
+    /// clock removed there is nothing left that could vary.
+    Unbounded,
 }
 
 impl Deadline {
@@ -50,20 +71,38 @@ impl Deadline {
     /// signature it prints — `expired(&self)` — is what carrying it preserves.
     pub fn new(clock: Arc<dyn Clock>, arrived_at: Instant, budget: Duration) -> Self {
         Self {
-            // `Instant + Duration` panics on overflow. A budget too large to
-            // represent becomes one that has already expired, which costs
-            // coverage rather than correctness — the direction `CLAUDE.md`'s
-            // performance posture asks for.
-            at: arrived_at.checked_add(budget).unwrap_or(arrived_at),
+            budget: Budget::Until {
+                // `Instant + Duration` panics on overflow. A budget too large
+                // to represent becomes one that has already expired, which
+                // costs coverage rather than correctness — the direction
+                // `CLAUDE.md`'s performance posture asks for.
+                at: arrived_at.checked_add(budget).unwrap_or(arrived_at),
+                clock,
+            },
             cancelled: Arc::new(AtomicBool::new(false)),
-            clock,
+        }
+    }
+
+    /// No clock at all — `measure replay`'s, and nothing on the shim path may
+    /// build one. Still cancellable, since `$/cancelRequest` and the client
+    /// going away are not latency.
+    pub fn none() -> Self {
+        Self {
+            budget: Budget::Unbounded,
+            cancelled: Arc::new(AtomicBool::new(false)),
         }
     }
 
     pub fn expired(&self) -> bool {
         // Relaxed: this flag carries no data, only the fact that somebody set
         // it, and a poll that misses it observes it at the next loop boundary.
-        self.cancelled.load(Ordering::Relaxed) || self.clock.now() >= self.at
+        if self.cancelled.load(Ordering::Relaxed) {
+            return true;
+        }
+        match &self.budget {
+            Budget::Until { at, clock } => clock.now() >= *at,
+            Budget::Unbounded => false,
+        }
     }
 
     /// `$/cancelRequest`, and the query dying with the client that asked for
@@ -72,7 +111,13 @@ impl Deadline {
         self.cancelled.store(true, Ordering::Relaxed);
     }
 
-    pub fn at(&self) -> Instant {
-        self.at
+    /// `None` for [`Deadline::none`]. An `Option` rather than a sentinel so a
+    /// caller has to say what it does when there is no instant, instead of
+    /// comparing against one that is merely very far away.
+    pub fn at(&self) -> Option<Instant> {
+        match &self.budget {
+            Budget::Until { at, .. } => Some(*at),
+            Budget::Unbounded => None,
+        }
     }
 }

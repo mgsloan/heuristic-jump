@@ -190,3 +190,43 @@ fn the_server_argv_survives_the_split() {
         Mode::Standalone => panic!("a server command was given, so this is not standalone"),
     }
 }
+
+/// `core.md` §7: **replay enforces no deadline at all**, and the section calls
+/// this the constraint that makes replay worth having and easy to get wrong by
+/// doing the obvious thing.
+///
+/// The obvious thing is a wall-clock deadline set very far out, which makes
+/// abstention depend on machine load: the same handler on the same snapshot
+/// gives up on a busy machine and finishes on an idle one, so *coverage* — not
+/// just latency — becomes a property of what else was running, and a tuning
+/// session cannot tell an improvement from a quiet minute.
+///
+/// `Deadline::none` is what makes that a value rather than a convention. The
+/// test is in `driver` rather than `shared` for the same reason the seam tests
+/// are: what is being asserted is that something is *not* reachable, and a
+/// crate that holds no clock is where that shows.
+#[test]
+fn an_unbounded_deadline_never_expires_and_names_no_instant() {
+    let deadline = Deadline::none();
+
+    assert!(
+        !deadline.expired(),
+        "Deadline::none() expired, so a replay would abstain for a reason that \
+         is not a fact about the code (core.md §7)"
+    );
+    assert_eq!(
+        deadline.at(),
+        None,
+        "Deadline::none() named an instant, which is the far-future sentinel \
+         core.md §7 rules out: coverage must not be a function of machine load"
+    );
+
+    // Still cancellable, because `$/cancelRequest` and the client going away
+    // are not latency.
+    deadline.cancel();
+    assert!(
+        deadline.expired(),
+        "an unbounded deadline ignored a cancellation, which is not a clock \
+         question (core.md §5)"
+    );
+}

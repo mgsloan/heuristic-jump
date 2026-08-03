@@ -41,6 +41,8 @@ use shared::{DocumentUri, EditorRequestId, Rope};
 /// The Read half of §8.2's table: deserialized, never written back.
 const READ: &[&str] = &[
     "CancelParams",
+    "ChildFrame",
+    "ChildResponseError",
     "ClientCapabilities",
     "ClientInfo",
     "ContentChange",
@@ -76,7 +78,28 @@ const READ: &[&str] = &[
 /// The Construct half: serialized, never read. Standalone's
 /// `InitializeResult` is a different type from the one we read from a child
 /// precisely so that this list and the one above can be disjoint.
+///
+/// The `Client*` block is `measure_core`'s outgoing half — the corpus scan is
+/// a plain LSP client, so it constructs what the shim reads. Each has a read
+/// twin two lists up, and they are separate types for the same reason
+/// `StandaloneInitializeResult` is: a projection that can be written back is
+/// the round trip §8.2 removes.
 const CONSTRUCT: &[&str] = &[
+    "ClientDefinitionCapabilities",
+    "ClientDefinitionParams",
+    "ClientDidCloseParams",
+    "ClientDidOpenParams",
+    "ClientGeneralCapabilities",
+    "ClientIdentity",
+    "ClientInitializeParams",
+    "ClientNotification",
+    "ClientReply",
+    "ClientOfferedCapabilities",
+    "ClientRequest",
+    "ClientTextDocumentCapabilities",
+    "ClientTextDocumentIdentifier",
+    "ClientTextDocumentItem",
+    "ClientWorkspaceFolder",
     "ErrorCode",
     "JsonRpcVersion",
     "MessageActionItem",

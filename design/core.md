@@ -1330,10 +1330,17 @@ measure-<lang> replay    --corpus <dir> --server <name> [--repo <name>]...
   `positions/<repo>.jsonl`. `--limit` defaults to 20 000 and `--seed` makes the
   sample reproducible — an unseeded sample is a corpus that cannot be
   regenerated, which defeats freezing it.
-* **`collect`** drives the server named in the corpus root's `servers.toml`,
-  which carries its command and pinned version. Naming a server rather than
-  passing a command line is what lets the provenance header record what was
-  actually run without trusting the invocation to be repeated correctly.
+* **`collect`** drives the server named in `servers.toml`, which carries its
+  command and pinned version. That file is at the root of the *code*
+  repository, not in the corpus:
+  [`data-collection.md` §0](data-collection.md) and
+  [`external-dependencies.md` §1](external-dependencies.md) both put it there,
+  because which servers the corpus is collected against is a decision and
+  belongs in the history beside the code that is scored against them, while
+  what lives in the corpus root is the several hundred megabytes of installed
+  binaries it points at. Naming a server rather than passing a command line is
+  what lets the provenance header record what was actually run without
+  trusting the invocation to be repeated correctly.
   Resuming is the default; `--restart` discards a partial truth file, which is
   the destructive option and therefore the explicit one.
 * **`replay`** reads the frozen truth and prints the per-stratum table.
@@ -1435,6 +1442,22 @@ The inventory is roughly thirty small structs:
 | response envelope | result or error, with our own id type |
 | `showMessage`, `showMessageRequest`, `showDocument` | |
 | `InitializeResult` | standalone only |
+| request and notification envelopes | `measure_core` only, with an integer id of its own |
+| `initialize` params, `didOpen`/`didClose` params, definition params | `measure_core` only |
+
+The last two rows are the corpus scan's, and they are why "only a small set is
+ever constructed" needs a second reading rather than a correction. The shim
+sits between an editor and a server and *reads* every request; `measure_core`
+is a plain LSP client
+([section 7](#the-corpus-scan-is-a-separate-program)) and therefore
+constructs the same messages the shim reads. Each is a **separate type** from
+its read twin, carrying `Serialize` and not `Deserialize` — the same split
+standalone's `InitializeResult` already makes, and for the same reason: a
+projection that can be written back is exactly the round trip this section
+removes, so the two lists have to stay disjoint. They live in `shared::proto`
+rather than in `measure_core` per [section 8.7](#87-where-it-lives); the
+alternative is a second vocabulary for one protocol, in the one crate whose
+job is to agree with the shim.
 
 ### 8.3 The wire position type is inert
 
