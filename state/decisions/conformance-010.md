@@ -1,6 +1,6 @@
 ---
 id: conformance-010
-status: open
+status: accepted
 opened: 2026-08-03T09:05:00+00:00
 campaign: ff3e1a40-5639-4c57-ac81-66ea1144762f
 kind: class-b
@@ -78,3 +78,14 @@ and there is no fixture to point one at.
 If the answer is to keep hand-reading: the module wants a fixture the day
 `servers.toml` exists, since today nothing exercises it, and that is a
 follow-up campaign rather than part of this one.
+
+## Answer — 2026-08-03T19:00:32+00:00
+
+**Ruling:** accepted
+
+Option A.
+
+**Rationale:** The hand-reader is already broken against the manifest that exists: it accepts only `[[server]]` and servers.toml uses `[server.rust-analyzer]`. Neither party did anything unreasonable, which is the point -- the two shapes are both valid TOML and they will keep diverging as the manifest grows. servers.toml names the oracle every language is scored against, and its failure mode is refusing a valid file at minute zero of a hundred-hour collection run. Four crates on a 170-crate lock, none heavy, none with a build script, is a small price against that. It also puts servers.toml on the Deserialize path core.md 8.1 already argues for, where the newtypes are what deserialization produces.
+
+Reconciling the sites tagged `// DECISION-conformance-010: provisional` is a
+normal campaign target, not an interrupt.
