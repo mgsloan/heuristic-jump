@@ -841,6 +841,12 @@ def answer_decision(fields: dict[str, str]) -> tuple[int, str]:
             "commit": hj.head_sha(),
         },
     )
+    # Committed here for the reason `conformance-001` established: an answer
+    # left in the working tree is a dirty tree, and a dirty tree stops the
+    # next campaign from starting at all.
+    hj.commit_harness_state(
+        [path, STATE / "interventions.jsonl"], f"answer {identifier} ({status})"
+    )
     return 303, "/"
 
 
@@ -875,6 +881,7 @@ def record_review(fields: dict[str, str]) -> tuple[int, str]:
             "commit": hj.head_sha(),
         },
     )
+    hj.commit_harness_state([STATE / "interventions.jsonl"], f"{kind}: {target}")
     return 303, "/"
 
 
