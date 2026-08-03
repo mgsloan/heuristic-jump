@@ -304,3 +304,98 @@ nothing for it to catch. Do not spend a campaign making `Outcome` opaque.
   handled locally — a hand-written `Debug` and one `#[expect]` with the reason
   — rather than by editing `vendor/rope`, which is the cheaper-looking fix and
   the one that widens the re-sync diff.
+
+## dc1c9639 — core.md#3-position-encoding
+
+Target picked on distance rather than importance: two gaps, both satisfied by
+one module and one test file, where every other single-gap section needs a
+crate that does not exist (`measure_core`, `similarity`) or a subsystem that
+does not (a document map, a golden corpus). The section's audit was one of the
+six still stamped `03:47:22`, from before there was any code at all — it says
+`vendor/` does not exist on disk. **A stale gap is not a hard gap**; check the
+`last_audited` stamp in `state/audit/core.toml` before estimating one, because
+the three timestamps in that file are three different worlds.
+
+**`rope` panics on the position you are most likely to hand it, in debug
+only.** This is the finding worth the whole campaign. `point_to_offset` and
+`point_utf16_to_offset` reach `debug_panic!` when the position is past the end
+of its line or inside a scalar value — `chunk.rs:436` and `chunk.rs:560`. In a
+release build the same call silently clips and returns a plausible neighbouring
+offset. So the two failure modes are *split across profiles*: tests panic,
+production answers about the wrong place. Neither is acceptable at a boundary
+where the value arrived over a wire, and the fix is not a bounds check of your
+own — it is to call `clip_point` / `clip_point_utf16` first and compare the
+result with the input, which is the only path through rope that neither panics
+nor moves a position without telling you. Anything else in this workspace that
+converts a `Point` learned from outside has the same trap waiting.
+
+**`Bias` was not re-exported by rope**, although `clip_offset`, `clip_point`
+and `clip_point_utf16` are all public and all take one. Upstream never notices
+because every caller inside Zed also depends on `sum_tree`. The tempting fix —
+adding `sum_tree` to `shared` — contradicts `core.md` §9, which prints an
+authoritative dependency list for `shared` (serde, serde_json, url, rope,
+tree-sitter, ignore, rayon, thiserror, rustc-hash) and says §8.7 refers back to
+it rather than restating it. So it is a one-line vendor patch instead, recorded
+as item 6 in `vendor/README.md`. Read §9's list before adding any dependency to
+`shared`: it is more specific than it looks, and it already answers the
+question.
+
+**clippy's `allow-unwrap-in-tests` does not reach a helper function in an
+integration test.** It looks for an enclosing `#[test]`, and a free `fn` in
+`tests/foo.rs` has none — so `unwrap`, `expect`, `panic` and `unreachable` are
+all denied in exactly the place a test's reference implementation wants them.
+Two gate cycles went to this. What works: saturating conversions
+(`u32::try_from(x).unwrap_or(u32::MAX)`) where the saturated value cannot be a
+legitimate answer, so a saturation fails an assertion instead of passing one;
+and one `#[expect(clippy::panic, reason = ...)]` where there is genuinely no
+value to fall back to. Do not restructure the reference to please the lint —
+the reference being obvious is the only reason it is worth having.
+
+**Approaches considered and dropped:**
+
+* *Writing `resolve` as a round trip through `encode`* — convert, convert back,
+  compare, one statement of the rule for all three encodings. This was the
+  first implementation and it is a nicer piece of code than what shipped. It
+  cannot work: the conversion it needs to perform *before* the check is the one
+  that panics. The round trip survives as a property test
+  (`resolve_inverts_encode_at_every_boundary`), which is where it belonged —
+  the code states the rule per encoding, the test states it once.
+* *Computing the UTF-8 arm as `line_start + character`* — correct by
+  definition, since a UTF-8 column is a byte count, and it avoids `Bias`
+  entirely. Dropped on the lint set rather than on the idea: `u32` to `usize`
+  needs `as` (denied by the `cast_*` block) or `try_from` (whose `unwrap` is
+  denied outside tests), and neither escape is worth a special case in the one
+  place the three encodings should read alike.
+* *Two variants of `PositionEncoding` instead of three.* `core.md` §10's
+  property-test bullet names only UTF-8 and UTF-16, and rope carries no
+  scalar-count dimension, so `Utf32` is a line walk rather than a seek. Kept
+  anyway: this value holds what the *child* negotiated, LSP 3.17 defines the
+  kind, and an enum that cannot represent a legal negotiation turns an unusual
+  server into an unrepresentable state rather than a slow one.
+* *Deriving `Serialize` on `WirePosition`.* It will be needed by §8.4's
+  `WireLocation` and §14.3's standalone `InitializeResult`, and adding it now
+  would have made the tests marginally easier to write. Left out: §8.2's rule
+  that the incoming projections must *not* implement `Serialize` is a property
+  someone will want to check mechanically, and pre-empting it from a section
+  that is not this campaign's target is how that check ends up with an
+  exception in it. `serde_json` is a dev-dependency for the same reason —
+  nothing in `shared` writes a frame yet.
+
+**The limit worth knowing about.** `WirePosition` makes it impossible to use a
+UTF-16 column as a byte offset, which is the failure §3 is written about. It
+does not make it impossible to read a UTF-16 column as UTF-32: on `"😀x"`,
+column 2 is offset 4 in UTF-16 and offset 5 in UTF-32, and both are real
+positions, so nothing in the type system objects. The only thing standing
+between that and a wrong answer is `PositionEncoding` being settled once from
+`InitializeResult` and never inferred — which is why §3 says so twice, and why
+`PositionEncoding` deliberately has no `Default`. The last assertion in
+`tests/position_encoding.rs` is that case, kept as documentation.
+
+**Another writer commits to this branch while you work.** The journal already
+says never to `--amend`; the same fact has a second edge. Four files this
+campaign did not touch (`design/data-collection.md`, `readme.md`, `todo.md`,
+`harness/corpus-selection.toml`) appeared in the working tree mid-session, and
+one of them is denied to every loop, so `git add -A` would have produced a
+commit the gate rejects at step 4 for a path you never wrote. **Stage explicit
+paths, never `-A`**, and take the verdict from `harness/gate conformance --rev
+HEAD` afterwards.
