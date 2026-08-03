@@ -233,6 +233,15 @@ campaign's commits from git, `reverted` is revert commands seen in the
 stream, and `empty` is the residual. A campaign that is mostly empty is
 thrashing regardless of what it spent, which is the signal the mix is for.
 
+`hj estimates` puts section 15's guess table beside what has actually been
+spent, per phase, in the three resources the section keeps apart — tokens,
+model wall-clock, machine wall-clock. The table is read out of the document
+rather than copied here, so it cannot drift; the comparison is left to a
+human because the guesses read "low–moderate" and "days". The section's own
+argument is why the command exists: an estimate that is never compared
+against an actual is decoration, and calibration is the first ten campaigns
+of each loop.
+
 Budgets are three scopes, per `design/loops.md` section 15, and each stops
 and reports rather than continuing quietly:
 

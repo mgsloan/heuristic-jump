@@ -2458,6 +2458,147 @@ def cost_per_gap(owner: str, docs: list[str]) -> dict:
     }
 
 
+# The estimate table lives in the spec and is read from it rather than copied
+# here. `design/loops.md` section 15 calls the table "a set of guesses whose
+# main job is to be wrong in a way that gets noticed", and a second copy in
+# `harness/` would drift and be wrong quietly instead.
+ESTIMATE_SECTION = "loops.md#estimates-and-replacing-them-with-measurements"
+ESTIMATE_HEADER = ("Phase", "Tokens", "Model wall-clock", "Machine wall-clock")
+
+
+def estimate_table() -> list[dict]:
+    """Section 15's guesses, parsed out of the document.
+
+    Returns [] when the table is not where it was, which the caller reports
+    rather than papering over: a silently empty comparison is exactly the
+    "estimate that is never compared against an actual" the section calls
+    decoration.
+    """
+    doc, _, anchor = ESTIMATE_SECTION.partition("#")
+    section = next((s for s in sections_of(doc) if s.anchor == anchor), None)
+    if section is None:
+        return []
+    return parse_estimate_table(doc_path(doc).read_text().splitlines()[section.start : section.end])
+
+
+def parse_estimate_table(lines: list[str]) -> list[dict]:
+    rows: list[dict] = []
+    header: list[str] | None = None
+    for line in lines:
+        if not line.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if header is None:
+            if tuple(cells[: len(ESTIMATE_HEADER)]) != ESTIMATE_HEADER:
+                return []
+            header = cells
+            continue
+        if set("".join(cells)) <= set("-: "):
+            continue
+        rows.append(dict(zip(header, cells)))
+    return rows
+
+
+def measured_resources() -> dict[str, dict]:
+    """The three resources of section 15, by phase, from what has been recorded.
+
+    They are kept apart because they have different drivers and different
+    levers: a slow gate inflates machine wall-clock without costing a token,
+    and a campaign that re-reads the design costs tokens without costing wall
+    clock. Reporting one number for "cost" is what the section is warning
+    against.
+    """
+    # An audit row written before audits recorded their phase falls to the
+    # current one, the same rule `attribute_spend` uses: audits are appended as
+    # they run, so the only rows this misplaces are ones from before a phase
+    # change, and dropping them into a `?` bucket loses real spend from the
+    # phase that incurred it.
+    current = load_phase().phase
+    by_phase: dict[str, dict] = {}
+    for owner in cost_owners():
+        for row in cost_rows(owner):
+            phase = row.get("phase") or current
+            actual = by_phase.setdefault(
+                phase,
+                {"campaigns": 0, "audits": 0, "usd": 0.0, "output_tokens": 0,
+                 "model_seconds": 0.0, "machine_seconds": 0.0, "loops": set()},
+            )
+            actual["loops"].add(owner)
+            if row.get("kind") == "audit":
+                actual["audits"] += 1
+            else:
+                actual["campaigns"] += 1
+            actual["usd"] += row.get("usd") or 0
+            actual["output_tokens"] += row.get("output_tokens") or 0
+            actual["model_seconds"] += row.get("model_seconds") or 0
+            # The only machine wall-clock the harness measures today. Truth
+            # collection is the dominant term in the table's row for it and
+            # has not run, so this is the gate and nothing else — named
+            # honestly rather than presented as the whole of the resource.
+            actual["machine_seconds"] += row.get("gate_seconds") or 0
+    return by_phase
+
+
+def cmd_estimates(args: argparse.Namespace) -> int:
+    """`design/loops.md` section 15: "an estimate that is never compared
+    against an actual is decoration", and calibration is the first ten
+    campaigns of each loop.
+
+    The comparison is qualitative on purpose — the table's cells read
+    "low–moderate" and "days" — so this puts the guess and the measurement
+    side by side and leaves the judgement to the human doing the phase gate.
+    What it does mechanically is the part that was missing: knowing which
+    phases have enough campaigns behind them for the comparison to mean
+    anything, and noticing a phase that has spent real money and has no row in
+    the table at all.
+    """
+    estimates = estimate_table()
+    if not estimates:
+        print(
+            f"estimates: could not find the table in {ESTIMATE_SECTION}. It is read from the "
+            "document rather than copied, so a change to its shape lands here first.",
+            file=sys.stderr,
+        )
+        return 1
+    actuals = measured_resources()
+    print(f"estimates: section 15's table against {sum(a['campaigns'] for a in actuals.values())} closed campaign(s)")
+    print()
+    for row in estimates:
+        phase = row[ESTIMATE_HEADER[0]]
+        print(f"  {phase}")
+        print(
+            f"    guess     tokens {row[ESTIMATE_HEADER[1]]} · model {row[ESTIMATE_HEADER[2]]}"
+            f" · machine {row[ESTIMATE_HEADER[3]]}"
+        )
+        match = actuals.get(phase.split()[0]) if phase else None
+        if not match:
+            print("    actual    nothing recorded against this phase yet")
+            continue
+        campaigns = match["campaigns"]
+        print(
+            f"    actual    tokens {match['output_tokens']:,} out (API-eq ${match['usd']:,.2f})"
+            f" · model {match['model_seconds'] / 3600:.1f}h"
+            f" · machine {match['machine_seconds'] / 3600:.1f}h in the gate"
+        )
+        print(
+            f"    from      {campaigns} campaign(s) and {match['audits']} audit(s) across "
+            f"{', '.join(sorted(match['loops']))}"
+            + ("" if campaigns >= CALIBRATION_CAMPAIGNS else
+               f" — under the {CALIBRATION_CAMPAIGNS} the section calls calibration")
+        )
+    unnamed = sorted(set(actuals) - {row[ESTIMATE_HEADER[0]].split()[0] for row in estimates if row[ESTIMATE_HEADER[0]]})
+    if unnamed:
+        print()
+        print(f"estimates: spend recorded against {', '.join(unnamed)}, which the table has no row for")
+    return 0
+
+
+# Section 15: "Calibration is the first ten campaigns of each loop." Below it
+# the comparison is noise; the constant is here so the report says which side
+# of it a phase is on rather than implying every row is equally settled.
+CALIBRATION_CAMPAIGNS = 10
+
+
 def cost_owners() -> list[str]:
     """Every loop that has ever spent anything, which is not the same set as
     the loops running now: a retired loop's spend still counts against the
@@ -2903,6 +3044,23 @@ def selftest_cases() -> list[tuple[str, object]]:
         )
         assert budget.global_usd == 900.0 and budget.language_usd == {"rust": 120.0}
 
+    def the_estimate_table_parses():
+        rows = parse_estimate_table([
+            "Some prose above it.",
+            "| Phase | Tokens | Model wall-clock | Machine wall-clock | Sensitive to |",
+            "|---|---|---|---|---|",
+            "| 1a core for measurement | low–moderate | days | small | how sharp the audit is |",
+            "| 3 whole-repository optimisation | moderate | days, serial | high | duplication |",
+        ])
+        assert len(rows) == 2, rows
+        assert rows[0]["Phase"] == "1a core for measurement"
+        assert rows[0]["Machine wall-clock"] == "small"
+        assert rows[1]["Model wall-clock"] == "days, serial"
+
+    def a_moved_estimate_table_is_reported_not_guessed():
+        moved = parse_estimate_table(["| Phase | Guess |", "|---|---|", "| 1a | cheap |"])
+        assert moved == [], "a table that is not the one expected yields nothing, loudly"
+
     def adapter_measures_the_gate():
         events = [
             {"type": "assistant", "timestamp": "2026-01-01T00:00:00.000Z", "message": {"content": [
@@ -3123,6 +3281,9 @@ def main() -> int:
         help="re-measure closed campaigns whose row predates a field the row spec now carries",
     )
     p.set_defaults(run=cmd_cost)
+
+    p = sub.add_parser("estimates", help="section 15's guesses against what has actually been spent")
+    p.set_defaults(run=cmd_estimates)
 
     p = sub.add_parser("selftest", help="gate step: hj's own parsing and arithmetic still hold")
     p.set_defaults(run=cmd_selftest)
