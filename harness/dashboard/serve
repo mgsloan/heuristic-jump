@@ -398,8 +398,8 @@ def line_chart(
     series: list[tuple[str, str, list[float]]],
     caption: str,
     x_label: str,
-    width: int = 640,
-    height: int = 104,
+    width: int = 900,
+    height: int = 150,
 ) -> str:
     """A small multi-series line chart, inline SVG, no dependencies.
 
@@ -420,7 +420,7 @@ def line_chart(
     if points < 2:
         return empty("Not enough audits yet to draw a trend.")
     top = max(max(values) for _, _, values in series) or 1
-    pad_l, pad_r, pad_t, pad_b = 30, 92, 10, 12
+    pad_l, pad_r, pad_t, pad_b = 38, 108, 12, 16
     plot_w, plot_h = width - pad_l - pad_r, height - pad_t - pad_b
 
     def x(index: int) -> float:
@@ -1574,7 +1574,9 @@ header nav { display:flex; gap:6px; margin-left:8px; align-items:center; flex:1;
 .loops .lead { font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:.06em; }
 .tab.loop { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
 .tab.loop.on { background:var(--accent); border-color:var(--accent); color:#fff; }
-main { padding:0 20px 60px; max-width:1100px; }
+/* Wider than a prose column on purpose: the tables run to eleven numeric
+   columns and the charts are time series that read better long. */
+main { padding:0 20px 60px; max-width:1400px; }
 .panel { margin:26px 0; }
 .panel > h2 { font-size:13px; text-transform:uppercase; letter-spacing:.08em; margin:0 0 10px;
               padding-bottom:6px; border-bottom:1px solid var(--line); font-weight:600; }
@@ -1620,9 +1622,13 @@ th { color:var(--dim); font-weight:500; white-space:nowrap; }
 }
 :root[data-theme="dark"] .panel { --series-1:#3987e5; --series-2:#d95926; --series-3:#199e70; }
 
-.charts { display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:10px 22px; margin:10px 0 2px; }
+/* Stacked rather than side by side. These are all time series over the same
+   x — one point per audit, per commit, per campaign — so reading them
+   against each other is the point, and a shared width makes that possible.
+   Two columns halved the width and made every trend look flat. */
+.charts { display:flex; flex-direction:column; gap:18px; margin:14px 0 2px; }
 .chart { margin:0; min-width:0; }
-.chart svg { width:100%; height:auto; max-height:132px; overflow:visible; }
+.chart svg { width:100%; height:auto; max-height:210px; overflow:visible; }
 .chart .grid { stroke:var(--line); stroke-width:1; }
 .chart .tick { fill:var(--dim); font-size:9px; font-family:inherit; }
 .chart .series { fill:none; stroke-width:2; stroke-linejoin:round; stroke-linecap:round; }
