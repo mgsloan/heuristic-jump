@@ -62,12 +62,38 @@ per-language work:
 | C / C++ | `compile_commands.json` — usually the hardest of the set |
 
 A repository where this half-works is worse than one where it fails
-outright: the server answers, the answers are wrong in a
-systematically biased way (unresolved imports look like missing
-definitions), and nothing in the pipeline flags it. So **build
-resolution is part of selection, not a step after it** — a candidate
-that cannot be brought to a working index is rejected and replaced, and
-the manifest records what it took.
+outright: the server answers, the answers are wrong in a systematically
+biased way — unresolved imports look exactly like missing definitions —
+and nothing in the pipeline flags it. So **build resolution is part of
+selection, not a step after it**, and the bar is *full* resolution
+rather than good-enough.
+
+### Resolution is verified, not assumed
+
+"The build works" is a claim, and it is the claim most likely to be
+wrong in the direction that quietly poisons a truth file. So it is
+checked, with the machinery already being built for something else:
+**sample import statements across the repository and require the server
+to resolve every one.**
+
+This reuses the readiness probe below rather than adding a mechanism,
+and it measures the thing actually at stake — not whether a build system
+exited zero, but whether the server can follow a reference — in a way
+that is identical across languages. Parsing per-server diagnostics would
+be the alternative and would need per-server knowledge of which
+diagnostic codes mean "unresolved" versus "type error".
+
+**The gate is every probe resolving.** A miss is investigated, not
+absorbed into a threshold: it is either a fixable setup problem, or the
+repository is replaced. If one genuinely cannot resolve — a
+platform-conditional import, a generated module — it is recorded in the
+manifest with its reason, so the exception is a decision somebody made
+rather than a tolerance the pipeline grants silently.
+
+Rejecting a repository is cheap at this stage and expensive later.
+Nothing downstream can detect a repository that indexed at 90%: it
+produces plausible answers, a plausible truth file, and a stratum
+distribution slightly wrong in a way no metric names.
 
 ### The split is decided here
 
@@ -78,12 +104,32 @@ repository has been in the tuning corpus it cannot be moved to held-out
 selection at phase gates consumes the second one
 (`implementation-loop.md` §12).
 
-### `manifest.toml`
+### `manifest.toml`, and repositories are never bumped
 
-Per repository: URL, pinned commit, language, split, line count,
-domain, what was needed to make dependencies resolve, and the date.
-This is what makes selection bias auditable later, when a metric looks
-suspiciously good and the question is whether the corpus earned it.
+Per repository: URL, pinned SHA, language, split, line count, domain,
+what was needed to make dependencies resolve, and the date. This is what
+makes selection bias auditable later, when a metric looks suspiciously
+good and the question is whether the corpus earned it.
+
+**Plain checkouts verified against the manifest — not submodules.**
+Submodules would drag the corpus into the repository's own history,
+which is gigabytes of other people's code, and would couple corpus
+version to source version in a way nothing wants. Instead the checkouts
+live in the corpus root and collection starts by checking `git rev-parse
+HEAD` against the manifest for every repository, refusing to run on a
+mismatch. Cheap, and it catches the accidental `git pull` that would
+otherwise invalidate every byte offset silently.
+
+**A repository is never bumped.** A newer commit is a different corpus,
+and re-pinning invalidates every position and every truth file that
+references it. If a repository must be replaced, it is *added* as a new
+entry and the old one retires; the manifest grows rather than changes.
+
+One consequence worth stating: **the checkout is the artifact, not the
+URL.** Since nothing ever re-clones, a repository that is force-pushed,
+renamed, or deleted upstream costs nothing — but losing the corpus
+directory loses the corpus, and it cannot be reconstructed from the
+manifest. It belongs in whatever gets backed up.
 
 ## 2. Positions are enumerated once per repository
 
@@ -96,10 +142,54 @@ be aligned, and the agreement / divergence split that
 `core.md` §11 builds the whole per-server design
 on would have nothing to join on.
 
-A position record is `(file, byte offset, identifier text, node kind)`.
-Enumeration walks the tree-sitter parse and takes identifier nodes —
-grammar-level only, no resolution logic, so nothing here depends on code
-that is still being written.
+A position record is `(file, byte offset, text, node kind, class)`.
+
+### Which positions count as identifiers
+
+Tree-sitter, not a regex — the grammar is already on hand, since
+`measure_core` gets it from `LanguageHandler::grammar()`, and it knows
+what a regex has to guess at.
+
+The selection rule is **language-agnostic on purpose**: a named leaf
+node whose entire text is identifier-shaped.
+
+* **Named** excludes keywords and punctuation in most grammars for free,
+  because those appear as anonymous tokens — the grammar already drew
+  this line and there is no reason to redraw it in a per-language list.
+  A list of node kinds per language (`identifier`, `type_identifier`,
+  `field_identifier`, `property_identifier`, …) is exactly the
+  per-language configuration format the rest of the design keeps
+  refusing.
+* **Leaf** — no named children — is what makes it a token rather than a
+  construct containing one.
+* **Identifier-shaped text** catches what the first two miss: grammars
+  that make some keywords named (`self`, `true`, `super` are named nodes
+  in several), and named leaves that are literals or comments. A string,
+  a number, and `// note` all fail the shape test; `self` passes and is
+  kept, because go-to-definition on `self` is a real query with a real
+  answer.
+
+**The offset is the identifier's start.** A cursor can sit anywhere
+inside a token and the handler must behave identically wherever it sits,
+but that invariance is better asserted by a property test than paid for
+with corpus positions — sampling random intra-token offsets would spend
+the budget re-measuring the same query and make every position harder to
+reason about.
+
+### Non-identifier positions
+
+**About 100 per language, total — not per repository.** Keywords,
+punctuation, string interiors, comments, whitespace: places a user can
+press go-to-definition where the honest answer is nothing.
+
+They exist to prove the `NotAnIdentifier` abstention path fires on real
+input, not to measure anything, so a hundred is plenty and the sample
+does not need to be representative.
+
+**They carry their own denominator and never enter the main one.** On
+these positions answering nothing is correct, so folding them into
+coverage would mix two different questions and move the headline number
+for a reason that has nothing to do with resolution.
 
 ## 3. Sampling
 
@@ -130,6 +220,23 @@ true stratum distribution and validate that the sample resembles it. If
 it does not, this decision gets revisited with data instead of the
 arithmetic above.
 
+### Known issue: thin strata
+
+Uniform sampling buys unbiased proportional coverage and does not buy
+enough `AmbiguousName` or `TypeInferenceRequired` positions to
+distinguish two candidate rankings. With 20k positions per repository
+and those strata at a few percent, the rarest rows will carry confidence
+intervals wide enough to hide a real improvement.
+
+It is recorded here and **not solved here.** Strata are defined by the
+resolution logic — they are `resolution.md`'s categories, reported by
+the handler, and they do not exist at collection time. A corpus that
+oversampled them would have to classify positions before the answers
+exist, using the code under measurement, which is the circularity §3
+avoids. So the question of whether a stratum has enough data to tune
+against belongs to the phase that tunes against it; this document's job
+is to sample without bias and say how much of each thing it got.
+
 ## 4. Ground truth collection
 
 ### The server matrix
@@ -138,6 +245,16 @@ Installed and pinned in phase 1c, documented in
 `external-dependencies.md`, and recorded by version in each truth file's
 provenance header. Where a language has one usable server the
 multi-server machinery is inert.
+
+**Version drift is checked, not assumed.** `measure collect` reads the
+installed server's version and compares it against the manifest:
+
+* fresh collection with a different version — warn, record what was
+  actually used, and continue, since the version in the header is what
+  makes the file interpretable;
+* resuming or appending to an existing truth file with a different
+  version — refuse. Half a file from one version and half from another
+  is the one outcome with no honest provenance header.
 
 The set is "every trustworthy server Zed supports for the language",
 which is what makes the list below a starting point rather than a
@@ -249,28 +366,28 @@ fighting back. Do C++ second rather than last, because if
 while there is still time to drop the language rather than after
 everything else is built around it.
 
-## Open questions
+## Decided
 
-1. **Is 20k positions per repository the right cap?** Chosen so the
-   matrix fits in ~100 machine-hours. The right number depends on how
-   thin the interesting strata turn out to be, which the exhaustive
-   repositories will say.
+The questions this document opened with, settled — recorded because the
+reasoning matters more than the answer:
 
-2. **Do the sampled positions need refreshing when a repository is
-   re-pinned?** Bumping a commit invalidates byte offsets. Simplest is
-   to treat a re-pin as a new corpus version and recollect, which is
-   correct and expensive. Whether anything cheaper is worth building
-   depends on how often repositories actually need bumping — plausibly
-   never, since nothing forces the corpus forward.
+* **20k positions per repository.** Kept.
+* **Repositories are never bumped**, so the "refresh positions on
+  re-pin" problem does not arise. SHA manifest, verified checkouts, no
+  submodules — [above](#manifesttoml-and-repositories-are-never-bumped).
+* **Non-identifier positions are included, ~100 per language**, in their
+  own denominator — [above](#non-identifier-positions).
+* **Server versions are recorded and checked**, warning on a fresh
+  collection and refusing on a resume — [above](#the-server-matrix).
+  Containers per server version stay available if drift turns out to be
+  recurring rather than occasional.
+* **The identifier-shape rule stays language-agnostic.** It keeps a few
+  things a per-language kind list would drop — `true`, `self`, label and
+  macro names — and most of those are legitimate queries. The cost is a
+  slightly noisier denominator rather than a wrong one.
+* **Dependencies must resolve fully**, verified rather than assumed —
+  [above](#resolution-is-verified-not-assumed).
 
-3. **Should positions include non-identifier locations?** Users press
-   go-to-definition on keywords, string literals, and whitespace, and
-   `NotAnIdentifier` is a real abstention path the corpus currently
-   cannot measure at all. Adding them is cheap; the question is whether
-   they belong in the same denominator as real queries.
-
-4. **How are servers kept pinned in practice?** Version drift silently
-   invalidates truth files. Containers per server version is the honest
-   answer and the heavier one; a recorded version plus a check at
-   collection time is the cheap one that catches drift after the fact
-   rather than preventing it.
+One known issue is carried rather than closed: [thin
+strata](#known-issue-thin-strata), which belongs to the tuning phase
+rather than to collection.
