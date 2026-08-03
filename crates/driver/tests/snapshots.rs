@@ -40,8 +40,8 @@ use proptest::test_runner::{FileFailurePersistence, TestCaseError, TestRunner};
 use serde_json::value::RawValue;
 use shared::proto::PositionEncoding;
 use shared::{
-    ByteOffset, ByteRange, Clock, CommitPolicy, Confidence, Deadline, DocumentUri, DocumentVersion,
-    Error, FileExtension, InputEdit, LanguageHandler, LanguageId, Outcome, ParseKind, ProjectView,
+    ByteRange, Clock, CommitPolicy, Confidence, Deadline, DocumentUri, DocumentVersion, Error,
+    FileExtension, InputEdit, LanguageHandler, LanguageId, Offset, Outcome, ParseKind, ProjectView,
     Query, Rope, ServerProfile, SnapshotSeed, Strata, Stratum, SystemClock, Trace, input_edit,
 };
 use tree_sitter::{Language, Parser, Point, Tree};
@@ -414,8 +414,8 @@ fn edit_and_dispatch(
                 let start = boundary(&whole, at % (whole.len() + 1));
                 let end = boundary(&whole, start + span % 64);
                 let replaced = ByteRange {
-                    start: ByteOffset(start),
-                    end: ByteOffset(end),
+                    start: Offset(start),
+                    end: Offset(end),
                 };
                 log.push((
                     DocumentVersion(version + 1),
@@ -716,7 +716,7 @@ fn request<'a>(
 ) -> Request<'a> {
     Request {
         seed,
-        position: ByteOffset(0),
+        position: Offset(0),
         project: view,
         deadline,
         server,

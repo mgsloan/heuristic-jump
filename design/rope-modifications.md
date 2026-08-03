@@ -6,7 +6,7 @@ it is vendored and what patches the copy needs to compile. This document covers
 one further change, which is larger than those and is a design decision rather
 than a mechanical fix-up:
 
-> **The rope's public API speaks in newtypes: `ByteOffset`, `ByteLen`, and
+> **The rope's public API speaks in newtypes: `Offset`, `ByteLen`, and
 > `ByteRange` instead of bare `usize` and `Range<usize>`, and `LineIndex`,
 > `ByteColumn`, `Utf16Column`, and `CharCount` instead of the bare `u32`s in
 > `Point`, `PointUtf16`, and `TextSummary`. The newtypes are opaque — no
@@ -17,10 +17,10 @@ rests on byte offsets more than on anything else — `core.md`
 [section 3](core.md#3-position-encoding) calls position
 handling the highest-risk detail in the whole driver, and
 [section 8](core.md#8-protocol-types) drops `lsp-types`
-specifically so that `ByteOffset` is what deserialization *produces* rather than
+specifically so that `Offset` is what deserialization *produces* rather than
 what a conversion layer produces afterwards.
 
-That argument does not stop at the LSP boundary. If `ByteOffset` is unwrapped to
+That argument does not stop at the LSP boundary. If `Offset` is unwrapped to
 a `usize` the moment it touches the text, the type has been enforcing the
 boundary and nothing else — and the text is where offsets are actually used.
 
@@ -30,7 +30,6 @@ This is not an alien discipline being imposed on the crate. rope's dimension
 types are already newtypes:
 
 ```rust
-pub struct Offset(pub usize);                     // offset.rs
 pub struct OffsetUtf16(pub usize);                // offset_utf16.rs
 pub struct Point { row: u32, column: u32 }        // point.rs
 pub struct PointUtf16 { row: u32, column: u32 }   // point_utf16.rs
@@ -57,14 +56,14 @@ family** than as patching it.
 
 `shared` depends on `rope`
 ([section 9](core.md#the-dependency-graph)), so rope
-cannot depend on `shared`. `ByteOffset` therefore **lives in `rope`**, and
+cannot depend on `shared`. `Offset` therefore **lives in `rope`**, and
 `shared` re-exports it:
 
 ```rust
-// vendor/rope/src/byte_offset.rs
-pub struct ByteOffset(pub usize);   // a position in a document
+// vendor/rope/src/offset.rs
+pub struct Offset(pub usize);       // a position in a document
 pub struct ByteLen(pub usize);      // a quantity of bytes
-pub struct ByteRange { pub start: ByteOffset, pub end: ByteOffset }
+pub struct ByteRange { pub start: Offset, pub end: Offset }
 
 // vendor/rope/src/point.rs, point_utf16.rs
 pub struct LineIndex(pub u32);
@@ -76,13 +75,28 @@ pub struct Point       { pub row: LineIndex, pub column: ByteColumn }
 pub struct PointUtf16  { pub row: LineIndex, pub column: Utf16Column }
 ```
 
+**Why `Offset` and not `ByteOffset`, next to `ByteLen` and `ByteRange`.** The
+family looks inconsistent and is not. Unqualified means bytes: that is already
+rope's convention, where `Offset` is the sibling of `OffsetUtf16` exactly as
+`Point` is of `PointUtf16`, and naming it `ByteOffset` would leave the byte
+dimension as the only member of that family spelling its unit out. The
+quantities are the other way round — `ByteLen` and `ByteRange` name their unit
+because they have no `Utf16` sibling to be distinguished from, so the prefix
+is doing descriptive work rather than contrastive work. `Range` on its own
+would also collide with the prelude.
+
+The rule this leaves is worth stating once, because it is what a reader needs
+to carry: **a position is `Offset` unless it says otherwise, and anything that
+says `Utf16` is the exception.** Outside rope the types arrive through
+`shared`, where the same rule holds.
+
 `ByteColumn` and `Utf16Column` being distinct types is most of the value here.
 They are the pair that is currently interchangeable and must not be —
 and `CharCount` is a third way of measuring the same span
 ([section 4](#the-signatures)), which the crate currently spells `u32` as
 well.
 
-`shared` re-exports both, so every other crate says `shared::ByteOffset` and
+`shared` re-exports both, so every other crate says `shared::Offset` and
 never knows or cares that the definition sits in the vendored crate. That
 keeps [section 1](core.md#vocabulary-types)'s claim —
 that these are the shared vocabulary — true from the outside.
@@ -153,8 +167,8 @@ mechanisms as before:
   fn point_to_offset_raw(&self, point: Point) -> usize {
       /* upstream body, untouched */
   }
-  pub fn point_to_offset(&self, point: Point) -> ByteOffset {
-      ByteOffset(self.point_to_offset_raw(point))
+  pub fn point_to_offset(&self, point: Point) -> Offset {
+      Offset(self.point_to_offset_raw(point))
   }
   ```
 
@@ -191,11 +205,11 @@ exactly the operations that make sense between a position and a quantity:
 
 | Expression | Result | Meaning |
 |---|---|---|
-| `ByteOffset + ByteLen` | `ByteOffset` | advance a position |
-| `ByteOffset - ByteLen` | `ByteOffset` | retreat a position |
-| `ByteOffset - ByteOffset` | `ByteLen` | distance between positions |
+| `Offset + ByteLen` | `Offset` | advance a position |
+| `Offset - ByteLen` | `Offset` | retreat a position |
+| `Offset - Offset` | `ByteLen` | distance between positions |
 | `ByteLen ± ByteLen` | `ByteLen` | accumulate |
-| `ByteOffset + ByteOffset` | — | **not implemented**; meaningless |
+| `Offset + Offset` | — | **not implemented**; meaningless |
 
 Plus the matching `AddAssign`/`SubAssign`, and `ByteRange::len() -> ByteLen`.
 This is the ordinary point-and-vector split, and the row above that has no
@@ -295,12 +309,12 @@ it is called out rather than absorbed.
 
 ### The dimension impls
 
-`ByteOffset` gains the two impls that make it usable as a seek dimension,
+`Offset` gains the two impls that make it usable as a seek dimension,
 mirroring what `OffsetUtf16` already has (`rope.rs:1516`, `rope.rs:1526`):
 
 ```rust
-impl<'a> sum_tree::Dimension<'a, ChunkSummary> for ByteOffset { … }
-impl TextDimension for ByteOffset { … }
+impl<'a> sum_tree::Dimension<'a, ChunkSummary> for Offset { … }
+impl TextDimension for Offset { … }
 ```
 
 **`sum_tree` needs no changes at all.** `Dimension` is generic over the
@@ -311,7 +325,7 @@ that it needs no patching survives.
 
 ### Offsets and lengths are separate types, and `ByteLen` is shared
 
-`Rope::len()` and `ChunkSlice::len()` return `ByteLen`, not `ByteOffset`.
+`Rope::len()` and `ChunkSlice::len()` return `ByteLen`, not `Offset`.
 
 An earlier draft merged them, on the grounds that in this crate a length *is*
 an offset — `TextSummary.len` is fed straight to cursor seeks, and summaries
@@ -327,9 +341,9 @@ function bodies — no longer applies, since bodies are editable
 each one is a place where the direction could have been wrong and now has to be
 written down.
 
-There is deliberately **no `From<ByteLen> for ByteOffset`**. Turning a length
+There is deliberately **no `From<ByteLen> for Offset`**. Turning a length
 into a position means measuring from somewhere, so it is spelled
-`ByteOffset::ZERO + len`, which names the origin.
+`Offset::ZERO + len`, which names the origin.
 
 **`ByteLen` is one type, shared with resolution code.** `resolution.md` needs a byte
 quantity for `bytes_scanned` — the running total across the files a query
@@ -436,14 +450,14 @@ were independent; they are not any more.
   name the type. Recorded rather than fixed.
 * **`sum_tree`.** Untouched by this. It needs nothing from `util` and
   nothing from the newtypes — `sum_tree::Dimension` is generic over the
-  summary type, so `ByteOffset`'s impls live in rope.
+  summary type, so `Offset`'s impls live in rope.
 
 ### `LineIndex` is rope's, and `shared` re-exports it
 
 `Location` carries a `LineIndex`
 ([section 8.4](core.md#84-location-is-byte-based-and-this-fixes-a-real-inconsistency)).
 Since `Point.row` is now a `LineIndex`, the type has to live in rope for the
-same dependency reason as `ByteOffset`, and `shared` re-exports it. The
+same dependency reason as `Offset`, and `shared` re-exports it. The
 row-taking APIs —`slice_rows(Range<LineIndex>)`, `line_len(row: LineIndex)`
 —take it too, so a row obtained from a `Point` can be handed straight back to
 the rope.
@@ -557,7 +571,7 @@ entirely.
   are the verification. What the signature check catches is the one thing they
   cannot: a new upstream `pub fn` arriving with a bare `usize` in its
   signature.
-* **Round-trip property tests** over `ByteOffset` ↔ `Point` ↔ `PointUtf16` ↔
+* **Round-trip property tests** over `Offset` ↔ `Point` ↔ `PointUtf16` ↔
   `OffsetUtf16` on random text with astral-plane characters. Already required
   by [section 10](core.md#10-testing) for the encoding
   layer; running them against the rope directly puts them one level lower,

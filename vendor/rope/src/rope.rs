@@ -14,7 +14,7 @@ macro_rules! debug_panic {
     };
 }
 
-mod byte_offset;
+mod offset;
 mod chunk;
 mod offset_utf16;
 mod point;
@@ -33,7 +33,7 @@ use std::{
 use sum_tree::{Dimension, Dimensions, SumTree};
 use tracing::instrument;
 
-pub use byte_offset::{ByteLen, ByteOffset, ByteRange};
+pub use offset::{ByteLen, ByteRange, Offset};
 pub use chunk::{Chunk, ChunkSlice};
 pub use offset_utf16::OffsetUtf16;
 pub use point::{ByteColumn, CharCount, LineIndex, Point};
@@ -1539,14 +1539,14 @@ impl TextDimension for usize {
     }
 }
 
-// Ours, not upstream's: the two impls that make `ByteOffset` seekable, exactly
+// Ours, not upstream's: the two impls that make `Offset` seekable, exactly
 // mirroring `OffsetUtf16`'s below (`rope-modifications.md` §4). `sum_tree`
 // needs no change for this — `Dimension` is generic over the summary type, so
 // the impls live here and the vendored `sum_tree` stays a pristine copy.
 //
 // The `.0`s go away when §4's sweep gives `TextSummary.len` the type `ByteLen`;
 // until then a summary length is a bare `usize`.
-impl<'a> sum_tree::Dimension<'a, ChunkSummary> for ByteOffset {
+impl<'a> sum_tree::Dimension<'a, ChunkSummary> for Offset {
     fn zero(_cx: ()) -> Self {
         Default::default()
     }
@@ -1556,7 +1556,7 @@ impl<'a> sum_tree::Dimension<'a, ChunkSummary> for ByteOffset {
     }
 }
 
-impl TextDimension for ByteOffset {
+impl TextDimension for Offset {
     fn from_text_summary(summary: &TextSummary) -> Self {
         Self(summary.len)
     }

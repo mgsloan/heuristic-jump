@@ -15,8 +15,8 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use shared::{
-    ByteOffset, CodecError, ConfigError, Deadline, DocumentUri, DocumentVersion, Error,
-    LanguageHandler, LanguageId, ProjectPath, Rope, SnapshotSeed,
+    CodecError, ConfigError, Deadline, DocumentUri, DocumentVersion, Error, LanguageHandler,
+    LanguageId, Offset, ProjectPath, Rope, SnapshotSeed,
 };
 
 /// `(file, byte offset, text, node kind, class)`.
@@ -194,7 +194,7 @@ fn take_non_identifiers(
             break;
         }
         if !text.is_char_boundary(offset)
-            || shared::identifier_at(document, ByteOffset(offset)).is_some()
+            || shared::identifier_at(document, Offset(offset)).is_some()
         {
             continue;
         }
@@ -209,14 +209,14 @@ fn take_non_identifiers(
             file: relative.into(),
             offset,
             text: slice.into(),
-            kind: kind_at(document, ByteOffset(offset)),
+            kind: kind_at(document, Offset(offset)),
             class: Class::Other,
         });
     }
     found
 }
 
-fn kind_at(document: &shared::DocumentSnapshot, offset: ByteOffset) -> Box<str> {
+fn kind_at(document: &shared::DocumentSnapshot, offset: Offset) -> Box<str> {
     document
         .tree()
         .root_node()

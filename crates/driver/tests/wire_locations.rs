@@ -32,9 +32,9 @@ use std::sync::Arc;
 use driver::{DebounceMs, Dispatched, FileListCache, Request, dispatch};
 use shared::proto::{PositionEncoding, WirePosition};
 use shared::{
-    AbstainReason, ByteOffset, Clock, CommitPolicy, Confidence, Deadline, DocumentUri,
-    DocumentVersion, EncodingError, Error, FileExtension, LanguageHandler, LanguageId, LineIndex,
-    Location, Outcome, ProjectError, ProjectPath, ProjectRoot, ProjectView, Query, RelPath, Rope,
+    AbstainReason, Clock, CommitPolicy, Confidence, Deadline, DocumentUri, DocumentVersion,
+    EncodingError, Error, FileExtension, LanguageHandler, LanguageId, LineIndex, Location, Offset,
+    Outcome, ProjectError, ProjectPath, ProjectRoot, ProjectView, Query, RelPath, Rope,
     ServerProfile, SnapshotSeed, Strata, Stratum, SystemClock, Trace,
 };
 use tree_sitter::Language;
@@ -214,7 +214,7 @@ fn a_location_the_file_list_does_not_know_is_a_failure_and_not_an_answer() {
     let server = ServerProfile::standalone();
     let request = Request {
         seed: document,
-        position: ByteOffset(0),
+        position: Offset(0),
         project: &view,
         deadline: &deadline,
         server: &server,
@@ -267,7 +267,7 @@ fn a_target_file_that_moved_under_the_query_is_refused_rather_than_encoded() {
     let server = ServerProfile::standalone();
     let request = Request {
         seed: seed(&root),
-        position: ByteOffset(0),
+        position: Offset(0),
         project: &view,
         deadline: &deadline,
         server: &server,
@@ -362,7 +362,7 @@ fn decided(
     let server = ServerProfile::standalone();
     let request = Request {
         seed: document,
-        position: ByteOffset(0),
+        position: Offset(0),
         project: view,
         deadline: &deadline,
         server: &server,

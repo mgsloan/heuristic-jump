@@ -42,7 +42,7 @@
 //! untagged enum whose `Full` variant would swallow every incremental change
 //! and replace the document with the characters just typed.
 
-use rope::{Bias, ByteLen, ByteOffset, LineIndex, Point, PointUtf16, Rope, Unclipped};
+use rope::{Bias, ByteLen, LineIndex, Offset, Point, PointUtf16, Rope, Unclipped};
 use serde::de::{IgnoredAny, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::value::RawValue;
@@ -107,11 +107,7 @@ impl WirePosition {
 
     /// The only way out. Requires naming the encoding and the document, which
     /// is exactly the information a correct conversion needs.
-    pub fn resolve(
-        self,
-        encoding: PositionEncoding,
-        text: &Rope,
-    ) -> Result<ByteOffset, EncodingError> {
+    pub fn resolve(self, encoding: PositionEncoding, text: &Rope) -> Result<Offset, EncodingError> {
         let last_line = LineIndex(text.max_point().row);
         if self.line > last_line {
             return Err(EncodingError::LineOutOfRange {
@@ -164,14 +160,14 @@ impl WirePosition {
                 offset
             }
         };
-        Ok(ByteOffset(offset))
+        Ok(Offset(offset))
     }
 
     /// The only constructor other than deserialization, which is what makes
     /// encoding something applied in two functions rather than everywhere a
     /// position is built (`core.md` §8.3).
     pub fn encode(
-        offset: ByteOffset,
+        offset: Offset,
         encoding: PositionEncoding,
         text: &Rope,
     ) -> Result<Self, EncodingError> {

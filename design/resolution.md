@@ -66,7 +66,7 @@ From core doc [section 1], a handler receives a `Query` and returns an
 `Outcome`. Restating the obligations that resolution code must actually honour:
 
 * **Byte offsets only.** UTF-16 never reaches here; the driver converts at the
-  edge and `ByteOffset` is the proof.
+  edge and `Offset` is the proof.
 * **Cooperative deadlines.** `deadline.expired()` is polled at every loop
   boundary. A handler that ignores it does not produce a late answer — the
   driver drops it — it produces wasted CPU during the exact window the whole

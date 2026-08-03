@@ -6,7 +6,7 @@
 //! The text-shaped newtypes are re-exported rather than defined: they live in
 //! `vendor/rope`, because `shared` depends on `rope` and the dependency cannot
 //! run the other way (`rope-modifications.md` §2). Every other crate says
-//! `shared::ByteOffset` and never has to know which side of that edge it came
+//! `shared::Offset` and never has to know which side of that edge it came
 //! from.
 
 mod agreement;
@@ -46,9 +46,7 @@ pub use project::{
 // the reason the list is re-exported is that a crate which may not depend on
 // `rope` still has to be able to name them. `driver`'s seam test is that
 // crate, and asserts it.
-pub use rope::{
-    ByteColumn, ByteLen, ByteOffset, ByteRange, CharCount, LineIndex, Rope, Utf16Column,
-};
+pub use rope::{ByteColumn, ByteLen, ByteRange, CharCount, LineIndex, Offset, Rope, Utf16Column};
 // The tree-sitter types the seam already speaks in, re-exported for exactly
 // the reason `rope`'s newtypes are: §9's graph gives `driver` no tree-sitter
 // edge, and §1 gives it a parse cache — which cannot be written without naming

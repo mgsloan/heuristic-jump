@@ -21,7 +21,7 @@
 use std::path::Path;
 
 use shared::{
-    ByteColumn, ByteLen, ByteOffset, ByteRange, CharCount, LanguageHandler, LineIndex, Utf16Column,
+    ByteColumn, ByteLen, ByteRange, CharCount, LanguageHandler, LineIndex, Offset, Utf16Column,
 };
 
 #[test]
@@ -90,7 +90,7 @@ fn the_text_vocabulary_is_nameable_through_shared_and_defined_in_rope() {
     // in `shared` — one that would compile, satisfy every use site here, and
     // silently not be the type rope's own signatures speak in.
     for defined_in in [
-        std::any::type_name::<ByteOffset>(),
+        std::any::type_name::<Offset>(),
         std::any::type_name::<ByteLen>(),
         std::any::type_name::<ByteRange>(),
         std::any::type_name::<LineIndex>(),

@@ -22,8 +22,8 @@ use std::time::{Duration, Instant};
 use proptest::prelude::{Strategy, prop_assert_eq};
 use proptest::proptest;
 use shared::{
-    ByteOffset, ByteRange, Clock, Deadline, DocumentSnapshot, DocumentUri, DocumentVersion, Error,
-    HandlerError, LanguageId, Rope, SnapshotSeed, SystemClock, input_edit,
+    ByteRange, Clock, Deadline, DocumentSnapshot, DocumentUri, DocumentVersion, Error,
+    HandlerError, LanguageId, Offset, Rope, SnapshotSeed, SystemClock, input_edit,
 };
 use tree_sitter::{InputEdit, Language, Point};
 
@@ -220,7 +220,7 @@ proptest! {
     ) {
         let edit = input_edit(
             &Rope::from(before.as_str()),
-            ByteRange { start: ByteOffset(start), end: ByteOffset(end) },
+            ByteRange { start: Offset(start), end: Offset(end) },
             &inserted,
         );
         let after = format!("{}{inserted}{}", &before[..start], &before[end..]);

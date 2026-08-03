@@ -14,7 +14,7 @@ use std::ops::{Add, AddAssign, Sub, SubAssign};
 /// position by a length" and "how far apart are these positions" different
 /// signatures (`rope-modifications.md` §4).
 #[derive(Copy, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct ByteOffset(pub usize);
+pub struct Offset(pub usize);
 
 /// A quantity of bytes. Also what `resolution.md`'s `bytes_scanned` counts:
 /// one byte quantity in the workspace, not two.
@@ -23,11 +23,11 @@ pub struct ByteLen(pub usize);
 
 #[derive(Copy, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct ByteRange {
-    pub start: ByteOffset,
-    pub end: ByteOffset,
+    pub start: Offset,
+    pub end: Offset,
 }
 
-impl ByteOffset {
+impl Offset {
     pub const ZERO: Self = Self(0);
     pub const MAX: Self = Self(usize::MAX);
 }
@@ -37,11 +37,11 @@ impl ByteLen {
     pub const MAX: Self = Self(usize::MAX);
 }
 
-// There is deliberately no `From<ByteLen> for ByteOffset`: turning a length
+// There is deliberately no `From<ByteLen> for Offset`: turning a length
 // into a position means measuring from somewhere, so it is spelled
-// `ByteOffset::ZERO + len`, which names the origin.
+// `Offset::ZERO + len`, which names the origin.
 
-impl Add<ByteLen> for ByteOffset {
+impl Add<ByteLen> for Offset {
     type Output = Self;
 
     fn add(self, other: ByteLen) -> Self {
@@ -49,7 +49,7 @@ impl Add<ByteLen> for ByteOffset {
     }
 }
 
-impl Sub<ByteLen> for ByteOffset {
+impl Sub<ByteLen> for Offset {
     type Output = Self;
 
     fn sub(self, other: ByteLen) -> Self {
@@ -59,7 +59,7 @@ impl Sub<ByteLen> for ByteOffset {
 }
 
 /// The distance between two positions, which is a quantity and not a position.
-impl Sub for ByteOffset {
+impl Sub for Offset {
     type Output = ByteLen;
 
     fn sub(self, other: Self) -> ByteLen {
@@ -68,13 +68,13 @@ impl Sub for ByteOffset {
     }
 }
 
-impl AddAssign<ByteLen> for ByteOffset {
+impl AddAssign<ByteLen> for Offset {
     fn add_assign(&mut self, other: ByteLen) {
         self.0 += other.0;
     }
 }
 
-impl SubAssign<ByteLen> for ByteOffset {
+impl SubAssign<ByteLen> for Offset {
     fn sub_assign(&mut self, other: ByteLen) {
         debug_assert!(other.0 <= self.0);
         self.0 -= other.0;
@@ -113,11 +113,11 @@ impl SubAssign for ByteLen {
 
 impl ByteRange {
     pub const EMPTY: Self = Self {
-        start: ByteOffset::ZERO,
-        end: ByteOffset::ZERO,
+        start: Offset::ZERO,
+        end: Offset::ZERO,
     };
 
-    pub fn new(start: ByteOffset, end: ByteOffset) -> Self {
+    pub fn new(start: Offset, end: Offset) -> Self {
         Self { start, end }
     }
 
@@ -131,7 +131,7 @@ impl ByteRange {
 
     /// Half-open, as every range in this crate is: the end offset is not in
     /// the range.
-    pub fn contains(self, at: ByteOffset) -> bool {
+    pub fn contains(self, at: Offset) -> bool {
         self.start <= at && at < self.end
     }
 
@@ -157,7 +157,7 @@ impl ByteRange {
 // once its fields are newtypes (`rope-modifications.md` §4). It cannot be
 // derived, so all seven are written out.
 
-impl fmt::Display for ByteOffset {
+impl fmt::Display for Offset {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }

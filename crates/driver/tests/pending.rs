@@ -39,10 +39,10 @@ use shared::proto::{
     DefinitionResult, MessageType, PositionEncoding, WireLocation, WirePosition, WireRange,
 };
 use shared::{
-    AbstainReason, Agreement, ByteOffset, Clock, CommitPolicy, Confidence, Deadline, DocumentUri,
+    AbstainReason, Agreement, Clock, CommitPolicy, Confidence, Deadline, DocumentUri,
     DocumentVersion, EditorRequestId, Error, FileExtension, LanguageHandler, LanguageId, Location,
-    Outcome, ProjectPath, ProjectRoot, ProjectView, Query, RelPath, Rope, ServerProfile, Severity,
-    SnapshotSeed, Strata, Stratum, SystemClock, Trace,
+    Offset, Outcome, ProjectPath, ProjectRoot, ProjectView, Query, RelPath, Rope, ServerProfile,
+    Severity, SnapshotSeed, Strata, Stratum, SystemClock, Trace,
 };
 use tree_sitter::Language;
 
@@ -357,7 +357,7 @@ fn pending() -> PendingQuery {
     PendingQuery::new(
         EditorRequestId::from_number(1),
         uri_of(Path::new("/fixture/src/lib.rs")),
-        ByteOffset(21),
+        Offset(21),
         SystemClock.now(),
     )
 }
@@ -390,7 +390,7 @@ fn answer(handler: &dyn LanguageHandler, view: &ProjectView, root: &Path) -> dri
     let server = ServerProfile::standalone();
     let request = Request {
         seed: seed(root),
-        position: ByteOffset(21),
+        position: Offset(21),
         project: view,
         deadline: &deadline,
         server: &server,

@@ -18,7 +18,7 @@
 
 use std::fmt;
 
-use rope::{ByteOffset, Rope};
+use rope::{Offset, Rope};
 use tree_sitter::{Node, TreeCursor};
 
 use crate::document::DocumentSnapshot;
@@ -28,7 +28,7 @@ use crate::document::DocumentSnapshot;
 /// The node is returned rather than a `bool` because every caller that wants
 /// the answer also wants the token — its text to search for, its range to
 /// build a [`crate::Location`] from.
-pub fn identifier_at(doc: &DocumentSnapshot, at: ByteOffset) -> Option<Node<'_>> {
+pub fn identifier_at(doc: &DocumentSnapshot, at: Offset) -> Option<Node<'_>> {
     let node = doc
         .tree()
         .root_node()

@@ -22,7 +22,7 @@ use std::fmt;
 use std::iter;
 use std::path::{Path, PathBuf};
 
-use rope::{ByteOffset, ByteRange, LineIndex, Rope};
+use rope::{ByteRange, LineIndex, Offset, Rope};
 use serde::de::Visitor;
 use serde::{Deserialize, Deserializer};
 use tree_sitter::Node;
@@ -295,8 +295,8 @@ impl Location {
         Self {
             uri,
             range: ByteRange {
-                start: ByteOffset(node.start_byte()),
-                end: ByteOffset(node.end_byte()),
+                start: Offset(node.start_byte()),
+                end: Offset(node.end_byte()),
             },
             line: LineIndex(row),
         }

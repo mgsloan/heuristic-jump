@@ -331,7 +331,7 @@ fn a_projection_ignores_every_field_it_did_not_model() {
             .position
             .resolve(PositionEncoding::Utf16, &rope)
             .unwrap(),
-        rope::ByteOffset(21)
+        rope::Offset(21)
     );
 }
 
@@ -593,8 +593,8 @@ fn a_cancel_and_a_progress_notification_keep_their_two_id_spaces_apart() {
 fn a_response_echoes_the_id_in_the_kind_it_arrived_in() {
     let rope = Rope::from("fn main() {}\n");
     let uri = DocumentUri::parse("file:///work/repo/src/main.rs").unwrap();
-    let start = WirePosition::encode(rope::ByteOffset(3), PositionEncoding::Utf16, &rope).unwrap();
-    let end = WirePosition::encode(rope::ByteOffset(7), PositionEncoding::Utf16, &rope).unwrap();
+    let start = WirePosition::encode(rope::Offset(3), PositionEncoding::Utf16, &rope).unwrap();
+    let end = WirePosition::encode(rope::Offset(7), PositionEncoding::Utf16, &rope).unwrap();
     let location = WireLocation::new(uri, WireRange { start, end });
 
     let answer = Response::result(EditorRequestId::from_number(7), vec![location]);

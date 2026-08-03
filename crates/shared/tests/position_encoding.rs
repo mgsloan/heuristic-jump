@@ -24,7 +24,7 @@
 
 use proptest::prelude::{Just, ProptestConfig, Strategy, prop_assert, prop_assert_eq};
 use proptest::{prop_oneof, proptest};
-use rope::{ByteOffset, Rope};
+use rope::{Offset, Rope};
 use shared::proto::{PositionEncoding, WirePosition};
 
 const ALPHABET: &[char] = &[
@@ -171,7 +171,7 @@ proptest! {
         let rope = Rope::from(text.as_str());
         let boundary = text.is_char_boundary(offset);
 
-        match WirePosition::encode(ByteOffset(offset), encoding, &rope) {
+        match WirePosition::encode(Offset(offset), encoding, &rope) {
             Ok(position) => {
                 prop_assert!(boundary, "encoded {offset}, which is not a character boundary");
                 let (line, character) = reference_encode(&text, offset, encoding);
@@ -197,7 +197,7 @@ proptest! {
         let expected = reference_resolve(&text, line, character, encoding);
 
         match (expected, wire(line, character).resolve(encoding, &rope)) {
-            (Some(offset), Ok(resolved)) => prop_assert_eq!(resolved, ByteOffset(offset)),
+            (Some(offset), Ok(resolved)) => prop_assert_eq!(resolved, Offset(offset)),
             (None, Err(_)) => {}
             (expected, resolved) => prop_assert!(
                 false,
@@ -215,7 +215,7 @@ proptest! {
         let rope = Rope::from(text.as_str());
 
         for offset in (0..=text.len()).filter(|&at| text.is_char_boundary(at)) {
-            let offset = ByteOffset(offset);
+            let offset = Offset(offset);
             let position = WirePosition::encode(offset, encoding, &rope)
                 .expect("a character boundary always has a wire position");
             // `.ok()` throughout: `EncodingError` is not `PartialEq` and
@@ -235,7 +235,7 @@ proptest! {
         let rope = Rope::from(text.as_str());
 
         for offset in 0..=text.len() {
-            let offset = ByteOffset(offset);
+            let offset = Offset(offset);
             let utf8 = WirePosition::encode(offset, PositionEncoding::Utf8, &rope).ok();
             prop_assert_eq!(
                 utf8,
@@ -257,7 +257,7 @@ proptest! {
 #[test]
 fn an_astral_scalar_is_a_different_column_in_every_encoding() {
     let rope = Rope::from("😀x");
-    let after = ByteOffset(4);
+    let after = Offset(4);
 
     assert_eq!(
         WirePosition::encode(after, PositionEncoding::Utf8, &rope).ok(),
@@ -287,6 +287,6 @@ fn an_astral_scalar_is_a_different_column_in_every_encoding() {
     // once, which is why §3 insists it never be inferred.
     assert_eq!(
         wire(0, 2).resolve(PositionEncoding::Utf32, &rope).ok(),
-        Some(ByteOffset(5))
+        Some(Offset(5))
     );
 }

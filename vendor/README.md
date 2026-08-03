@@ -65,13 +65,19 @@ property (`deps.md` §14).
    module. It `#[path]`-includes `src/test_support.rs` instead, so there is
    still one copy. See `state/spec-changelog.md`, CHANGE-conformance-002.
 
-5. **The vocabulary newtypes are added** — `src/byte_offset.rs`
-   (`ByteOffset`, `ByteLen`, `ByteRange`), `LineIndex` / `ByteColumn` /
+5. **The vocabulary newtypes are added** — `src/offset.rs`
+   (`Offset`, `ByteLen`, `ByteRange`), `LineIndex` / `ByteColumn` /
    `CharCount` at the end of `src/point.rs`, `Utf16Column` at the end of
-   `src/point_utf16.rs`, and `ByteOffset`'s two seek-dimension impls beside
+   `src/point_utf16.rs`, and `Offset`'s two seek-dimension impls beside
    `OffsetUtf16`'s in `src/rope.rs`. They live here rather than in `shared`
    because `shared` depends on `rope` and the dependency cannot run the other
    way (`rope-modifications.md` §2).
+
+   The byte position is `Offset` rather than `ByteOffset`, which matters to a
+   re-sync because upstream has neither: **unqualified means bytes**, so
+   `Offset` sits beside `OffsetUtf16` as `Point` does beside `PointUtf16`.
+   `ByteLen` and `ByteRange` keep their prefix because they have no `Utf16`
+   sibling to contrast with. `rope-modifications.md` §2 has the argument.
 
    **The substantive half of that document is still to do.** These types are
    inert: not one of rope's ~51 public signatures has been converted, so
@@ -106,7 +112,7 @@ property (`deps.md` §14).
    rope.
 
 `sum_tree` is otherwise unpatched, and the newtype work does not change that:
-`sum_tree::Dimension` is generic over the summary type, so `ByteOffset`'s
+`sum_tree::Dimension` is generic over the summary type, so `Offset`'s
 impls live in `rope`.
 
 ## Recorded differences that are not patches to the source

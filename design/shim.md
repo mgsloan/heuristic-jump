@@ -953,7 +953,7 @@ The protocol from `high-level.md`, stated precisely.
 struct PendingQuery {
     editor_id: EditorRequestId,
     uri: DocumentUri,
-    position: ByteOffset,
+    position: Offset,
     arrived: Instant,
     /// Byte-space, as the handler returned it, kept for the divergence
     /// check in section 9 -- which compares (uri, line) and so needs

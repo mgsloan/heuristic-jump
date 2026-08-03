@@ -38,7 +38,7 @@ disallowed-methods = [
   { path = "std::env::temp_dir", reason = "Shared, non-isolated temp dir races across parallel tests.", replacement = "tempfile::tempdir" },
 
   # ── GROUP 5: error discipline (shared::Error is closed & typed) ─────────────
-  { path = "std::io::Error::other", reason = "Produces a stringly-typed io error; shared::Error is a closed enum with typed context (PathBuf/ByteOffset/DocumentUri) and no Other/Message variant.", replacement = "a typed shared::Error variant" },
+  { path = "std::io::Error::other", reason = "Produces a stringly-typed io error; shared::Error is a closed enum with typed context (PathBuf/Offset/DocumentUri) and no Other/Message variant.", replacement = "a typed shared::Error variant" },
 
   # ── GROUP 6: forwarded frames are never round-tripped ("one message-copy") ──
   { path = "serde_json::from_reader", reason = "Parsing from a Reader is much slower than reading into a buffer then from_slice, and allocates; frames must reach the child byte-for-byte.", replacement = "serde_json::from_slice" },

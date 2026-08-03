@@ -121,7 +121,7 @@ argument; the dependency-relevant part:
 
 * **The motive is the newtypes.** `CLAUDE.md` asks for newtypes on primitive
   fields, and the driver's correctness rests on several of them —
-  `ByteOffset`, `DocumentUri`, `DocumentVersion`, `EditorRequestId`,
+  `Offset`, `DocumentUri`, `DocumentVersion`, `EditorRequestId`,
   `LanguageId`. With a foreign types crate those can only be produced by a
   conversion layer *after* deserialization, which makes the discipline
   optional: holding an `lsp_types::Position` a few functions inward
@@ -474,7 +474,7 @@ the exception and wants a comment saying why.
 The reason is that std's default hasher is SipHash-1-3, chosen to make
 `HashMap` safe against hash-flooding from untrusted input. Nothing here is
 keyed by untrusted input. Every map in the driver is keyed by a
-`DocumentUri`, a `ByteOffset`, a `LanguageId`, an `EditorRequestId`, a
+`DocumentUri`, a `Offset`, a `LanguageId`, an `EditorRequestId`, a
 `ProjectPath`, or a small tuple of those — values the shim itself constructed
 from one editor and one language server, both of which are already inside the
 trust boundary and can trivially do worse than degrade a hash table. Paying a
@@ -483,7 +483,7 @@ the definition path where the budget is a p50 of 50ms.
 
 FxHash is a few instructions per word and is what rustc itself uses for the
 same reason. The types involved are also short — a `LanguageId` is a pointer,
-a `ByteOffset` is a word — which is precisely where SipHash's fixed setup cost
+a `Offset` is a word — which is precisely where SipHash's fixed setup cost
 dominates and FxHash wins by the largest margin.
 
 Two rules so this does not become folklore:
@@ -556,7 +556,7 @@ Rules, so this stays a real closed set rather than `anyhow` with extra steps:
 * **No `Other(String)`, no `Message(String)`, no `Box<dyn Error>` variant.**
   Adding a failure mode means adding a variant, which is the point.
 * **Every variant carries typed context**, not a formatted string. A path is a
-  `PathBuf`, an offset is a `ByteOffset`, a URI is a `DocumentUri`.
+  `PathBuf`, an offset is a `Offset`, a URI is a `DocumentUri`.
 * **Foreign errors are the one unavoidable leak.** `std::io::Error` and
   `serde_json::Error` are themselves open. They are wrapped as
   `#[source]` fields on our own variants, always alongside our own context
@@ -969,7 +969,7 @@ char_lit_as_u8 = "deny"
 # solid wall of #[expect], which turns a lint into decoration in the one place
 # it would have mattered most. The protection that actually holds here is
 # structural rather than lexical: WirePosition has private fields and yields a
-# ByteOffset only when handed the encoding and the text (core.md §8.3), the
+# Offset only when handed the encoding and the text (core.md §8.3), the
 # offsets are newtypes rather than usize (rope-modifications.md), and the
 # cast_* denies above still catch the arithmetic. Slicing a str at a non-char
 # boundary panics loudly and immediately, which is the failure mode this
@@ -988,7 +988,7 @@ iter_over_hash_type = "deny"
 # shim.md §11 failure table is only enforceable if the compiler catches new variants.
 wildcard_enum_match_arm = "deny"
 match_wildcard_for_single_variants = "deny"
-# `Error` nests nine sub-enums carrying PathBuf/DocumentUri/ByteOffset, and sits
+# `Error` nests nine sub-enums carrying PathBuf/DocumentUri/Offset, and sits
 # in the Err of every Result on the hot path. Threshold tuned in clippy.toml.
 result_large_err = "deny"
 large_enum_variant = "deny"

@@ -15,7 +15,7 @@ use shared::proto::{
     ClientOfferedCapabilities, ClientTextDocumentCapabilities, ClientTextDocumentIdentifier,
     ClientTextDocumentItem, DefinitionResult, InitializeResult, WirePosition,
 };
-use shared::{ByteOffset, ChildError, Clock, DocumentUri, DocumentVersion, Error, Rope};
+use shared::{ChildError, Clock, DocumentUri, DocumentVersion, Error, Offset, Rope};
 
 use crate::client::{Client, OFFERED_ENCODINGS, RawResult, settled_encoding};
 use crate::corpus::{Corpus, Repository, ServerEntry, verify_checkout};
@@ -269,7 +269,7 @@ impl Collection<'_> {
             return Err(shared::ConfigError::RepositoryMissing { path: absolute }.into());
         };
         let wire = WirePosition::encode(
-            ByteOffset(position.offset),
+            Offset(position.offset),
             encoding,
             &Rope::from(text.as_str()),
         )?;

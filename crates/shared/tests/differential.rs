@@ -45,7 +45,7 @@ use shared::proto::{
     InitializeParams, InitializeResult, PositionEncoding, ProgressParams, ProgressToken,
     TextDocumentSync, TextDocumentSyncKind, WirePosition, WireRange,
 };
-use shared::{ByteOffset, Rope};
+use shared::{Offset, Rope};
 
 /// The corpus, one JSON message per line, `include_str!`'d rather than read so
 /// that a corrupted corpus is a build failure and not a test that quietly
@@ -611,7 +611,7 @@ fn their_span(range: lsp_types::Range) -> Span {
 /// named because the corpus's positions are the ones a real editor sends, and
 /// on an all-ASCII document every encoding agrees anyway.
 fn our_position(position: WirePosition) -> (u32, u32) {
-    let ByteOffset(offset) = position
+    let Offset(offset) = position
         .resolve(PositionEncoding::Utf16, &GRID)
         .expect("a corpus position lands inside the grid");
     let line = position.line().0;

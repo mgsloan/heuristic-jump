@@ -21,8 +21,8 @@ use std::time::Duration;
 
 use shared::proto::DefinitionResult;
 use shared::{
-    Agreement, ByteOffset, Clock, CommitPolicy, DefinitionSite, DocumentUri, DocumentVersion,
-    Error, FileList, LanguageHandler, Location, Outcome, ProjectView, Query, Rope, ServerProfile,
+    Agreement, Clock, CommitPolicy, DefinitionSite, DocumentUri, DocumentVersion, Error, FileList,
+    LanguageHandler, Location, Offset, Outcome, ProjectView, Query, Rope, ServerProfile,
     SnapshotSeed, Strata, Stratum, Trace,
 };
 
@@ -142,7 +142,7 @@ impl Replay<'_> {
 
         let query = Query {
             doc: document,
-            position: ByteOffset(row.offset),
+            position: Offset(row.offset),
             project: &project,
             deadline: &deadline,
             server: &profile,
@@ -221,7 +221,7 @@ impl Replay<'_> {
 
         Ok(QueryRecord {
             uri: document.uri.to_string().into(),
-            position: record::position_of(ByteOffset(row.offset)),
+            position: record::position_of(Offset(row.offset)),
             language: self.corpus.language().as_str().into(),
             mode: Mode::Proxy,
             server_health: None,

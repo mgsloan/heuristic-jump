@@ -21,7 +21,7 @@ use std::fmt;
 use std::io;
 use std::path::PathBuf;
 
-use rope::{ByteLen, ByteOffset, LineIndex};
+use rope::{ByteLen, LineIndex, Offset};
 use thiserror::Error;
 
 use crate::proto::PositionEncoding;
@@ -259,8 +259,8 @@ pub enum DocumentError {
     #[error("a change to {uri} starts at {start} and ends at {end}")]
     RangeInverted {
         uri: DocumentUri,
-        start: ByteOffset,
-        end: ByteOffset,
+        start: Offset,
+        end: Offset,
     },
     /// §8.6's third check, the free end-to-end one: immediately after a save
     /// the buffer and the file are identical by definition, so a length that
@@ -401,7 +401,7 @@ pub enum EncodingError {
         encoding: PositionEncoding,
     },
     #[error("byte offset {offset} is not a character boundary in {len} bytes of text")]
-    OffsetOutOfRange { offset: ByteOffset, len: ByteLen },
+    OffsetOutOfRange { offset: Offset, len: ByteLen },
     /// `core.md` §8.4's stated risk — "a `line` that disagrees with `range`" —
     /// detected at the one place both are read against a document.
     ///

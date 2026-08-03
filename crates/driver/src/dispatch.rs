@@ -15,10 +15,9 @@ use std::sync::Arc;
 use rustc_hash::FxHashMap;
 use shared::proto::{PositionEncoding, WireLocation, WirePosition, WireRange};
 use shared::{
-    ByteOffset, CommitPolicy, Deadline, DocumentSnapshot, DocumentUri, DocumentVersion,
-    EncodingError, Error, FileText, HandlerError, LanguageHandler, LanguageId, Outcome,
-    ProjectError, ProjectPath, ProjectView, Query, RelPath, Rope, ServerProfile, SnapshotSeed,
-    Tree,
+    CommitPolicy, Deadline, DocumentSnapshot, DocumentUri, DocumentVersion, EncodingError, Error,
+    FileText, HandlerError, LanguageHandler, LanguageId, Offset, Outcome, ProjectError,
+    ProjectPath, ProjectView, Query, RelPath, Rope, ServerProfile, SnapshotSeed, Tree,
 };
 
 /// The handler set, resolved once at startup. `heuristic_jump` is the one
@@ -207,7 +206,7 @@ impl Answer {
 #[derive(Debug)]
 pub struct Request<'a> {
     pub seed: SnapshotSeed,
-    pub position: ByteOffset,
+    pub position: Offset,
     pub project: &'a ProjectView,
     pub deadline: &'a Deadline,
     pub server: &'a ServerProfile,

@@ -16,7 +16,7 @@ use crate::document::DocumentSnapshot;
 use crate::error::Error;
 use crate::project::{FileCount, ProjectView};
 use crate::vocabulary::{Confidence, FileExtension, LanguageId, Location, ServerId};
-use rope::{ByteLen, ByteOffset};
+use rope::{ByteLen, Offset};
 
 pub trait LanguageHandler: Send + Sync {
     /// LSP `languageId` values, for open documents.
@@ -41,7 +41,7 @@ pub trait LanguageHandler: Send + Sync {
 #[derive(Debug)]
 pub struct Query<'a> {
     pub doc: &'a DocumentSnapshot,
-    pub position: ByteOffset,
+    pub position: Offset,
     /// Scoped reads and searches. A handler cannot reach a file this did not
     /// give it.
     pub project: &'a ProjectView,

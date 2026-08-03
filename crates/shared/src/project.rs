@@ -30,7 +30,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use ignore::WalkBuilder;
-use rope::{ByteLen, ByteOffset, ByteRange, LineIndex, Rope};
+use rope::{ByteLen, ByteRange, LineIndex, Offset, Rope};
 use rustc_hash::FxHashSet;
 use tree_sitter::{Language, Parser, Point, Tree};
 
@@ -643,8 +643,8 @@ fn matches_in(text: &str, literal: &str) -> Vec<Hit> {
         counted = start;
         hits.push(Hit {
             range: ByteRange {
-                start: ByteOffset(start),
-                end: ByteOffset(end),
+                start: Offset(start),
+                end: Offset(end),
             },
             line,
         });

@@ -34,8 +34,7 @@ use std::time::Instant;
 use rustc_hash::FxHashMap;
 use shared::proto::{DefinitionResult, MessageType, ShowMessageParams};
 use shared::{
-    Agreement, ByteOffset, DefinitionSite, DocumentUri, EditorRequestId, Location, Outcome,
-    Severity,
+    Agreement, DefinitionSite, DocumentUri, EditorRequestId, Location, Offset, Outcome, Severity,
 };
 
 use crate::dispatch::Answer;
@@ -50,7 +49,7 @@ use crate::dispatch::Answer;
 pub struct PendingQuery {
     editor_id: EditorRequestId,
     uri: DocumentUri,
-    position: ByteOffset,
+    position: Offset,
     arrived: Instant,
     /// Byte-space, as the handler returned it and **in the order it returned
     /// them**, kept for the divergence check — which compares `(uri, line)` and
@@ -72,7 +71,7 @@ impl PendingQuery {
     pub fn new(
         editor_id: EditorRequestId,
         uri: DocumentUri,
-        position: ByteOffset,
+        position: Offset,
         arrived: Instant,
     ) -> Self {
         Self {
@@ -92,7 +91,7 @@ impl PendingQuery {
         &self.uri
     }
 
-    pub fn position(&self) -> ByteOffset {
+    pub fn position(&self) -> Offset {
         self.position
     }
 
@@ -185,7 +184,7 @@ impl Resolution {
 ///
 /// **What it cannot name is the symbol.** §9 asks the message to name "the
 /// symbol queried and the location the shim sent them to", and only the second
-/// is reachable from here: the record holds a `ByteOffset` into a document
+/// is reachable from here: the record holds a `Offset` into a document
 /// version that may be several edits gone by the time the child replies, and
 /// resolving one to a token needs that version's tree. The symbol would have to
 /// be captured at answer time, when the worker still has the snapshot. That is

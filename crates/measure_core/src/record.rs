@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 use shared::{
-    AbstainReason, Agreement, ByteOffset, DocumentUri, FileCount, LineIndex, Micros, StageLabel,
+    AbstainReason, Agreement, DocumentUri, FileCount, LineIndex, Micros, Offset, StageLabel,
     StageName, Stratum,
 };
 
@@ -227,6 +227,6 @@ pub(crate) fn file_count(files: FileCount) -> u32 {
 }
 
 /// The position, spelled the one way `data-collection.md` and §7 agree on.
-pub(crate) fn position_of(offset: ByteOffset) -> usize {
+pub(crate) fn position_of(offset: Offset) -> usize {
     offset.0
 }

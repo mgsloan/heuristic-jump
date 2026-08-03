@@ -45,23 +45,23 @@ strings across the seam. Almost every value here is an offset, an index, or an
 identifier, and those are exactly the things that silently substitute for each
 other.
 
-**The text-shaped ones are `rope`'s, not `shared`'s.** `ByteOffset`,
+**The text-shaped ones are `rope`'s, not `shared`'s.** `Offset`,
 `ByteLen`, `ByteRange`, and `LineIndex` are *defined in* the vendored rope and
 re-exported here, because `shared` depends on `rope` and the dependency cannot
 run the other way — `rope-modifications.md` §2 has the argument, and the same
 goes for `ByteColumn`, `Utf16Column`, and `CharCount`, which handlers do not
-use. Every other crate says `shared::ByteOffset` and never has to know. They
+use. Every other crate says `shared::Offset` and never has to know. They
 appear here because this is the seam they are part of:
 
 ```rust
 // vendor/rope, re-exported by shared
-pub struct ByteOffset(pub usize);   // a position; never a UTF-16 offset
+pub struct Offset(pub usize);   // a position; never a UTF-16 offset
 pub struct ByteLen(pub usize);      // a quantity, distinct from a position
-pub struct ByteRange { pub start: ByteOffset, pub end: ByteOffset }
+pub struct ByteRange { pub start: Offset, pub end: Offset }
 pub struct LineIndex(pub u32);      // zero-based line
 
 impl ByteRange {
-    pub fn contains(self, at: ByteOffset) -> bool;
+    pub fn contains(self, at: Offset) -> bool;
     pub fn overlaps(self, other: ByteRange) -> bool;
 }
 
@@ -139,7 +139,7 @@ pub trait LanguageHandler: Send + Sync {
 
 pub struct Query<'a> {
     pub doc: &'a DocumentSnapshot,       // rope + tree, immutable
-    pub position: ByteOffset,
+    pub position: Offset,
     /// Scoped reads, parses, and search execution -- see below.
     pub project: &'a ProjectView,
     pub deadline: &'a Deadline,
@@ -571,7 +571,7 @@ Conversion lives in one module with exhaustive property tests against a
 reference implementation, and every position is converted to byte offsets at
 the edge so that no UTF-16 offset ever reaches the handler interface. That
 last rule is enforced by the type system rather than by discipline:
-`proto::WirePosition` has private fields and yields a `ByteOffset` only when
+`proto::WirePosition` has private fields and yields a `Offset` only when
 handed the negotiated encoding and the text
 ([section 8.3](#83-the-wire-position-type-is-inert)).
 
@@ -1407,7 +1407,7 @@ they can only ever be the latter.
 
 With `lsp-types`, every message boundary yields foreign primitives that a
 conversion layer then has to launder into `DocumentUri`, `DocumentVersion`,
-`EditorRequestId`, `LanguageId`, `ByteOffset`. That layer is real code, it is
+`EditorRequestId`, `LanguageId`, `Offset`. That layer is real code, it is
 where the encoding bugs live, and — decisively — **it is optional.** Nothing
 stops a later change from holding an `lsp_types::Position` a few functions
 inward, and nothing about that change looks wrong in review. The newtype
@@ -1496,16 +1496,16 @@ impl WirePosition {
     /// The only way out. Requires naming the encoding and the document,
     /// which is exactly the information a correct conversion needs.
     pub fn resolve(self, enc: PositionEncoding, text: &Rope)
-        -> Result<ByteOffset, EncodingError>;
+        -> Result<Offset, EncodingError>;
 }
 ```
 
-`WirePosition` has private fields and no accessors. A `ByteOffset` cannot be
+`WirePosition` has private fields and no accessors. A `Offset` cannot be
 obtained from it without supplying both the negotiated encoding and the text,
 so the failure mode in [section 3](#3-position-encoding) — using a UTF-16 column
 as a byte index — is not something to be careful about. It does not compile.
 
-The same applies outbound: `WirePosition::encode(ByteOffset, enc, &Rope)` is
+The same applies outbound: `WirePosition::encode(Offset, enc, &Rope)` is
 the only constructor. Encoding is therefore applied in exactly two functions
 in the whole system, both of which take the encoding explicitly, and
 `PositionEncoding` itself is set once from `InitializeResult` and never
@@ -2094,7 +2094,7 @@ seven languages grow out of.
 ### Vendoring the Zed crates
 
 Beyond the mechanical patches below, `vendor/rope` gets one substantive change:
-its public API speaks in newtypes — `ByteOffset`, `ByteLen`, and `ByteRange`
+its public API speaks in newtypes — `Offset`, `ByteLen`, and `ByteRange`
 instead of `usize` and `Range<usize>`, and `LineIndex` / `ByteColumn` /
 `Utf16Column` / `CharCount` instead of the bare `u32`s in `Point`,
 `PointUtf16`, and `TextSummary` — so the
@@ -2104,7 +2104,7 @@ document: **`rope-modifications.md`**. Read it before touching `vendor/`.
 
 Three things stated here because they change this section's own claims:
 
-* `ByteOffset`, `ByteLen`, `ByteRange`, `LineIndex`, `ByteColumn`,
+* `Offset`, `ByteLen`, `ByteRange`, `LineIndex`, `ByteColumn`,
   `Utf16Column`, and `CharCount` are *defined in* `rope` and re-exported by
   `shared`, since the dependency direction forbids the reverse. `ByteLen` is
   also what a handler counts `bytes_scanned` in — one byte quantity, not
@@ -2150,7 +2150,7 @@ to `rope`, recorded as such.
 
 `sum_tree` needs no patching, and the newtype work in
 `rope-modifications.md` does not change that: `sum_tree::Dimension` is
-generic over the summary type, so `ByteOffset`'s impls live in `rope`. Its
+generic over the summary type, so `Offset`'s impls live in `rope`. Its
 `tree_map.rs` is unused here and can be dropped; a whole-file deletion still
 leaves a clean diff.
 
