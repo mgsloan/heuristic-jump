@@ -125,6 +125,7 @@ class LoopConfig:
     stall_n: int
     rotation: int
     splice_sections: int
+    detail_gaps: int
     budget_usd: float | None
     model: str | None
     language: str | None
@@ -154,6 +155,7 @@ def load_phase() -> Phase:
             stall_n=table.get("stall_n", 3),
             rotation=table.get("rotation", 6),
             splice_sections=table.get("splice_sections", 3),
+            detail_gaps=table.get("detail_gaps", 8),
             budget_usd=table.get("budget_usd"),
             model=table.get("model"),
             language=table.get("language"),
@@ -974,6 +976,7 @@ def cmd_audit_merge(args: argparse.Namespace) -> int:
         GAP_LOG,
         {
             "ts": stamp,
+            "commit": head_sha(),
             "sections_audited": sorted(audited),
             "opened": sorted(set(after) - set(before)),
             "closed": sorted(set(before) - set(after)),
@@ -1232,10 +1235,34 @@ def prompt_values(phase: Phase, config: LoopConfig, campaign_id: str) -> dict[st
     gaps = open_gaps(config.docs)
     counts = audit_counts(config.docs)
 
+    # Full detail for the gaps a campaign is most likely to take, one line for
+    # the rest. The whole list was being resent every turn, and at the observed
+    # 141:1 cache-read to output ratio the tail's size is the dominant cost of
+    # a campaign — 34KB re-read across 79 turns, of which two gaps get used.
+    # Ordered by how close their section is to going clean, which is the
+    # preference the prompt already states.
+    per_section: dict[str, int] = {}
+    for key, _ in gaps:
+        per_section[key] = per_section.get(key, 0) + 1
+    ranked = sorted(gaps, key=lambda pair: (per_section[pair[0]], pair[0]))
+    detailed, listed = ranked[: config.detail_gaps], ranked[config.detail_gaps :]
+
     gap_lines = [
         f"- {key}[{gap_id(key, gap.claim)}]\n  claim: {gap.claim}\n  found: {gap.found}\n  where: {gap.where}"
-        for key, gap in gaps
-    ] or ["- (none recorded; the audit has not run, or every audited section is clean)"]
+        for key, gap in detailed
+    ]
+    if listed:
+        gap_lines.append(
+            f"\nThe remaining {len(listed)}, one line each. Ask for the detail of any"
+            " you take — it is in `state/audit/`, and `harness/hj section-text"
+            " <anchor>` prints the section:"
+        )
+        gap_lines += [
+            f"- {key}[{gap_id(key, gap.claim)}] {gap.claim[:110]}" for key, gap in listed
+        ]
+    gap_lines = gap_lines or [
+        "- (none recorded; the audit has not run, or every audited section is clean)"
+    ]
 
     index = section_index(config.docs)
     unjudged = [
@@ -1356,10 +1383,25 @@ def cmd_render_auditor(args: argparse.Namespace) -> int:
     unknown = [key for key in keys if key not in index]
     if unknown:
         die(f"audit plan names sections that do not exist: {', '.join(unknown)}")
+    # What changed since the last audit — evidence, deliberately not the last
+    # audit's verdicts. `design/loops.md` section 19 names a section wrongly
+    # called clean as the audit's worst failure and says successive audits by
+    # *fresh* sessions are the only defence. Telling this one what the last one
+    # concluded destroys that; telling it which files moved does not, and saves
+    # it re-reading a tree it has no reason to suspect.
+    rows = read_jsonl(GAP_LOG)
+    since = next((row["commit"] for row in reversed(rows) if row.get("commit")), None)
+    if since:
+        changed = git("diff", "--stat", f"{since}..HEAD", "--", "crates", "vendor").strip()
+        changes = changed or "Nothing under crates/ or vendor/ has changed since the last audit."
+    else:
+        changes = "No previous audit to compare against; everything is new to this one."
+
     template = (HARNESS / "prompts" / "auditor.md").read_text()
     rendered = render(
         template,
         {
+            "changes_since_last_audit": changes,
             "phase": phase.phase,
             "loop": config.owner,
             "docs": ", ".join(f"`design/{d}`" for d in config.docs) or "(none)",

@@ -18,9 +18,23 @@ Documents in scope: {{docs}}
 correct" — that question produces reassurance.
 
 You are given {{section_count}} sections, spliced in full at the end. They
-are your entire scope. Do not audit sections you were not given; do not
-audit code no section in your scope makes a claim about. Read the code the
-claims are about — you have Read, Grep and Glob.
+are your entire scope.
+
+**What changed since the last audit**, so you can spend your reading where the
+code moved rather than re-deriving a tree nobody has touched. This is a
+diffstat and nothing more — you are not told what the last audit concluded,
+deliberately. A section wrongly called clean is the worst failure available
+here, and successive audits by sessions that have not seen the previous
+verdict are the only thing that catches it. Unchanged code is not therefore
+correct; it is only unchanged.
+
+```
+{{changes_since_last_audit}}
+```
+
+Do not audit sections you were not given; do not audit code no section in your
+scope makes a claim about. Read the code the claims are about — you have Read,
+Grep and Glob.
 
 # Answer in exactly two numbered lists
 

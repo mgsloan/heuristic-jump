@@ -59,6 +59,17 @@ worked through in sequence.
    are already spliced into your context at the end of this prompt. Follow a
    cross-reference only when the work needs it.
 
+   **Read in few large pieces, not many small ones.** Every turn re-reads
+   everything before it, so the cost of a campaign grows with the *square* of
+   its turn count — measured on this loop, a 79-turn campaign re-read about
+   89,000 tokens per turn against a 9,000-token prompt, because every earlier
+   `grep` result was still in context. Reading one file whole costs one turn
+   and one result; finding the same thing with eleven `grep -n` and eight
+   `sed -n` costs nineteen turns and nineteen results, each re-read by every
+   turn that follows. Prefer `Read` on a whole file over slicing it, batch
+   independent commands into one call, and do not re-read what is already
+   above you.
+
 3. **Implement, one experiment at a time.** After each change run
    `{{gate_command}}`.
    - Green: commit, using the trailer format below, then run
@@ -70,9 +81,20 @@ worked through in sequence.
    session its whole context budget on diagnosis, and it will not know the
    breakage was deliberate.
 
-4. **Close** when the target's claim is satisfied and committed, or three
-   experiments produce no commit, or you have done as much of the target as
-   fits and the rest is honestly a separate campaign. An experiment that
+4. **When the target is done, take another if it is cheap to.** Closing with
+   a warm context throws away everything you have read. If there is a gap
+   whose work is in code you already have open — the same files, the same
+   types, the same section — take it and say so in `{{campaign_record}}`;
+   your `TARGET` line lists all of them.
+
+   Stop extending at the first target that would need fresh reading. That is
+   the boundary, and it is not a matter of taste: a target you have to read
+   for is one a fresh session does better and cheaper, because it starts
+   without your accumulated context to re-read on every turn.
+
+   **Close** when the target's claim is satisfied and no cheap next target
+   remains, or three experiments produce no commit, or you have done as much
+   as fits and the rest is honestly a separate campaign. An experiment that
    produces no commit at all is a signal, not rest.
 
 5. **On close**, before you say anything else:

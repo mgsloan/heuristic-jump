@@ -32,6 +32,12 @@ stall_n = 3        # campaigns without progress before the loop stops and asks
 rotation = 6       # sections per audit beyond the ones the last campaign touched
 splice_sections = 3
 
+# How many gaps carry full claim/found/where in the prompt. The rest are one
+# line each. Every turn re-reads the whole prompt, and the observed cache-read
+# to output ratio is about 141:1, so the tail's size — not the campaign count —
+# is what a campaign costs.
+detail_gaps = 8
+
 # The documents the audit covers. `core.md` and `shim.md` make checkable
 # claims; `resolution.md` describes an approach whose success is *measured*,
 # so conforming to it would be optimising the wrong thing
