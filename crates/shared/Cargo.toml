@@ -12,3 +12,14 @@ workspace = true
 [lib]
 path = "src/shared.rs"
 doctest = false
+
+# `rope` is the only one of these that is a *layering* claim rather than a
+# choice: the text vocabulary is defined there and re-exported here, because
+# `shared` depends on `rope` and the dependency cannot run the other way
+# (`rope-modifications.md` §2, `core.md` §1).
+[dependencies]
+ignore.workspace = true
+rope.workspace = true
+thiserror.workspace = true
+tree-sitter.workspace = true
+url.workspace = true

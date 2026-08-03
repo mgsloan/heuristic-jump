@@ -15,6 +15,25 @@ license = "GPL-3.0-or-later"
 [lints.rust]
 unexpected_cfgs = { level = "allow" }
 
+# These two are not a lint policy for this crate either — they are the two
+# default-level clippy lints upstream's `rope.rs` trips, and they leak out of
+# here the moment a crate that *is* linted depends on rope: `cargo clippy -p
+# shared --all-targets -- -D warnings` compiles rope from source, and `-D
+# warnings` is a command-line flag that applies to every crate in the build,
+# not just the one named by `-p`. Without this the gate turns red on a
+# dependency edge, in a crate the gate is documented not to lint.
+#
+# Allowed rather than fixed, one reason each:
+# * `should_implement_trait` fires on `Lines::next`, which *cannot* implement
+#   `Iterator` — it returns `Option<&str>` borrowed from `self`, which is a
+#   lending iterator and does not fit the trait.
+# * `from_over_into` fires on `impl Into<Chunk> for ChunkSlice<'_>`. The fix is
+#   mechanical and clippy offers it, but it is an edit to upstream's text that
+#   buys nothing here.
+[lints.clippy]
+should_implement_trait = "allow"
+from_over_into = "allow"
+
 [lib]
 path = "src/rope.rs"
 

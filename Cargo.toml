@@ -27,6 +27,19 @@ shared = { path = "crates/shared" }
 rope = { path = "vendor/rope" }
 sum_tree = { path = "vendor/sum_tree" }
 
+# Ours, chosen in `deps.md` §0's table and argued in the section each names.
+# Each arrives with its first user rather than up front, so a pin here is
+# always one somebody has resolved and built against (`deps.md` §14).
+#
+# `tree-sitter`'s *runtime* version is ours to pick and tracks a recent release
+# — it is the grammars that are pinned to Zed's revisions, and no grammar crate
+# is in the graph yet (`deps.md` §6).
+ignore = "0.4.31"
+rustc-hash = "2.1"
+thiserror = "2.0"
+tree-sitter = "0.26"
+url = "2.5"
+
 # Held at `../zed/Cargo.toml`'s values at `90d024b8`, because the vendored
 # crates are written against them and `deps.md` §5 records each as forced by
 # rope rather than chosen. Two deliberate differences from Zed:
@@ -180,11 +193,15 @@ declare_interior_mutable_const = "deny"
 
 # Zed's values, and the right ones for a binary whose headline metric is
 # latency but which still needs usable backtraces from user reports
-# (`deps.md` §14). `[profile.dev.package]`'s opt-level bumps for `tree-sitter`
-# and `serde_json` are not here yet: cargo rejects a profile override naming a
-# package that is not in the graph, and neither is a dependency of anything so
-# far. They land with the crate that first pulls them in.
+# (`deps.md` §14).
 [profile.release]
 debug = "limited"
 lto = "thin"
 codegen-units = 1
+
+# `deps.md` §6: parsing in a debug build is otherwise slow enough to distort
+# every latency observation made while developing. `serde_json`'s bump from the
+# same section is still absent — cargo rejects a profile override naming a
+# package that is not in the graph, and nothing depends on it yet.
+[profile.dev.package.tree-sitter]
+opt-level = 3

@@ -3,7 +3,17 @@
 //! hand-written LSP wire types, and §9 why this is a crate of its own rather
 //! than the bottom of `driver`.
 //!
-//! Empty so far. The workspace layout exists before the types do, deliberately
-//! — `core.md` §9 is what the first campaign could satisfy without `vendor/`,
-//! and the seam it holds is frozen at the phase 1a gate, so it is written once
-//! and with the escalation that decision needs.
+//! The text-shaped newtypes are re-exported rather than defined: they live in
+//! `vendor/rope`, because `shared` depends on `rope` and the dependency cannot
+//! run the other way (`rope-modifications.md` §2). Every other crate says
+//! `shared::ByteOffset` and never has to know which side of that edge it came
+//! from.
+
+mod error;
+mod vocabulary;
+
+pub use error::{Error, HandlerError, ParseError, ProjectError, ProtocolError};
+pub use rope::{ByteLen, ByteOffset, ByteRange, LineIndex, Rope};
+pub use vocabulary::{
+    Confidence, DocumentUri, DocumentVersion, FileExtension, LanguageId, Location, ServerId,
+};

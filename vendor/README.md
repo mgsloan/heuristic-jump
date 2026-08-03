@@ -109,6 +109,19 @@ impls live in `rope`.
   not a rule but a false positive: `rust_analyzer` is a cfg Zed sets from
   outside cargo and allows workspace-wide.
 
+  It now carries a `[lints.clippy]` block for a different reason, and the
+  reason is worth knowing before someone deletes it: **lints leak along the
+  dependency edge.** `-D warnings` is a command-line flag, so
+  `cargo clippy -p shared --all-targets -- -D warnings` — gate step 2, on a
+  crate the gate *does* lint — applies it to every crate it compiles from
+  source, and `shared` depends on `rope`. The two entries are the two
+  default-level clippy lints upstream's `rope.rs` trips
+  (`should_implement_trait` on the lending `Lines::next`, which cannot
+  implement `Iterator`; `from_over_into` on `impl Into<Chunk> for
+  ChunkSlice`). Allowing them in the vendored manifest keeps the edit out of
+  upstream's source. Anything the *tests* trip is still not covered — that is
+  `conformance-003` and this does not answer it.
+
 * **Dependency versions** are Zed's at `90d024b8`, in this workspace's
   `[workspace.dependencies]`, with two deliberate differences recorded there:
   `log` without Zed's `kv_unstable_serde`/`serde` features, and crates.io
