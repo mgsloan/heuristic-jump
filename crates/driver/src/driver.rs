@@ -4,4 +4,9 @@
 //! actor (`design/core.md` §9).
 //!
 //! It depends on `shared` and on no language crate, and that direction is the
-//! one rule the workspace graph is built around.
+//! one rule the workspace graph is built around. `tests/seam.rs` asserts it
+//! rather than leaving it to be read.
+
+mod dispatch;
+
+pub use dispatch::{Dispatched, Registry, dispatch};

@@ -228,7 +228,9 @@ dependencies = [
 name = "driver"
 version = "0.1.0"
 dependencies = [
+ "rustc-hash",
  "shared",
+ "tracing",
 ]
 
 [[package]]

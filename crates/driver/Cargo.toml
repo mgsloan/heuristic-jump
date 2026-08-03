@@ -14,4 +14,6 @@ path = "src/driver.rs"
 doctest = false
 
 [dependencies]
+rustc-hash.workspace = true
 shared.workspace = true
+tracing.workspace = true
