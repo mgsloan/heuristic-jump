@@ -420,6 +420,198 @@ fn the_licence_text_is_symlinked_into_every_member() {
     }
 }
 
+/// `deps.md` §14's first two conventions, which are one mechanism:
+///
+/// > **Every dependency version lives in `[workspace.dependencies]`.** Member
+/// > crates never name a version. This is what stops the vendored crates and
+/// > ours from resolving two copies of `heapless` or `rayon`.
+///
+/// > **Members reference deps as `foo.workspace = true`**, the dotted form, not
+/// > `foo = { workspace = true }`. The braced form appears only when the member
+/// > adds something — `util = { workspace = true, features = [...] }`.
+///
+/// The stated consequence is the reason this is asserted rather than reviewed.
+/// A member that names `rayon = "1.8"` resolves, builds, and passes every test
+/// in the suite; what it costs is that `vendor/rope` and `crates/shared` can
+/// now compile against two different `rayon`s, and the first symptom of that
+/// is a type error in an unrelated crate months later. Nothing about the
+/// second convention is cosmetic either: the braced form is where a version
+/// would go, so requiring the dotted one unless something *else* is added
+/// makes the exception visible.
+#[test]
+fn no_member_names_a_dependency_version_of_its_own() {
+    let members = workspace_members();
+    assert!(
+        !members.is_empty(),
+        "no workspace members parsed out of Cargo.toml, so this test would pass vacuously"
+    );
+
+    let mut entries = 0;
+    for member in &members {
+        let manifest = workspace_file(&format!("{member}/Cargo.toml"));
+        assert!(
+            !manifest.is_empty(),
+            "no manifest for {member}, so every assertion below is vacuous"
+        );
+
+        for (table, key, value) in dependency_entries(&manifest) {
+            entries += 1;
+            let where_ = format!("{member}'s [{table}] entry `{key} = {value}`");
+
+            if let Some(name) = key.strip_suffix(".workspace") {
+                assert_eq!(
+                    value, "true",
+                    "{where_} writes the dotted form and then does not inherit: \
+                     deps.md §14 has every version live in [workspace.dependencies], and \
+                     `{name}` here names something else"
+                );
+                continue;
+            }
+
+            assert!(
+                value.starts_with('{') && value.contains("workspace = true"),
+                "{where_} does not inherit from [workspace.dependencies]: deps.md §14 is \
+                 what stops the vendored crates and ours from resolving two copies of \
+                 heapless or rayon, and two copies show up as a type error in an unrelated \
+                 crate rather than as anything here"
+            );
+            assert!(
+                value.matches('=').count() > 1,
+                "{where_} uses the braced form and adds nothing: deps.md §14 keeps the \
+                 dotted `{key}.workspace = true` unless the member adds a feature or a \
+                 flag, because the braced form is where a version would go and the \
+                 exception should be visible"
+            );
+        }
+    }
+
+    assert!(
+        entries > 20,
+        "only {entries} dependency entries across {} members, which is fewer than the \
+         manifests have — the table scan is not reading them",
+        members.len()
+    );
+}
+
+/// `deps.md` §14 on lints, where the *absence* is as deliberate as the
+/// presence:
+///
+/// > **`[lints] workspace = true` in every member we wrote** — one place, no
+/// > `#![deny(...)]` scattered in `lib.rs` files.
+///
+/// > **`vendor/*` does not inherit them**, and this is deliberate rather than
+/// > an oversight to fix later. Those crates are 7,400 lines of someone else's
+/// > text-datastructure code, plus upstream tests kept *verbatim* … Bending
+/// > them to `unwrap_used`, `panic`, and the `cast_*` family would be a large
+/// > amount of work that buys no correctness, and every line of it would widen
+/// > the re-sync diff.
+///
+/// The `crates/*` half fails silently and this scan is what catches it: a
+/// crate created without the table compiles under no lints at all and the gate
+/// stays green, because `-D warnings` only denies what some lint level turned
+/// on. Deleting `shared`'s `[lints]` is the control, and it fires.
+///
+/// **The `vendor/*` half has no negative control, and the reason is worth more
+/// than the assertion.** Every mutation that would violate it is rejected
+/// before a test runs. Adding `[lints]` beside `vendor/rope`'s existing
+/// `[lints.rust]` is a duplicate key cargo refuses to parse; replacing those
+/// tables outright, or adding one to `vendor/sum_tree`, makes the crate stop
+/// compiling — `elided_lifetimes_in_paths` and `unused_qualifications` alone
+/// produce dozens of errors across upstream's text, before `unwrap_used` or
+/// the `cast_*` family is reached.
+///
+/// That is §14's own claim, measured rather than argued: "Bending them to
+/// `unwrap_used`, `panic`, and the `cast_*` family would be a large amount of
+/// work that buys no correctness, and every line of it would widen the re-sync
+/// diff." The assertion is kept anyway, because the compiler's enforcement is
+/// incidental — it holds only while upstream's text happens to trip a denied
+/// lint, and a future re-sync that arrives clean would leave nothing else
+/// saying the exemption was deliberate.
+#[test]
+fn the_workspace_lints_reach_our_crates_and_not_the_vendored_ones() {
+    let members = workspace_members();
+    assert!(
+        !members.is_empty(),
+        "no workspace members parsed out of Cargo.toml, so this test would pass vacuously"
+    );
+
+    for member in &members {
+        let manifest = workspace_file(&format!("{member}/Cargo.toml"));
+        // Inside the `[lints]` table specifically. Scanning for the two lines
+        // anywhere in the manifest passes on one where they are unrelated —
+        // and, found by the control run for this test, cannot be exercised at
+        // all on `vendor/rope`: its `[lints.rust]` and `[lints.clippy]` tables
+        // make an *added* `[lints]` a duplicate key, which cargo rejects
+        // before a single test runs. A control that produces no test result is
+        // not a control.
+        let inherits = table_of(&manifest, "lints")
+            .iter()
+            .any(|line| line == "workspace = true");
+
+        if member.starts_with("vendor/") {
+            assert!(
+                !inherits,
+                "{member} inherits [lints] from the workspace: deps.md §14 keeps the rules on \
+                 crates/* only, so upstream's text stays unedited and the re-sync diff stays \
+                 readable — a vendored crate under unwrap_used and the cast_* family is a \
+                 large edit that buys no correctness"
+            );
+        } else {
+            assert!(
+                inherits,
+                "{member} has no `[lints] workspace = true`: deps.md §14 puts the rules in one \
+                 place rather than scattering #![deny(...)] through lib.rs files, and a crate \
+                 that inherits none of them compiles clean under -D warnings because nothing \
+                 turned a lint on"
+            );
+        }
+    }
+}
+
+/// `deps.md` §14: "**Explicit `[lib] path`.** Zed writes
+/// `path = "src/rope.rs"` rather than relying on `src/lib.rs`. We keep this for
+/// the vendored crates because it is how they arrive, **and for our own crates
+/// too**, per `CLAUDE.md`" — which states it as a rule for creating a crate,
+/// "for a descriptive library root name", and which `core.md` §9's
+/// language-crate template already assumes (`src/lang_rust.rs`, not `lib.rs`).
+///
+/// Asserted here because the failure is a non-event: a crate created the
+/// default way has a `src/lib.rs`, no `[lib]` table, and builds. Nothing
+/// notices until someone opens the directory. `sources_of` above also depends
+/// on the convention — it derives a crate's root from its name — so a crate
+/// that broke it would quietly make three of the scans in this file read an
+/// empty string instead of a source file.
+#[test]
+fn every_library_names_its_root_explicitly() {
+    for member in workspace_members() {
+        let manifest = workspace_file(&format!("{member}/Cargo.toml"));
+        if !manifest.contains("[lib]") {
+            // A binary-only crate. `[[bin]]` carries its own path, and both of
+            // ours state one because cargo would otherwise name the artifact
+            // after the package (CHANGE-conformance-001).
+            assert!(
+                manifest.contains("[[bin]]"),
+                "{member} declares neither [lib] nor [[bin]], so it builds a default target \
+                 from a path nothing names"
+            );
+            continue;
+        }
+
+        let named = manifest
+            .lines()
+            .map(str::trim)
+            .find_map(|line| line.strip_prefix("path = "))
+            .map(|path| path.trim_matches('"').to_owned())
+            .unwrap_or_default();
+        assert!(
+            !named.is_empty() && !named.ends_with("lib.rs"),
+            "{member}'s [lib] names {named:?}: deps.md §14 and CLAUDE.md both want an explicit \
+             descriptive root rather than src/lib.rs, and the scans in this file derive a \
+             crate's sources from that convention"
+        );
+    }
+}
+
 /// §5's table, as a rule rather than a list, because six more `lang_*` and six
 /// more `measure_*` arrive by copying the template and a hardcoded list would
 /// stop applying the moment one did.
@@ -602,6 +794,60 @@ fn dependencies_in(text: &str) -> Vec<String> {
         }
     }
     found
+}
+
+/// The lines of one named table, exactly — `table_of(m, "lints")` returns
+/// `[lints]`'s body and not `[lints.clippy]`'s, which is the distinction the
+/// vendored crates turn on.
+fn table_of(manifest: &str, wanted: &str) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut inside = false;
+    for line in manifest.lines() {
+        let line = line.trim();
+        if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+            inside = name == wanted;
+            continue;
+        }
+        if inside && !line.starts_with('#') && !line.is_empty() {
+            lines.push(line.to_owned());
+        }
+    }
+    lines
+}
+
+/// Every entry of every dependency table, as (table, key, value), where the
+/// key is everything left of the first `=` and the value everything right of
+/// it. `dependencies_in` above answers "what does this crate depend on" and
+/// deliberately reads `[dependencies]` alone; §14's conventions are about the
+/// *form* of an entry and hold in `[dev-dependencies]` just as much, which is
+/// where a stray version would be least noticed.
+///
+/// `[workspace.dependencies]` is skipped by name, since it is the one table
+/// where a version belongs.
+fn dependency_entries(manifest: &str) -> Vec<(String, String, String)> {
+    let mut entries = Vec::new();
+    let mut table = String::new();
+    for line in manifest.lines() {
+        let line = line.trim();
+        if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+            table = name.to_owned();
+            continue;
+        }
+        if !table.ends_with("dependencies") || table.starts_with("workspace.") {
+            continue;
+        }
+        if line.starts_with('#') || line.is_empty() {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once('=') {
+            entries.push((
+                table.clone(),
+                key.trim().to_owned(),
+                value.trim().to_owned(),
+            ));
+        }
+    }
+    entries
 }
 
 fn manifest_text(crate_name: &str) -> String {
