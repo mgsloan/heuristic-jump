@@ -481,33 +481,66 @@ def panel_metrics() -> str:
 
 
 def panel_cost() -> str:
-    directory = STATE / "cost"
-    files = sorted(directory.glob("*.jsonl")) if directory.exists() else []
-    if not files:
+    """`design/loops.md` section 15's derived number is the one that should
+    drive stopping decisions: cost per unit of progress, which should *rise*
+    over a run as the easy wins are exhausted. A rising curve is the economic
+    form of the frontier flattening, and it usually turns up before the
+    frontier visibly stalls."""
+    phase = hj.load_phase()
+    blocks = []
+    for owner in sorted(phase.loops):
+        rows = hj.read_jsonl(hj.cost_path(owner))
+        if not rows:
+            continue
+        total = sum(r.get("usd") or 0 for r in rows)
+        output = sum(r.get("output_tokens") or 0 for r in rows)
+        minutes = sum(r.get("model_seconds") or 0 for r in rows) / 60
+        progressed = [r for r in rows if r.get("progress")]
+        per_progress = (total / len(progressed)) if progressed else None
+        per_progress_tokens = (output / len(progressed)) if progressed else None
+
+        body = "".join(
+            "<tr>"
+            f"<td><code>{esc((r.get('campaign') or '')[:8])}</code></td>"
+            f"<td>{esc(r.get('target') or '—')}</td>"
+            f"<td>{esc(r.get('outcome'))}</td>"
+            f"<td class='num'>${(r.get('usd') or 0):.2f}</td>"
+            f"<td class='num'>{(r.get('output_tokens') or 0):,}</td>"
+            f"<td class='num'>{(r.get('model_seconds') or 0) / 60:.0f}m</td>"
+            f"<td class='num'>{esc(r.get('turns'))}</td>"
+            f"<td class='num'>{esc(r.get('commits'))}</td>"
+            f"<td>{'yes' if r.get('progress') else 'no'}</td>"
+            "</tr>"
+            for r in rows
+        )
+        spend = [r.get("usd") or 0 for r in rows]
+        blocks.append(f"""
+        <article class="metrics">
+          <h3>{esc(owner)}</h3>
+          <p class="headline"><strong>{output:,}</strong> output tokens over {len(rows)} campaigns
+            <span class="note">{minutes:.0f} model-minutes · API-equivalent ${total:.2f}</span></p>
+          <p class="headline" style="font-size:16px">{('%.0f' % per_progress_tokens) if per_progress_tokens else '—'} output tokens
+            <span class="note">per campaign that made progress — this is the number that says when to stop,
+            and it should rise as the easy wins are exhausted</span></p>
+          <p class="note"><strong>API-equivalent is not a bill.</strong> It is the CLI's valuation of the
+            tokens at pay-as-you-go list prices, carried in each session's result event. On a flat
+            subscription it is a usage magnitude, useful for comparing campaigns against each other and for
+            what <code>--max-budget-usd</code> measures itself against — not for what you are charged.</p>
+          {sparkline(spend)}
+          <table><thead><tr><th>campaign</th><th>target</th><th>outcome</th><th class="num">API-eq $</th>
+            <th class="num">output</th><th class="num">model</th><th class="num">turns</th>
+            <th class="num">commits</th><th>progress</th></tr></thead><tbody>{body}</tbody></table>
+        </article>""")
+
+    if not blocks:
         return panel(
             "Cost",
             empty(
-                "Not collected. The join is on session id and happens after the fact — "
-                "`ccusage` reads Claude Code's local JSONL and the harness already records "
-                "which loop and target it launched, so nothing inside the model needs "
-                "instrumenting. It is deferred with the rest of phase 2a's machinery "
-                "(design/loops.md section 18)."
+                "No campaign has closed yet. Rows are written by `harness/hj cost`, "
+                "which the loop runs at each close."
             ),
         )
-    rows = []
-    for path in files:
-        for row in hj.read_jsonl(path):
-            rows.append(
-                "<tr>"
-                + "".join(f"<td>{esc(row.get(key))}</td>" for key in ("campaign", "loop", "phase", "target", "commits", "output_tokens", "model_seconds", "outcome"))
-                + "</tr>"
-            )
-    return panel(
-        "Cost",
-        "<table><thead><tr><th>campaign</th><th>loop</th><th>phase</th><th>target</th><th>commits</th><th>output</th><th>model s</th><th>outcome</th></tr></thead>"
-        f"<tbody>{''.join(rows)}</tbody></table>",
-        note="cost per unit of progress is the number that should drive stopping decisions",
-    )
+    return panel("Cost", "".join(blocks), note="per campaign, because the campaign is the unit of decision")
 
 
 # --- panel 5: sessions -----------------------------------------------------
@@ -735,7 +768,7 @@ tr.gaps td.state { color:var(--bad); }
 tr.unjudged td.state { color:var(--dim); }
 .sections td:first-child { white-space:nowrap; width:1%; }
 .sections td:nth-child(2) { width:26%; }
-.sections td.state { width:1%; white-space:nowrap; }
+.sections td.state { width:1%; white-space:nowrap; }\n.num { text-align:right; font-variant-numeric:tabular-nums; }
 .sections { margin-top:10px; }
 .gaps li, .minors li { font-size:12px; margin-bottom:6px; }
 .paths code { display:inline-block; }

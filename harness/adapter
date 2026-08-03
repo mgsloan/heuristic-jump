@@ -28,6 +28,8 @@
 #       Normalise the stream into our own event shape, one JSON object per
 #       line: {kind, text?, name?, summary?, input?, diff?}. Everything
 #       downstream reads this and not the vendor's records.
+#   cost <transcript>
+#       What the session cost: usd, tokens, model seconds, turns.
 #   transcript-path <owner> <campaign>
 #   hook-path        (reads a PreToolUse payload on stdin)
 #   version          the CLI version, recorded per campaign
@@ -168,6 +170,43 @@ summary)
 		# Third line: how the session ended, which the campaign cannot report
 		# because the conditions that end it that way also stop it writing.
 		print("max_budget" if terminal == "error_max_budget_usd" else "")
+	PY
+	;;
+
+cost)
+	# What the session cost, in the vendor's shape, which is why it lives here.
+	# `design/loops.md` section 17: ccusage reads the CLI's own store, but the
+	# teed stream already carries the same numbers, so this is a parsing job
+	# rather than a dependency.
+	python3 - "${1:?transcript}" <<-'PY'
+		import json, sys
+
+		last = None
+		for line in open(sys.argv[1], errors="replace"):
+		    line = line.strip()
+		    if not line:
+		        continue
+		    try:
+		        event = json.loads(line)
+		    except json.JSONDecodeError:
+		        continue
+		    if event.get("type") == "result":
+		        last = event
+		if last is None:
+		    print("{}")
+		    raise SystemExit(0)
+		usage = last.get("usage") or {}
+		print(json.dumps({
+		    "usd": last.get("total_cost_usd"),
+		    "output_tokens": usage.get("output_tokens"),
+		    "input_tokens": usage.get("input_tokens"),
+		    "cache_read_tokens": usage.get("cache_read_input_tokens"),
+		    "cache_creation_tokens": usage.get("cache_creation_input_tokens"),
+		    "model_seconds": round((last.get("duration_ms") or 0) / 1000, 1),
+		    "api_seconds": round((last.get("duration_api_ms") or 0) / 1000, 1),
+		    "turns": last.get("num_turns"),
+		    "terminal": last.get("subtype"),
+		}, sort_keys=True))
 	PY
 	;;
 

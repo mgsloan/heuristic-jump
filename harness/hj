@@ -1465,6 +1465,74 @@ def cmd_campaign_reap(args: argparse.Namespace) -> int:
     return 0
 
 
+def cost_path(owner: str) -> Path:
+    return STATE / "cost" / f"{owner}.jsonl"
+
+
+def cmd_cost(args: argparse.Namespace) -> int:
+    """One row per campaign, joined on the session id.
+
+    `design/loops.md` section 15: the campaign is the unit of accounting
+    because it is the unit of *decision* — a campaign that spent its budget
+    and falsified its hypothesis is a legitimate outcome, and per-iteration
+    accounting would report it as a run of failures.
+
+    No instrumentation inside the model is needed. The harness recorded which
+    loop and target it launched, and the teed stream carries the numbers, so
+    the join happens after the fact.
+    """
+    phase = load_phase()
+    owners = [args.loop] if args.loop else sorted(phase.loops)
+    written = 0
+    for owner in owners:
+        already = {row.get("campaign") for row in read_jsonl(cost_path(owner))}
+        for campaign in campaigns_of(owner):
+            campaign_id = campaign.get("campaign", "")
+            if campaign_id in already or not campaign.get("outcome"):
+                continue
+            transcript = subprocess.run(
+                [str(HARNESS / "adapter"), "transcript-path", owner, campaign_id],
+                capture_output=True, text=True, check=False,
+            ).stdout.strip()
+            if not transcript or not Path(transcript).exists():
+                continue
+            measured = subprocess.run(
+                [str(HARNESS / "adapter"), "cost", transcript],
+                capture_output=True, text=True, check=False,
+            ).stdout.strip()
+            try:
+                numbers = json.loads(measured or "{}")
+            except json.JSONDecodeError:
+                numbers = {}
+            if not numbers:
+                continue
+            append_jsonl(
+                cost_path(owner),
+                {
+                    "campaign": campaign_id,
+                    "loop": owner,
+                    "phase": campaign.get("phase"),
+                    "language": campaign.get("language"),
+                    "target": campaign.get("target"),
+                    "outcome": campaign.get("outcome"),
+                    "commits": campaign.get("commits"),
+                    "progress": campaign.get("progress"),
+                    "sections_clean": campaign.get("sections_clean"),
+                    "open_gaps": campaign.get("open_gaps"),
+                    "prompt_sha": campaign.get("prompt_sha"),
+                    "cli_version": campaign.get("cli_version"),
+                    **numbers,
+                },
+            )
+            written += 1
+            print(f"cost: {campaign_id[:8]}  ${numbers.get('usd', 0):.2f}  {numbers.get('output_tokens', 0):,} out")
+    if written:
+        commit_harness_state([cost_path(owner) for owner in owners], f"cost rows for {written} campaign(s)")
+    else:
+        print("cost: nothing new to record")
+    return 0
+
+
 def cmd_stall(args: argparse.Namespace) -> int:
     """`design/loops.md` section 7: stall is judged per campaign, not per
     experiment. N consecutive closed campaigns with no progress stops the
@@ -1681,6 +1749,10 @@ def main() -> int:
     p = sub.add_parser("campaign-reap", help="close campaigns whose process is gone (crash recovery)")
     p.add_argument("loop", nargs="?")
     p.set_defaults(run=cmd_campaign_reap)
+
+    p = sub.add_parser("cost", help="join campaign records to what their sessions cost")
+    p.add_argument("loop", nargs="?")
+    p.set_defaults(run=cmd_cost)
 
     p = sub.add_parser("stall", help="exit 1 when the loop has stalled")
     p.add_argument("loop")

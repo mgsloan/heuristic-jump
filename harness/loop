@@ -158,6 +158,8 @@ while :; do
 	"$here/audit" "$loop" || echo "loop: the audit did not complete; state/audit/ is stale." >&2
 	"$hj" campaign-close "$loop" --id "$campaign" --outcome "$outcome" ${target:+--target "$target"}
 
+	"$hj" cost "$loop"
+
 	if ! "$hj" stall "$loop"; then
 		echo
 		echo "loop: stalled. See state/handoff.md, then answer and set the loop"
