@@ -1,55 +1,59 @@
-# Findings — conformance, after 25be160b
+# Findings — conformance, after ec5303a7
 
-**Target selection, in order. This has now picked three `confirmed` closes.**
-(1) `last_audited` in `state/audit/core.toml`: the stamps vary by hours and the
-oldest ones describe a repository that no longer exists — this campaign's §8
-gaps claimed `proto` did not exist when it had for two campaigns, so **check
-the code before believing a gap**, and expect one or two sections to be clean
-already. (2) The `write` list in `state/phase.toml`. (3) Gaps per *section*,
-since the number moves per section: a one-gap section in one existing file is
-worth more than five gaps spread across crates that do not exist.
+**Target selection, in order. Four `confirmed` closes now.** (1) Check the
+code before believing a gap: `last_audited` stamps in `state/audit/core.toml`
+vary by hours and the oldest describe a repository that no longer exists —
+expect one or two "gaps" to be already satisfied. (2) The `write` list in
+`state/phase.toml`. (3) Gaps per *section*, since the number moves per
+section: a one-gap section in files that exist beats five gaps spread across
+crates nobody has written.
 
-**Where the gaps are now.** `crates/similarity/` was placed by a human during
-this campaign (`conformance-008`, accepted), so the §9 cluster —
-`#the-dependency-graph`, `#adding-a-language`,
-`#what-the-templates-handler-does` — is **no longer blocked**, and
-`crates/lang_rust/` can be written with the `similarity` dependency the spec
-asks for rather than the tagged omission the record allowed as a holding
-position. That is the biggest change to the reachable set since this loop
-started, and it is the obvious next target. The remaining concentration is
-`measure_core`/`measure_rust`: ~12 gaps across §6, §7 and their subsections,
-all one fact — the crates do not exist — and both are ours to create.
+**Where the gaps are.** The concentration is `measure_core`/`measure_rust`:
+~12 gaps across §2, §6, §7, §9 and their subsections, all one fact — the
+crates do not exist — and both are ours to create. `crates/similarity/` was
+placed by a human (`conformance-008`), so `crates/lang_rust/` and the §9
+cluster (`#the-dependency-graph`, `#adding-a-language`,
+`#what-the-templates-handler-does`) are unblocked and can take the
+`similarity` dependency the spec asks for.
 
-**§8 after this campaign.** `shared::proto` holds the whole §8.2 table.
-`#83` and `#87` should be re-judged rather than re-implemented. The two real
-remainders: §8.5 wants a *golden corpus* of captured editor/server traffic
-plus an `lsp-types` dev-dependency oracle — captured traffic is closer to an
-intervention than a campaign, so settle that before writing a differential
-harness — and §8.6's untrusted-document state needs `driver`'s document map,
-which does not exist.
+**One-gap sections left.** `#the-trait` wants
+`ProjectView::{candidates, parse, scan}` — the parse LRU and the bounded scan
+pool; `resolution.md` §3 has the signatures. It is a whole campaign and it is
+inside the frozen seam, so plan for a Class B record. `#87-where-it-lives` and
+`#83` are believed already satisfied by `shared::proto`: re-judge, do not
+re-implement.
 
-**Ruled out, with evidence.** No handler double is possible in `crates/` until
-a grammar crate is in the graph (`grammar()` returns a
-`tree_sitter::Language`); factor the testable part out of dispatch instead.
-The rope public-API newtype sweep has already eaten one whole campaign without
-landing — it is its own campaign, never a step inside another. Clippy denies
-`unwrap`/`expect`/`panic` in a free `fn` in `tests/*.rs` (it looks for an
-enclosing `#[test]`), and `extra_unused_type_parameters` kills the
-`fn f<T: Bound>()` trick for asserting a trait bound — return `PhantomData<T>`.
+**The pattern that keeps sections reopening.** Every §1 claim that stays clean
+has a test that fails *at compile time*; the ones that reopen are checked by
+reading. A where-claim ("X lives in A so B can name it") has no runtime
+behaviour, so a test is the only thing holding it up — and it must live in a
+crate that cannot take the shortcut. `shared` cannot test its own re-export of
+rope's vocabulary, because `shared` depends on rope; `driver` can, and does
+(`crates/driver/tests/seam.rs`: `use shared::{..}` plus
+`type_name().starts_with("rope::")`).
 
-**The gate, when a human is mid-intervention.** `harness/gate <loop>` inspects
-untracked paths too, so a denied directory appearing in the working tree makes
-the pending-tree run un-greenable from inside the loop. Commit only your own
-paths and verify with `--rev HEAD`, which scopes the check to the commit. Do
-not revert or stash someone else's files.
+**Ruled out, with evidence.** No handler double is possible until a grammar
+crate is in the graph (`grammar()` returns `tree_sitter::Language`); factor
+the testable part out of dispatch instead. The rope public-API newtype sweep
+has eaten one whole campaign without landing — it is its own campaign, never a
+step inside another. §8.5's golden corpus is captured editor/server traffic,
+closer to an intervention than a campaign: settle that before writing a
+differential harness. §8.6 needs `driver`'s document map, which does not
+exist.
+
+**Clippy traps.** `unwrap`/`expect`/`panic` are denied in a free `fn` in
+`tests/*.rs` (the lint looks for an enclosing `#[test]`).
+`extra_unused_type_parameters` kills `fn f<T: Bound>()` for asserting a bound
+— return `PhantomData<T>`.
+
+**Gate, mid-intervention.** `harness/gate <loop>` inspects untracked paths, so
+a denied directory appearing in the working tree makes the pending run
+un-greenable. Commit only your own paths and verify with `--rev HEAD`. Never
+revert or stash someone else's files.
 
 **Load-bearing spec claims.** §8.1's "the newtypes *are* the deserialization
-targets" decides `proto`'s field types; the one deliberate exception is
-`languageId`, which stays a `Box<str>` because interning must be able to fail.
-§8.2's read-only rule is now a source-scanning test (`tests/proto.rs`) with
-three lists — read, constructed, and the five value types that travel both
-ways; that third list is where an exception would hide, so it is asserted
-exactly. §9's `shared` dependency list calls itself authoritative and is
-treated as binding, but `shared`, `driver` and `heuristic_jump` all declare
-`tracing`, which it omits, and no changelog entry records it — fix that once,
-in `#the-dependency-graph`, not three times.
+targets" decides `proto`'s field types; the one exception is `languageId`,
+which stays `Box<str>` because interning must be able to fail. §9's `shared`
+dependency list calls itself authoritative and is treated as binding, but
+`shared`, `driver` and `heuristic_jump` all declare `tracing`, which it omits,
+and no changelog entry records it — fix that once, in `#the-dependency-graph`.

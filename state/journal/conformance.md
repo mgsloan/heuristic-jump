@@ -657,3 +657,52 @@ and the `lsp-types` dev-dependency oracle — the corpus is captured traffic
 from real editors and servers, so it is closer to an intervention than to a
 campaign, and a campaign that targets §8.5 should decide that first rather
 than discovering it after writing the differential harness.
+
+## ec5303a7 — core.md#vocabulary-types
+
+The section's last gap, and a small one: `shared` re-exported four of rope's
+seven text newtypes. `ByteColumn`, `Utf16Column` and `CharCount` were missing.
+One line of manifest-free change, plus the test that makes it stay true.
+
+**Why the gap survived a campaign that targeted this same section.**
+`bc8f02bb` closed `#vocabulary-types` and the audit reopened it here. The
+three missing names are exactly the three §1 describes as "which handlers do
+not use" — so they are the ones a campaign writing the *seam* has no reason to
+reach for, and nothing in the workspace could report their absence, because
+`shared` itself depends on `rope` and can always name them by either path. The
+general shape: **a re-export list is unfalsifiable from inside the crate that
+owns it.** If a section says "X is re-exported so that a crate which cannot
+depend on Y can name it", the test belongs in a crate that cannot depend on Y,
+or it is not testing the claim. `driver` is that crate here (`rustc-hash`,
+`shared`, `tracing`), which is why the test landed in
+`crates/driver/tests/seam.rs` and not in `shared`'s own tests.
+
+`type_name` earns its place beside the `use`: the `use` catches a *missing*
+name, and `type_name().starts_with("rope::")` catches the other failure — a
+`shared`-side redefinition that compiles, satisfies every use site, and is not
+the type rope's own signatures speak in. The same trick already carries §1's
+"the trait lives in shared" assertion in that file, so this is a second use of
+a pattern rather than a new one.
+
+**Considered and not done.** Asserting the seven by *value* (constructing a
+`ByteColumn(3)` and so on) instead of by `type_name`. It compiles, it uses the
+imports, and it asserts less: a redefinition in `shared` would pass it. It
+would also have quietly pinned each type's constructor shape — `pub` tuple
+field, one field — which is `#vendoring-the-zed-crates`'s business and would
+have put a second file in the way of the newtype sweep that section still
+needs. Nameability is the whole of what §1 claims here.
+
+**What this campaign is evidence about, beyond its own diff.** The other
+sections judged clean and then reopened were reopened for the same reason —
+the claim was satisfied by code that a later campaign had no compiler reason
+to preserve. Every claim in `core.md` §1 that is now clean has a test that
+fails *at compile time* if it stops being true, and the ones that keep
+reopening are the ones checked by reading. That is the cheapest available
+signal about which of a section's claims are worth spending a test on, and it
+argues for spending the test on the where-claims specifically: a where-claim
+has no runtime behaviour to assert, so it has nothing else holding it up.
+
+**Cost.** One experiment, no reverts. The gate was green on the first run, so
+the guidance about the pending-tree gate from `25be160b` was not exercised
+again — `crates/similarity/` is committed now and the working tree was clean
+at open.
