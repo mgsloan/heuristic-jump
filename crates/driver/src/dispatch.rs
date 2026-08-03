@@ -15,8 +15,9 @@ use std::sync::Arc;
 use rustc_hash::FxHashMap;
 use shared::proto::{PositionEncoding, WireLocation, WirePosition, WireRange};
 use shared::{
-    Deadline, DocumentUri, Error, FileText, HandlerError, LanguageHandler, Outcome, ProjectError,
-    ProjectPath, Query, RelPath, Rope,
+    ByteOffset, CommitPolicy, Deadline, DocumentSnapshot, DocumentUri, Error, FileText,
+    HandlerError, LanguageHandler, Outcome, ProjectError, ProjectPath, ProjectView, Query, RelPath,
+    Rope, ServerProfile, SnapshotSeed,
 };
 
 /// The handler set, resolved once at startup. `heuristic_jump` is the one
@@ -175,9 +176,38 @@ impl Answer {
     }
 }
 
-/// The direct call, plus the conversion onto the wire. No trait object
-/// registry lookup, no message, no indirection beyond the one `&dyn` the
-/// handler set needs.
+/// What `core` puts on the work channel, and the reason it can do so in O(1):
+/// the document arrives as a `SnapshotSeed` — three refcount bumps and a
+/// struct move — rather than as a parsed `DocumentSnapshot` (`core.md` §2).
+///
+/// It carries a seed and not a snapshot deliberately. `Query` is what a
+/// handler is given, and there is no way to reach one except through
+/// `dispatch`, which parses first; so the parse happens on the worker thread
+/// and inside the deadline, never in `core`, and a handler cannot be handed a
+/// document that nobody parsed.
+///
+/// Everything but the seed is borrowed, because `core` owns it and a query
+/// does not outlive its dispatch.
+#[derive(Debug)]
+pub struct Request<'a> {
+    pub seed: SnapshotSeed,
+    pub position: ByteOffset,
+    pub project: &'a ProjectView,
+    pub deadline: &'a Deadline,
+    pub server: &'a ServerProfile,
+    pub policy: &'a CommitPolicy,
+}
+
+/// The direct call, plus the parse in front of it and the conversion onto the
+/// wire behind it. No trait object registry lookup, no message, no
+/// indirection beyond the one `&dyn` the handler set needs.
+///
+/// The parse is first and is the worker's: `realise` is where an unparseable
+/// document fails, which is what keeps `DocumentSnapshot::tree` infallible and
+/// keeps `core` free of parsing (`core.md` §2). A parse abandoned on the
+/// deadline surfaces as `HandlerError::DeadlineExpired` and is classified
+/// exactly like a handler's own expiry — the query ran out of time, and
+/// nothing about the document is wrong.
 ///
 /// `core.md` §5's hard cap is applied here rather than left to the caller.
 /// The deadline is not a fact the caller holds and this function does not —
@@ -197,16 +227,34 @@ impl Answer {
 /// target is frequently a file the editor never opened.
 pub fn dispatch(
     handler: &dyn LanguageHandler,
-    query: &Query<'_>,
+    request: Request<'_>,
     encoding: PositionEncoding,
 ) -> Dispatched {
-    let dispatched = match call(handler, query)
-        .and_then(|outcome| encode(outcome, encoding, query).map_err(classify))
-    {
+    let Request {
+        seed,
+        position,
+        project,
+        deadline,
+        server,
+        policy,
+    } = request;
+
+    let dispatched = match realise(seed, deadline).and_then(|document| {
+        let query = Query {
+            doc: &document,
+            position,
+            project,
+            deadline,
+            server,
+            policy,
+        };
+        call(handler, &query)
+            .and_then(|outcome| encode(outcome, encoding, &query).map_err(classify))
+    }) {
         Ok(answer) => Dispatched::Decided(answer),
         Err(dispatched) => dispatched,
     };
-    hard_cap(query.deadline, dispatched)
+    hard_cap(deadline, dispatched)
 }
 
 /// The hard cap, separated from `dispatch` because it is the half of it that
@@ -238,6 +286,14 @@ pub fn hard_cap(deadline: &Deadline, dispatched: Dispatched) -> Dispatched {
         Dispatched::DeadlineExpired => Dispatched::DeadlineExpired,
         Dispatched::Failed(error) => Dispatched::Failed(error),
     }
+}
+
+/// The worker's half of `core.md` §2's two-step split, and the first thing
+/// `dispatch` does. Separated so the classification is written once: a parse
+/// that ran out of time is the query's expiry and a parse that failed is the
+/// document's, and `classify` already knows which is which.
+fn realise(seed: SnapshotSeed, deadline: &Deadline) -> Result<DocumentSnapshot, Dispatched> {
+    seed.realise(deadline).map_err(classify)
 }
 
 /// `Err` is the already-classified non-answer, which is what lets `dispatch`

@@ -11,7 +11,7 @@ mod config;
 mod dispatch;
 
 pub use config::{Config, DeadlineMs, DeadlineOverride, Heuristics, Mode, ServerCommand};
-pub use dispatch::{Answer, Dispatched, Registry, dispatch, hard_cap};
+pub use dispatch::{Answer, Dispatched, Registry, Request, dispatch, hard_cap};
 
 /// The whole of `heuristic_jump`'s `main` after argument parsing, and the
 /// reason `driver` needs no opinion about how it was invoked: the binary hands

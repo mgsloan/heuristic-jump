@@ -29,13 +29,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use driver::{Dispatched, dispatch};
+use driver::{Dispatched, Request, dispatch};
 use shared::proto::{PositionEncoding, WirePosition};
 use shared::{
-    AbstainReason, ByteOffset, CommitPolicy, Confidence, Deadline, DocumentSnapshot, DocumentUri,
-    DocumentVersion, Error, FileExtension, FileList, LanguageHandler, LanguageId, Location,
-    Outcome, ProjectError, ProjectPath, ProjectRoot, ProjectView, Query, RelPath, Rope,
-    ServerProfile, SnapshotSeed, Stratum,
+    AbstainReason, ByteOffset, CommitPolicy, Confidence, Deadline, DocumentUri, DocumentVersion,
+    Error, FileExtension, FileList, LanguageHandler, LanguageId, Location, Outcome, ProjectError,
+    ProjectPath, ProjectRoot, ProjectView, Query, RelPath, Rope, ServerProfile, SnapshotSeed,
+    Stratum,
 };
 use tree_sitter::Language;
 
@@ -63,7 +63,7 @@ const DEFINITION: &str = "fn target() {}";
 fn a_decided_query_comes_back_in_both_forms() {
     let root = fixture("both_forms");
     let view = view(&root);
-    let document = snapshot(&root);
+    let document = seed(&root);
     let expected = vec![
         definition_in(&view, &root, "src/target.rs"),
         definition_in(&view, &root, "src/lib.rs"),
@@ -72,7 +72,7 @@ fn a_decided_query_comes_back_in_both_forms() {
         locations: expected.clone(),
     };
 
-    let answer = decided(&handler, &document, &view, PositionEncoding::Utf16);
+    let answer = decided(&handler, document, &view, PositionEncoding::Utf16);
 
     match answer.outcome() {
         Outcome::Committed {
@@ -122,7 +122,6 @@ fn a_decided_query_comes_back_in_both_forms() {
 fn the_encoding_handed_to_the_wrapper_is_the_one_applied() {
     let root = fixture("encodings");
     let view = view(&root);
-    let document = snapshot(&root);
     let location = definition_in(&view, &root, "src/target.rs");
     let handler = Committing {
         locations: vec![location.clone()],
@@ -135,7 +134,7 @@ fn the_encoding_handed_to_the_wrapper_is_the_one_applied() {
         PositionEncoding::Utf16,
         PositionEncoding::Utf32,
     ] {
-        let answer = decided(&handler, &document, &view, encoding);
+        let answer = decided(&handler, seed(&root), &view, encoding);
         let start = answer
             .wire()
             .first()
@@ -170,9 +169,9 @@ fn the_encoding_handed_to_the_wrapper_is_the_one_applied() {
 fn an_abstention_carries_no_wire_locations() {
     let root = fixture("abstention");
     let view = view(&root);
-    let document = snapshot(&root);
+    let document = seed(&root);
 
-    let answer = decided(&Declining, &document, &view, PositionEncoding::Utf16);
+    let answer = decided(&Declining, document, &view, PositionEncoding::Utf16);
 
     match answer.outcome() {
         Outcome::Abstain {
@@ -202,15 +201,15 @@ fn an_abstention_carries_no_wire_locations() {
 fn a_location_the_file_list_does_not_know_is_a_failure_and_not_an_answer() {
     let root = fixture("unresolvable");
     let view = view(&root);
-    let document = snapshot(&root);
+    let document = seed(&root);
     let handler = Committing {
         locations: vec![elsewhere(&view, &root)],
     };
     let deadline = Deadline::none();
     let policy = CommitPolicy::permissive();
     let server = ServerProfile { id: None };
-    let query = Query {
-        doc: &document,
+    let request = Request {
+        seed: document,
         position: ByteOffset(0),
         project: &view,
         deadline: &deadline,
@@ -218,7 +217,7 @@ fn a_location_the_file_list_does_not_know_is_a_failure_and_not_an_answer() {
         policy: &policy,
     };
 
-    match dispatch(&handler, &query, PositionEncoding::Utf16) {
+    match dispatch(&handler, request, PositionEncoding::Utf16) {
         Dispatched::Failed(Error::Project(ProjectError::Unresolvable { uri: _ })) => {}
         other @ (Dispatched::Failed(_) | Dispatched::Decided(_) | Dispatched::DeadlineExpired) => {
             panic!(
@@ -283,15 +282,15 @@ impl LanguageHandler for Declining {
 
 fn decided(
     handler: &dyn LanguageHandler,
-    document: &DocumentSnapshot,
+    document: SnapshotSeed,
     view: &ProjectView,
     encoding: PositionEncoding,
 ) -> driver::Answer {
     let deadline = Deadline::none();
     let policy = CommitPolicy::permissive();
     let server = ServerProfile { id: None };
-    let query = Query {
-        doc: document,
+    let request = Request {
+        seed: document,
         position: ByteOffset(0),
         project: view,
         deadline: &deadline,
@@ -299,7 +298,7 @@ fn decided(
         policy: &policy,
     };
 
-    match dispatch(handler, &query, encoding) {
+    match dispatch(handler, request, encoding) {
         Dispatched::Decided(answer) => answer,
         other @ (Dispatched::DeadlineExpired | Dispatched::Failed(_)) => {
             panic!("the query did not decide: {other:?}")
@@ -363,7 +362,10 @@ fn uri_of(path: &Path) -> DocumentUri {
     DocumentUri::from_file_path(path).expect("a file URI for a fixture path")
 }
 
-fn snapshot(root: &Path) -> DocumentSnapshot {
+/// The seed `core` would put on the work channel, unparsed: `dispatch` is
+/// what turns it into the `DocumentSnapshot` a handler sees (`core.md` §2), so
+/// nothing here may realise one.
+fn seed(root: &Path) -> SnapshotSeed {
     SnapshotSeed::fresh(
         uri_of(&root.join("src").join("lib.rs")),
         Rope::from(DOCUMENT),
@@ -371,8 +373,6 @@ fn snapshot(root: &Path) -> DocumentSnapshot {
         LanguageId::new("rust"),
         grammar(),
     )
-    .realise(&Deadline::none())
-    .expect("parsing the document")
 }
 
 fn view(root: &Path) -> ProjectView {
