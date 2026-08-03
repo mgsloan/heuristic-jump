@@ -17,7 +17,9 @@
 //! unknown language fails at the boundary rather than deserializing into
 //! something that matches nothing.
 
+use std::ffi::{OsStr, OsString};
 use std::fmt;
+use std::iter;
 use std::path::{Path, PathBuf};
 
 use rope::{ByteOffset, ByteRange, LineIndex};
@@ -339,12 +341,84 @@ impl Confidence {
 /// Interned server identity, resolved from the child's command name at
 /// startup. What a server *does* differently is `ServerProfile`; this is only
 /// the key (`core.md` §1).
+///
+/// Interned in the same sense `LanguageId` is: [`ServerId::KNOWN`] is the only
+/// place one is built, so an id that names no server in the matrix cannot be
+/// constructed and "we have no profile for this server" stays a `None` rather
+/// than an id nothing will ever match.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct ServerId(&'static str);
 
 impl ServerId {
-    pub const fn new(id: &'static str) -> Self {
-        Self(id)
+    /// The server matrix, as `servers.toml` at the repository root names it.
+    ///
+    /// A second copy of that file's table keys, which is normally the thing
+    /// `core.md` §7 refuses ("a directory tree in two documents is a directory
+    /// tree that will disagree with itself"). It is a copy because the
+    /// manifest is data read at runtime by `measure_core` and this is a
+    /// compile-time interning table in a crate that reads no files, and
+    /// because `servers.toml` is in no loop's write list — a loop that could
+    /// edit its own oracle list would be choosing its own examiner.
+    /// `driver/tests/oracle.rs` asserts the two agree in both directions, so
+    /// the copy cannot drift silently.
+    pub const KNOWN: &'static [Self] = &[
+        Self("rust-analyzer"),
+        Self("gopls"),
+        Self("clangd"),
+        Self("pyright"),
+        Self("basedpyright"),
+        Self("pylsp"),
+        Self("typescript-language-server"),
+        Self("vtsls"),
+    ];
+
+    /// The server named as `servers.toml` spells it — a `truth.jsonl`
+    /// provenance header or `measure`'s `--server`, where the oracle is
+    /// recorded by name because there is no child process to look at.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::KNOWN.iter().copied().find(|known| known.0 == name)
+    }
+
+    /// The shim's half: the child's command line, which is what the user's
+    /// editor was configured with rather than anything we chose.
+    ///
+    /// Matching is over the path components of every word and not the program
+    /// alone, because half the matrix is launched through an interpreter —
+    /// `node …/pyright/…/langserver.index.js --stdio` has a program name of
+    /// `node`, and a resolver that read only the program would fail to
+    /// identify exactly the servers a profile is most likely to be needed for.
+    ///
+    /// Two distinct matches resolve to `None`. A command line naming both
+    /// `pyright` and `basedpyright` is one we cannot identify, and answering
+    /// with whichever came first would attach a profile to the wrong server —
+    /// where `None` is already the documented state for a server we have no
+    /// profile for.
+    pub fn from_command(program: &OsStr, arguments: &[OsString]) -> Option<Self> {
+        let words = iter::once(program).chain(arguments.iter().map(OsString::as_os_str));
+        let mut found: Option<Self> = None;
+
+        for word in words {
+            for component in Path::new(word).components() {
+                let Some(text) = component.as_os_str().to_str() else {
+                    continue;
+                };
+                let Some(id) = Self::from_name(text).or_else(|| {
+                    Path::new(text)
+                        .file_stem()
+                        .and_then(OsStr::to_str)
+                        .and_then(Self::from_name)
+                }) else {
+                    continue;
+                };
+                match found {
+                    Some(already) if already != id => return None,
+                    Some(_) => {}
+                    None => found = Some(id),
+                }
+            }
+        }
+
+        found
     }
 
     pub const fn as_str(self) -> &'static str {

@@ -132,7 +132,13 @@ impl Replay<'_> {
         // method, so it is handed over here.
         let project = ProjectView::new(Arc::clone(files), deadline.clone(), self.handler.grammar());
         let policy = CommitPolicy::permissive();
-        let profile = ServerProfile { id: None };
+        // The oracle this truth file was collected against, by the name
+        // `servers.toml` gives it — a replay has no child process, so the name
+        // is the only identity there is, and it is the same one the provenance
+        // header records. A fixture oracle that is not in the matrix resolves
+        // to no id, which is the documented "a server we have no profile for"
+        // rather than a synthesised one (`core.md` §7).
+        let profile = ServerProfile::proxying_named(self.server);
 
         let query = Query {
             doc: document,

@@ -211,7 +211,7 @@ fn a_location_the_file_list_does_not_know_is_a_failure_and_not_an_answer() {
     };
     let deadline = Deadline::none();
     let policy = CommitPolicy::permissive();
-    let server = ServerProfile { id: None };
+    let server = ServerProfile::standalone();
     let request = Request {
         seed: document,
         position: ByteOffset(0),
@@ -294,7 +294,7 @@ fn decided(
 ) -> driver::Answer {
     let deadline = Deadline::none();
     let policy = CommitPolicy::permissive();
-    let server = ServerProfile { id: None };
+    let server = ServerProfile::standalone();
     let request = Request {
         seed: document,
         position: ByteOffset(0),

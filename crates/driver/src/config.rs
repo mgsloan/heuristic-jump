@@ -11,6 +11,8 @@
 use std::ffi::OsString;
 use std::time::Duration;
 
+use shared::ServerProfile;
+
 /// The hard cap, in the unit `--deadline-ms` and both of `shim.md` §14.6's
 /// numbers are written in. A newtype because it is one of three durations in
 /// the design — the cap, the debounce, the health probe — and they are not
@@ -155,6 +157,20 @@ impl Mode {
         }
     }
 
+    /// Which oracle we are standing in for (`core.md` §7). Derived from the
+    /// mode rather than stored beside it, for the reason the argv is: the mode
+    /// *is* whether a server was given, so a profile built anywhere else would
+    /// be a second answer to a question this enum already settles.
+    pub fn server_profile(&self) -> ServerProfile {
+        match self {
+            Self::Proxy {
+                server,
+                heuristics: _,
+            } => ServerProfile::proxying_command(server.program(), server.arguments()),
+            Self::Standalone => ServerProfile::standalone(),
+        }
+    }
+
     /// For the log line and the trace record, which name the mode rather than
     /// printing its argv.
     pub fn name(&self) -> &'static str {
@@ -173,18 +189,29 @@ impl Mode {
 pub struct Config {
     mode: Mode,
     deadline: DeadlineMs,
+    server: ServerProfile,
 }
 
 impl Config {
     /// The override wins in either mode, including when it is larger than the
     /// standalone default: `core.md` §5 says nothing below it depends on the
     /// specific value, so there is no range to police here.
+    ///
+    /// The profile is resolved here and not per query, because `core.md` §7
+    /// says "at startup" and this is it: the child's argv cannot change while
+    /// the process runs, so a resolution anywhere further in would be the same
+    /// answer recomputed under a deadline.
     pub fn new(mode: Mode, deadline: DeadlineOverride) -> Self {
         let deadline = match deadline {
             DeadlineOverride::ModeDefault => mode.default_deadline(),
             DeadlineOverride::Explicit(milliseconds) => milliseconds,
         };
-        Self { mode, deadline }
+        let server = mode.server_profile();
+        Self {
+            mode,
+            deadline,
+            server,
+        }
     }
 
     pub fn mode(&self) -> &Mode {
@@ -193,5 +220,10 @@ impl Config {
 
     pub fn deadline(&self) -> DeadlineMs {
         self.deadline
+    }
+
+    /// What every `Query` this process dispatches carries (`core.md` §1).
+    pub fn server(&self) -> &ServerProfile {
+        &self.server
     }
 }

@@ -7,6 +7,7 @@
 //! a language can be measured before there is anything to proxy.
 
 use std::collections::BTreeMap;
+use std::ffi::{OsStr, OsString};
 
 use tree_sitter::Language;
 
@@ -59,12 +60,49 @@ pub struct Query<'a> {
 /// *identity* — `if server.id == PYRIGHT` scattered through a handler is the
 /// per-language configuration format `resolution.md` §1.2 rules out. A handler
 /// reads a field describing a behaviour; it does not ask who it is talking to.
-#[derive(Debug)]
+///
+/// The field is private and the constructors are the two situations `core.md`
+/// §7 describes, rather than `id: Option<ServerId>` left open. The absence has
+/// to be representable — standalone has no oracle, and a proxied server we
+/// have no profile for is a different thing from one we do — but with a public
+/// field the third case is representable too: a call site that *knows* which
+/// server it is standing in for and passes `None` anyway. That was the whole
+/// of this section's gap, and a constructor taking the name is what stops it
+/// being expressible.
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ServerProfile {
+    id: Option<ServerId>,
+}
+
+impl ServerProfile {
+    /// No oracle at all: nothing is being proxied, so there is no identity to
+    /// resolve rather than one we failed to resolve.
+    pub const fn standalone() -> Self {
+        Self { id: None }
+    }
+
+    /// Proxying the child on this command line, as the shim was invoked
+    /// (`core.md` §7: "resolved from the child's command name at startup").
+    pub fn proxying_command(program: &OsStr, arguments: &[OsString]) -> Self {
+        Self {
+            id: ServerId::from_command(program, arguments),
+        }
+    }
+
+    /// Standing in for the server a corpus run names — `measure`'s `--server`,
+    /// which is a `servers.toml` key rather than a command line because a
+    /// replay has no child to look at.
+    pub fn proxying_named(name: &str) -> Self {
+        Self {
+            id: ServerId::from_name(name),
+        }
+    }
+
     /// `None` in standalone, and when proxying a server we have no profile
-    /// for. The absence has to be representable because the two modes are not
-    /// the same situation and a synthesised identity would hide that.
-    pub id: Option<ServerId>,
+    /// for.
+    pub fn id(&self) -> Option<ServerId> {
+        self.id
+    }
 }
 
 /// Not `Result`. Abstention is a normal, expected, frequently correct outcome
