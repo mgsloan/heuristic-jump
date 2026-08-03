@@ -399,3 +399,87 @@ one of them is denied to every loop, so `git add -A` would have produced a
 commit the gate rejects at step 4 for a path you never wrote. **Stage explicit
 paths, never `-A`**, and take the verdict from `harness/gate conformance --rev
 HEAD` afterwards.
+
+## f08773ec — core.md#5-deadlines-and-abstention
+
+Target picked on distance again, and the estimate held: §5 had two gaps, one
+of which (`Deadline` with `at`/`cancelled`/`expired()`) had already been
+satisfied by an earlier campaign and was only still listed because its audit
+entry is stamped `03:47:22`, from before there was code. **Check
+`last_audited` before estimating a section's size** — the five sections still
+carrying that stamp (`#2`, `#3`, `#4`, `#5`, `#10`) describe a repository that
+no longer exists, and one of them is now a section whose remaining work is
+half what the gap list says.
+
+**The cap belongs inside `dispatch`, not above it.** The previous campaign
+left a comment saying the hard cap "belongs to the caller, which is the only
+thing that knows whether the answer is still wanted". That reasoning does not
+survive contact with `Query`: the deadline is *in the query*, so `dispatch`
+holds everything the caller would have used to decide, and leaving the check
+outside makes it a rule somebody upholds rather than a property. It is now
+`hard_cap(query.deadline, call(handler, query))` with `call` private, so there
+is no uncapped route to a handler through `driver`. The same move made the
+claim testable, which is the part that mattered: `hard_cap` takes
+`(&Deadline, Dispatched)` and needs no handler, and **there is still no
+handler double** — `grammar()` returns a `tree_sitter::Language`, `Query`
+needs a `DocumentSnapshot`, and both need a grammar crate. Anything phase 1a
+wants to test about dispatch has to be factored out of it like this.
+
+**A late failure stays a failure.** Tempting to fold `Dispatched::Failed` into
+`DeadlineExpired` when the deadline has passed, since the wire sees an
+abstention either way. Rejected: `core.md` §7's table needs "no coverage
+because the handler is broken" and "no coverage because it was slow" to be
+different rows, and that is the entire reason `Dispatched` has three variants
+instead of two. The test asserts both a `HandlerError` and a `ParseError`
+survive the cap.
+
+**Two lint traps, both cheap once known:**
+
+* `Duration - Duration` is denied workspace-wide
+  (`unchecked_time_subtraction`), so "one millisecond inside the deadline" has
+  to be built as `Duration::from_millis(PROXYING.get() - 1)` — subtract in the
+  integer, not in the `Duration`.
+* `tracing_subscriber::fmt()` writes to **stdout** by default, which is the
+  JSON-RPC wire. `.with_writer(...)` is mandatory, and the only handle
+  available is `std::io::stderr`, which `clippy.toml` bans. One
+  `#[expect(clippy::disallowed_methods)]` on a named function, the same shape
+  `SystemClock` uses for `Instant::now`: the ban's stated replacement is
+  `tracing`, and this is where `tracing` comes out.
+
+**Approaches considered and dropped:**
+
+* *Implementing all four of `deps.md` §11's flags.* `--trace` wants §7's
+  record writer, which does not exist, and a flag that parses and is then
+  ignored is worse than one that errors — it reads as configured. Dropped it
+  from the `Cli` entirely; `--trace=x` is now an "unexpected argument" error,
+  which is honest. `--log` was kept because log setup is this crate's
+  documented job and because it is the only way the resolved cap is
+  observable from outside the process.
+* *Adding `driver::run` as a stub for `main` to call.* `core.md` §9 prints
+  `driver::run(registry, Cli::parse())`, which cannot compile as written —
+  `shim.md` §13 puts clap in `heuristic_jump`, so `driver` cannot name `Cli`
+  without depending on clap, which is the exact coupling §9's own prose gives
+  as the reason for the split. The resolution that trades nothing off is
+  `driver::run(registry, Config::from(Cli::parse()))`, i.e. a driver-side
+  config type — which is what `config.rs` now is. **The spec edit was
+  deliberately not made**: §9 is not this campaign's target, the campaign was
+  already adding the code the edit would describe, and that pairing is the one
+  shape the loop prompt says is watched for. Whoever targets
+  `#the-dependency-graph` should make it there, where the graph is the thing
+  under judgement.
+* *Having `main` construct a `Registry` from an empty language list.* §9's
+  "the one place the language list is enumerated" is already judged clean, and
+  an empty registry passed to nothing is scaffolding that reads as wiring.
+* *Skipping the bare-`--` check as `deps.md`'s business rather than §5's.*
+  Kept, because the failure it catches is a §5 failure: `heuristic-jump --
+  $SERVER` with `$SERVER` unset parses as standalone, which swaps 750 for 2000
+  and the oracle along with it. Three lines and one test.
+
+**Handover, for `#the-dependency-graph`.** `heuristic_jump` now declares
+`tracing`, which §9's graph annotation does not list for it — the third crate
+in that position, after `shared` and `driver`, and the audit already calls the
+first one a gap. Do not fix it three times: `deps.md` §0's table says `tracing`
+is used by *all*, so the defensible edit is one sentence in §9 saying the
+graph names what is distinctive rather than what is ubiquitous. `clap` and
+`tracing-subscriber` are both on §9's list for `heuristic_jump` already, so
+this campaign added no unlisted dependency beyond that one.
