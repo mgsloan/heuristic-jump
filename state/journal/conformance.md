@@ -1104,3 +1104,79 @@ plus that line's text — a §8.3 change, since §8.3's whole claim is that ther
 is exactly *one* constructor and it takes a whole `Rope`. Also untouched: the
 open-document map that would make `target_text` return `FileText::Open`, and
 therefore make `ProjectError::Unresolvable` harder to reach.
+
+## e017e797 — `core.md` §2, the snapshot path through `driver`
+
+**Target:** three gaps in three sections — `#2-document-snapshots`,
+`#snapshots-are-o1`, `#text-and-tree-can-never-disagree` — every one of them
+saying the same thing in different words: nothing in `driver` ever realised a
+`SnapshotSeed`. Confirmed, three commits, no reverts. Fourth campaign in a row
+where the gap's stated blocker was not one.
+
+**The parse *can* be interrupted, and the granularity is the interesting
+part.** tree-sitter 0.26 has `ParseOptions::progress_callback`, and the C side
+calls it once per **100 parser operations**
+(`OP_COUNT_PER_PARSER_CALLBACK_CHECK`, `src/parser.c:81`) — an operation
+count, not a byte count, so there is no document size at which interruption is
+*guaranteed*. Measured: a 46 KB generated file is reliably abandoned; a
+60-byte one parses to completion with the deadline already expired. Both are
+asserted, the second deliberately — if it ever fails, tree-sitter has become
+more eager and that is a decision to record rather than a break to fix.
+
+**The error arm mattered more than the parameter.** A parse abandoned on time
+returns `HandlerError::DeadlineExpired`, not `ParseError::NoTree`, because
+`dispatch::classify` already maps exactly that one class back to an
+abstention. Putting it in `ParseError` would have compiled, passed, and logged
+every large file in every corpus repository as a *handler failure* — the one
+distinction §7's record exists to make, destroyed by picking the wrong
+variant. Detected only because the two arms were written side by side.
+
+**Rejected: `dispatch(&mut cache, ...)`.** The obvious way to make "core
+caches the tree" true is to hand the cache to the wrapper. It is wrong for the
+reason the whole design is built around: the cache is `core`'s state and
+`dispatch` runs on a worker, so sharing it is a lock in a codebase that has
+none. §2 already says the right answer — "getting the result back to `core` is
+explicit" — so `dispatch` returns `Completed { dispatched, parsed }` and the
+owner does the write. **The channel is still missing** and that is the honest
+gap: `Parsed` travels by return value because `core` and the worker pool do
+not exist. The ownership is already right; only the wiring is absent.
+
+**`Parsed` is returned even when the query failed or expired.** It is tempting
+to fold it into `Dispatched::Decided`, and that is wrong twice over: the parse
+succeeded independently of what the handler decided, and the query most likely
+to be asked again in a moment is precisely the one that just abstained on its
+deadline.
+
+**The property that needed inventing: `ParseKind`.** An incremental reparse
+and a full parse produce the *same tree for the same text* — that is what
+makes the optimisation safe, and it is also what makes "the cached tree is
+actually reused" unobservable. Asserting on the resulting tree proves nothing;
+asserting on `TreeCache::version` proves the cache has an entry, not that the
+seed carries it, so a `seed` that always returned `fresh` would have passed. A
+two-variant `ParseKind` on `SnapshotSeed` makes the branch assertable, and
+breaking `TreeCache::seed` was verified to fail the test before it was kept.
+Reach for this shape whenever a claim is about *which path ran* rather than
+about the answer.
+
+**`TreeCache::insert` refuses a tree older than the one it holds**, which is
+not in §2. Dispatch is parallel by design, so two workers can be realising
+seeds for the same document at once and the one that finishes last is not the
+one parsed from the newest text. Overwriting would leave `base` at a version
+the edit log no longer describes, and tree-sitter's incremental parse is only
+correct when the edits handed to it are. Treated as an implementation
+invariant rather than a spec change: §2 says the cache makes the next query
+warm, and a cache that can go backwards does not.
+
+**CHANGE-conformance-013, and the shape being watched for.** §2 printed
+`realise(self)` while the paragraph above it said the parse happens "inside
+the deadline", and `SnapshotSeed`'s fields gave it no route to one. Fixed by
+adding the parameter, which makes the section *harder* to satisfy — before the
+edit, a `realise` that ignored deadlines conformed. That is the direction a
+spec edit made by the implementing campaign should always go; the changelog
+entry says so plainly and expects to be asked.
+
+**Not attempted, deliberately.** `heuristic_jump`'s `run` still wires none of
+this: there is no transport, no codec and no actor, so `TreeCache` has no
+owner outside the tests. Building that owner is the driver-cluster campaign
+(`#4-project-file-enumeration`, `#86-modelling-errors`, `#both-sides-are-sets`,
+`#10-testing[ddadbddae0]`), and it is one campaign per gap at least.
