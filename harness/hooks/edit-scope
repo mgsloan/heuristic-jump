@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# PreToolUse hook: reject an Edit or Write outside the running loop's owned
+# paths. `design/loops.md` section 13, layer 2.
+#
+# It is fast feedback, **not a boundary** — deny rules cover Claude's file
+# tools and not bash subprocesses, so anything this blocks is reachable
+# through `sh -c`. The gate's diff-scope check is the enforcement, because it
+# inspects the result rather than trusting the actor. The value here is that
+# the campaign finds out before it has written the file, rather than at the
+# gate after it has reasoned about it.
+#
+# A no-op outside a loop: HJ_LOOP is set by harness/loop and by nothing else,
+# so an interactive session in this repository is unaffected.
+#
+# Exit 2 blocks the call and shows stderr to the model.
+
+set -uo pipefail
+
+[ -n "${HJ_LOOP:-}" ] || exit 0
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+hj="$(dirname "$here")/hj"
+
+path="$(jq -r '.tool_input.file_path // .tool_input.path // empty')"
+[ -n "$path" ] || exit 0
+
+if ! "$hj" check-path "$HJ_LOOP" "$path"; then
+	exit 2
+fi

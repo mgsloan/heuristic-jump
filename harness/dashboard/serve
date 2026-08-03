@@ -1,0 +1,875 @@
+#!/usr/bin/env python3
+"""The operator view. `design/loops.md` section 16.
+
+Everything above it produces files; this is for the one human who has to
+understand them. It is not a status page — several places in the design
+*stop* until a person decides something, and if those are slow to reach you
+the loops idle on provisional choices and the whole schedule is bounded by
+how often you go reading JSON.
+
+So the requirement is: everything a decision needs, on the page, next to the
+decision. Answering happens here, and answering *is* the append to
+`state/interventions.jsonl` — the log is the mechanism, not a record of it.
+
+A trivial local server rather than a `file://` page, because a page opened
+from disk cannot poll. The page asks for a version token every couple of
+seconds and swaps the panels in place when it moves; a full reload would
+reset the scroll position on a page you are reading while it updates.
+
+Output is not written to disk. It is derived from state that is in git, and
+regenerating per request is cheaper than owning a cache.
+
+    harness/dashboard/serve [--port 8787] [--no-open]
+"""
+
+from __future__ import annotations
+
+import argparse
+import html
+import importlib.machinery
+import importlib.util
+import json
+import re
+import subprocess
+import sys
+import urllib.parse
+import webbrowser
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+HARNESS = Path(__file__).resolve().parent.parent
+REPO = HARNESS.parent
+
+
+def load_hj():
+    """`harness/hj` has no extension on purpose — it is a command, not a
+    library — so it is loaded by path rather than imported by name. Sharing it
+    matters more than the awkwardness: a dashboard that computed
+    `sections clean` its own way would eventually disagree with the gate."""
+    spec = importlib.util.spec_from_loader(
+        "hj", importlib.machinery.SourceFileLoader("hj", str(HARNESS / "hj"))
+    )
+    sys.dont_write_bytecode = True  # no __pycache__ inside a directory nobody owns
+    module = importlib.util.module_from_spec(spec)
+    # Registered before execution because `@dataclass` resolves annotations
+    # through `sys.modules[cls.__module__]`, which is not there yet otherwise.
+    sys.modules["hj"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+hj = load_hj()
+STATE = hj.STATE
+
+
+# --------------------------------------------------------------------------
+# Reading what the loops wrote
+
+
+FRONTMATTER = re.compile(r"\A---\n(?P<body>.*?)\n---\n", re.DOTALL)
+
+
+def parse_decision(path: Path) -> dict:
+    text = path.read_text()
+    meta: dict[str, str] = {}
+    match = FRONTMATTER.match(text)
+    body = text
+    if match:
+        for line in match.group("body").splitlines():
+            if ":" in line:
+                key, _, value = line.partition(":")
+                meta[key.strip()] = value.strip()
+        body = text[match.end() :]
+
+    sections: dict[str, str] = {}
+    current = "preamble"
+    collected: list[str] = []
+    for line in body.splitlines():
+        if line.startswith("## "):
+            sections[current] = "\n".join(collected).strip()
+            current = line[3:].strip().lower()
+            collected = []
+        else:
+            collected.append(line)
+    sections[current] = "\n".join(collected).strip()
+
+    title = ""
+    for line in body.splitlines():
+        if line.startswith("# "):
+            title = line[2:].strip()
+            break
+
+    identifier = meta.get("id") or path.stem
+    return {
+        "id": identifier,
+        "path": str(path.relative_to(REPO)),
+        "status": meta.get("status", "unknown"),
+        "kind": meta.get("kind", "class-b"),
+        "opened": meta.get("opened", ""),
+        "campaign": meta.get("campaign", ""),
+        "title": title or identifier,
+        "sections": sections,
+        "tagged": tagged_sites(identifier),
+    }
+
+
+def tagged_sites(identifier: str) -> list[str]:
+    result = subprocess.run(
+        ["git", "-C", str(REPO), "grep", "-n", "-F", f"DECISION-{identifier}:"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return [line for line in result.stdout.splitlines() if line][:40]
+
+
+def decisions() -> list[dict]:
+    directory = STATE / "decisions"
+    if not directory.exists():
+        return []
+    return sorted((parse_decision(p) for p in directory.glob("*.md")), key=lambda d: d["id"])
+
+
+def version_token() -> str:
+    """Moves when anything the page shows moves. Cheap enough to compute on a
+    two-second poll: a stat of every tracked state file, and HEAD."""
+    stamps = []
+    for path in sorted(STATE.rglob("*")):
+        if path.is_file():
+            stamps.append(f"{path}:{path.stat().st_mtime_ns}")
+    try:
+        stamps.append(hj.head_sha())
+    except SystemExit:
+        pass
+    return str(hash("|".join(stamps)))
+
+
+def transcript_dir(owner: str) -> Path:
+    import os
+
+    root = os.environ.get("HJ_TRANSCRIPTS") or str(REPO.parent / "heuristic-jump-transcripts")
+    return Path(root) / owner
+
+
+# --------------------------------------------------------------------------
+# Rendering
+
+
+def esc(value) -> str:
+    return html.escape(str(value if value is not None else ""))
+
+
+def markdownish(text: str) -> str:
+    """Not a markdown renderer. The state files are written by a model under a
+    template, and the four constructs it actually uses — paragraphs, list
+    items, inline code, bold — are worth the twenty lines. Anything else falls
+    through as text, which is the failure mode you want."""
+    out = []
+    for block in re.split(r"\n\s*\n", text.strip()):
+        lines = block.splitlines()
+        if all(line.lstrip().startswith(("- ", "* ", "1. ")) for line in lines if line.strip()):
+            items = "".join(f"<li>{inline(re.sub(r'^\s*([-*]|\d+\.)\s+', '', l))}</li>" for l in lines if l.strip())
+            out.append(f"<ul>{items}</ul>")
+        else:
+            out.append(f"<p>{inline(block)}</p>")
+    return "".join(out)
+
+
+def inline(text: str) -> str:
+    escaped = esc(text)
+    escaped = re.sub(r"`([^`]+)`", r"<code>\1</code>", escaped)
+    escaped = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", escaped)
+    return escaped
+
+
+def panel(title: str, body: str, note: str = "") -> str:
+    subtitle = f'<span class="note">{esc(note)}</span>' if note else ""
+    return f'<section class="panel"><h2>{esc(title)}{subtitle}</h2>{body}</section>'
+
+
+def empty(message: str) -> str:
+    return f'<p class="empty">{esc(message)}</p>'
+
+
+# --- panel 1: decisions waiting -------------------------------------------
+
+
+def decision_form(decision: dict) -> str:
+    return f"""
+    <form class="answer" method="post" action="/answer">
+      <input type="hidden" name="id" value="{esc(decision['id'])}">
+      <label>Ruling
+        <select name="status">
+          <option value="accepted">accepted — take the option below</option>
+          <option value="rejected">rejected — do not do this</option>
+          <option value="superseded">superseded — the question changed</option>
+        </select>
+      </label>
+      <label>Answer
+        <textarea name="answer" rows="3" placeholder="Which option, concretely."></textarea>
+      </label>
+      <label>Rationale <span class="required">required</span>
+        <textarea name="rationale" rows="4" required
+          placeholder="Why. A decision with no recorded reason is one you re-litigate in three weeks — and the loop cannot use it, because half the point is that a later campaign reads this and applies it to a case nobody anticipated."></textarea>
+      </label>
+      <button type="submit">Answer and log</button>
+    </form>"""
+
+
+def decision_card(decision: dict) -> str:
+    wanted = ["context", "options", "provisional choice in force", "consequences", "decision"]
+    parts = []
+    for name in wanted:
+        body = decision["sections"].get(name)
+        if body:
+            parts.append(f'<div class="field"><h4>{esc(name)}</h4>{markdownish(body)}</div>')
+    if decision["tagged"]:
+        sites = "".join(f"<li><code>{esc(line)}</code></li>" for line in decision["tagged"])
+        parts.append(f'<div class="field"><h4>sites running on the provisional choice</h4><ul class="sites">{sites}</ul></div>')
+    else:
+        parts.append('<div class="field"><h4>sites running on the provisional choice</h4><p class="empty">No <code>DECISION-</code> tag found in the tree.</p></div>')
+
+    meta = " · ".join(
+        filter(None, [decision["kind"], decision["opened"], f"campaign {decision['campaign'][:8]}" if decision["campaign"] else "", decision["path"]])
+    )
+    return f"""
+    <article class="decision" id="{esc(decision['id'])}">
+      <h3>{esc(decision['id'])} — {inline(decision['title'])}</h3>
+      <p class="meta">{esc(meta)}</p>
+      {''.join(parts)}
+      {decision_form(decision)}
+    </article>"""
+
+
+def handoff_card() -> str:
+    path = STATE / "handoff.md"
+    if not path.exists():
+        return ""
+    return f"""
+    <article class="decision stall">
+      <h3>Stall handoff</h3>
+      <p class="meta">state/handoff.md — the loop stopped and asked. It will not start again until you set it back to <code>running</code> in <code>state/phase.toml</code>.</p>
+      {markdownish(path.read_text())}
+    </article>"""
+
+
+def panel_decisions() -> str:
+    waiting = [d for d in decisions() if d["status"] in ("open", "provisional")]
+    cards = handoff_card() + "".join(decision_card(d) for d in waiting)
+    if not cards:
+        cards = empty(
+            "Nothing waiting. Escalations batch rather than interrupt, so this "
+            "panel being empty means the loops are running on choices they were "
+            "allowed to make."
+        )
+    return panel("Decisions waiting", cards, note="answering here is what writes the intervention log")
+
+
+# --- panel 2: loop status --------------------------------------------------
+
+
+def panel_loops() -> str:
+    phase = hj.load_phase()
+    rows = []
+    for owner, config in sorted(phase.loops.items()):
+        campaigns = hj.campaigns_of(owner)
+        closed = [c for c in campaigns if c.get("outcome")]
+        trailing = hj.trailing_without_progress(owner)
+        current = next((c for c in reversed(campaigns) if not c.get("outcome")), None)
+        counts = hj.audit_counts(config.docs)
+
+        if config.status != "running":
+            state, css = config.status, "paused"
+        elif trailing >= config.stall_n:
+            state, css = "stalled", "bad"
+        elif current:
+            state, css = "running a campaign", "good"
+        else:
+            state, css = "idle", "paused"
+
+        record = "target not written yet"
+        if current:
+            path = REPO / str(current.get("record", ""))
+            if path.exists():
+                target = re.search(r"## Target\n+(.+?)(?=\n## )", path.read_text(), re.DOTALL)
+                if target:
+                    text = re.sub(r"<!--.*?-->", "", target.group(1), flags=re.DOTALL).strip()
+                    record = text[:400] or "target not written yet"
+
+        last_commit = hj.git("log", "-1", "--format=%h %s", check=False).strip()
+        rows.append(f"""
+        <article class="loop">
+          <h3>{esc(owner)} <span class="pill {css}">{esc(state)}</span></h3>
+          <table>
+            <tr><th>phase</th><td>{esc(phase.phase)}</td></tr>
+            <tr><th>audit</th><td>{counts['sections_clean']}/{counts['sections_total']} sections clean · {counts['sections_unjudged']} unjudged · {counts['open_gaps']} gaps · {counts['audit_minors']} minor</td></tr>
+            <tr><th>campaigns</th><td>{len(campaigns)} opened, {len(closed)} closed, {trailing} in a row without progress (stops at {config.stall_n})</td></tr>
+            <tr><th>current</th><td>{esc(current['campaign'][:8]) + ' — ' + esc(record) if current else 'none open'}</td></tr>
+            <tr><th>last commit</th><td><code>{esc(last_commit)}</code></td></tr>
+            <tr><th>may write</th><td class="paths"><details><summary>{len(config.write)} path patterns</summary>
+              {'<br>'.join('<code>' + esc(p) + '</code>' for p in config.write)}</details></td></tr>
+          </table>
+        </article>""")
+    return panel("Loop status", "".join(rows), note="a stalled loop with an unanswered question is the thing most likely to cost you a day")
+
+
+# --- panel 3: metrics ------------------------------------------------------
+
+
+def sparkline(values: list[float], width: int = 320, height: int = 40) -> str:
+    if len(values) < 2:
+        return '<p class="empty">Not enough rows to draw a trend yet.</p>'
+    low, high = min(values), max(values)
+    span = (high - low) or 1
+    step = width / (len(values) - 1)
+    points = " ".join(
+        f"{index * step:.1f},{height - ((value - low) / span) * (height - 4) - 2:.1f}"
+        for index, value in enumerate(values)
+    )
+    return f'<svg class="spark" viewBox="0 0 {width} {height}" preserveAspectRatio="none"><polyline points="{points}"/></svg>'
+
+
+def panel_metrics() -> str:
+    phase = hj.load_phase()
+    blocks = []
+    for owner, config in sorted(phase.loops.items()):
+        rows = hj.read_jsonl(hj.metrics_path(owner))
+        clean = [row.get("sections_clean", 0) for row in rows]
+        counts = hj.audit_counts(config.docs)
+        headline = (
+            f'<p class="headline"><strong>{counts["sections_clean"]}</strong> / {counts["sections_total"]} sections clean'
+            f' <span class="note">the number this loop is judged by</span></p>'
+        )
+
+        # The rows that are not clean are the work queue and stay in view; the
+        # clean ones are the score and go behind a fold. A thirty-row table
+        # above the sessions panel would invert section 16's ordering, which
+        # is by how often a panel should change what you do.
+        buckets: dict[str, list[str]] = {"gaps": [], "unjudged": [], "clean": []}
+        for doc in config.docs:
+            verdicts = hj.read_audit(doc)
+            for section in hj.sections_of(doc):
+                verdict = verdicts.get(section.key)
+                state = verdict.state if verdict else "unjudged"
+                detail = ""
+                if verdict and verdict.gaps:
+                    items = "".join(
+                        f"<li><strong>{esc(gap.claim)}</strong><br>{esc(gap.found)}<br><code>{esc(gap.where)}</code></li>"
+                        for gap in verdict.gaps
+                    )
+                    detail += f"<ul class='gaps'>{items}</ul>"
+                if verdict and verdict.minors:
+                    items = "".join(
+                        f"<li>{esc(minor.claim)} — {esc(minor.note)} <code>{esc(minor.where)}</code></li>"
+                        for minor in verdict.minors
+                    )
+                    detail += f"<ul class='minors'>{items}</ul>"
+                row = (
+                    f"<tr class='{state}'><td><code>{esc(section.anchor)}</code></td>"
+                    f"<td>{esc(section.heading)}</td><td class='state'>{esc(state)}</td>"
+                    f"<td>{detail}</td></tr>"
+                )
+                buckets[state].append(row)
+
+        header = "<thead><tr><th>anchor</th><th>section</th><th>state</th><th>gaps and minor items</th></tr></thead>"
+
+        def table_of(state: str) -> str:
+            return f'<table class="sections">{header}<tbody>{"".join(buckets[state])}</tbody></table>'
+
+        outstanding = (
+            table_of("gaps")
+            if buckets["gaps"]
+            else empty(
+                "No section in scope has a gap. What is left is the unjudged list, "
+                "and the minor items, which are a human's to rule on."
+            )
+        )
+        folded = "".join(
+            f'<details><summary>{len(buckets[state])} section(s) {label}</summary>{table_of(state)}</details>'
+            for state, label in (("unjudged", "not reached yet"), ("clean", "clean"))
+            if buckets[state]
+        )
+        settled = folded
+
+        blocks.append(f"""
+        <article class="metrics">
+          <h3>{esc(owner)}</h3>
+          {headline}
+          {sparkline(clean)}
+          <p class="note">{len(rows)} metrics row(s). The history is a cache — replay is deterministic, so any row can be recomputed from its commit.</p>
+          {outstanding}
+          {settled}
+        </article>""")
+
+    note = "the frontier chart is a phase 2a object; there is nothing to plot until there is a corpus"
+    return panel("Metrics", "".join(blocks), note=note)
+
+
+# --- panel 4: cost ---------------------------------------------------------
+
+
+def panel_cost() -> str:
+    directory = STATE / "cost"
+    files = sorted(directory.glob("*.jsonl")) if directory.exists() else []
+    if not files:
+        return panel(
+            "Cost",
+            empty(
+                "Not collected. The join is on session id and happens after the fact — "
+                "`ccusage` reads Claude Code's local JSONL and the harness already records "
+                "which loop and target it launched, so nothing inside the model needs "
+                "instrumenting. It is deferred with the rest of phase 2a's machinery "
+                "(design/loops.md section 18)."
+            ),
+        )
+    rows = []
+    for path in files:
+        for row in hj.read_jsonl(path):
+            rows.append(
+                "<tr>"
+                + "".join(f"<td>{esc(row.get(key))}</td>" for key in ("campaign", "loop", "phase", "target", "commits", "output_tokens", "model_seconds", "outcome"))
+                + "</tr>"
+            )
+    return panel(
+        "Cost",
+        "<table><thead><tr><th>campaign</th><th>loop</th><th>phase</th><th>target</th><th>commits</th><th>output</th><th>model s</th><th>outcome</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table>",
+        note="cost per unit of progress is the number that should drive stopping decisions",
+    )
+
+
+# --- panel 5: sessions -----------------------------------------------------
+
+
+def panel_sessions() -> str:
+    phase = hj.load_phase()
+    rows = []
+    for owner in sorted(phase.loops):
+        for campaign in reversed(hj.campaigns_of(owner)):
+            identifier = campaign.get("campaign", "")
+            path = transcript_dir(owner) / f"{identifier}.jsonl"
+            link = (
+                f'<a href="/transcript/{urllib.parse.quote(owner)}/{urllib.parse.quote(identifier)}">read</a>'
+                if path.exists()
+                else '<span class="empty">no transcript</span>'
+            )
+            rows.append(
+                f"<tr><td><code>{esc(identifier[:8])}</code></td><td>{esc(owner)}</td>"
+                f"<td>{esc(campaign.get('target') or '—')}</td>"
+                f"<td>{esc(campaign.get('outcome') or 'open')}</td>"
+                f"<td>{esc(campaign.get('commits', 0))}</td>"
+                f"<td><code>{esc((campaign.get('prompt_sha') or '')[:12])}</code></td>"
+                f"<td>{esc(campaign.get('started', ''))}</td><td>{link}</td></tr>"
+            )
+    if not rows:
+        return panel("Sessions", empty("No campaign has run yet."))
+    return panel(
+        "Sessions",
+        "<table><thead><tr><th>id</th><th>loop</th><th>target</th><th>outcome</th><th>commits</th>"
+        "<th>prompt sha</th><th>started</th><th></th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table>",
+        note="the campaign id is the session id — `claude --resume <id>` works directly",
+    )
+
+
+def panel_interventions() -> str:
+    rows = hj.read_jsonl(STATE / "interventions.jsonl")
+    if not rows:
+        return panel(
+            "Interventions",
+            empty("Nothing logged. Interventions per 100 experiments is the honest version of “close to one-shot”; nothing else in the design reports it."),
+        )
+    body = "".join(
+        f"<tr><td>{esc(row.get('ts'))}</td><td>{esc(row.get('kind'))}</td><td>{esc(row.get('target'))}</td>"
+        f"<td>{esc(row.get('answer'))}</td><td>{esc(row.get('rationale'))}</td></tr>"
+        for row in reversed(rows)
+    )
+    return panel(
+        "Interventions",
+        f"<table><thead><tr><th>when</th><th>kind</th><th>target</th><th>answer</th><th>rationale</th></tr></thead><tbody>{body}</tbody></table>",
+        note=f"{len(rows)} logged",
+    )
+
+
+def fragment() -> str:
+    return (
+        panel_decisions()
+        + panel_loops()
+        + panel_metrics()
+        + panel_cost()
+        + panel_sessions()
+        + panel_interventions()
+    )
+
+
+# --------------------------------------------------------------------------
+# The transcript view
+
+
+def render_transcript(owner: str, campaign: str, limit: int) -> str:
+    path = transcript_dir(owner) / f"{campaign}.jsonl"
+    if not path.exists():
+        return page("Transcript", empty(f"No transcript at {esc(path)}."))
+
+    events = []
+    for line in path.read_text(errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+
+    parts = []
+    shown = 0
+    for event in events:
+        if shown >= limit:
+            break
+        kind = event.get("type")
+        if kind == "assistant":
+            for block in event.get("message", {}).get("content", []):
+                parts.append(render_block(block))
+                shown += 1
+        elif kind == "user":
+            content = event.get("message", {}).get("content", [])
+            if isinstance(content, list):
+                for block in content:
+                    parts.append(render_result(block))
+                    shown += 1
+        elif kind == "result":
+            # Verbatim: the last two lines are the TARGET / OUTCOME contract
+            # the runner reads, and reflowing them hides whether they were
+            # actually on their own lines.
+            parts.append(f'<div class="turn result"><h4>result</h4><pre>{esc(event.get("result", ""))}</pre></div>')
+            shown += 1
+
+    more = ""
+    if shown >= limit and len(events) > shown:
+        more = f'<p><a href="/transcript/{urllib.parse.quote(owner)}/{urllib.parse.quote(campaign)}?limit={limit * 4}">show more</a> · <a href="/raw/{urllib.parse.quote(owner)}/{urllib.parse.quote(campaign)}">raw jsonl</a></p>'
+
+    header = (
+        f'<p class="meta"><a href="/">&larr; dashboard</a> · {esc(owner)} · <code>{esc(campaign)}</code> · '
+        f'{len(events)} events · <a href="/raw/{urllib.parse.quote(owner)}/{urllib.parse.quote(campaign)}">raw</a></p>'
+    )
+    return page("Transcript", header + "".join(parts) + more, poll=False)
+
+
+GATE_LINE = re.compile(r"^(GATE (?:PASSED|FAILED).*|--- \d+\..*|scope: .*|audit: .*|metrics: .*)$", re.MULTILINE)
+
+
+def truncate(text: str, keep: int = 1200) -> tuple[str, bool]:
+    return (text[:keep], True) if len(text) > keep else (text, False)
+
+
+def render_block(block: dict) -> str:
+    kind = block.get("type")
+    if kind == "text":
+        return f'<div class="turn text">{markdownish(block.get("text", ""))}</div>'
+    if kind == "thinking":
+        body, _ = truncate(block.get("thinking", ""), 4000)
+        return f'<details class="turn thinking"><summary>thinking</summary><pre>{esc(body)}</pre></details>'
+    if kind == "tool_use":
+        name = block.get("name", "?")
+        args = block.get("input", {}) or {}
+        summary = args.get("command") or args.get("file_path") or args.get("pattern") or args.get("path") or ""
+        if name == "Edit" and "old_string" in args:
+            body = render_edit(args)
+        else:
+            body = f"<pre>{esc(json.dumps(args, indent=2)[:4000])}</pre>"
+        return (
+            f'<details class="turn tool"><summary><span class="tool-name">{esc(name)}</span> '
+            f'<code>{esc(str(summary)[:160])}</code></summary>{body}</details>'
+        )
+    return ""
+
+
+def render_edit(args: dict) -> str:
+    old = str(args.get("old_string", "")).splitlines()
+    new = str(args.get("new_string", "")).splitlines()
+    lines = [f'<span class="del">-{esc(line)}</span>' for line in old] + [
+        f'<span class="add">+{esc(line)}</span>' for line in new
+    ]
+    return f'<pre class="diff">{"<br>".join(lines)}</pre>'
+
+
+def render_result(block: dict) -> str:
+    if block.get("type") != "tool_result":
+        return ""
+    content = block.get("content")
+    if isinstance(content, list):
+        text = "\n".join(part.get("text", "") for part in content if isinstance(part, dict))
+    else:
+        text = str(content or "")
+
+    # The gate's verdict and a metrics row are the decision points the rest of
+    # the turn is reasoning about, so they come out of the fold.
+    highlights = GATE_LINE.findall(text)
+    banner = ""
+    if highlights:
+        css = "bad" if any(line.startswith("GATE FAILED") for line in highlights) else "good"
+        banner = f'<pre class="highlight {css}">{esc(chr(10).join(highlights[:20]))}</pre>'
+
+    body, truncated = truncate(text)
+    tail = '<p class="note">truncated</p>' if truncated else ""
+    return (
+        f'{banner}<details class="turn result-block"><summary>tool result '
+        f'({len(text)} bytes)</summary><pre>{esc(body)}</pre>{tail}</details>'
+    )
+
+
+# --------------------------------------------------------------------------
+# The page
+
+
+STYLE = """
+:root { color-scheme: light dark; --fg:#111; --bg:#fff; --dim:#666; --line:#d8d8d8;
+        --good:#1a7f37; --bad:#b42318; --warn:#9a6700; --accent:#0b5fff; --card:#fafafa; }
+@media (prefers-color-scheme: dark) {
+  :root { --fg:#e6e6e6; --bg:#141414; --dim:#9a9a9a; --line:#333; --good:#4ac26b;
+          --bad:#ff6b5e; --warn:#d9a400; --accent:#6ea8ff; --card:#1c1c1c; }
+}
+* { box-sizing: border-box; }
+body { margin:0; font:14px/1.5 -apple-system, "Segoe UI", system-ui, sans-serif;
+       color:var(--fg); background:var(--bg); }
+header { padding:14px 20px; border-bottom:1px solid var(--line); display:flex;
+         align-items:baseline; gap:14px; position:sticky; top:0; background:var(--bg); z-index:2; }
+header h1 { font-size:15px; margin:0; font-weight:600; }
+main { padding:0 20px 60px; max-width:1100px; }
+.panel { margin:26px 0; }
+.panel > h2 { font-size:13px; text-transform:uppercase; letter-spacing:.08em; margin:0 0 10px;
+              padding-bottom:6px; border-bottom:1px solid var(--line); font-weight:600; }
+.note { color:var(--dim); font-weight:400; text-transform:none; letter-spacing:0; margin-left:10px; font-size:12px; }
+.empty { color:var(--dim); font-style:italic; }
+h3 { font-size:14px; margin:0 0 6px; }
+h4 { font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); margin:12px 0 4px; }
+code { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; }
+pre { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px;
+      background:var(--card); border:1px solid var(--line); border-radius:4px;
+      padding:8px 10px; overflow-x:auto; white-space:pre-wrap; word-break:break-word; }
+table { border-collapse:collapse; width:100%; font-size:13px; }
+th, td { text-align:left; vertical-align:top; padding:5px 8px; border-bottom:1px solid var(--line); }
+th { color:var(--dim); font-weight:500; white-space:nowrap; }
+.decision, .loop, .metrics { background:var(--card); border:1px solid var(--line);
+                             border-radius:6px; padding:14px 16px; margin-bottom:14px; }
+.decision { border-left:3px solid var(--warn); }
+.decision.stall { border-left-color:var(--bad); }
+.meta { color:var(--dim); font-size:12px; margin:0 0 8px; }
+.sites li { font-size:12px; }
+.answer { display:flex; flex-direction:column; gap:8px; margin-top:14px;
+          border-top:1px dashed var(--line); padding-top:12px; }
+.answer label { display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--dim); }
+.answer textarea, .answer select { font:inherit; font-size:13px; color:var(--fg);
+   background:var(--bg); border:1px solid var(--line); border-radius:4px; padding:6px 8px; width:100%; }
+.answer button { align-self:flex-start; font:inherit; font-size:13px; padding:6px 14px;
+   border:1px solid var(--accent); background:var(--accent); color:#fff; border-radius:4px; cursor:pointer; }
+.required { color:var(--bad); }
+.pill { font-size:11px; padding:1px 8px; border-radius:10px; border:1px solid var(--line); color:var(--dim); }
+.pill.good { color:var(--good); border-color:var(--good); }
+.pill.bad { color:var(--bad); border-color:var(--bad); }
+.headline { font-size:22px; margin:4px 0; }
+.headline strong { font-size:30px; }
+.spark { width:100%; height:40px; }
+.spark polyline { fill:none; stroke:var(--accent); stroke-width:1.5; vector-effect:non-scaling-stroke; }
+tr.clean td.state { color:var(--good); }
+tr.gaps td.state { color:var(--bad); }
+tr.unjudged td.state { color:var(--dim); }
+.sections td:first-child { white-space:nowrap; width:1%; }
+.sections td:nth-child(2) { width:26%; }
+.sections td.state { width:1%; white-space:nowrap; }
+.sections { margin-top:10px; }
+.gaps li, .minors li { font-size:12px; margin-bottom:6px; }
+.paths code { display:inline-block; }
+.turn { margin:8px 0; }
+.turn.text p { margin:6px 0; }
+summary { cursor:pointer; color:var(--dim); font-size:12px; }
+.tool-name { color:var(--accent); font-weight:600; }
+.diff .del { color:var(--bad); }
+.diff .add { color:var(--good); }
+.highlight { border-left:3px solid var(--dim); }
+.highlight.good { border-left-color:var(--good); }
+.highlight.bad { border-left-color:var(--bad); }
+"""
+
+POLL = """
+let token = %TOKEN%;
+async function tick() {
+  try {
+    const fresh = await (await fetch('/version')).text();
+    if (fresh === token) return;
+    // Never swap under someone who is typing an answer: losing a rationale
+    // half-written is exactly the friction that leaves decisions unanswered.
+    const active = document.activeElement;
+    if (active && active.closest && active.closest('form.answer')) return;
+    for (const field of document.querySelectorAll('form.answer textarea')) {
+      if (field.value.trim()) return;
+    }
+    const html = await (await fetch('/fragment')).text();
+    document.querySelector('main').innerHTML = html;
+    token = fresh;
+    document.getElementById('token').textContent = 'updated ' + new Date().toLocaleTimeString();
+  } catch (error) { /* the server is restarting; the next tick retries */ }
+}
+setInterval(tick, 2000);
+"""
+
+
+def page(title: str, body: str, poll: bool = True) -> str:
+    script = ""
+    if poll:
+        script = f"<script>{POLL.replace('%TOKEN%', json.dumps(version_token()))}</script>"
+    try:
+        phase = hj.load_phase().phase
+    except SystemExit:
+        phase = "?"
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{esc(title)} — heuristic-jump</title>
+<style>{STYLE}</style></head>
+<body>
+<header><h1>heuristic-jump</h1><span class="note">phase {esc(phase)}</span>
+<span class="note" id="token"></span></header>
+<main>{body}</main>
+{script}
+</body></html>"""
+
+
+# --------------------------------------------------------------------------
+# Answering
+
+
+def answer_decision(fields: dict[str, str]) -> tuple[int, str]:
+    identifier = fields.get("id", "").strip()
+    rationale = fields.get("rationale", "").strip()
+    status = fields.get("status", "accepted").strip()
+    answer = fields.get("answer", "").strip()
+
+    if not rationale:
+        return 400, "A rationale is required. `design/loops.md` section 16: a decision with no recorded reason is one you re-litigate in three weeks."
+    if status not in ("accepted", "rejected", "superseded"):
+        return 400, f"Unknown status {status!r}."
+
+    path = STATE / "decisions" / f"{identifier}.md"
+    if not path.exists():
+        return 404, f"No decision record at {path}."
+
+    stamp = hj.now()
+    text = path.read_text()
+    # MADR's discipline: the status changes, the text does not. The answer is
+    # appended rather than edited into the body.
+    updated, count = re.subn(r"(?m)^status:\s*.+$", f"status: {status}", text, count=1)
+    if count == 0:
+        updated = f"---\nid: {identifier}\nstatus: {status}\n---\n\n" + text
+    updated = updated.rstrip() + (
+        f"\n\n## Answer — {stamp}\n\n"
+        f"**Ruling:** {status}\n\n"
+        f"{answer or '(no option text given; see the rationale)'}\n\n"
+        f"**Rationale:** {rationale}\n\n"
+        f"Reconciling the sites tagged `// DECISION-{identifier}: provisional` is a\n"
+        f"normal campaign target, not an interrupt.\n"
+    )
+    path.write_text(updated)
+
+    hj.append_jsonl(
+        STATE / "interventions.jsonl",
+        {
+            "ts": stamp,
+            "kind": "decision-answered",
+            "target": identifier,
+            "answer": f"{status}: {answer}" if answer else status,
+            "rationale": rationale,
+            "commit": hj.head_sha(),
+        },
+    )
+    return 303, "/"
+
+
+# --------------------------------------------------------------------------
+# The server
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "heuristic-jump-dashboard"
+
+    def log_message(self, fmt, *args):
+        if self.path not in ("/version", "/fragment"):
+            sys.stderr.write(f"dashboard: {self.address_string()} {fmt % args}\n")
+
+    def send(self, code: int, body: str, content_type: str = "text/html; charset=utf-8") -> None:
+        payload = body.encode()
+        self.send_response(code)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def do_GET(self) -> None:
+        parsed = urllib.parse.urlparse(self.path)
+        route = parsed.path
+        query = urllib.parse.parse_qs(parsed.query)
+        try:
+            if route == "/":
+                self.send(200, page("Dashboard", fragment()))
+            elif route == "/fragment":
+                self.send(200, fragment())
+            elif route == "/version":
+                self.send(200, version_token(), "text/plain; charset=utf-8")
+            elif route.startswith("/transcript/"):
+                _, _, owner, campaign = route.split("/", 3)
+                limit = int(query.get("limit", ["120"])[0])
+                self.send(200, render_transcript(owner, campaign, limit))
+            elif route.startswith("/raw/"):
+                _, _, owner, campaign = route.split("/", 3)
+                path = transcript_dir(owner) / f"{campaign}.jsonl"
+                if not path.exists():
+                    self.send(404, page("Transcript", empty("No such transcript.")))
+                else:
+                    self.send(200, path.read_text(errors="replace"), "text/plain; charset=utf-8")
+            else:
+                self.send(404, page("Not found", empty(f"No route {esc(route)}.")))
+        except Exception as error:  # a dashboard that dies is worse than one that says so
+            self.send(500, page("Error", f"<pre>{esc(repr(error))}</pre>"))
+
+    def do_POST(self) -> None:
+        if urllib.parse.urlparse(self.path).path != "/answer":
+            self.send(404, page("Not found", empty("No such endpoint.")))
+            return
+        length = int(self.headers.get("Content-Length", "0"))
+        raw = self.rfile.read(length).decode()
+        fields = {k: v[0] for k, v in urllib.parse.parse_qs(raw, keep_blank_values=True).items()}
+        try:
+            code, message = answer_decision(fields)
+        except Exception as error:
+            self.send(500, page("Error", f"<pre>{esc(repr(error))}</pre>"))
+            return
+        if code == 303:
+            self.send_response(303)
+            self.send_header("Location", message)
+            self.end_headers()
+        else:
+            self.send(code, page("Not written", f'<p class="empty">{esc(message)}</p><p><a href="/">back</a></p>'))
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--port", type=int, default=8787)
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--no-open", action="store_true")
+    args = parser.parse_args()
+
+    server = ThreadingHTTPServer((args.host, args.port), Handler)
+    url = f"http://{args.host}:{args.port}/"
+    print(f"dashboard: {url}   (ctrl-c to stop)")
+    if not args.no_open:
+        webbrowser.open(url)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\ndashboard: stopped")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

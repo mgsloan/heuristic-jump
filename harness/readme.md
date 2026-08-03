@@ -23,8 +23,9 @@ demanding.
 
 ```sh
 harness/loop conformance              # campaigns until stalled or stopped
+harness/dashboard/serve               # the operator view, at localhost:8787
+harness/hj status                     # the same thing in a terminal
 harness/loop conformance --once       # one campaign
-harness/hj status                     # the operator view, until there is a dashboard
 ```
 
 `state/phase.toml` is the desired state — the phase, and each loop's status.
@@ -39,8 +40,9 @@ boundary, which is safe because every experiment commits or reverts.
 | `gate` | `fmt`, `clippy`, `nextest`, diff scope, audit consistency, metrics row — in that order, all mandatory, scoped to the crates the loop owns |
 | `audit` | a fresh read-only session judging spec against code, and the merge of its verdict into `state/audit/` |
 | `hj` | everything mechanical: section lists, audit merges, scope checks, prompt rendering, campaign records, metrics rows |
+| `dashboard/serve` | the operator view, and the place escalations are answered |
 | `prompts/` | one prompt per variety of phase. Not one template with a swapped middle |
-| `trailer-format.md` | the commit trailer convention, spliced into the prompts at launch so there is one copy of it |
+| `trailer-format.md`, `decision-template.md` | the commit trailer convention and the decision-record shape, spliced into the prompts at launch so there is one copy of each |
 
 Run `harness/hj --help` for the subcommands.
 
@@ -71,13 +73,45 @@ follows the documents rather than drifting from them, and coverage comes from
 rotation: the sections the last campaign touched, plus the least recently
 audited slice of the rest.
 
+## The dashboard answers, it does not only display
+
+`harness/dashboard/serve` is a local server over a page regenerated per
+request. Five panels, in descending order of how often they should change
+what you do: decisions waiting, loop status, metrics, cost, sessions — plus
+the intervention log.
+
+The part that earns it is that **you answer from the page**. A read-only
+dashboard means every decision costs a context switch into an editor, which
+is exactly the friction that leaves loops idling on provisional choices. A
+`POST` writes the ruling into `state/decisions/<id>.md` — appending the
+answer and flipping the status, never editing the record's text, which is
+MADR's discipline — and appends to `state/interventions.jsonl` in the same
+action. The log is the mechanism, not a record of it, so an answer given
+through the page is logged by construction. **The rationale field is
+required**, because a decision with no recorded reason is one you
+re-litigate in three weeks and one the loop cannot use.
+
+Two smaller things it does on purpose. It swaps the panels in place rather
+than reloading, so the scroll position survives an update you were reading
+through — and it skips the swap entirely while a rationale is half-written.
+And the transcript view renders the teed stream: tool calls collapsed to
+their command or path, diffs as diffs, gate verdicts and metric rows pulled
+out of the fold, large results truncated with the raw JSONL one link away.
+
+Nothing it produces is committed; it is all derived from state that is.
+
 ## What is not built
 
-The supervisor, the dashboard, the frontier tool, held-out selection, cost
-accounting, worktree parallelism, and the tuning and optimisation prompts.
+The supervisor, the frontier tool, held-out selection, cost accounting,
+worktree parallelism, and the tuning and optimisation prompts.
 `design/loops.md` section 18 is the argument: they exist to serve tuning
 loops, and there are none until phase 2a. With one loop, one bash loop is not
-a fleet and `hj status` is enough of a dashboard.
+a fleet.
+
+The cost panel is therefore empty and says so, rather than showing a zero.
+It fills in when `state/cost/<loop>.jsonl` exists — the join is `ccusage`
+against the session ids the harness already records, after the fact, with
+nothing inside the model instrumented.
 
 `design/loops.md` section 18 also says who builds them — this same
 conformance loop, pointed at `loops.md`, during the ~100 machine-hours of

@@ -63,7 +63,7 @@ model_args=()
 claude -p \
 	--session-id "$session" \
 	--tools "Read,Grep,Glob" \
-	--permission-mode dontAsk \
+	--permission-mode bypassPermissions \
 	"${model_args[@]}" \
 	<"$work/prompt" |
 	tee "$transcripts/audit-$session.md"

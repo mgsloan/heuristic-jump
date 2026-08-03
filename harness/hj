@@ -691,6 +691,15 @@ def cmd_check_audit(args: argparse.Namespace) -> int:
 
 def cmd_check_scope(args: argparse.Namespace) -> int:
     _, config = loop_config(args.loop)
+    if args.rev:
+        # Forensics on an existing commit. A commit without this loop's
+        # `loop:` trailer is a human's, and ownership does not apply to it —
+        # the check that matters is the one on the pending commit below,
+        # which has no trailer to consult and therefore always runs.
+        owner = trailers_of(args.rev).get("loop")
+        if owner != args.loop:
+            print(f"scope: {args.rev} carries no `loop: {args.loop}` trailer; ownership does not apply")
+            return 0
     paths = commit_paths(args.rev) if args.rev else working_tree_paths()
     violations = []
     for path in paths:
@@ -709,6 +718,36 @@ def cmd_check_scope(args: argparse.Namespace) -> int:
         return 1
     print(f"scope: {len(paths)} path(s), all owned by {args.loop}")
     return 0
+
+
+def cmd_check_path(args: argparse.Namespace) -> int:
+    """One path, for the `PreToolUse` hook. Fast feedback and **not a
+    boundary**: deny rules cover Claude's file tools and not bash
+    subprocesses, so anything this blocks is reachable through `sh -c`. The
+    gate's diff-scope check is what actually enforces
+    (`design/loops.md` section 13)."""
+    _, config = loop_config(args.loop)
+    failed = False
+    for raw in args.path:
+        path = Path(raw)
+        try:
+            relative = str(path.resolve().relative_to(REPO))
+        except ValueError:
+            print(f"{raw} is outside the repository", file=sys.stderr)
+            failed = True
+            continue
+        if matches_any(relative, DENIED_ALWAYS):
+            print(f"{relative} is denied to every loop, in every phase.", file=sys.stderr)
+            failed = True
+        elif not matches_any(relative, config.write):
+            print(
+                f"{relative} is outside {args.loop}'s owned paths, so the gate would "
+                "reject the commit. If you need it, that is a decision record, not a "
+                "workaround.",
+                file=sys.stderr,
+            )
+            failed = True
+    return 1 if failed else 0
 
 
 def cmd_check_metrics(args: argparse.Namespace) -> int:
@@ -1135,6 +1174,11 @@ def main() -> int:
     p.add_argument("loop")
     p.add_argument("--rev", help="check a commit instead of the working tree")
     p.set_defaults(run=cmd_check_scope)
+
+    p = sub.add_parser("check-path", help="is one path inside this loop's owned set (for the PreToolUse hook)")
+    p.add_argument("loop")
+    p.add_argument("path", nargs="+")
+    p.set_defaults(run=cmd_check_path)
 
     p = sub.add_parser("check-metrics", help="gate step: the previous iteration recorded its row")
     p.add_argument("loop")

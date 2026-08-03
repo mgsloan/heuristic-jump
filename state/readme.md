@@ -45,6 +45,14 @@ evidence to make and no campaign to make them in. A decision record exists
 because a campaign hit something and could not proceed without choosing —
 that is what makes the outstanding count mean anything.
 
+## Answering happens through the dashboard
+
+`harness/dashboard/serve`, not an editor. Answering a decision *means*
+appending to `interventions.jsonl` — the harness derives a record's status
+from what was written, so the log cannot drift from what happened. Editing a
+decision file by hand leaves the answer but not the reasoning, which is the
+half with the higher information density.
+
 ## What is not here yet
 
 The cost rows (`cost/<loop>.jsonl`), the findings protocol in anger, and the

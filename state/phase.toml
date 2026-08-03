@@ -70,6 +70,17 @@ write = [
   "state/handoff.md",
 ]
 
+# A permission prompt in `claude -p` is a denial, and a campaign cannot run
+# `harness/gate`, `cargo` or `git commit` under one — so this defaults to
+# `bypassPermissions` and the containment is the design's rather than the
+# CLI's: the PreToolUse hook for fast feedback, the gate's diff-scope check
+# for enforcement (`design/loops.md` section 13).
+#
+# Set it to `acceptEdits` to watch a run and approve each command yourself.
+# That is the right setting for the first campaign or two and the wrong one
+# for an overnight run, since an unanswered prompt reads as a refused tool.
+permission_mode = "bypassPermissions"
+
 # Optional. `budget_usd` closes a campaign that runs long, which also bounds
 # context growth since context now accumulates within a campaign
 # (`design/loops.md` section 15). `model` overrides the tier per loop.

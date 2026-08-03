@@ -70,8 +70,21 @@ model_of() {
 	PY
 }
 
+permission_mode_of() {
+	python3 - "$1" <<-'PY'
+		import sys, tomllib, pathlib
+		phase = tomllib.loads(pathlib.Path("state/phase.toml").read_text())
+		loop = phase.get("loop", {}).get(sys.argv[1], {})
+		print(loop.get("permission_mode") or "bypassPermissions")
+	PY
+}
+
 transcripts="${HJ_TRANSCRIPTS:-$repo/../heuristic-jump-transcripts}/$loop"
 mkdir -p "$transcripts"
+
+# The PreToolUse hook reads this and no-ops without it, so an interactive
+# session in this repository is unaffected by the ownership rules.
+export HJ_LOOP="$loop"
 
 count=0
 while :; do
@@ -103,11 +116,18 @@ while :; do
 	model="$(model_of "$loop")"
 	[ -n "$model" ] && extra_args+=(--model "$model")
 
+	# A permission prompt in `-p` mode is a denial, and the campaign has to run
+	# `harness/gate`, `cargo` and `git commit` without one. So prompts are off
+	# by default and the containment is the design's, not the CLI's: the
+	# PreToolUse hook rejects an edit outside owned paths as fast feedback, and
+	# the gate's diff-scope check is the enforcement, because it inspects the
+	# result rather than trusting the actor (design/loops.md section 13).
+	# Override with `permission_mode` in state/phase.toml to supervise a run.
 	claude -p \
 		--session-id "$campaign" \
 		--output-format stream-json \
 		--verbose \
-		--permission-mode acceptEdits \
+		--permission-mode "$(permission_mode_of "$loop")" \
 		"${extra_args[@]}" \
 		<"$prompt" >"$transcript"
 	exit_status=$?
