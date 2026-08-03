@@ -414,6 +414,12 @@ def gap_ledger(docs: list[str]) -> dict[str, int]:
     closed: set[str] = set()
     for row in read_jsonl(GAP_LOG):
         found.update(row.get("opened", []))
+        # A gap can be closed without ever having been *opened* in this log:
+        # the audits before the log existed left no identities behind, so the
+        # first time one of their gaps is seen here is when it disappears.
+        # Counting only `opened` made "closed of found" report 15 closed of 41
+        # found while 41 were still open.
+        found.update(row.get("closed", []))
         closed.update(row.get("closed", []))
         closed.difference_update(row.get("opened", []))  # reopened is not closed
     still_open = open_gap_ids(docs)
