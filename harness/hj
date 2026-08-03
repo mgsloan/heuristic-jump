@@ -1388,10 +1388,23 @@ def cmd_campaign_close(args: argparse.Namespace) -> int:
 
 
 def campaign_is_alive(campaign_id: str) -> bool:
+    """`pgrep -f` matches any command line containing the string, including a
+    shell that merely mentions it — a watcher looking for the loop matched
+    itself and reported the loop as running. So the match is confirmed against
+    the process's actual argv: some argument must *be* the adapter, followed by
+    `campaign` and this id."""
     result = subprocess.run(
         ["pgrep", "-f", f"adapter campaign {campaign_id}"], capture_output=True, text=True, check=False
     )
-    return bool(result.stdout.strip())
+    for pid in result.stdout.split():
+        try:
+            argv = Path(f"/proc/{pid}/cmdline").read_bytes().decode().split("\0")
+        except OSError:
+            continue
+        for index, argument in enumerate(argv[:-2]):
+            if argument.endswith("/adapter") and argv[index + 1 : index + 3] == ["campaign", campaign_id]:
+                return True
+    return False
 
 
 def cmd_campaign_reap(args: argparse.Namespace) -> int:
