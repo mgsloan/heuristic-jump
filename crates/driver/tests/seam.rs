@@ -420,6 +420,149 @@ fn the_licence_text_is_symlinked_into_every_member() {
     }
 }
 
+/// `deps.md` §12's table, which places each testing crate, plus the two pins
+/// its rows argue for and the four crates it declines.
+///
+/// The placements are narrow and the narrowness is the claim.
+/// `criterion` is "`vendor/rope`'s benchmark only, per §5" — it exists in this
+/// workspace to answer one question, whether the newtype wrappers and the
+/// `*_raw` indirection inline away, and a second user would mean somebody
+/// started benchmarking our own code, which §12 says explicitly is not
+/// planned. `rand` is there for "upstream rope/sum_tree tests, kept per §5",
+/// which is why it belongs to the vendored crates and not to ours.
+///
+/// The pins are two of the three the document's preamble calls still
+/// load-bearing, and both have a reason that a bare version number does not
+/// carry. `rand` is "pinned to Zed's 0.9 rather than crates.io's 0.10: the
+/// tests are kept verbatim and are written against `rng.random_range(..)`.
+/// Taking 0.10 would mean editing test bodies, which defeats keeping them" —
+/// and keeping them is what `rope-modifications.md` §7 relies on as the
+/// independent check on the newtype sweep. `lsp-types` is held below the
+/// release that swapped `url::Url` for `fluent-uri`, because "an oracle whose
+/// URIs are a different type compares nothing where percent-encoding and
+/// drive letters live, which is where the bugs actually are". A routine
+/// version bump defeats either one silently.
+///
+/// `tempfile` is permitted and not required: §12 places it in the
+/// `ProjectView` scope tests, that suite builds its fixtures from
+/// `CARGO_TARGET_TMPDIR` instead, and `conformance-015` is where that sits
+/// until someone rules on it.
+#[test]
+fn the_testing_crates_are_placed_where_section_12_puts_them() {
+    /// §12's "Deliberately not adding".
+    const DECLINED: &[&str] = &["mockall", "pretty_assertions", "arbitrary", "cargo-fuzz"];
+
+    /// §12's table. Every one is a testing crate, so in a crate of ours it
+    /// belongs in a dev table — `lsp-types` most of all, which
+    /// `the_lsp_types_oracle_never_leaves_the_dev_dependencies` asserts on its
+    /// own grounds. The vendored crates are exempt: `sum_tree` carries
+    /// `proptest` as an optional runtime dependency behind its `test-support`
+    /// feature, which is upstream's shape and not ours to correct.
+    const TESTING: &[&str] = &[
+        "insta",
+        "proptest",
+        "tempfile",
+        "rand",
+        "criterion",
+        "lsp-types",
+    ];
+
+    let members = workspace_members();
+    assert!(
+        !members.is_empty(),
+        "no workspace members parsed out of Cargo.toml, so this test would pass vacuously"
+    );
+
+    let mut criterion_declared_by = Vec::new();
+    let mut rand_declared_by = Vec::new();
+    for member in &members {
+        let manifest = workspace_file(&format!("{member}/Cargo.toml"));
+        assert!(
+            !manifest.is_empty(),
+            "no manifest for {member}, so every assertion below is vacuous"
+        );
+
+        for (table, key, _) in dependency_entries(&manifest) {
+            let name = key.strip_suffix(".workspace").unwrap_or(&key);
+            assert!(
+                !DECLINED.contains(&name),
+                "{member} declares {name} in [{table}], and deps.md §12 declines it: the fake \
+                 child is a scripted frame list, which is a plain struct, and insta covers the \
+                 cases where diff quality actually matters"
+            );
+
+            if name == "criterion" {
+                criterion_declared_by.push(member.clone());
+            }
+            if name == "rand" {
+                rand_declared_by.push(member.clone());
+            }
+            if TESTING.contains(&name) && !member.starts_with("vendor/") {
+                assert!(
+                    table.contains("dev-dependencies"),
+                    "{member} declares {name} in [{table}] rather than a dev table: deps.md \
+                     §12 places it in the tests, and a testing crate in the runtime graph is \
+                     one the shipped binary links for nothing"
+                );
+            }
+        }
+    }
+
+    assert_eq!(
+        criterion_declared_by,
+        vec!["vendor/rope".to_owned()],
+        "deps.md §12 gives criterion to vendor/rope's benchmark only, and §5 gives the reason \
+         — it answers whether the newtype wrappers and the *_raw indirection inline away. §12 \
+         is explicit that no benchmark of our own code is planned, so a second user is a \
+         decision nobody recorded"
+    );
+    assert_eq!(
+        rand_declared_by,
+        vec!["vendor/rope".to_owned(), "vendor/sum_tree".to_owned()],
+        "deps.md §12 gives rand to the upstream rope/sum_tree tests kept per §5, and those \
+         are the vendored crates"
+    );
+
+    assert!(
+        workspace_version("rand").starts_with("0.9"),
+        "rand is at {v}, and deps.md §12 holds it at Zed's 0.9 rather than crates.io's 0.10: \
+         upstream's tests are kept verbatim and are written against rng.random_range(..), so a \
+         bump means editing test bodies, which defeats keeping them — and keeping them is what \
+         rope-modifications.md §7 rests the newtype sweep on",
+        v = workspace_version("rand")
+    );
+    assert!(
+        workspace_version("lsp-types").starts_with("0.94"),
+        "lsp-types is at {v}, and deps.md §3 holds it below the release that swapped url::Url \
+         for fluent-uri: the point of the oracle is that it produces the same Url we do, and \
+         one whose URIs are a different type compares nothing where percent-encoding and drive \
+         letters live",
+        v = workspace_version("lsp-types")
+    );
+    assert!(
+        workspace_version("criterion").starts_with("0.5"),
+        "criterion is at {v}, and deps.md §12 pins Zed's 0.5 since the benchmark is kept \
+         verbatim",
+        v = workspace_version("criterion")
+    );
+}
+
+/// The version `[workspace.dependencies]` resolves a crate at, whether written
+/// bare or inside a table. Empty when the crate is not declared, which every
+/// caller reports as a failed pin rather than passing silently.
+fn workspace_version(name: &str) -> String {
+    table_of(&workspace_file("Cargo.toml"), "workspace.dependencies")
+        .iter()
+        .find(|line| line.split(['.', ' ', '=']).next() == Some(name))
+        .and_then(|line| {
+            let rest = line.split_once('=')?.1;
+            let rest = rest.split_once("version").map_or(rest, |(_, after)| after);
+            let (_, quoted) = rest.split_once('"')?;
+            Some(quoted.split_once('"')?.0.to_owned())
+        })
+        .unwrap_or_default()
+}
+
 /// `deps.md` §1, "Async runtime: none", which `CLAUDE.md` restates as a hard
 /// constraint: "Do not add `async fn`, `.await`, or any executor."
 ///
