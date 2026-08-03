@@ -1043,3 +1043,64 @@ instead.
 `FileText::Open` reachable, and `resolution.md` §3's "each file is read at
 most once", which `conformance-005`'s ruling says is wrong as written and
 which the answer explicitly hands to a later campaign as a Class A edit.
+
+## b62bf25e — `core.md` §8.4, the wire conversion and the premise under it
+
+**Target:** both gaps of `#84-location-is-byte-based`, taken together because
+one is the justification the other rests on. Confirmed, three commits, no
+reverts.
+
+**What was actually blocking it: nothing.** Every piece existed —
+`WirePosition::encode`, `ProjectView::{read,lookup}`, `Location::{uri,range}`.
+The conversion had never been written because `dispatch` had no encoding
+parameter and nobody had a reason to add one. This is the third campaign in a
+row where the gap's apparent blocker dissolved on inspection; the pattern is
+now strong enough to lead with.
+
+**The dead end I nearly walked into, and why it was not one.** The plan was to
+put the end-to-end test in `crates/heuristic_jump/tests/`, on the reasoning
+that it is the only crate depending on both `driver` and a language, and that
+`driver` may not name `tree_sitter::Language` — which an `impl
+LanguageHandler` must, to write `fn grammar`. That reasoning was wrong and
+`deadline.rs`'s own module doc had been repeating it since campaign e3b8dbf4
+("there is no handler double in phase 1a"). `seam.rs`'s grammar ban reads
+`[dependencies]` only, and its doc comment says why in as many words: "§9's
+graph is the graph the shipped binary has, and a `[dev-dependencies]` grammar
+is not in it." `shared` and `measure_core` were already relying on exactly
+that. So `driver` took `tree-sitter` + `tree-sitter-rust` as dev-deps and the
+test sits next to the code it tests. **Do not re-derive this.** Handler
+doubles are available in `driver`, `shared` and `measure_core`; what stays
+banned in every table, including dev, is a `lang_*` edge.
+
+**Rejected: a public `Answer::new(outcome, wire)`.** It would have made
+`deadline.rs` trivial to update and would have thrown away the only property
+worth having — the wire half is *derived* from the byte half, so the two
+cannot disagree. What made privacy affordable is that the no-locations case is
+provably consistent: `Answer::without_locations` returns `Option`, `None` for
+a commit that has locations. Every test that needs a `Decided` without a
+document goes through it.
+
+**Rejected: asserting the encoding by reading the character out of a
+`WirePosition`.** There is no accessor and there should not be — §8.3 makes
+the type inert on purpose, and `line()` exists only because §6's predicate
+needs a row. Serialising to JSON would have meant `serde_json` in `driver`'s
+dev-deps and a fixture-path-dependent string. What works instead: round-trip
+through `resolve(encoding, &rope)` and assert the *three encodings disagree
+with each other*. That needs a four-byte scalar on the definition's own line —
+a `/* 𝄞 */` prefix gives columns 11 / 9 / 8, three numbers no confusion
+produces by accident. A fixture with the astral character on a *different*
+line proves nothing, because the definition's column is unaffected.
+
+**§8.4's economics do not hold and that is recorded rather than fixed.** The
+section prices the conversion at nearly free because "every target file's text
+is already in the view's cache". `conformance-005` refused that cache. So each
+closed target file costs a read, and several locations in one file cost
+several. Adding memoisation here would be that ruling reversed on the same
+missing evidence, so it is a comment at the loop instead.
+
+**Not attempted, and separate campaigns:** the read-free conversion §8.4
+actually describes needs a second `WirePosition` constructor taking a line
+plus that line's text — a §8.3 change, since §8.3's whole claim is that there
+is exactly *one* constructor and it takes a whole `Rope`. Also untouched: the
+open-document map that would make `target_text` return `FileText::Open`, and
+therefore make `ProjectError::Unresolvable` harder to reach.
