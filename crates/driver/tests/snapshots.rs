@@ -28,12 +28,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use driver::{Dispatched, OpenDocument, Request, TreeCache, dispatch};
+use driver::{DebounceMs, Dispatched, FileListCache, OpenDocument, Request, TreeCache, dispatch};
 use shared::proto::PositionEncoding;
 use shared::{
     ByteOffset, Clock, CommitPolicy, Confidence, Deadline, DocumentUri, DocumentVersion, Error,
-    FileExtension, FileList, InputEdit, LanguageHandler, LanguageId, Outcome, ParseKind,
-    ProjectView, Query, Rope, ServerProfile, SnapshotSeed, Strata, Stratum, SystemClock, Trace,
+    FileExtension, InputEdit, LanguageHandler, LanguageId, Outcome, ParseKind, ProjectView, Query,
+    Rope, ServerProfile, SnapshotSeed, Strata, Stratum, SystemClock, Trace,
 };
 use tree_sitter::{Language, Point};
 
@@ -397,10 +397,15 @@ fn document() -> String {
         .collect()
 }
 
+/// Through the cache rather than through `FileList::enumerate`, because
+/// `core.md` §4 puts one owner between the walk and every query, and a test
+/// that reaches around it is testing a path the driver does not have.
 fn view(root: &Path, deadline: &Deadline) -> ProjectView {
-    let roots = [root.to_path_buf()];
-    let files = FileList::enumerate(&roots).expect("enumerating the fixture");
-    ProjectView::new(Arc::new(files), deadline.clone(), grammar())
+    let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+    FileListCache::new(vec![root.to_path_buf()], clock, DebounceMs::RESCAN)
+        .expect("the scanner thread")
+        .view(deadline.clone(), grammar())
+        .expect("enumerating the fixture")
 }
 
 fn uri_of(path: &Path) -> DocumentUri {

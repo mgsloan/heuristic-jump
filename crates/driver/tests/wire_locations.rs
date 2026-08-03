@@ -29,13 +29,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use driver::{Dispatched, Request, dispatch};
+use driver::{DebounceMs, Dispatched, FileListCache, Request, dispatch};
 use shared::proto::{PositionEncoding, WirePosition};
 use shared::{
-    AbstainReason, ByteOffset, CommitPolicy, Confidence, Deadline, DocumentUri, DocumentVersion,
-    Error, FileExtension, FileList, LanguageHandler, LanguageId, Location, Outcome, ProjectError,
-    ProjectPath, ProjectRoot, ProjectView, Query, RelPath, Rope, ServerProfile, SnapshotSeed,
-    Strata, Stratum, Trace,
+    AbstainReason, ByteOffset, Clock, CommitPolicy, Confidence, Deadline, DocumentUri,
+    DocumentVersion, Error, FileExtension, LanguageHandler, LanguageId, Location, Outcome,
+    ProjectError, ProjectPath, ProjectRoot, ProjectView, Query, RelPath, Rope, ServerProfile,
+    SnapshotSeed, Strata, Stratum, SystemClock, Trace,
 };
 use tree_sitter::Language;
 
@@ -381,10 +381,15 @@ fn seed(root: &Path) -> SnapshotSeed {
     )
 }
 
+/// Through the cache rather than through `FileList::enumerate`, because
+/// `core.md` §4 puts one owner between the walk and every query, and a test
+/// that reaches around it is testing a path the driver does not have.
 fn view(root: &Path) -> ProjectView {
-    let roots = [root.to_path_buf()];
-    let files = FileList::enumerate(&roots).expect("enumerating the fixture");
-    ProjectView::new(Arc::new(files), Deadline::none(), grammar())
+    let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+    FileListCache::new(vec![root.to_path_buf()], clock, DebounceMs::RESCAN)
+        .expect("the scanner thread")
+        .view(Deadline::none(), grammar())
+        .expect("enumerating the fixture")
 }
 
 fn grammar() -> Language {

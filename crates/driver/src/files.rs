@@ -28,7 +28,10 @@ use std::thread::{Builder, JoinHandle};
 use std::time::Instant;
 
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
-use shared::{Clock, Error, FileList, FileListEvidence, Outcome, ProjectError};
+use shared::{
+    Clock, Deadline, Error, FileList, FileListEvidence, Language, Outcome, ProjectError,
+    ProjectView,
+};
 
 use crate::config::DebounceMs;
 use crate::dispatch::Dispatched;
@@ -118,6 +121,16 @@ impl FileListCache {
                 Ok(list)
             }
         }
+    }
+
+    /// The view a query is dispatched against, and `driver`'s only route to
+    /// one: a `ProjectView` built anywhere else in this crate would be a
+    /// second file list, walked again and refreshed by nobody.
+    ///
+    /// The deadline and the grammar are per query and the list is not, which
+    /// is the whole reason this takes two arguments and holds the third.
+    pub fn view(&mut self, deadline: Deadline, grammar: Language) -> Result<ProjectView, Error> {
+        Ok(ProjectView::new(self.list()?, deadline, grammar))
     }
 
     /// `shim.md` §3's tee of `workspace/didChangeWatchedFiles`.
