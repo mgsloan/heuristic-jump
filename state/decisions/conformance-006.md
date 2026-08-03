@@ -1,6 +1,6 @@
 ---
 id: conformance-006
-status: open
+status: accepted
 opened: 2026-08-03T05:34:00+00:00
 campaign: dc1c9639-0a25-4eeb-aa61-b0cfaee75485
 kind: class-b
@@ -86,3 +86,14 @@ strict behaviour in two of five properties (`rejects_positions_outside_the_docum
 and the exactness half of `resolve_matches_the_reference`); those two would be
 rewritten rather than deleted. Nothing else in the workspace calls `resolve`
 yet, so the reconciliation cost today is one module and one test file.
+
+## Answer — 2026-08-03T05:41:06+00:00
+
+**Ruling:** accepted
+
+Split by the provenance of the position, not by which binary is running. A position from a CLIENT (an editor request over the wire) is clamped per LSP 3.17. A position from a SERVER (an answer being checked, or compared for divergence reporting) is rejected. Two further rulings that go with it: a clamp is recorded, as one flag reaching the trace record, reported beside the metric and never on it; and a mid-surrogate position rejects in both directions regardless of clamping.
+
+**Rationale:** The record framed this as one behaviour for one door, and the sharper question is whose position it is. A conforming client is entitled to LSP 3.17 clamping — Vim virtualedit and a column computed against a stale version are both legitimate — and refusing those spends coverage on clients behaving correctly. A server answer outside our rope is the opposite: it is evidence the two ends disagree about the text, it invalidates the corpus row it appears in, and core.md section 8.6 already builds a self-check on exactly that signal. Keying on provenance rather than on binary keeps core.md line 382 intact — driver and measure_core still build snapshots through the same constructor, so the corpus still scores the code that ships — which a shim-versus-measure split would have given away for nothing, since data-collection.md section 2 records positions as byte offsets and measure never resolves a client position at all. Recording the clamp is what preserves the one argument for rejecting outright: a clamped answer is otherwise indistinguishable afterwards from a correct one, so nothing could ever say how often this happens. With the flag, the first corpus run answers it. Mid-surrogate stays an error because a character past a line end is a client being loose about columns, while a position inside a surrogate pair means the client encoding assumption differs from ours, which is the failure core.md section 3 calls the highest-risk correctness detail in the driver; rope clip_* treats them identically and the design should not.
+
+Reconciling the sites tagged `// DECISION-conformance-006: provisional` is a
+normal campaign target, not an interrupt.
