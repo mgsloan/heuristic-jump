@@ -332,17 +332,17 @@ last_audited = "2026-08-03T20:56:22+00:00"
 
 [section."core.md#vendoring-the-zed-crates"]
 state = "gaps"
-last_audited = "2026-08-03T09:16:14+00:00"
+last_audited = "2026-08-03T23:07:08+00:00"
 
   [[section."core.md#vendoring-the-zed-crates".gap]]
-  claim = "vendor/rope's public API speaks in newtypes \u2014 ByteOffset/ByteLen/ByteRange instead of usize and Range<usize>, LineIndex/ByteColumn/Utf16Column/CharCount instead of the bare u32s in Point, PointUtf16 and TextSummary"
-  found = "the seven types are defined and re-exported, but no signature was converted: Point is still `pub row: u32, pub column: u32`, Rope::len() returns usize, and byte_offset.rs:6 plus vendor/README.md:76-80 both record the sweep as not done"
-  where = "vendor/rope/src/point.rs:10"
+  claim = "ztracing's redirect to tracing is \"a single-line patch to `rope`\", and `sum_tree` needs no patching"
+  found = "vendor/sum_tree carries the same redirect in two files plus a ctor/zlog deletion and the tree_map.rs deletion \u2014 three patches recorded under \"Patches to `sum_tree`\". deps.md \u00a75 already names all three ztracing call sites, so the code is right and this section's count is not. Mechanizable: assert the crates with a \"Patches to X\" heading in vendor/README.md are exactly the ones this section says are patched."
+  where = "vendor/sum_tree/src/sum_tree.rs:11"
 
   [[section."core.md#vendoring-the-zed-crates".minor]]
-  claim = "vendoring rope makes the shipped binary GPL-3.0-or-later, while crates/* stay MIT"
-  note = "similarity, lang_rust and measure_rust all declare GPL-3.0-or-later, for a reason unrelated to rope; deps.md \u00a75 owns the per-crate table and this section only summarises it"
-  where = "crates/similarity/Cargo.toml:13"
+  claim = "vendor/README.md is the record a future re-sync reads"
+  note = "its last bullet says the gate does not build, lint or run the vendored crates; harness/gate:64-68 and harness/hj:1525-1536 now build and test them and withhold only lint and fmt"
+  where = "vendor/README.md:186"
 
 [section."core.md#10-testing"]
 state = "clean"

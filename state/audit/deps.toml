@@ -1,0 +1,109 @@
+# Audit of design/deps.md. Written by harness/audit, never by hand.
+# `design/loops.md` section 3. The section list is parsed out of the
+# document, so it follows the document rather than drifting from it.
+
+[section."deps.md#0-summary-table"]
+state = "clean"
+last_audited = "2026-08-03T23:07:08+00:00"
+
+[section."deps.md#1-async-runtime-none"]
+state = "clean"
+last_audited = "2026-08-03T23:07:08+00:00"
+
+[section."deps.md#2-channels"]
+state = "clean"
+last_audited = "2026-08-03T23:07:08+00:00"
+
+[section."deps.md#3-lsp-types-our-own-not-lsp-types"]
+state = "clean"
+last_audited = "2026-08-03T23:07:08+00:00"
+
+[section."deps.md#4-json"]
+state = "clean"
+last_audited = "2026-08-03T23:07:08+00:00"
+
+[section."deps.md#5-text-vendored-zed-rope"]
+state = "clean"
+last_audited = "2026-08-03T23:07:08+00:00"
+
+  [[section."deps.md#5-text-vendored-zed-rope".minor]]
+  claim = "rope's tests use `#[gpui::test]` (9 sites), each replaced by `seeded(N, <name>_inner)`"
+  note = "there are eight seeded() call sites, not nine; the 24-test total matches vendor/README.md, and rope.rs:2421 is a randomised test with an inline seed that reads like upstream's own shape \u2014 probably the document's count is wrong rather than a test dropped, but \u00a75 rests the newtype verification on these tests and a human should confirm"
+  where = "vendor/rope/src/rope.rs:2421"
+
+[section."deps.md#licensing-our-crates-are-mit-the-binary-is-gpl"]
+state = "unjudged"
+
+[section."deps.md#6-tree-sitter"]
+state = "unjudged"
+
+[section."deps.md#7-file-enumeration-and-watching"]
+state = "unjudged"
+
+[section."deps.md#8-parse-cache"]
+state = "unjudged"
+
+[section."deps.md#fxhashmap-and-fxhashset-are-the-default"]
+state = "unjudged"
+
+[section."deps.md#9-logging-and-tracing"]
+state = "unjudged"
+
+[section."deps.md#10-errors-one-enumerated-type-no-anyhow"]
+state = "gaps"
+last_audited = "2026-08-03T23:07:08+00:00"
+
+  [[section."deps.md#10-errors-one-enumerated-type-no-anyhow".gap]]
+  claim = "every variant carries typed context, not a formatted string; foreign errors are wrapped as `#[source]` fields so the classification is ours and only the detail is theirs"
+  found = "ConfigError::ManifestMalformed carries the toml::de::Error's rendered message as `reason: Box<str>` instead of a #[source] field \u2014 the one place in the enum where a foreign error's detail is flattened to prose. Deliberate (the doc comment cites shared's dependency graph), so a human should rule."
+  where = "crates/shared/src/error.rs:77"
+
+  [[section."deps.md#10-errors-one-enumerated-type-no-anyhow".minor]]
+  claim = "an Error converted into an abstention is converted explicitly and logged"
+  note = "documents.rs:381 logs before marking untrusted; dispatch::classify converts HandlerError::DeadlineExpired into an abstention silently"
+  where = "crates/driver/src/dispatch.rs:405"
+
+[section."deps.md#11-cli-parsing-clap"]
+state = "gaps"
+last_audited = "2026-08-03T23:07:08+00:00"
+
+  [[section."deps.md#11-cli-parsing-clap".gap]]
+  claim = "the Cli carries `trace: Option<PathBuf>` and `--trace=<path>` writes JSONL metric records (core.md \u00a77)"
+  found = "the implemented Cli has proxy_only, deadline_ms, log and server only; no trace field exists and Config::new takes no trace path. Mechanizable the way seam.rs already handles \u00a715: parse \u00a711's flag table out of design/deps.md and compare it against the #[arg(long)] names on Cli."
+  where = "crates/heuristic_jump/src/heuristic_jump.rs:34"
+
+[section."deps.md#12-testing"]
+state = "gaps"
+last_audited = "2026-08-03T23:07:08+00:00"
+
+  [[section."deps.md#12-testing".gap]]
+  claim = "the injected clock is a `trait Clock` with a `TestClock` impl in `shared`, not a dependency"
+  found = "shared exports only SystemClock; no TestClock exists, and five test files hand-roll their own impl (FrozenClock in driver/tests/snapshots.rs:55, shared/tests/document.rs:42, shared/tests/project.rs:320, driver/tests/deadline.rs:31; DrivenClock in driver/tests/file_list.rs:238). A check that no crates/*/tests file contains `impl Clock for` would hold this permanently."
+  where = "crates/shared/src/deadline.rs:19"
+
+  [[section."deps.md#12-testing".minor]]
+  claim = "tempfile is rejected; CARGO_TARGET_TMPDIR fixtures hold the property it was chosen for"
+  note = "clippy.toml's ban on std::env::temp_dir names `tempfile::tempdir` as its replacement, pointing whoever trips the lint at the declined crate"
+  where = "clippy.toml:38"
+
+[section."deps.md#13-explicitly-not-depended-on"]
+state = "clean"
+last_audited = "2026-08-03T23:07:08+00:00"
+
+[section."deps.md#14-workspace-cargotoml-shape"]
+state = "gaps"
+last_audited = "2026-08-03T23:07:08+00:00"
+
+  [[section."deps.md#14-workspace-cargotoml-shape".gap]]
+  claim = "Zed sets `tree-sitter` and `serde_json` to opt-level = 3, plus the proc-macro crates; we take exactly those"
+  found = "only [profile.dev.package.tree-sitter] is set. The comment justifies the omission as cargo rejecting a package not in the graph, but serde_json is a [dependencies] entry of shared, driver and measure_core and is resolved in Cargo.lock:1057 \u2014 the stated blocker no longer applies. A check that every package \u00a714 names has a [profile.dev.package.<name>] table would catch the next one."
+  where = "Cargo.toml:278"
+
+[section."deps.md#15-clippy-in-workspace-toml"]
+state = "gaps"
+last_audited = "2026-08-03T23:07:08+00:00"
+
+  [[section."deps.md#15-clippy-in-workspace-toml".gap]]
+  claim = "result_large_err and large_enum_variant: \"Threshold tuned in clippy.toml.\""
+  found = "clippy.toml sets msrv, avoid-breaking-exported-api and six allow-*-in-tests keys and no threshold at all \u2014 neither large-error-threshold nor enum-variant-size-threshold \u2014 so both lints run at clippy's defaults. seam.rs's \u00a715 comparison checks lint names and levels only and passes without noticing. Extending it to assert that every clippy.toml key a \u00a715 comment names actually exists would close this."
+  where = "clippy.toml:3"

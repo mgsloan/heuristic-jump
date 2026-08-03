@@ -1,0 +1,76 @@
+# Audit of design/rope-modifications.md. Written by harness/audit, never by hand.
+# `design/loops.md` section 3. The section list is parsed out of the
+# document, so it follows the document rather than drifting from it.
+
+[section."rope-modifications.md#1-rope-already-works-this-way-byte-offsets-are-the-omission"]
+state = "clean"
+last_audited = "2026-08-03T23:07:08+00:00"
+
+[section."rope-modifications.md#2-where-the-types-live-is-forced"]
+state = "clean"
+last_audited = "2026-08-03T23:07:08+00:00"
+
+  [[section."rope-modifications.md#2-where-the-types-live-is-forced".minor]]
+  claim = "the vocabulary newtypes live in rope and shared re-exports them"
+  note = "offset.rs's module doc still says \"Nothing in rope uses these types yet\", and point.rs's block comment says \"this file's own `row: u32` is still bare\" twelve lines below `pub row: LineIndex`; both were true before the sweep and are not now"
+  where = "vendor/rope/src/offset.rs:6"
+
+[section."rope-modifications.md#3-what-keeps-this-safe"]
+state = "clean"
+last_audited = "2026-08-03T23:07:08+00:00"
+
+[section."rope-modifications.md#4-what-changes"]
+state = "clean"
+last_audited = "2026-08-03T23:07:08+00:00"
+
+[section."rope-modifications.md#the-newtypes-are-opaque"]
+state = "unjudged"
+
+[section."rope-modifications.md#the-constructors-take-newtypes"]
+state = "unjudged"
+
+[section."rope-modifications.md#the-signatures"]
+state = "unjudged"
+
+[section."rope-modifications.md#textsummary-is-converted-too"]
+state = "unjudged"
+
+[section."rope-modifications.md#the-dimension-impls"]
+state = "unjudged"
+
+[section."rope-modifications.md#offsets-and-lengths-are-separate-types-and-bytelen-is-shared"]
+state = "unjudged"
+
+[section."rope-modifications.md#folding-vendorutil-in"]
+state = "unjudged"
+
+[section."rope-modifications.md#5-what-deliberately-does-not-change"]
+state = "clean"
+last_audited = "2026-08-03T23:07:08+00:00"
+
+  [[section."rope-modifications.md#5-what-deliberately-does-not-change".minor]]
+  claim = "the usize dimension impls (rope.rs:1492, :1502) stay"
+  note = "they do stay and TextDimension for usize is still public, but after the sweep they are at rope.rs:1567 and :1577; the cited lines now land inside TextDimension for TextSummary"
+  where = "vendor/rope/src/rope.rs:1567"
+
+[section."rope-modifications.md#lineindex-is-ropes-and-shared-re-exports-it"]
+state = "unjudged"
+
+[section."rope-modifications.md#6-consequences-for-re-syncing"]
+state = "clean"
+last_audited = "2026-08-03T23:07:08+00:00"
+
+[section."rope-modifications.md#7-testing"]
+state = "unjudged"
+
+[section."rope-modifications.md#all-of-upstreams-tests-are-kept"]
+state = "unjudged"
+
+[section."rope-modifications.md#consequences-for-the-dependency-plan"]
+state = "unjudged"
+
+[section."rope-modifications.md#beyond-upstreams-tests"]
+state = "unjudged"
+
+[section."rope-modifications.md#8-decided-and-what-remains"]
+state = "unjudged"
