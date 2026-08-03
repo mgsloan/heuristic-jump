@@ -844,9 +844,9 @@ line gets filled in.** Core doc [section 1] has `Location` carrying
 `line: LineIndex` alongside `range`, constructible only via
 `Location::at_node`, on the reasoning that a handler gets the row for free from
 a tree-sitter node it has already verified and the driver would otherwise
-build a whole-file line index later — at divergence-classification time,
-seconds after the answer, when the read cache is gone and the file may never
-have been open. That reasoning lands exactly here: `classify` is holding the
+have to read the target file again to find the row — at
+divergence-classification time, seconds after the answer, when nothing about
+that file is in memory and it may never have been open. That reasoning lands exactly here: `classify` is holding the
 node, so the winning candidate converts to a `Location` with no extra work and
 the two fields cannot disagree. A handler that reconstructs a line by counting
 newlines has misunderstood the type.

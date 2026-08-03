@@ -402,6 +402,21 @@ pub enum EncodingError {
     },
     #[error("byte offset {offset} is not a character boundary in {len} bytes of text")]
     OffsetOutOfRange { offset: ByteOffset, len: ByteLen },
+    /// `core.md` §8.4's stated risk — "a `line` that disagrees with `range`" —
+    /// detected at the one place both are read against a document.
+    ///
+    /// `Location::at_node` stops the two being built inconsistently, so this
+    /// is not a handler getting the row wrong: it is the text moving between
+    /// the handler's read and the driver's. `conformance-005` refused a
+    /// per-query read cache, which means the conversion re-reads the target
+    /// file, and a file edited in between yields offsets that are stale and
+    /// still in range — an answer pointing confidently at the wrong place,
+    /// which is the failure shape this design fails closed against.
+    #[error("a location carries line {carried}, and its range starts on line {found}")]
+    LineDisagreesWithRange {
+        carried: LineIndex,
+        found: LineIndex,
+    },
 }
 
 #[derive(Debug, Error)]

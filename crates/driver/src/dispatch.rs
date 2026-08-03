@@ -15,9 +15,10 @@ use std::sync::Arc;
 use rustc_hash::FxHashMap;
 use shared::proto::{PositionEncoding, WireLocation, WirePosition, WireRange};
 use shared::{
-    ByteOffset, CommitPolicy, Deadline, DocumentSnapshot, DocumentUri, DocumentVersion, Error,
-    FileText, HandlerError, LanguageHandler, LanguageId, Outcome, ProjectError, ProjectPath,
-    ProjectView, Query, RelPath, Rope, ServerProfile, SnapshotSeed, Tree,
+    ByteOffset, CommitPolicy, Deadline, DocumentSnapshot, DocumentUri, DocumentVersion,
+    EncodingError, Error, FileText, HandlerError, LanguageHandler, LanguageId, Outcome,
+    ProjectError, ProjectPath, ProjectView, Query, RelPath, Rope, ServerProfile, SnapshotSeed,
+    Tree,
 };
 
 /// The handler set, resolved once at startup. `heuristic_jump` is the one
@@ -457,12 +458,30 @@ fn encode(
 
     let mut wire = Vec::with_capacity(locations.len());
     for location in locations {
-        // One read per location, including several in one file. §8.4 prices
-        // this at nearly free because "every target file's text is already in
-        // the view's cache" — and there is no cache: `conformance-005` refused
-        // one for want of a corpus and a benchmark, and adding it here would
-        // be that ruling reversed on the same missing evidence.
+        // One read per location, including several in one file.
+        // `conformance-005` refused a per-query read cache for want of a
+        // corpus and a benchmark, and adding one here would be that ruling
+        // reversed on the same missing evidence
+        // (CHANGE-conformance-014).
         let text = target_text(location.uri(), query)?;
+
+        // The one thing that ruling makes reachable, and the reason §8.4's
+        // carried row earns its place on this path rather than only in §6's
+        // predicate: the handler's offsets were taken against the text it
+        // read, and this is a *second* read of the same file. A file edited in
+        // between gives offsets that are stale and still in range, and the
+        // carried row is the only witness that they moved. Failing closed
+        // rather than encoding it: an answer pointing confidently at the wrong
+        // place is the failure §8.6 spends a section refusing to produce.
+        let found = location.line_in(&text);
+        if found != location.line() {
+            return Err(EncodingError::LineDisagreesWithRange {
+                carried: location.line(),
+                found,
+            }
+            .into());
+        }
+
         let range = location.range();
         wire.push(WireLocation::new(
             location.uri().clone(),
@@ -477,13 +496,6 @@ fn encode(
 }
 
 /// The text a `Location`'s offsets are offsets into.
-///
-/// `Location` carries a `LineIndex` and this does not use it, which looks like
-/// the redundancy §8.4 defends and is not: `WirePosition::encode` is
-/// deliberately the only constructor and takes a whole `Rope` (§8.3), so the
-/// read-free conversion the section describes needs a second constructor that
-/// does not exist. The line still earns its place — §6's predicate is the
-/// consumer that reads nothing (`shared::agreement`).
 fn target_text(uri: &DocumentUri, query: &Query<'_>) -> Result<Rope, Error> {
     // The common case, and the free one: the definition is in the document the
     // query came from, whose rope the snapshot already holds. Cloning it is

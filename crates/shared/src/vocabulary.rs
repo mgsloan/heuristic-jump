@@ -22,7 +22,7 @@ use std::fmt;
 use std::iter;
 use std::path::{Path, PathBuf};
 
-use rope::{ByteOffset, ByteRange, LineIndex};
+use rope::{ByteOffset, ByteRange, LineIndex, Rope};
 use serde::de::Visitor;
 use serde::{Deserialize, Deserializer};
 use tree_sitter::Node;
@@ -269,8 +269,10 @@ impl<'de> Deserialize<'de> for EditorRequestId {
 ///
 /// `line` is redundant with `range` but is not encoding — row plus byte range
 /// is still entirely byte-space. It is carried because a handler gets it for
-/// free from the tree-sitter node it already verified, and it saves the driver
-/// a whole-file line index later.
+/// free from the tree-sitter node it already verified, because §6's predicate
+/// compares `(uri, line)` and reads nothing, and because it is the witness
+/// that detects a target file having moved between the handler's read and the
+/// driver's ([`line_in`](Location::line_in)).
 ///
 /// The fields are private and the only constructor is `at_node`, so the row
 /// and the range are derived from one node and cannot drift apart — a line
@@ -310,6 +312,26 @@ impl Location {
 
     pub fn line(&self) -> LineIndex {
         self.line
+    }
+
+    /// The row `range.start` actually falls on in `text` — which is what
+    /// [`line`](Location::line) claims, read back from a document rather than
+    /// from the node the location was built at.
+    ///
+    /// `core.md` §8.4 names the risk this answers: "a `line` that disagrees
+    /// with `range`". `at_node` derives both from one node, so they cannot
+    /// drift apart *while the text stands still*. What `at_node` cannot cover
+    /// is the text moving underneath them, and `conformance-005`'s accepted
+    /// ruling makes that reachable: with no per-query read cache, the driver
+    /// re-reads the target file to convert, so a file edited between the
+    /// handler's read and the conversion yields offsets that are stale and
+    /// still in range. Comparing the two rows is what turns that into a
+    /// detected inconsistency instead of an answer pointing somewhere else.
+    ///
+    /// It lives here because `rope::Point` is deliberately not re-exported:
+    /// the row conversion belongs beside the type that carries the row.
+    pub fn line_in(&self, text: &Rope) -> LineIndex {
+        LineIndex(text.offset_to_point(self.range.start.0).row)
     }
 }
 

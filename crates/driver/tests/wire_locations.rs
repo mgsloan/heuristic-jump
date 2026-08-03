@@ -33,9 +33,9 @@ use driver::{DebounceMs, Dispatched, FileListCache, Request, dispatch};
 use shared::proto::{PositionEncoding, WirePosition};
 use shared::{
     AbstainReason, ByteOffset, Clock, CommitPolicy, Confidence, Deadline, DocumentUri,
-    DocumentVersion, Error, FileExtension, LanguageHandler, LanguageId, Location, Outcome,
-    ProjectError, ProjectPath, ProjectRoot, ProjectView, Query, RelPath, Rope, ServerProfile,
-    SnapshotSeed, Strata, Stratum, SystemClock, Trace,
+    DocumentVersion, EncodingError, Error, FileExtension, LanguageHandler, LanguageId, LineIndex,
+    Location, Outcome, ProjectError, ProjectPath, ProjectRoot, ProjectView, Query, RelPath, Rope,
+    ServerProfile, SnapshotSeed, Strata, Stratum, SystemClock, Trace,
 };
 use tree_sitter::Language;
 
@@ -227,6 +227,71 @@ fn a_location_the_file_list_does_not_know_is_a_failure_and_not_an_answer() {
             panic!(
                 "a location naming a file outside the project became {other:?}, where \
                  core.md §8.4's conversion has no text to encode against"
+            )
+        }
+    }
+}
+
+/// §8.4 states the risk — "a `line` that disagrees with `range`" — and gives
+/// `Location::at_node` as the answer, which covers the half where a handler
+/// builds the two inconsistently and not the half where the text moves under
+/// them.
+///
+/// That second half is not hypothetical, and it is `conformance-005`'s ruling
+/// that makes it reachable: with no per-query read cache, the handler's read
+/// and the conversion's read are two reads of the same path, and a file edited
+/// in between yields offsets that are stale and *still in range*. Nothing
+/// downstream could notice. `WirePosition::encode` refuses an offset that is
+/// not a character boundary, and a shifted file offers plenty that are; §6's
+/// predicate then compares the carried line, which is the line the file no
+/// longer has. The result is a confidently wrong jump, which is the one
+/// failure shape this design spends §8.6 refusing to produce.
+///
+/// Two blank lines are the whole edit. Every byte offset in the file now
+/// belongs to a row two later, and the carried row is the only witness.
+#[test]
+fn a_target_file_that_moved_under_the_query_is_refused_rather_than_encoded() {
+    let root = fixture("moved_target");
+    let view = view(&root);
+    let location = definition_in(&view, &root, "src/target.rs");
+    let carried_before = location.line();
+
+    fs::write(root.join("src").join("target.rs"), format!("\n\n{TARGET}"))
+        .expect("rewriting the fixture target file");
+
+    let handler = Committing {
+        locations: vec![location],
+    };
+    let deadline = Deadline::none();
+    let policy = CommitPolicy::permissive();
+    let server = ServerProfile::standalone();
+    let request = Request {
+        seed: seed(&root),
+        position: ByteOffset(0),
+        project: &view,
+        deadline: &deadline,
+        server: &server,
+        policy: &policy,
+    };
+
+    match dispatch(&handler, request, PositionEncoding::Utf16).dispatched {
+        Dispatched::Failed(Error::Encoding(EncodingError::LineDisagreesWithRange {
+            carried,
+            found,
+        })) => {
+            assert_eq!(carried, carried_before);
+            assert_eq!(
+                found,
+                LineIndex(carried_before.0 + 2),
+                "the two blank lines moved the definition by two rows, and the conversion \
+                 reported some other disagreement"
+            );
+        }
+        other @ (Dispatched::Failed(_) | Dispatched::Decided(_) | Dispatched::DeadlineExpired) => {
+            panic!(
+                "a target file that moved between the handler's read and the conversion's \
+                 became {other:?}, where the carried row disagrees with the text it was \
+                 encoded against"
             )
         }
     }

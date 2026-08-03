@@ -96,8 +96,9 @@ pub struct EditorRequestId(Box<str>);
 ///
 /// `line` is redundant with `range` but is not encoding: it is row plus
 /// byte-range, still entirely byte-space. It is carried because a handler
-/// gets it for free from the tree-sitter node it already verified, and it
-/// saves the driver a whole-file line index later -- see section 8.4.
+/// gets it for free from the tree-sitter node it already verified, and
+/// because the redundancy is what section 6's predicate compares and what
+/// detects a target file that moved -- see section 8.4.
 /// Constructed only via `Location::at_node`, so the two cannot disagree:
 /// the fields are private and read through `uri()`, `range()` and `line()`
 /// (`state/decisions/conformance-004.md`).
@@ -1555,15 +1556,37 @@ is the same component that already returns a `Parsed` event without the
 handler's involvement ([section 2](#text-and-tree-can-never-disagree)), and it
 is still the shim doing it — the worker *is* the shim, on a pool thread.
 
-The reason it must be there rather than anywhere later is the one this
-document already used to make the agreement predicate read nothing: **the
-per-query read cache is only alive inside the query.** A handler cannot return
-a `Location` for a file it did not read — `Location::at_node` needs a node,
-which needs a parse, which needs a read — so at the moment the handler
-returns, every target file's text is already in the view's cache and the
-conversion is nearly free. One event loop later it is a disk read; by
+The reason it must be there rather than anywhere later is **proximity to the
+read the handler already did.** A handler cannot return a `Location` for a
+file it did not read — `Location::at_node` needs a node, which needs a parse,
+which needs a read — so at the moment the handler returns, every target file
+was read microseconds ago by this thread: the page cache is as warm as it will
+ever be, and the bytes on disk are as likely as they will ever be to still be
+the bytes the offsets were taken against. One event loop later both decay; by
 divergence time ([section 6](#6-the-agreement-predicate)) the document may
 never have been open at all.
+
+An earlier revision of this section said something stronger and no longer
+true: that "the per-query read cache is only alive inside the query", so the
+text was already in the view's cache and the conversion was nearly free.
+There is no per-query read cache. `conformance-005` asked for one and was
+answered **no** — a cache reached through a `Sync` `&Query` needs a primitive
+this project does not have, and `CLAUDE.md` forbids adding caching before a
+corpus and a benchmark say it is worth it. So the conversion **re-reads the
+target file**, once per location, and the honest price is a syscall and a
+UTF-8 validation that the page cache makes cheap rather than free.
+
+That re-read is not only a cost, and the consequence is load-bearing enough
+to state here: the handler's read and the conversion's read are two reads of
+the same path, so a file edited between them yields offsets that are stale
+and *still in range*. Nothing downstream could notice —
+`WirePosition::encode` refuses only offsets that are not character
+boundaries, and a shifted file offers plenty that are. The carried row is the
+witness, and the conversion compares it against the text it actually read
+(`EncodingError::LineDisagreesWithRange`). A location whose row has moved is
+refused rather than encoded, because an answer pointing confidently at the
+wrong place is the failure shape [section 8.6](#86-modelling-errors-must-fail-closed)
+exists to prevent.
 
 Two consequences:
 
@@ -1592,13 +1615,13 @@ one caller in the whole system, and `shared` would be a home for it shared
 with nobody.
 
 **Why `Location` carries a line.** It looks redundant with `range`, and
-strictly it is. It is there because the alternative is worse in two places:
+strictly it is. It is there because the redundancy pays for itself twice:
 
-* To put an answer on the wire the driver needs line and character in the
-  *target* file, which without a line means building a whole-file line index
-  for a file the handler may only have literal-scanned. With the line
-  supplied, only that one line's text is needed, and only to resolve the
-  UTF-16 column.
+* It is what detects the target file having moved under the query, which the
+  conversion above rests on. The row is derived from the handler's text and
+  checked against the conversion's, and two numbers derived from the same
+  node can only disagree if the document they describe is not the same
+  document.
 * The agreement predicate ([section 6](#6-the-agreement-predicate)) is
   line-based by definition — every severity tier is "within 3 lines" or
   "further than 3 lines", and columns are not compared at all. With the line

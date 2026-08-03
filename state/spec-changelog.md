@@ -560,3 +560,64 @@ the edit makes the section *harder* to satisfy rather than easier — before it,
 a `realise` that ignored deadlines conformed.
 
 **Campaign:** e017e797-a44c-4aae-8906-3ce8a4004a7d
+
+## CHANGE-conformance-014 — core.md#84-location-is-byte-based-and-this-fixes-a-real-inconsistency — the conversion's price rests on a read cache a human already ruled away
+
+**Contradiction:** §8.4 prices the `Location -> WireLocation` conversion
+against a cache that does not exist:
+
+> The reason it must be there rather than anywhere later is the one this
+> document already used to make the agreement predicate read nothing: **the
+> per-query read cache is only alive inside the query.** [...] at the moment
+> the handler returns, every target file's text is already in the view's cache
+> and the conversion is nearly free.
+
+against `state/decisions/conformance-005.md`, answered `accepted`
+2026-08-03T05:13:34+00:00:
+
+> Option A stands: no read cache. resolution.md section 3 is what is wrong —
+> "each file is read at most once" is not implementable behind a Sync &Query
+> without a primitive this project does not have, and it should say what it
+> means instead. That correction is a Class A edit and a normal campaign
+> target.
+
+The same section's second claim is wrong for an unrelated reason — a false
+claim about a dependency's API. §8.4 said that without a carried row the
+driver must build "a whole-file line index", and that with one "only that one
+line's text is needed". Neither holds against the vendored `rope`:
+`Rope::offset_to_point` is a sum-tree seek on the `Point` dimension
+(`vendor/rope/src/rope.rs:423`), so a row costs `O(log n)` and no index is
+built — and a caller *cannot* read one line without exactly the index the
+claim was avoiding, since finding a line's bytes is the same lookup. The
+claim was repeated at `core.md`'s `Location` doc comment and in
+`resolution.md` §6.
+
+**Resolution:** §8.4 now says the conversion re-reads the target file, once
+per location, and gives the reason it still belongs on the worker thread
+immediately after the handler returns: proximity to the read the handler just
+did, which is where the page cache is warmest and the bytes are likeliest to
+still be the bytes the offsets were taken against. The "why `Location` carries
+a line" bullet that claimed a saved index now states what the redundancy
+actually buys, and `resolution.md` §6's version — which is about
+divergence-classification time, where a *read* genuinely is the alternative —
+keeps its argument and loses its reference to a cache.
+
+This reading trades nothing off. The conclusion §8.4 drew (convert in the
+dispatch wrapper) survives with a better premise; what changes is the price
+quoted for it, in the direction of the accepted decision.
+
+**A code change landed in the same campaign, and this is that flagged
+plainly.** Rewriting the spec toward the code is the one way of faking
+progress the audit cannot catch, so: the correction above *created* a finding
+rather than absorbing one. With no cache, the handler's read and the
+conversion's read are two reads of the same path, so a file edited between
+them yields offsets that are stale and still in range — and
+`WirePosition::encode` would encode them without complaint. The carried row is
+the only witness, so the conversion now compares it against the text it read
+and refuses on disagreement (`EncodingError::LineDisagreesWithRange`,
+`Location::line_in`, and
+`a_target_file_that_moved_under_the_query_is_refused_rather_than_encoded`).
+The document gained a hazard it did not previously describe; it did not lose
+one it could not meet.
+
+**Campaign:** acb37d9b-56ff-4568-8b74-a5ac0bc66a55
