@@ -1,6 +1,6 @@
 ---
 id: conformance-013
-status: open
+status: accepted
 opened: 2026-08-03T10:05:00+00:00
 campaign: 7a30ee1a-41d0-48c8-a372-843cd25e8431
 kind: class-b
@@ -117,3 +117,18 @@ the prior stratum and precision on the settled one. If `Strata` collapses back
 to one field, that split collapses with it and `high-level.md`'s central table
 stops being comparable across versions, which §7 says is the one property it
 needs.
+
+## Answer — 2026-08-03T19:00:32+00:00
+
+**Ruling:** accepted
+
+Option A.
+
+**Rationale:** Option A: widen both arms of Outcome with strata and trace.
+
+The deciding argument is section 7's own: B makes the trace reachable for reading *during* the query, which is the shape section 7 rules out when it says nothing branches on it. That is a property, not an inconvenience -- a trace that can be read mid-query is one a handler can condition on, and then the record stops describing the run and starts shaping it. B also changes the trait signature, which is a larger piece of the frozen seam than the enum, and lets a handler silently write nothing. C was correctly ruled out by the record before being weighed: CLAUDE.md forbids locks and section 2 argues Query carries no interior mutability under fan-out.
+
+A's cost is real and accepted: two fields at every construction site in every language crate, and CommitPolicy::decide grows to four parameters.
+
+Reconciling the sites tagged `// DECISION-conformance-013: provisional` is a
+normal campaign target, not an interrupt.
