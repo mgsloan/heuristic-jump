@@ -886,18 +886,25 @@ def cmd_audit_plan(args: argparse.Namespace) -> int:
         anchor.strip() for target in targets[-1:] for anchor in target.split(",") if anchor.strip()
     }
 
-    planned: list[str] = []
+    # `rotation` is a budget for the whole audit, not per document. It used to
+    # be applied inside this loop, so it silently multiplied by the number of
+    # documents: adding a second doc turned `rotation = 18` into 36 sections
+    # plus targets. The staleness order is therefore global — the least
+    # recently audited sections anywhere, which is what the setting says and
+    # what stays true when a third document is added.
+    touched: list[str] = []
+    pool: list[tuple[tuple[str, str], str]] = []
     for doc in config.docs:
         verdicts = read_audit(doc)
-        known = sections_of(doc)
-        touched = [s.key for s in known if s.key in recent_targets]
-
-        def staleness(section: Section) -> tuple[str, str]:
+        for section in sections_of(doc):
+            if section.key in recent_targets:
+                touched.append(section.key)
+                continue
             verdict = verdicts.get(section.key)
-            return (verdict.last_audited or "" if verdict else "", section.anchor)
-
-        rotation = [s.key for s in sorted(known, key=staleness) if s.key not in touched]
-        planned += touched + rotation[: config.rotation]
+            last_audited = verdict.last_audited or "" if verdict else ""
+            pool.append(((last_audited, section.anchor), section.key))
+    pool.sort()
+    planned = touched + [key for _, key in pool[: config.rotation]]
     for key in planned:
         print(key)
     return 0
