@@ -217,7 +217,7 @@ fn a_location_the_file_list_does_not_know_is_a_failure_and_not_an_answer() {
         policy: &policy,
     };
 
-    match dispatch(&handler, request, PositionEncoding::Utf16) {
+    match dispatch(&handler, request, PositionEncoding::Utf16).dispatched {
         Dispatched::Failed(Error::Project(ProjectError::Unresolvable { uri: _ })) => {}
         other @ (Dispatched::Failed(_) | Dispatched::Decided(_) | Dispatched::DeadlineExpired) => {
             panic!(
@@ -298,7 +298,7 @@ fn decided(
         policy: &policy,
     };
 
-    match dispatch(handler, request, encoding) {
+    match dispatch(handler, request, encoding).dispatched {
         Dispatched::Decided(answer) => answer,
         other @ (Dispatched::DeadlineExpired | Dispatched::Failed(_)) => {
             panic!("the query did not decide: {other:?}")

@@ -26,7 +26,7 @@ pub mod proto;
 
 pub use agreement::{Agreement, DefinitionSite, Severity};
 pub use deadline::{Clock, Deadline, SystemClock};
-pub use document::{DocumentSnapshot, SnapshotSeed};
+pub use document::{DocumentSnapshot, ParseKind, SnapshotSeed};
 pub use error::{
     ChildError, CodecError, ConfigError, EncodingError, Error, HandlerError, ParseError,
     ProjectError, ProtocolError,
@@ -47,6 +47,13 @@ pub use project::{
 pub use rope::{
     ByteColumn, ByteLen, ByteOffset, ByteRange, CharCount, LineIndex, Rope, Utf16Column,
 };
+// The tree-sitter types the seam already speaks in, re-exported for exactly
+// the reason `rope`'s newtypes are: §9's graph gives `driver` no tree-sitter
+// edge, and §1 gives it a parse cache — which cannot be written without naming
+// `Tree`. Nothing new crosses the seam here, since `LanguageHandler::grammar`
+// already hands over a `Language`; what changes is that a crate which may not
+// depend on tree-sitter can name what it is handed.
+pub use tree_sitter::{InputEdit, Language, Tree};
 pub use vocabulary::{
     Confidence, DocumentUri, DocumentVersion, EditorRequestId, FileExtension, LanguageId, Location,
     ServerId,

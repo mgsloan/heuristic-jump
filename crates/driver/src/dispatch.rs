@@ -15,9 +15,9 @@ use std::sync::Arc;
 use rustc_hash::FxHashMap;
 use shared::proto::{PositionEncoding, WireLocation, WirePosition, WireRange};
 use shared::{
-    ByteOffset, CommitPolicy, Deadline, DocumentSnapshot, DocumentUri, Error, FileText,
-    HandlerError, LanguageHandler, Outcome, ProjectError, ProjectPath, ProjectView, Query, RelPath,
-    Rope, ServerProfile, SnapshotSeed,
+    ByteOffset, CommitPolicy, Deadline, DocumentSnapshot, DocumentUri, DocumentVersion, Error,
+    FileText, HandlerError, LanguageHandler, Outcome, ProjectError, ProjectPath, ProjectView,
+    Query, RelPath, Rope, ServerProfile, SnapshotSeed, Tree,
 };
 
 /// The handler set, resolved once at startup. `heuristic_jump` is the one
@@ -229,7 +229,7 @@ pub fn dispatch(
     handler: &dyn LanguageHandler,
     request: Request<'_>,
     encoding: PositionEncoding,
-) -> Dispatched {
+) -> Completed {
     let Request {
         seed,
         position,
@@ -239,22 +239,99 @@ pub fn dispatch(
         policy,
     } = request;
 
-    let dispatched = match realise(seed, deadline).and_then(|document| {
-        let query = Query {
-            doc: &document,
-            position,
-            project,
-            deadline,
-            server,
-            policy,
-        };
-        call(handler, &query)
-            .and_then(|outcome| encode(outcome, encoding, &query).map_err(classify))
-    }) {
+    let document = match realise(seed, deadline) {
+        Ok(document) => document,
+        // No tree, so nothing to cache: this is the one path where the parse
+        // did not happen.
+        Err(dispatched) => {
+            return Completed {
+                dispatched: hard_cap(deadline, dispatched),
+                parsed: None,
+            };
+        }
+    };
+    let parsed = Parsed::of(&document);
+
+    let query = Query {
+        doc: &document,
+        position,
+        project,
+        deadline,
+        server,
+        policy,
+    };
+    let dispatched = match call(handler, &query)
+        .and_then(|outcome| encode(outcome, encoding, &query).map_err(classify))
+    {
         Ok(answer) => Dispatched::Decided(answer),
         Err(dispatched) => dispatched,
     };
-    hard_cap(deadline, dispatched)
+
+    Completed {
+        dispatched: hard_cap(deadline, dispatched),
+        // Handed back whatever the query decided, and deliberately: the parse
+        // was paid for either way, and a query that abstained on its deadline
+        // is the one most likely to be asked again a moment later.
+        parsed: Some(parsed),
+    }
+}
+
+/// Everything a worker hands back: the answer, and — separately — the tree, so
+/// that a parse paid for once is not paid for again.
+///
+/// Two fields rather than a tree inside `Dispatched`, because they are
+/// independent facts. A query can fail, expire or abstain and still have
+/// produced a perfectly good tree, and that tree is exactly what makes the
+/// next query on the document cheap.
+#[derive(Debug)]
+pub struct Completed {
+    pub dispatched: Dispatched,
+    /// `None` only when `realise` failed, which is the one case where no tree
+    /// exists.
+    pub parsed: Option<Parsed>,
+}
+
+/// `core.md` §2's message back to `core`: the tree the worker parsed, and the
+/// version it is a tree *of*.
+///
+/// The constructor is private to this module and there is no other, so the
+/// only way to hold one is to have called `dispatch` — and `TreeCache::insert`
+/// consumes one, so the only thing to do with it is cache it. That is what
+/// makes "the dispatch wrapper, not the handler, sends it; the handler is not
+/// involved and cannot forget" a property of the types rather than a rule
+/// somebody follows.
+#[derive(Debug)]
+pub struct Parsed {
+    uri: DocumentUri,
+    version: DocumentVersion,
+    tree: Tree,
+}
+
+impl Parsed {
+    /// Three clones, and all of them refcount bumps: `Tree::clone` is
+    /// `ts_subtree_retain` (`core.md` §2), and the version is a number.
+    fn of(document: &DocumentSnapshot) -> Self {
+        Self {
+            uri: document.uri.clone(),
+            version: document.version,
+            tree: document.tree().clone(),
+        }
+    }
+
+    pub fn uri(&self) -> &DocumentUri {
+        &self.uri
+    }
+
+    pub fn version(&self) -> DocumentVersion {
+        self.version
+    }
+
+    /// `pub(crate)` and consuming, so `TreeCache` can take the tree out and
+    /// nothing outside `driver` can put a `Parsed` back together from pieces
+    /// it obtained some other way.
+    pub(crate) fn into_parts(self) -> (DocumentUri, DocumentVersion, Tree) {
+        (self.uri, self.version, self.tree)
+    }
 }
 
 /// The hard cap, separated from `dispatch` because it is the half of it that

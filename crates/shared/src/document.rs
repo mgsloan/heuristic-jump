@@ -35,6 +35,23 @@ pub struct SnapshotSeed {
     grammar: Language,
 }
 
+/// Which of `SnapshotSeed`'s two constructors a seed came from, and therefore
+/// what `realise` will do with it.
+///
+/// It exists to be asserted on. The two paths are deliberately
+/// indistinguishable in their *result* — an incremental reparse and a full one
+/// produce the same tree for the same text, which is what makes the
+/// optimisation safe — so without this, "the cached tree is actually reused"
+/// is unobservable, and the gap `core.md` §2 describes (nothing ever fills
+/// `base`) could reopen with every test still passing.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ParseKind {
+    /// From scratch: there was no cached tree for this document.
+    Full,
+    /// From a cached tree plus the edits since it was parsed.
+    Incremental,
+}
+
 /// What a handler is given. The tree is already correct for the text.
 ///
 /// No cell and no interior mutability: handlers fan out across candidate
@@ -91,6 +108,13 @@ impl SnapshotSeed {
             language_id,
             base: Some((base, edits)),
             grammar,
+        }
+    }
+
+    pub fn parse_kind(&self) -> ParseKind {
+        match self.base {
+            Some(_) => ParseKind::Incremental,
+            None => ParseKind::Full,
         }
     }
 
