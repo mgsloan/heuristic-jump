@@ -2382,6 +2382,65 @@ def cmd_cost(args: argparse.Namespace) -> int:
     return 0
 
 
+# The phases whose progress is measured in gaps closed. `design/loops.md`
+# section 15 gives 2a a different ratio (tokens per coverage point, per
+# stratum) and phase 3 another (tokens per kilobyte removed); neither has data
+# until there is a corpus, so neither is computed here.
+CONFORMANCE_PHASES = ("1a", "2b")
+
+
+def cost_per_gap(owner: str, docs: list[str]) -> dict:
+    """`design/loops.md` section 15's derived number for a conformance phase:
+    tokens per gap closed, which "should *rise* over a run as the easy wins are
+    exhausted", and which the section says should drive stopping decisions.
+
+    Cumulative, and also per audit interval — the cumulative figure is what the
+    run cost so far and the interval series is the curve that turns up. Gaps
+    are only observed to close at an audit, so the audit boundaries are the
+    only sampling points that exist; a campaign is attributed to the interval
+    its `ended` timestamp falls in.
+
+    All-in: audit sessions count. They close no gap themselves, but the section
+    calls the auditor a fixed cost of the loop rather than a knob, and a cost
+    per unit of progress that excludes the instrument understates the unit.
+    """
+    ended = {
+        campaign.get("campaign"): campaign.get("ended") or ""
+        for campaign in campaigns_of(owner)
+    }
+    dated: list[tuple[str, int]] = []
+    for row in cost_rows(owner):
+        tokens = row.get("output_tokens") or 0
+        when = row.get("ts") if row.get("kind") == "audit" else ended.get(row.get("campaign"), "")
+        if when:
+            dated.append((when, tokens))
+
+    series = []
+    previous = ""
+    for audit in audits_for(docs):
+        when = audit.get("ts") or ""
+        tokens = sum(count for stamp, count in dated if previous < stamp <= when)
+        closed = len(audit.get("closed", []))
+        series.append(
+            {
+                "ts": when,
+                "tokens": tokens,
+                "closed": closed,
+                "per_gap": (tokens / closed) if closed else None,
+            }
+        )
+        previous = when
+
+    ledger = gap_ledger(docs)
+    total = sum(tokens for _, tokens in dated)
+    return {
+        "output_tokens": total,
+        "gaps_closed": ledger["gaps_closed"],
+        "per_gap": (total / ledger["gaps_closed"]) if ledger["gaps_closed"] else None,
+        "series": series,
+    }
+
+
 def cost_owners() -> list[str]:
     """Every loop that has ever spent anything, which is not the same set as
     the loops running now: a retired loop's spend still counts against the

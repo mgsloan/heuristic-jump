@@ -1257,9 +1257,43 @@ def panel_cost(loop: str = "") -> str:
             return sum((r.get("experiments") or {}).get(name, 0) for r in rows)
 
         committed, reverted, empty = share("committed"), share("reverted"), share("empty")
-        progressed = [r for r in rows if r.get("progress")]
-        per_progress = (total / len(progressed)) if progressed else None
-        per_progress_tokens = (output / len(progressed)) if progressed else None
+        # The derived number, which section 15 defines per phase: tokens per
+        # gap closed at 1a and 2b. Per campaign that made progress is the
+        # fallback for the phases whose own ratio needs a corpus that does not
+        # exist yet — it is a weaker number, because a campaign that closes
+        # four gaps and one that closes one both count once.
+        config = phase.loops.get(owner)
+        docs = config.docs if config else []
+        derived = (
+            hj.cost_per_gap(owner, docs)
+            if docs and phase.phase in hj.CONFORMANCE_PHASES
+            else None
+        )
+        trend = ""
+        if derived and derived["per_gap"]:
+            headline = f"{derived['per_gap']:,.0f} output tokens"
+            headline_note = (
+                f"per gap closed, over {derived['gaps_closed']} closed so far — this is the number "
+                "that says when to stop, and it should rise as the easy wins are exhausted"
+            )
+            # Only intervals that closed something: an audit that closed no gap
+            # has an undefined ratio, and plotting it as zero would read as the
+            # cheapest point on the curve.
+            points = [entry["per_gap"] for entry in derived["series"] if entry["per_gap"]]
+            if len(points) >= 2:
+                trend = line_chart(
+                    [("per gap", "var(--series-2)", points)],
+                    "output tokens per gap closed",
+                    "one point per audit interval that closed a gap",
+                )
+        else:
+            progressed = [r for r in rows if r.get("progress")]
+            per_campaign = (output / len(progressed)) if progressed else None
+            headline = f"{per_campaign:,.0f} output tokens" if per_campaign else "—"
+            headline_note = (
+                "per campaign that made progress — a stand-in until this phase has the ratio "
+                "section 15 names for it"
+            )
 
         body = "".join(
             "<tr>"
@@ -1294,14 +1328,13 @@ def panel_cost(loop: str = "") -> str:
             <span class="note">{minutes:.0f} model-minutes · {gate_minutes:.0f} of them in the gate ·
             {committed}/{reverted}/{empty} experiments committed/reverted/empty ·
             API-equivalent ${total:.2f}, of which ${audit_usd:.2f} in {len(audits)} audit session(s)</span></p>
-          <p class="headline" style="font-size:16px">{('%.0f' % per_progress_tokens) if per_progress_tokens else '—'} output tokens
-            <span class="note">per campaign that made progress — this is the number that says when to stop,
-            and it should rise as the easy wins are exhausted</span></p>
+          <p class="headline" style="font-size:16px">{headline}
+            <span class="note">{headline_note}</span></p>
           <p class="note"><strong>API-equivalent is not a bill.</strong> It is the CLI's valuation of the
             tokens at pay-as-you-go list prices, carried in each session's result event. On a flat
             subscription it is a usage magnitude, useful for comparing campaigns against each other and for
             what <code>--max-budget-usd</code> measures itself against — not for what you are charged.</p>
-          <div class="charts">{chart}</div>
+          <div class="charts">{chart}{trend}</div>
           <details><summary>per campaign</summary>
           <table><thead><tr><th>campaign</th><th>target</th><th>outcome</th><th class="num">API-eq $</th>
             <th class="num">output</th><th class="num">model</th><th class="num">gate</th>
