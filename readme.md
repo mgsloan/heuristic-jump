@@ -39,7 +39,6 @@ state/               loop state: metrics, journals, campaigns, decisions,
 vendor/
   rope/              copied from Zed, GPL-3.0-or-later
   sum_tree/          copied from Zed, Apache-2.0
-  util/              cut down to the ~60 lines rope actually uses
 crates/
   shared/            the handler seam, vocabulary newtypes, ProjectView,
                      hand-written LSP wire types, the one error enum

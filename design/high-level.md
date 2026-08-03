@@ -426,7 +426,7 @@ The crates in `crates/` are MIT.
 
 The shipped binary is GPL-3.0-or-later, because it links a vendored
 copy of Zed's `rope` (`vendor/rope`), which is GPL-3.0-or-later.
-`vendor/sum_tree` and `vendor/util` are Apache-2.0.
+`vendor/sum_tree` is Apache-2.0.
 
 Keeping our own crates MIT is deliberate: `rope` is the only GPL
 input, so replacing it would make the whole workspace permissively

@@ -400,7 +400,8 @@ means for the loops and what its gate is.
 
 **Phase 1a — core needed for measurement.** Only the parts of core that
 `measure_core` and `measure_<lang>` require: `vendor/rope`, `sum_tree`,
-cut-down `util`, the newtype work in `rope-modifications.md`, `shared`
+the newtype work in `rope-modifications.md` (which folds Zed's
+`util` items into rope rather than vendoring a third crate), `shared`
 (seam, vocabulary, `ProjectView`, the client-side subset of `proto`), the
 framing codec, and `measure_core` itself. Explicitly **not** the router,
 the health model, the actor, dispatch, standalone, or divergence

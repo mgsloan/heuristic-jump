@@ -341,6 +341,68 @@ conversion at exactly that point, which is the one place a unit error would be
 invisible anyway. So `shared` re-exports `ByteLen` and `resolve` uses it
 directly.
 
+### Folding `vendor/util` in
+
+The plan was a third vendored crate holding the handful of items rope uses,
+keeping the crate name `util` so that rope's `use util::…` lines stayed
+untouched. That rested on one sentence: *rope needs no patching at all for
+this, which keeps re-syncing a clean diff rather than a merge.*
+
+**That justification is gone.** This document rewrites rope's public API, and
+[section 6](#6-consequences-for-re-syncing) already concedes the clean-diff
+property. Once the crate is being substantially patched anyway, preserving
+five import lines buys nothing and costs a whole vendored crate — a
+Cargo.toml, a license file, a provenance entry, and a workspace member called
+`util`, which is the most accretion-prone name available in any codebase.
+
+So the items move into rope and `vendor/util` does not exist.
+
+**Everything `util` supplies is rope's alone.** Verified rather than assumed:
+`sum_tree` does not depend on `util` at all, and its randomised tests use a
+plain `#[test]` with a hand-rolled seed loop rather than `#[gpui::test]`, so it
+needs no helper either. The "and/or `sum_tree`" question resolves to rope.
+
+| Item | Size | Where it lands in rope |
+|---|---|---|
+| `is_utf8_char_boundary` | 4-line `const fn` | private in `chunk.rs`, its only caller |
+| `debug_panic!` | ~10-line macro | `macro_rules!` at the crate root, **not** `#[macro_export]`ed |
+| `RandomCharIter` | ~40 lines, tests only | `#[cfg(test)]` module at the crate root |
+| `seeded` | ~20 lines, ours not upstream's | the same test module ([section 7](#7-testing)) |
+
+Details that matter:
+
+* **`debug_panic!` is not where the design said it was.** Upstream defines it
+  in `gpui_util`; `util` re-exports it via `pub use gpui_util::*`, which is why
+  a grep for it in `util` finds nothing. The vendored copy inlines the
+  definition. It is deliberately not `#[macro_export]`ed — `rope::debug_panic!`
+  has no business being in our public API.
+* **No new dependencies.** `log` is already a rope dependency, which is what
+  `debug_panic!` needs; `rand` is already a dev-dependency, which is what
+  `RandomCharIter` needs. rope's `Cargo.toml` loses both `util` lines and gains
+  nothing.
+* **Five import sites change**, across two files: `chunk.rs:6`, `:76`, `:192`,
+  `:825`, and `rope.rs:1733`.
+
+**Attribution is not optional.** `util` is Apache-2.0 and rope is
+GPL-3.0-or-later. Apache-2.0 is one-way compatible into GPL-3.0, so the move
+is fine legally, but each relocated item carries a comment naming its upstream
+path and original license, and `vendor/README.md` records the move. The items
+are trivial enough that whether they are copyrightable at all is arguable;
+attributing anyway costs a comment and settles the question.
+
+One simplification falls out: `vendor/` drops from three crates to two, and
+`sum_tree` becomes the only Apache-2.0 input. `deps.md` §5's table shrinks to
+match.
+
+**Re-sync cost.** Upstream edits touching those five lines will now conflict
+where previously they would not. Weighed against a patch that rewrites the
+entire public API, that is noise.
+
+**This is contingent, and worth knowing before revisiting either decision.**
+If the newtype work in this document were ever dropped, the original argument
+returns intact and a separate cut-down `util` becomes right again. The two
+were independent; they are not any more.
+
 ## 5. What deliberately does not change
 
 * **`OffsetUtf16` and `Unclipped`.** Already newtypes, already right.
@@ -354,7 +416,9 @@ directly.
   offset. That is a much narrower hole than an API that took `usize`
   everywhere, and it is not one anybody falls into by accident — you have to
   name the type. Recorded rather than fixed.
-* **`sum_tree` and `vendor/util`.** Untouched by this.
+* **`sum_tree`.** Untouched by this. It needs nothing from `util` and
+  nothing from the newtypes — `sum_tree::Dimension` is generic over the
+  summary type, so `ByteOffset`'s impls live in rope.
 
 ### `LineIndex` is rope's, and `shared` re-exports it
 
@@ -429,8 +493,8 @@ modules and a plain `cargo test`:
 nothing about gpui is involved for these: rope's randomised tests take
 `mut rng: StdRng` and nothing else — no `TestAppContext`, no async. The macro
 is doing one job, which is to run the body N times with deterministic seeds and
-print the seed on failure. That is replaced by a helper in the cut-down
-`vendor/util`, under a `test-support` feature:
+print the seed on failure. That is replaced by a helper in rope's own test module
+([above](#folding-vendorutil-in)):
 
 ```rust
 // upstream
@@ -439,11 +503,11 @@ fn test_random_rope(mut rng: StdRng) { /* body */ }
 
 // vendored
 #[test]
-fn test_random_rope() { util::seeded(100, test_random_rope_inner) }
+fn test_random_rope() { seeded(100, test_random_rope_inner) }
 fn test_random_rope_inner(mut rng: StdRng) { /* body, untouched */ }
 ```
 
-Two changed lines per test, nine tests, bodies verbatim. `util::seeded` is
+Two changed lines per test, nine tests, bodies verbatim. `seeded` is
 about twenty lines: derive the seed list, honour `SEED` and `ITERATIONS`
 environment overrides as gpui does, print the seed, and run. **No proc macro
 is needed** — the alternative of writing our own attribute macro would mean a
@@ -454,9 +518,8 @@ whole proc-macro crate to save nine lines.
 about it. Deleted, which drops the `ctor` and `zlog` dev-dependencies
 entirely.
 
-**`util::RandomCharIter`.** Already on
-[section 16](core.md#vendoring-the-zed-crates)'s list of
-items the cut-down `vendor/util` keeps. It needs `rand`.
+**`RandomCharIter`.** Moves into rope's test module with the rest of `util`
+([above](#folding-vendorutil-in)). It needs `rand`.
 
 ### Consequences for the dependency plan
 
@@ -464,8 +527,8 @@ items the cut-down `vendor/util` keeps. It needs `rand`.
   must be pinned to **0.9** — what Zed pins, and the API the tests are written
   against (`rng.random_range(..)`). crates.io is at 0.10, and taking it would
   mean editing test bodies, which defeats the point.
-* `vendor/util` grows a `test-support` feature carrying `RandomCharIter` and
-  `seeded`, plus its own `rand` dependency behind that feature.
+* `vendor/util` is not created at all; `RandomCharIter` and `seeded` live in
+  rope's `#[cfg(test)]` module, needing no feature flag and no extra crate.
 * `gpui`, `zlog`, and `ctor` are **not** vendored and not depended on.
 
 ### Beyond upstream's tests

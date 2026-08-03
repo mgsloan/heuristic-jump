@@ -33,7 +33,7 @@ it is worth knowing when we are ahead of them.
 | `rustc-hash` | 2.x | driver, shared | chosen — the default map/set, see §8 |
 | `heapless` | 0.9.3 | vendored rope/sum_tree | forced by rope |
 | `unicode-segmentation` | 1.13.3 | vendored rope | forced by rope |
-| `log` | 0.4.x | vendored rope/sum_tree/util | forced by rope |
+| `log` | 0.4.x | vendored rope/sum_tree | forced by rope |
 | `memchr` | 2.8.3 | resolve (not yet) | noted, out of scope |
 | `insta` | 1.48.0 | dev | chosen |
 | `rand` | 0.9 (Zed's pin) | dev | chosen — see §5, §12 |
@@ -217,7 +217,10 @@ touch a handful of bytes per frame.
 
 ## 5. Text: vendored Zed `rope`
 
-**Chosen: vendor `rope` + `sum_tree` + a cut-down `util`, per design §16.**
+**Chosen: vendor `rope` + `sum_tree`, per design §16.** No third crate: the
+few items rope uses from Zed's `util` are folded into rope itself —
+`rope-modifications.md` [§4](rope-modifications.md#folding-vendorutil-in) has
+the reasoning and the placement.
 
 The argument in design §4 is the real one: `OffsetUtf16` and `PointUtf16` are
 first-class dimensions of `TextSummary`, so a UTF-16↔byte conversion is one
@@ -236,13 +239,21 @@ What vendoring actually costs, measured rather than assumed:
 
 Four patches, each recorded in `vendor/README.md`:
 
-1. **`vendor/util`, cut down.** Confirmed by grep: `rope` and `sum_tree`
-   together use exactly `util::is_utf8_char_boundary` (a 4-line `const fn`),
-   `util::debug_panic!` (a 12-line macro, needs `log`), and — tests only —
-   `util::RandomCharIter`. Note the design says `debug_panic` lives in
-   `util`; upstream has moved it to `gpui_util` and `util` re-exports it via
-   `pub use gpui_util::*`. The cut-down copy inlines it directly. Keeping the
-   crate name `util` means `rope`'s `use util::…` lines are untouched.
+1. **`util` folded into `rope`.** Confirmed by grep: `sum_tree` does not
+   depend on `util` at all, and `rope` uses exactly
+   `util::is_utf8_char_boundary` (a 4-line `const fn`), `util::debug_panic!`
+   (a ~10-line macro, needs `log`), and — tests only — `util::RandomCharIter`.
+   Note that `debug_panic` is not in `util` upstream: it lives in `gpui_util`
+   and reaches `rope` through `pub use gpui_util::*`, so a grep in `util`
+   finds nothing. The vendored copy inlines it.
+
+   An earlier revision kept these in a cut-down crate still named `util`, so
+   `rope`'s `use util::…` lines were untouched and re-sync stayed a clean
+   diff. That argument died when `rope-modifications.md` took on rewriting
+   rope's public API — five import lines are not worth a vendored crate once
+   the crate is being patched throughout. Neither dependency line survives in
+   `rope`'s `Cargo.toml`, and nothing new is added: `log` and `rand` were
+   already there.
 2. **`ztracing::instrument` → `tracing::instrument`.** Three call sites
    (`rope.rs:15`, `sum_tree.rs:13`, `cursor.rs:4`). One-line patch each; both
    crates already depend on `tracing`.
@@ -252,7 +263,8 @@ Four patches, each recorded in `vendor/README.md`:
    Those randomised tests take `mut rng: StdRng` and nothing else — no
    `TestAppContext`, no async — so the attribute is doing one job: run the
    body N times with deterministic seeds. That becomes a twenty-line
-   `util::seeded` helper and two changed lines per test, bodies verbatim.
+   `seeded` helper in rope's own test module and two changed lines per test,
+   bodies verbatim.
    `zlog::init_test()` and its `#[ctor::ctor]` only initialise logging and are
    deleted outright, taking the `zlog` and `ctor` dev-dependencies with them.
 
@@ -325,12 +337,14 @@ Summary of the per-crate `license` fields:
 | `crates/*` — everything we write | `MIT` |
 | `vendor/rope` | `GPL-3.0-or-later` (Zed's, unchanged) |
 | `vendor/sum_tree` | `Apache-2.0` (Zed's, unchanged) |
-| `vendor/util` | `Apache-2.0`, matching upstream |
 
 | the shipped binary | GPL-3.0-or-later |
 
-`sum_tree` and `util` being Apache-2.0 is worth noting: Apache-2.0 is one-way
-compatible into GPL-3.0, and neither is the constraint here. **`rope` is the
+`sum_tree` being Apache-2.0 is worth noting: Apache-2.0 is one-way
+compatible into GPL-3.0, and it is not the constraint here. The handful of
+Apache-2.0 lines folded into `rope` become GPL-encumbered in our copy, which
+costs nothing — they are four lines of bit magic, a panic macro, and a test
+iterator, and they leave with `rope` if `rope` ever leaves. **`rope` is the
 only GPL input**, which is exactly why keeping everything else permissive
 keeps the exit open.
 
@@ -795,13 +809,12 @@ Cargo.toml
 rust-toolchain.toml     pin 1.95.0, so grammar/rope behaviour is reproducible
 LICENSE-MIT             covers crates/*
 LICENSE-GPL             covers the combined binary, via vendor/rope
-LICENSE-APACHE          covers vendor/sum_tree and vendor/util
+LICENSE-APACHE          covers vendor/sum_tree
                         -- all three symlinked into each crate, see above
 vendor/
   README.md             upstream rev, patches applied, items kept
   rope/                 GPL-3.0-or-later
   sum_tree/             Apache-2.0
-  util/                 Apache-2.0, cut down to 3 items
 crates/
   shared/           MIT -- vocabulary newtypes, LanguageHandler, proto, Error
   driver/           MIT -- the LSP driver

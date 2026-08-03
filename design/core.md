@@ -2090,7 +2090,6 @@ Cargo.toml              workspace root
 vendor/
   rope/                 copied from zed, GPL-3.0-or-later
   sum_tree/             copied from zed, Apache-2.0
-  util/                 cut down to only what rope needs
 crates/
   shared/           handler trait, vocabulary newtypes, ProjectView, proto, Error
   similarity/       ported from the prior implementation; frozen until phase 3
@@ -2303,14 +2302,19 @@ suggests. It lists `util` and `ztracing`, but uses exactly three items:
 * plus `util::RandomCharIter` in tests
 
 Vendoring `util` whole would drag in `async_zip`, `rust-embed`, `schemars`,
-`regex`, and `gpui_util` to support a text data structure. So **`vendor/util`
-is cut down to only those items** — on the order of sixty lines.
+`regex`, and `gpui_util` to support a text data structure. So **there is no
+`vendor/util`: those items are folded into `rope` itself.**
 
-The important part is that it keeps the crate name `util` and the same paths.
-That way `rope`'s `use util::...` lines are untouched and **`rope` needs no
-patching at all for this**, which keeps re-syncing against upstream a clean
-diff rather than a merge. Trimming the dependency is strictly better than
-rewriting the dependent.
+An earlier revision kept them in a cut-down crate still named `util`, so that
+`rope`'s `use util::...` lines were untouched and `rope` needed no patching at
+all — which kept re-syncing a clean diff rather than a merge. That reasoning
+was sound and is now obsolete: `rope-modifications.md` rewrites rope's public
+API for the newtypes, so the crate is patched throughout regardless, and five
+import lines are not worth a third vendored crate with its own manifest,
+license file, and provenance entry — under the most accretion-prone name in
+any workspace. `sum_tree` is unaffected; it does not depend on `util` at all.
+[That document](rope-modifications.md#folding-vendorutil-in) has the placement
+and the attribution rules.
 
 `ztracing` is not vendored. Its `instrument` is either `tracing::instrument`
 or a no-op passthrough depending on a cfg, and `rope` already depends on
@@ -2324,9 +2328,9 @@ generic over the summary type, so `ByteOffset`'s impls live in `rope`. Its
 leaves a clean diff.
 
 `vendor/README.md` records, per crate, the upstream revision it was taken at,
-the exact patches applied, and — for `util` — the list of items kept, so that
-a future re-sync can tell at a glance whether upstream changed anything that
-matters.
+the exact patches applied, and — for the items lifted out of `util` — where
+each came from and under what license, so that a future re-sync can tell at a
+glance whether upstream changed anything that matters.
 
 **Licensing consequence, stated plainly:** `rope` is GPL-3.0-or-later, so the
 shipped binary is GPL-3.0-or-later. That is a project-level commitment
@@ -2339,8 +2343,7 @@ extra grant. Marking them GPL would volunteer a restriction that `rope`
 imposes on the *combination* only.
 
 The point of keeping them MIT is that `rope` is the sole GPL input —
-`sum_tree` and the cut-down `util` are Apache-2.0, which is one-way compatible
-into GPL-3.0. So if `ropey` ever wins the argument in
+`sum_tree` is Apache-2.0, which is one-way compatible into GPL-3.0. So if `ropey` ever wins the argument in
 `deps.md` §5, the whole workspace becomes permissively licensable
 without relicensing a line. Relicensing later requires every contributor's
 agreement; declaring MIT now costs nothing. `deps.md` §5 has the
