@@ -835,7 +835,12 @@ def cmd_audit_plan(args: argparse.Namespace) -> int:
     for campaign in campaigns_of(args.loop):
         if campaign.get("target"):
             targets.append(campaign["target"])
-    recent_targets = set(targets[-1:])
+    # A target may name several related sections, comma-separated. All of them
+    # are what the last campaign touched, so all of them are what this audit
+    # has to re-examine — auditing one of a pair would report half a result.
+    recent_targets = {
+        anchor.strip() for target in targets[-1:] for anchor in target.split(",") if anchor.strip()
+    }
 
     planned: list[str] = []
     for doc in config.docs:
@@ -1170,7 +1175,7 @@ def prompt_values(phase: Phase, config: LoopConfig, campaign_id: str) -> dict[st
     counts = audit_counts(config.docs)
 
     gap_lines = [
-        f"- {key}\n  claim: {gap.claim}\n  found: {gap.found}\n  where: {gap.where}"
+        f"- {key}[{gap_id(key, gap.claim)}]\n  claim: {gap.claim}\n  found: {gap.found}\n  where: {gap.where}"
         for key, gap in gaps
     ] or ["- (none recorded; the audit has not run, or every audited section is clean)"]
 

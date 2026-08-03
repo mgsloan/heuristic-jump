@@ -27,12 +27,32 @@ the measurement and nothing downstream can tell.
 
 # One campaign per session
 
-A campaign is one target: one open gap, or one unjudged section. Not two.
+A campaign is one **hypothesis**. That is usually one target — an open gap,
+or an unjudged section — and may be several when they are the same piece of
+work seen from different sides. What it is never is a list of unrelated items
+worked through in sequence.
 
-1. **Pick the target.** Prefer an open gap over an unjudged section. Among
-   gaps, prefer the one whose section is closest to going clean, because the
-   number moves per section and not per gap. Write the target and why you
-   picked it into `{{campaign_record}}`.
+1. **Pick the target.** Prefer open gaps over unjudged sections. Among gaps,
+   prefer the ones whose section is closest to going clean, because the number
+   moves per section and not per gap — a section with one gap left is worth
+   more than a gap in a section with three.
+
+   **You may take more than one, and you may take a specific gap rather than a
+   whole section** — a gap is named `anchor[id]` in the list below, and the
+   ones in a section are independent claims that do not have to be closed
+   together. Take several only when they are **related**: the same claim seen
+   from two sides, gaps that share the code that would satisfy them, gaps that
+   cannot be closed independently without writing the same thing twice, or the
+   remaining gaps of one section when clearing them all is what makes it clean.
+
+   **Not related** means one campaign, one target. Batching unrelated gaps to
+   cover more ground makes a `partial` or a stall say nothing about which part
+   failed, and it is the same fiction as splitting one item into ten — motion
+   without a hypothesis behind it. If you cannot state in one sentence why
+   these belong together, they do not.
+
+   Write what you took and why into `{{campaign_record}}`, naming the specific
+   gaps rather than only the sections.
 
 2. **Read only the design sections the item names.** Not whole documents. The
    gaps below carry document anchors, and the sections for the current ones
@@ -153,7 +173,8 @@ The last two lines of your final message must be exactly these, with no
 formatting around them, because the harness reads them:
 
 ```
-TARGET: <the section anchor you targeted, e.g. core.md#7-measurement>
+TARGET: <the section anchors you targeted, comma-separated if several,
+         e.g. core.md#7-measurement or core.md#7-measurement, core.md#10-testing>
 OUTCOME: <confirmed | falsified | no-movement | partial>
 ```
 
