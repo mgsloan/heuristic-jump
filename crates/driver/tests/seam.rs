@@ -420,6 +420,124 @@ fn the_licence_text_is_symlinked_into_every_member() {
     }
 }
 
+/// `deps.md` §0's summary table, whose middle column is a claim per crate and
+/// the only place the whole dependency set is written down at once.
+///
+/// Scoped as §0 scopes itself: "the core driver only — `shared`, `driver`,
+/// `heuristic_jump`, plus the vendored text crates. `similarity` and `lang_*`
+/// dependencies are named where they are already implied, but not settled
+/// here." So `measure_core`, `measure_rust`, `lang_rust` and `similarity` are
+/// out of this test's reach even though the table names `toml` for the first
+/// of them — their edges are `core.md` §9's, asserted above.
+///
+/// A **subset**, not an equality, for the reason
+/// `shared_declares_only_the_dependencies_section_9_lists` gives and §14
+/// states: "each arrives with its first user", so a table entry not yet
+/// declared is the intended state. Several are in exactly that state right now
+/// — `rayon`, `lru`, `insta`, `tempfile` and `notify` are all chosen by the
+/// table and declared by nobody, because the code that needs them is not
+/// written. What is being caught is the other direction: a crate that acquires
+/// a dependency the table never placed there, which is how a dependency set
+/// stops being the one a document argued for.
+///
+/// Grammar crates are exempt. §6 puts them out of scope — "Grammar crates are
+/// `lang_*` business and out of scope here" — and the rule that actually
+/// governs them is `core.md` §9's, which
+/// `neither_driver_nor_shared_depends_on_a_language` asserts.
+#[test]
+fn the_core_crates_declare_only_what_section_0_places_there() {
+    /// §0's table, transposed: the `Where` column read per crate rather than
+    /// per dependency. Dev-only entries carry no `Where` in §0 and take their
+    /// homes from §12, so they are permitted anywhere in this set.
+    const PLACED: &[(&str, &[&str])] = &[
+        (
+            "crates/driver",
+            &[
+                "crossbeam-channel",
+                "rayon",
+                "serde",
+                "serde_json",
+                "tree-sitter",
+                "notify",
+                "lru",
+                "tracing",
+                "rustc-hash",
+            ],
+        ),
+        (
+            "crates/shared",
+            &[
+                "rayon",
+                "serde",
+                "serde_json",
+                "url",
+                "tree-sitter",
+                "ignore",
+                "thiserror",
+                "tracing",
+                "rustc-hash",
+            ],
+        ),
+        (
+            "crates/heuristic_jump",
+            &["clap", "tracing", "tracing-subscriber"],
+        ),
+        (
+            "vendor/rope",
+            &[
+                "heapless",
+                "unicode-segmentation",
+                "log",
+                "rayon",
+                "tracing",
+            ],
+        ),
+        (
+            "vendor/sum_tree",
+            &["heapless", "log", "rayon", "tracing", "proptest"],
+        ),
+    ];
+
+    /// §0's rows with no `Where`, placed by §12 instead.
+    const TESTING: &[&str] = &[
+        "insta",
+        "rand",
+        "criterion",
+        "proptest",
+        "tempfile",
+        "lsp-types",
+    ];
+
+    let internal = workspace_path_dependencies();
+    assert!(
+        internal.contains(&"shared".to_owned()),
+        "no path dependencies parsed out of [workspace.dependencies], so every crates/* edge \
+         below would be reported as an unplaced third-party dependency"
+    );
+
+    for (member, placed) in PLACED {
+        let manifest = workspace_file(&format!("{member}/Cargo.toml"));
+        assert!(
+            !manifest.is_empty(),
+            "no manifest for {member}, so every assertion below is vacuous"
+        );
+
+        for (table, key, _) in dependency_entries(&manifest) {
+            let name = key.strip_suffix(".workspace").unwrap_or(&key).to_owned();
+            if internal.contains(&name) || name.starts_with("tree-sitter-") {
+                continue;
+            }
+            assert!(
+                placed.contains(&name.as_str()) || TESTING.contains(&name.as_str()),
+                "{member} declares {name} in [{table}], and deps.md §0's table does not place \
+                 it there: the table is the one place the dependency set is written down at \
+                 once, so a crate reaching for something outside it is the set drifting from \
+                 the document that argued for it"
+            );
+        }
+    }
+}
+
 /// `deps.md` §13, "Explicitly not depended on", which is a list of decisions
 /// rather than a list of crates — each name is there because some section
 /// argued it away, and §0's summary table repeats four of them in its verdict
@@ -891,6 +1009,18 @@ fn dependencies_in(text: &str) -> Vec<String> {
         }
     }
     found
+}
+
+/// The workspace's own crates, by name, read out of `[workspace.dependencies]`
+/// rather than listed here — a hardcoded list would need editing for each of
+/// the six `lang_*` and six `measure_*` still to arrive, and would report each
+/// one as a stray third-party dependency until someone did.
+fn workspace_path_dependencies() -> Vec<String> {
+    table_of(&workspace_file("Cargo.toml"), "workspace.dependencies")
+        .iter()
+        .filter(|line| line.contains("path ="))
+        .filter_map(|line| Some(line.split_once('=')?.0.trim().to_owned()))
+        .collect()
 }
 
 /// The lines of one named table, exactly — `table_of(m, "lints")` returns
