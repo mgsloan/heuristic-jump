@@ -399,7 +399,7 @@ def line_chart(
     caption: str,
     x_label: str,
     width: int = 900,
-    height: int = 150,
+    height: int = 96,
 ) -> str:
     """A small multi-series line chart, inline SVG, no dependencies.
 
@@ -420,7 +420,7 @@ def line_chart(
     if points < 2:
         return empty("Not enough audits yet to draw a trend.")
     top = max(max(values) for _, _, values in series) or 1
-    pad_l, pad_r, pad_t, pad_b = 38, 108, 12, 16
+    pad_l, pad_r, pad_t, pad_b = 38, 108, 9, 13
     plot_w, plot_h = width - pad_l - pad_r, height - pad_t - pad_b
 
     def x(index: int) -> float:
@@ -1626,9 +1626,9 @@ th { color:var(--dim); font-weight:500; white-space:nowrap; }
    x — one point per audit, per commit, per campaign — so reading them
    against each other is the point, and a shared width makes that possible.
    Two columns halved the width and made every trend look flat. */
-.charts { display:flex; flex-direction:column; gap:18px; margin:14px 0 2px; }
+.charts { display:flex; flex-direction:column; gap:12px; margin:12px 0 2px; }
 .chart { margin:0; min-width:0; }
-.chart svg { width:100%; height:auto; max-height:210px; overflow:visible; }
+.chart svg { width:100%; height:auto; max-height:112px; overflow:visible; }
 .chart .grid { stroke:var(--line); stroke-width:1; }
 .chart .tick { fill:var(--dim); font-size:9px; font-family:inherit; }
 .chart .series { fill:none; stroke-width:2; stroke-linejoin:round; stroke-linecap:round; }
