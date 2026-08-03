@@ -111,6 +111,26 @@ while :; do
 	done
 	echo "round $round: all $count workers closed"
 
+	# One audit per round, here rather than in any worker: it reads the merged
+	# tree, which is the only tree that has all three workers' commits, and it
+	# writes `state/audit/` once instead of three times.
+	if "$hj" audit-due "$loop"; then
+		"$here/audit" "$loop" || echo "workers: the audit did not complete; state/audit/ is stale." >&2
+		# Workers rebase at their next merge, but they read the gap list at
+		# open — so hand them the new verdicts before the next plan.
+		for n in $(seq 1 "$count"); do
+			wt="$(python3 - "$loop" <<-'PY'
+				import sys, tomllib, pathlib
+				phase = tomllib.loads(pathlib.Path("state/phase.toml").read_text())
+				print(phase.get("loop", {}).get(sys.argv[1], {}).get("worktree", "") or "")
+			PY
+			)"
+			[ -n "$wt" ] && git -C "$wt-$n" merge --ff-only main -q 2>/dev/null
+		done
+	else
+		echo "workers: audit not due yet."
+	fi
+
 	if [ "$rounds" -gt 0 ] && [ "$round" -ge "$rounds" ]; then
 		echo "workers: ran $round round(s), which was the limit."
 		exit 0

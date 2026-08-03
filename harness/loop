@@ -126,8 +126,28 @@ cd "$repo" || exit 2
 # branch accumulates (`design/loops.md` §13). Code and state are partitioned by
 # owner, so the rebase is conflict-free by construction and the fast-forward
 # touches nothing the other loop has open.
+# Serialised across workers. Three of them close at their own pace, and two
+# `git merge --ff-only` into one checkout at the same moment is a race the
+# second one loses for no reason — its branch is fine, it just read `main`
+# before the first one moved it. `flock` makes the second wait and then
+# rebase onto what the first landed, which is the intended sequence rather
+# than a retry.
 merge_back() {
 	[ -n "$worktree" ] || return 0
+	local lock="$integration/.git/hj-merge.lock"
+	exec 9>"$lock" || return 1
+	if ! flock -w 900 9; then
+		echo "loop: timed out waiting for the merge lock; left unmerged." >&2
+		return 1
+	fi
+	merge_back_locked
+	local status=$?
+	flock -u 9
+	exec 9>&-
+	return $status
+}
+
+merge_back_locked() {
 	if ! git -C "$worktree" diff --quiet || ! git -C "$worktree" diff --cached --quiet; then
 		echo "loop: worktree is dirty at merge time; not merging." >&2
 		return 1
@@ -288,7 +308,16 @@ while :; do
 		git clean -fd -- crates vendor 2>/dev/null
 	fi
 
-	if "$hj" audit-due "$loop"; then
+	# A worker does not audit. Three of them would each audit their own branch,
+	# which is not the tree anyone ships: it has that worker's work and neither
+	# of the others'. They would also write `state/audit/` and the gap log
+	# concurrently, giving one section three verdicts with no rule for which
+	# wins. `harness/workers` runs one audit per round instead, against the
+	# integration checkout once every worker has merged
+	# (`design/loops.md` §13, "The audit does not parallelise").
+	if [ -n "$worker" ]; then
+		echo "loop: worker $identity does not audit; the round runner does."
+	elif "$hj" audit-due "$loop"; then
 		"$here/audit" "$loop" || echo "loop: the audit did not complete; state/audit/ is stale." >&2
 	else
 		echo "loop: audit not due yet; state/audit/ carries over."
