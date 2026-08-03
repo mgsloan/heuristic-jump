@@ -21,18 +21,23 @@ last_audited = "2026-08-03T06:54:58+00:00"
   where = "crates/shared/src/vocabulary.rs:45"
 
 [section."core.md#the-trait"]
-state = "gaps"
-last_audited = "2026-08-03T06:13:37+00:00"
-
-  [[section."core.md#the-trait".gap]]
-  claim = "handlers do their own reads, parses and searches through ProjectView \u2014 read, parse and scan are all on it \u2014 and every path a handler holds came from ProjectView::candidates or ::lookup"
-  found = "ProjectView has roots, root_of, lookup and read only; candidates, parse and scan do not exist, so a handler cannot search at all and the parse LRU and bounded pool the claim routes through have no entry point. The module doc states the omission at project.rs:18-23"
-  where = "crates/shared/src/project.rs:173"
+state = "clean"
+last_audited = "2026-08-03T19:21:14+00:00"
 
   [[section."core.md#the-trait".minor]]
-  claim = "handlers never construct Outcome::Committed; policy.decide is the only way to build an Outcome"
-  note = "Query::policy's doc states this as a property of the type, but Outcome::Committed has public fields and is constructible directly; resolution.md \u00a77.4 settles it as a rule for handler authors, so the behaviour is defensible and the comment overstates it"
-  where = "crates/shared/src/handler.rs:48"
+  claim = "`Outcome::Committed { locations, confidence, stratum }` and `decide(&self, stratum, confidence, locations)`"
+  note = "the code carries `strata: Strata` and `trace: Trace` on both arms and a four-argument decide, per the accepted ruling on conformance-013; the section still prints the superseded shape and no spec-changelog entry aligns it"
+  where = "crates/shared/src/handler.rs:82"
+
+  [[section."core.md#the-trait".minor]]
+  claim = "handlers never construct `Outcome::Committed`; every path ends through `policy.decide(..)`"
+  note = "the variant and its fields are public, so a handler could build one directly \u2014 a driver test already does; the claim holds only because the sole handler abstains. A source scan over crates/lang_* would make it structural"
+  where = "crates/driver/tests/file_list.rs:208"
+
+  [[section."core.md#the-trait".minor]]
+  claim = "handlers work through `ProjectView` so the driver can cache reads within a query, reuse the parse LRU, and run the literal scan on the bounded pool"
+  note = "none of the three exist \u2014 read goes to the filesystem every time, parse builds a fresh Parser, scan is sequential; deliberate under conformance-005 and CLAUDE.md, but the bullet still promises all three"
+  where = "crates/shared/src/project.rs:500"
 
 [section."core.md#2-document-snapshots"]
 state = "gaps"
@@ -63,41 +68,16 @@ last_audited = "2026-08-03T09:16:14+00:00"
 
 [section."core.md#3-position-encoding"]
 state = "clean"
-last_audited = "2026-08-03T06:13:37+00:00"
-
-  [[section."core.md#3-position-encoding".minor]]
-  claim = "what reaches this document is a settled PositionEncoding, set once and never inferred"
-  note = "the enforceable half holds \u2014 no Default, and resolve/encode plus Deserialize are the only doors \u2014 but nothing in the workspace holds a PositionEncoding: no field, no config value, no caller of resolve. The property is unexercised rather than upheld; \u00a78.4 carries the plumbing gap"
-  where = "crates/shared/src/proto.rs:37"
+last_audited = "2026-08-03T19:21:14+00:00"
 
 [section."core.md#4-project-file-enumeration"]
-state = "gaps"
-last_audited = "2026-08-03T06:33:47+00:00"
-
-  [[section."core.md#4-project-file-enumeration".gap]]
-  claim = "the driver caches a file list, built lazily on first need and refreshed in the background"
-  found = "FileList::enumerate is an eager one-shot walk with no caller in the workspace, and ProjectView::new takes an Arc<FileList> from an owner that does not exist; the doc comment says 'refreshed in the background by whoever owns it' and nobody owns it"
-  where = "crates/shared/src/project.rs:123"
-
-  [[section."core.md#4-project-file-enumeration".gap]]
-  claim = "AbstainReason::NoCandidates specifically triggers a debounced background rescan, while the triggering query still abstains"
-  found = "nothing observes the variant: grep for rescan/debounc across crates/ returns only the doc comment on NoCandidates itself and an unrelated line in config.rs"
-  where = "crates/shared/src/handler.rs:120"
-
-  [[section."core.md#4-project-file-enumeration".gap]]
-  claim = "in proxy mode the editor's watcher notifications are teed to core and set a stale flag with O(1) work, never reading the payload"
-  found = "there is no stale flag on FileList and no didChangeWatchedFiles handling anywhere in crates/; blocked on shim.md's routing, but the core-side half is absent too"
-  where = "crates/shared/src/project.rs:113"
+state = "clean"
+last_audited = "2026-08-03T19:21:14+00:00"
 
   [[section."core.md#4-project-file-enumeration".minor]]
-  claim = "built with the ignore crate so .gitignore is respected for free, implementing high-level.md's decision that gitignored files are out of scope"
-  note = "WalkBuilder's defaults also exclude hidden files and honour .ignore, so a tracked dotfile is silently out of scope \u2014 a scope rule set by a default rather than by a decision"
-  where = "crates/shared/src/project.rs:129"
-
-  [[section."core.md#4-project-file-enumeration".minor]]
-  claim = "in-process gives direct control over cancellation at the deadline"
-  note = "FileList::enumerate takes no Deadline and polls nothing, so a cold walk could not be cut off; harmless until the lazy-build path exists"
-  where = "crates/shared/src/project.rs:123"
+  claim = "the driver caches a file list, refreshed in the background and invalidated by two triggers"
+  note = "every mechanism exists and is tested, but nothing in driver constructs a FileListCache \u2014 driver::run still only reports config, so the tee and the debounce have no production caller"
+  where = "crates/driver/src/driver.rs:33"
 
 [section."core.md#5-deadlines-and-abstention"]
 state = "clean"
@@ -146,18 +126,13 @@ last_audited = "2026-08-03T06:54:58+00:00"
   where = "crates/shared/src/handler.rs:72"
 
 [section."core.md#the-corpus-scan-is-a-separate-program"]
-state = "gaps"
-last_audited = "2026-08-03T05:34:51+00:00"
+state = "clean"
+last_audited = "2026-08-03T19:21:14+00:00"
 
-  [[section."core.md#the-corpus-scan-is-a-separate-program".gap]]
-  claim = "the corpus scan is its own crate \u2014 measure_core plus a four-line measure_<lang> binary \u2014 which spawns a server per repository, opens documents, enumerates identifiers with the handler's own grammar and writes the records"
-  found = "neither crate exists and no code does any of it; [workspace] members lists only crates/driver, crates/heuristic_jump, crates/shared and the two vendored crates. The section's other halves are satisfied: driver has no batch path, transport abstraction or awareness of measurement (driver.rs:10), and snapshot construction lives in shared (document.rs:54)"
-  where = "Cargo.toml:3"
-
-  [[section."core.md#the-corpus-scan-is-a-separate-program".gap]]
-  claim = "the agreement predicate \u2014 the definition of 'match' that must not fork between the shipped metric and the measured one \u2014 lives in shared, since measure_core does not depend on driver"
-  found = "shared exports no agreement predicate and no normalisation of Location/LocationLink/null into a comparable set; its public surface is deadline, document, error, handler, project, proto and vocabulary (shared.rs:25-35), and grep for `agree` across crates/ returns only prose (handler.rs:145) and the position-encoding tests. driver has none either. MECHANICAL CHECK AVAILABLE: making the predicate the only pub fn either consumer can reach, in shared, keeps 'it must not fork' a compile-time fact"
-  where = "crates/shared/src/shared.rs:25"
+  [[section."core.md#the-corpus-scan-is-a-separate-program".minor]]
+  claim = "`measure collect` ... enumerates identifiers with the handler's own grammar, asks both sides, and writes the records above"
+  note = "enumeration is its own subcommand, collect asks only the oracle and writes truth.jsonl, and replay asks the handler and writes the \u00a77 records \u2014 which is what \u00a77's `two modes` and `the command line` specify, so the sentence here is the outlier"
+  where = "crates/measure_core/src/collect.rs:297"
 
 [section."core.md#one-measurement-library-one-tiny-binary-per-language"]
 state = "clean"
@@ -183,27 +158,17 @@ last_audited = "2026-08-03T06:13:37+00:00"
   where = "crates/shared/src/project.rs:212"
 
 [section."core.md#the-table-is-not-enough-a-replay-has-to-show-its-failures"]
-state = "gaps"
-last_audited = "2026-08-03T06:13:37+00:00"
-
-  [[section."core.md#the-table-is-not-enough-a-replay-has-to-show-its-failures".gap]]
-  claim = "replay --records <path> writes the per-query JSONL of the record above, unchanged and unfiltered"
-  found = "no replay, no --records flag and no record type exist; grep across crates/ for replay, truth.jsonl and records returns only unrelated Iterator::collect calls, and measure_core is not a workspace member. The digest half of this section belongs to harness/, which is outside the audited paths, so it is not judged here"
-  where = "Cargo.toml:3"
+state = "unjudged"
+last_audited = "2026-08-03T19:21:14+00:00"
 
 [section."core.md#the-oracle-is-the-server-being-proxied"]
 state = "gaps"
-last_audited = "2026-08-03T06:13:37+00:00"
+last_audited = "2026-08-03T19:21:14+00:00"
 
   [[section."core.md#the-oracle-is-the-server-being-proxied".gap]]
-  claim = "every metric is per (language, server); there is no aggregate across servers"
-  found = "no metric is emitted anywhere, per server or otherwise: crates/measure_core and crates/measure_rust do not exist on disk, [workspace] members lists only crates/driver, crates/heuristic_jump, crates/shared and the two vendored crates, and driver writes no record"
-  where = "Cargo.toml:3"
-
-  [[section."core.md#the-oracle-is-the-server-being-proxied".gap]]
-  claim = "the behaviour varies through a ServerProfile reaching handlers in Query, keyed by an interned ServerId resolved from the child's command name at startup"
-  found = "the seam half exists (Query.server at handler.rs:47, ServerProfile at handler.rs:61) but neither type has a producer: ServerId::new has no caller in the workspace, nothing constructs a ServerProfile, and Mode::Proxy holds the child's program name without ever mapping it to an identity. ServerProfile.id can only ever be None, so the divergent-set decomposition has no key"
-  where = "crates/driver/src/config.rs:71"
+  claim = "the behaviour varies through a `ServerProfile` reaching handlers in `Query`, carrying a `ServerId` resolved from the child's command name at startup"
+  found = "no ServerId is ever minted: ServerId::new has no caller in crates/**, driver never maps ServerCommand::program() to one, and measure_core discards the --server identity and passes ServerProfile { id: None }. Mechanizable: assert ServerId has a producer outside tests, or that a proxy-mode Query carries Some(id)"
+  where = "crates/measure_core/src/replay.rs:135"
 
 [section."core.md#where-the-corpus-lives"]
 state = "gaps"
@@ -320,28 +285,13 @@ last_audited = "2026-08-03T06:54:58+00:00"
   where = "crates/heuristic_jump/tests/binary_name.rs:11"
 
 [section."core.md#the-dependency-graph"]
-state = "gaps"
-last_audited = "2026-08-03T05:34:51+00:00"
-
-  [[section."core.md#the-dependency-graph".gap]]
-  claim = "the graph's nodes: measure_core, similarity (frozen, depends on shared), lang_* (depend on shared and similarity plus their grammar crate), and measure_<lang> as the only crate depending on both measure_core and a language"
-  found = "four of the seven node crates do not exist on disk \u2014 measure_core, similarity, lang_* and measure_<lang> \u2014 with no manifest under any of those paths and none a workspace member; [workspace] members lists crates/driver, crates/heuristic_jump, crates/shared, vendor/rope and vendor/sum_tree"
-  where = "Cargo.toml:3"
-
-  [[section."core.md#the-dependency-graph".gap]]
-  claim = "heuristic_jump depends on driver and every lang_*, plus clap and tracing-subscriber, and is the single place the language list is enumerated, with main building a registry and calling driver::run(registry, Cli::parse())"
-  found = "crates/heuristic_jump/Cargo.toml:19-20 declares exactly one dependency, driver \u2014 no clap, no tracing-subscriber, no language crate \u2014 and heuristic_jump.rs:6 is `fn main() {}` with no registry, no argument parsing and no log setup. driver exports no `run` (driver.rs:12 re-exports Dispatched, Registry, dispatch), so the printed main would not compile"
-  where = "crates/heuristic_jump/src/heuristic_jump.rs:6"
-
-  [[section."core.md#the-dependency-graph".gap]]
-  claim = "shared's dependencies are serde, serde_json, url, rope, tree-sitter, ignore, rayon, thiserror, rustc-hash \u2014 'this list is the authoritative one'"
-  found = "crates/shared/Cargo.toml:26 declares `tracing`, which is not on the list and is a runtime dependency used at project.rs:136 and project.rs:144; driver likewise carries rustc-hash and tracing against a graph annotation of crossbeam-channel, rayon (crates/driver/Cargo.toml:17-19). No spec change records it \u2014 state/spec-changelog.md has three entries, none about tracing \u2014 while the journal treats this same list as binding when rejecting sum_tree (state/journal/conformance.md:337-341). MECHANICAL CHECK AVAILABLE: one test asserting shared's declared dependency set equals the list turns an addition into a failing test; a manifest parse avoids the cargo metadata subprocess the journal notes is banned in clippy.toml"
-  where = "crates/shared/Cargo.toml:26"
+state = "clean"
+last_audited = "2026-08-03T19:21:14+00:00"
 
   [[section."core.md#the-dependency-graph".minor]]
-  claim = "driver must not depend on any language crate"
-  note = "the only check is a text scan of two manifests splitting each line on ['.', ' ', '=']; it catches `lang_x = ...` and `lang_x.workspace = true` but not `[dependencies.lang_rust]` (first token `[dependencies`), not a tree-sitter-* grammar reached transitively through a path dependency, and not a `[target.\u2026]` dependency table \u2014 so it would keep passing for two forms of the thing it exists to forbid"
-  where = "crates/driver/tests/seam.rs:39"
+  claim = "shared depends on rayon, for `ProjectView::scan`, which executes on the pool it is handed at construction"
+  note = "ProjectView::new takes (files, deadline, grammar) and no pool, and scan is sequential; the undeclared dependency is intended per deps.md \u00a714, the parenthetical is not"
+  where = "crates/shared/src/project.rs:426"
 
 [section."core.md#why-shared-is-separate-from-driver"]
 state = "gaps"
