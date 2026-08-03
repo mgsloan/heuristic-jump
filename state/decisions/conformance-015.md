@@ -1,6 +1,6 @@
 ---
 id: conformance-015
-status: open
+status: accepted
 opened: 2026-08-03T22:46:00+00:00
 campaign: 51628b98-b5ea-48b1-bb77-696ecc51face
 kind: class-b
@@ -59,7 +59,29 @@ way — which is why this is a record rather than a fix.
 
 ## Decision
 
-Undecided — waiting on a human.
+**Option A — `CARGO_TARGET_TMPDIR` stands; `tempfile` is rejected**, answered
+2026-08-03.
+
+The trade turned out to be one-sided, and this record understates its own
+case. Both costs it assigns to A are already paid:
+
+* Stale fixtures cannot mask a failure — `fixture()` calls `remove_dir_all`
+  on entry and rebuilds from scratch, which is exactly the care the record
+  says the mechanism "has to be" taken with.
+* Concurrent test processes cannot collide — the ten call sites use ten
+  distinct names, and `CARGO_TARGET_TMPDIR` is per test target besides.
+
+So A has B's safety property already, keeps an inspectable fixture after a
+failure that a dropped `TempDir` cannot, and adds no dependency, which
+`CLAUDE.md` asks for in as many words. B's structural-guarantee argument is
+the better *general* one and would win on a suite whose helper did not
+already clear; it does not win here.
+
+`tempfile` moves from **chosen** to **rejected** in §0, and §12's row is
+replaced by one naming `CARGO_TARGET_TMPDIR` and this reasoning. That edit is
+the point of the ruling: a dependency marked chosen whose named user does not
+use it is indistinguishable from one that is merely early, which is the
+confusion this record was opened about.
 
 ## Provisional choice in force
 
