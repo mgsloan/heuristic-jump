@@ -702,7 +702,7 @@ def live_campaign_row(opened: dict, closed: dict, diffs: dict) -> str:
         return ""
     identifier = running[-1]
     row = opened[identifier]
-    owner = row.get("loop") or "conformance"
+    owner = row.get("loop") or next(iter(hj.load_phase().loops), "core")
     state, state_css = campaign_state(identifier)
     progress = {}
     path = Path(adapter("transcript-path", owner, identifier).strip() or "/nonexistent")
@@ -716,15 +716,16 @@ def live_campaign_row(opened: dict, closed: dict, diffs: dict) -> str:
     target = open_campaign_target(owner, identifier)
     shown = target_links(target) if target else '<span class="dim">still choosing</span>'
     quoted = urllib.parse.quote(identifier)
+    quoted_owner = urllib.parse.quote(owner)
 
     def diff_cell(text: str, css: str) -> str:
         if not commits:
             return f'<td class="num dim">{text}</td>'
-        return f'<td class="num {css}"><a href="/diff/conformance/{quoted}">{text}</a></td>'
+        return f'<td class="num {css}"><a href="/diff/{quoted_owner}/{quoted}">{text}</a></td>'
 
     return (
         '<tr class="live">'
-        f'<td><a href="/record/conformance/{quoted}"><code>{esc(identifier[:8])}</code></a></td>'
+        f'<td><a href="/record/{quoted_owner}/{quoted}"><code>{esc(identifier[:8])}</code></a></td>'
         f"<td>{shown}</td>"
         f'<td class="num"><span class="{state_css}">{esc(state)}</span> '
         f'<span class="dim">{esc(elapsed(row.get("started") or ""))}</span></td>'
@@ -741,7 +742,7 @@ def live_campaign_row(opened: dict, closed: dict, diffs: dict) -> str:
     )
 
 
-def panel_campaign_table() -> str:
+def panel_campaign_table(loop: str = "") -> str:
     """What each campaign cost and what it moved, on one line each."""
     phase = hj.load_phase()
     diffs = campaign_diffstat()
@@ -753,7 +754,9 @@ def panel_campaign_table() -> str:
 
     opened: dict[str, dict] = {}
     closed: dict[str, dict] = {}
-    for row in hj.read_jsonl(hj.STATE / "sessions.jsonl"):
+    for row in hj.read_jsonl(hj.sessions_path()):
+        if loop and row.get("loop") and row["loop"] != loop:
+            continue
         (closed if row.get("outcome") else opened).setdefault(row["campaign"], {}).update(row)
 
     rows = []
@@ -769,6 +772,10 @@ def panel_campaign_table() -> str:
         d_gaps = (close.get("open_gaps") or 0) - (open_row.get("open_gaps") or 0)
 
         shown = target_links(close.get("target"))
+        # The owner comes off the row rather than a constant: these links
+        # were hardcoded to one loop, which was invisible while there was
+        # only one and wrong for every row the moment there were two.
+        quoted_owner = urllib.parse.quote(close.get("loop") or open_row.get("loop") or "core")
 
         def signed(value: int, good_when_positive: bool = True) -> str:
             if value == 0:
@@ -778,12 +785,12 @@ def panel_campaign_table() -> str:
 
         rows.append(
             "<tr>"
-            f'<td><a href="/record/conformance/{urllib.parse.quote(identifier)}"><code>{esc(identifier[:8])}</code></a></td>'
+            f'<td><a href="/record/{quoted_owner}/{urllib.parse.quote(identifier)}"><code>{esc(identifier[:8])}</code></a></td>'
             f"<td>{shown}</td>"
             f'<td class="num">{esc(close.get("outcome"))}</td>'
             f'<td class="num">{esc(close.get("commits"))}</td>'
-            f'<td class="num add"><a href="/diff/conformance/{urllib.parse.quote(identifier)}">+{added:,}</a></td>'
-            f'<td class="num del"><a href="/diff/conformance/{urllib.parse.quote(identifier)}">-{deleted:,}</a></td>'
+            f'<td class="num add"><a href="/diff/{quoted_owner}/{urllib.parse.quote(identifier)}">+{added:,}</a></td>'
+            f'<td class="num del"><a href="/diff/{quoted_owner}/{urllib.parse.quote(identifier)}">-{deleted:,}</a></td>'
             f'<td class="num">{signed(d_clean)}</td>'
             f'<td class="num">{signed(d_gaps, good_when_positive=False)}</td>'
             f'<td class="num">{(money.get("cache_read_tokens") or 0):,}</td>'
@@ -809,7 +816,7 @@ def panel_campaign_table() -> str:
     )
 
 
-def panel_audit_table() -> str:
+def panel_audit_table(loop: str = "") -> str:
     """One row per audit: what it looked at, what it moved, what it cost.
 
     The audit is the instrument the whole loop is scored by, and it ran five
@@ -835,13 +842,23 @@ def panel_audit_table() -> str:
     already on disk. Where this reads "none" the auditor was told nothing had
     a baseline and re-read a tree it had no reason to suspect.
     """
+    phase = hj.load_phase()
     audits = list(hj.read_jsonl(hj.GAP_LOG))
+    if loop and loop in phase.loops:
+        # The gap log is shared, and a row belongs to whichever loop owns the
+        # documents it audited.
+        mine = {f"{doc}#" for doc in phase.loops[loop].docs}
+        audits = [
+            row
+            for row in audits
+            if any(key.startswith(tuple(mine)) for key in row.get("sections_audited", []))
+        ]
     if not audits:
-        return panel("Audits", empty("No audit has run yet."))
+        return panel("Audits", empty("No audit has run for this loop yet."))
 
     cost = [
         row
-        for owner in hj.load_phase().loops
+        for owner in ([loop] if loop and loop in phase.loops else phase.loops)
         for row in hj.read_jsonl(hj.cost_path(owner))
         if row.get("kind") == "audit"
     ]
@@ -1100,13 +1117,15 @@ def panel_metrics() -> str:
 # --- panel 4: cost ---------------------------------------------------------
 
 
-def panel_sections() -> str:
+def panel_sections(loop: str = "") -> str:
     """The work queue at section granularity. Its own view because it is long
     and answers a different question from the overview: not "is this going
     well" but "what exactly is left"."""
     phase = hj.load_phase()
     blocks = []
     for owner, config in sorted(phase.loops.items()):
+        if loop and owner != loop:
+            continue
         buckets: dict[str, list[str]] = {"gaps": [], "unjudged": [], "clean": []}
         for doc in config.docs:
             verdicts = hj.read_audit(doc)
@@ -1234,10 +1253,10 @@ def panel_cost() -> str:
 # --- panel 5: sessions -----------------------------------------------------
 
 
-def panel_sessions() -> str:
+def panel_sessions(loop: str = "") -> str:
     phase = hj.load_phase()
     rows = []
-    for owner in sorted(phase.loops):
+    for owner in ([loop] if loop and loop in phase.loops else sorted(phase.loops)):
         for campaign in reversed(hj.campaigns_of(owner)):
             identifier = campaign.get("campaign", "")
             path = Path(adapter("transcript-path", owner, identifier).strip() or "/nonexistent")
@@ -1293,11 +1312,11 @@ def panel_interventions() -> str:
     )
 
 
-def current_campaign() -> tuple[str, str] | None:
+def current_campaign(loop: str = "") -> tuple[str, str] | None:
     """The campaign a transcript is still being written for, else the newest."""
     phase = hj.load_phase()
     newest = None
-    for owner in phase.loops:
+    for owner in ([loop] if loop and loop in phase.loops else phase.loops):
         for campaign in hj.campaigns_of(owner):
             identifier = campaign.get("campaign", "")
             if not identifier:
@@ -1308,14 +1327,14 @@ def current_campaign() -> tuple[str, str] | None:
     return newest
 
 
-def panel_live(tail: int = 30) -> str:
+def panel_live(tail: int = 30, loop: str = "") -> str:
     """The last turns of the session that is running now.
 
     Reading a campaign while it works is the one thing `state/` cannot answer:
     the journal and the record are written at close, so until then the
     transcript is the only account of what it is doing.
     """
-    current = current_campaign()
+    current = current_campaign(loop)
     if current is None:
         return panel("Live", empty("No campaign has run yet."))
     owner, identifier = current
@@ -1395,22 +1414,22 @@ VIEWS = (
 )
 
 
-def fragment(view: str = "overview") -> str:
+def fragment(view: str = "overview", loop: str = "") -> str:
     if view == "sections":
-        return panel_sections()
+        return panel_sections(loop)
     if view == "campaigns":
-        return panel_campaign_table() + panel_sessions()
+        return panel_campaign_table(loop) + panel_sessions(loop)
     if view == "interventions":
         return panel_interventions()
     if view == "live":
-        return panel_live()
+        return panel_live(loop=loop)
     return (
         panel_decisions()
         + panel_loops()
         + panel_metrics()
         + panel_cost()
-        + panel_campaign_table()
-        + panel_audit_table()
+        + panel_campaign_table(loop)
+        + panel_audit_table(loop)
     )
 
 
@@ -1543,6 +1562,12 @@ header nav { display:flex; gap:6px; margin-left:8px; }
        color:var(--dim); border:1px solid var(--line); white-space:nowrap; }
 .tab:hover { color:var(--fg); }
 .tab.on { background:var(--fg); color:var(--bg); border-color:var(--fg); }
+/* The loop selector answers a different question from the view tabs — which
+   loop, not which page — so it is shaped differently rather than being a
+   second row of the same pill. */
+.navgap { width:14px; display:inline-block; }
+.tab.loop { border-radius:4px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+.tab.loop.on { background:var(--accent); border-color:var(--accent); color:#fff; }
 main { padding:0 20px 60px; max-width:1100px; }
 .panel { margin:26px 0; }
 .panel > h2 { font-size:13px; text-transform:uppercase; letter-spacing:.08em; margin:0 0 10px;
@@ -1670,8 +1695,11 @@ async function tick() {
     for (const field of document.querySelectorAll('form.answer textarea')) {
       if (field.value.trim()) return;
     }
-    const view = document.querySelector('main').dataset.view;
-    const html = await (await fetch('/fragment?view=' + encodeURIComponent(view))).text();
+    const main = document.querySelector('main');
+    const view = main.dataset.view;
+    const loop = main.dataset.loop || '';
+    const html = await (await fetch('/fragment?view=' + encodeURIComponent(view)
+      + '&loop=' + encodeURIComponent(loop))).text();
     document.querySelector('main').innerHTML = html;
     token = fresh;
     document.getElementById('token').textContent = 'updated ' + new Date().toLocaleTimeString();
@@ -1681,14 +1709,54 @@ setInterval(tick, 2000);
 """
 
 
-def nav(view: str) -> str:
-    return "".join(
-        f'<a class="tab{" on" if name == view else ""}" href="/?view={name}">{esc(label)}</a>'
+def selected_loop(query: dict) -> str:
+    """The loop the page is showing, defaulting to the first configured one.
+
+    Validated against `state/phase.toml` rather than trusted, so a stale
+    bookmark or a hand-edited query string cannot make the panels silently
+    empty — it falls back to a loop that exists.
+    """
+    try:
+        owners = sorted(hj.load_phase().loops)
+    except SystemExit:
+        return ""
+    wanted = query.get("loop", [""])[0]
+    if wanted in owners:
+        return wanted
+    return owners[0] if owners else ""
+
+
+def nav(view: str, loop: str = "") -> str:
+    """View tabs, and — once there is more than one loop — a loop selector.
+
+    One page rather than one per loop: several of these panels are about how
+    the loops interact rather than about either one, and two dashboards on two
+    ports is the wrong shape for a page whose whole job is that one human sees
+    everything.
+
+    The selector is hidden while there is a single loop, because a control with
+    one option is a control that teaches nothing.
+    """
+    tabs = "".join(
+        f'<a class="tab{" on" if name == view else ""}"'
+        f' href="/?view={name}{"&loop=" + urllib.parse.quote(loop) if loop else ""}">{esc(label)}</a>'
         for name, label in VIEWS
     )
+    try:
+        owners = sorted(hj.load_phase().loops)
+    except SystemExit:
+        owners = []
+    if len(owners) < 2:
+        return tabs
+    picker = "".join(
+        f'<a class="tab loop{" on" if name == (loop or owners[0]) else ""}"'
+        f' href="/?view={view}&loop={urllib.parse.quote(name)}">{esc(name)}</a>'
+        for name in owners
+    )
+    return f'{tabs}<span class="navgap"></span>{picker}'
 
 
-def page(title: str, body: str, poll: bool = True, view: str = "overview") -> str:
+def page(title: str, body: str, poll: bool = True, view: str = "overview", loop: str = "") -> str:
     script = ""
     if poll:
         script = f"<script>{POLL.replace('%TOKEN%', json.dumps(version_token()))}</script>"
@@ -1703,9 +1771,9 @@ def page(title: str, body: str, poll: bool = True, view: str = "overview") -> st
 <style>{STYLE}</style></head>
 <body>
 <header><h1>heuristic-jump</h1><span class="note">phase {esc(phase)}</span>
-<nav>{nav(view)}</nav>
+<nav>{nav(view, loop)}</nav>
 <span class="note" id="token"></span></header>
-<main data-view="{esc(view)}">{body}</main>
+<main data-view="{esc(view)}" data-loop="{esc(loop)}">{body}</main>
 {script}
 </body></html>"""
 
@@ -1830,10 +1898,14 @@ class Handler(BaseHTTPRequestHandler):
                 view = query.get("view", ["overview"])[0]
                 if view not in dict(VIEWS):
                     view = "overview"
-                self.send(200, page("Dashboard", fragment(view), view=view))
+                loop = selected_loop(query)
+                self.send(200, page("Dashboard", fragment(view, loop), view=view, loop=loop))
             elif route == "/fragment":
                 view = query.get("view", ["overview"])[0]
-                self.send(200, fragment(view if view in dict(VIEWS) else "overview"))
+                self.send(
+                    200,
+                    fragment(view if view in dict(VIEWS) else "overview", selected_loop(query)),
+                )
             elif route == "/version":
                 self.send(200, version_token(), "text/plain; charset=utf-8")
             elif route.startswith("/section/"):
