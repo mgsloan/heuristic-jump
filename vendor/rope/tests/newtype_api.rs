@@ -89,6 +89,42 @@ fn the_signature_scan_finds_what_it_is_looking_for() {
     );
 }
 
+/// §4: **the newtypes are opaque.** The tempting shortcut is `Add<u32>`,
+/// `AddAssign<u32>`, `PartialEq<u32>` and `PartialOrd<u32>`, so that
+/// `p.row += 1` and `p.column == 0` keep compiling and no body needs editing —
+/// and it is refused, because a type that compares and adds against bare
+/// integers is a type bare integers flow into, which is the situation the
+/// whole conversion exists to end. (It is also subtly broken: cross-type
+/// `PartialOrd` does not participate in generic `Ord` code, so the ordering
+/// would be asymmetric depending on how it was reached.)
+///
+/// That is a claim about what does *not* exist, so nothing but a scan can hold
+/// it: the bodies compile either way, and every test in this crate would go on
+/// passing if someone added the impls and deleted the unwraps.
+#[test]
+fn no_newtype_implements_a_trait_against_a_bare_primitive() {
+    let offenders: Vec<String> = ["offset.rs", "point.rs", "point_utf16.rs"]
+        .into_iter()
+        .flat_map(|file| {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(file);
+            let text = fs::read_to_string(path).expect("reading a newtype module");
+            impl_headers(&text)
+                .into_iter()
+                .filter(|header| mentions_bare_primitive(header))
+                .map(|header| format!("{file}: {header}"))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+
+    assert!(
+        offenders.is_empty(),
+        "a vocabulary newtype implements a trait against a bare integer, which \
+         is the half-transparent type `design/rope-modifications.md` §4 \
+         refuses:\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// §7: round-trip property tests over `Offset` ↔ `Point` ↔ `PointUtf16` ↔
 /// `OffsetUtf16` on random text with astral-plane characters. `core.md` §10
 /// already requires them for the encoding layer; running them against the
@@ -213,6 +249,24 @@ fn public_signatures(text: &str) -> Vec<(&str, String)> {
         signatures.push((name, body));
     }
     signatures
+}
+
+/// Every `impl` header in `text`, from `impl` to the opening brace. The
+/// header is where a lenient operator would appear — `impl Add<u32> for
+/// LineIndex` — and stopping at the brace is what keeps `usize::MAX` inside a
+/// body from reading as one.
+fn impl_headers(text: &str) -> Vec<String> {
+    let mut headers = Vec::new();
+    for (index, _) in text.match_indices("impl") {
+        let before = text[..index].chars().next_back();
+        if before.is_some_and(|character| character.is_alphanumeric() || character == '_') {
+            continue;
+        }
+        let rest = &text[index..];
+        let Some(end) = rest.find('{') else { continue };
+        headers.push(rest[..end].split_whitespace().collect::<Vec<_>>().join(" "));
+    }
+    headers
 }
 
 /// A whole-word `usize` or `u32`, so `Utf16Column` and `to_u32` do not match
