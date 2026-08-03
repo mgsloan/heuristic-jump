@@ -43,6 +43,10 @@ DESIGN = REPO / "design"
 # forbidden.
 DENIED_ALWAYS = [
     "harness/**",
+    # The protocol a loop implements against must not be editable by that loop,
+    # for the same reason `harness/` is not: it is a source of truth rather
+    # than a thing being built. Regenerate it with `harness/reference-lsp`.
+    "reference/**",
     "state/phase.toml",
     "state/audit/**",
     "state/interventions.jsonl",

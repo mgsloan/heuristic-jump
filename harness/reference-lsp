@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Download the LSP specification, resolve its Jekyll includes, and cut it down
+# to the parts the shim touches. See reference/lsp-3.17/README.md.
+#
+# Owned by nobody, like the rest of harness/: the specification a loop is
+# implementing against must not be editable by that loop.
+set -uo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec python3 "$here/reference_lsp.py" "$@"

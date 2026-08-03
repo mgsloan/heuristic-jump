@@ -29,9 +29,11 @@ import html
 import importlib.machinery
 import importlib.util
 import json
+import os
 import re
 import subprocess
 import sys
+import time
 import urllib.parse
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -1397,7 +1399,35 @@ def main() -> int:
     parser.add_argument("--no-open", action="store_true")
     args = parser.parse_args()
 
-    server = ThreadingHTTPServer((args.host, args.port), Handler)
+    # Reuse the address rather than walking to the next free port. A dashboard
+    # that moves is one whose URL you cannot keep open in a tab, and the usual
+    # reason the old port looks busy is a previous instance of this same
+    # program that has just been killed and is sitting in TIME_WAIT.
+    ThreadingHTTPServer.allow_reuse_address = True
+    try:
+        server = ThreadingHTTPServer((args.host, args.port), Handler)
+    except OSError as error:
+        holder = subprocess.run(
+            ["pgrep", "-f", f"dashboard/serve --port {args.port}"],
+            capture_output=True, text=True, check=False,
+        ).stdout.split()
+        mine = [pid for pid in holder if pid != str(os.getpid())]
+        if not mine:
+            print(f"dashboard: port {args.port} is held by something else — {error}", file=sys.stderr)
+            return 1
+        print(f"dashboard: replacing the instance already on {args.port} (pid {' '.join(mine)})")
+        for pid in mine:
+            subprocess.run(["kill", pid], check=False)
+        for _ in range(40):
+            time.sleep(0.25)
+            try:
+                server = ThreadingHTTPServer((args.host, args.port), Handler)
+                break
+            except OSError:
+                continue
+        else:
+            print(f"dashboard: {args.port} did not free up", file=sys.stderr)
+            return 1
     url = f"http://{args.host}:{args.port}/"
     print(f"dashboard: {url}   (ctrl-c to stop)")
     if not args.no_open:
