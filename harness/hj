@@ -666,6 +666,21 @@ def append_jsonl(path: Path, row: dict) -> None:
         handle.write(json.dumps(row, sort_keys=True) + "\n")
 
 
+def commit_in(root: Path, paths: list[Path], message: str) -> None:
+    relative = [str(path.relative_to(root)) for path in paths if path.exists()]
+    if not relative:
+        return
+    subprocess.run(["git", "-C", str(root), "add", "--", *relative], capture_output=True, check=False)
+    result = subprocess.run(
+        ["git", "-C", str(root), "commit", "-m", f"harness: {message}", "--", *relative],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0 and "nothing to commit" not in result.stdout:
+        print(f"hj: could not commit in {root}: {result.stdout.strip()}", file=sys.stderr)
+
+
 def commit_harness_state(paths: list[Path], message: str) -> None:
     """The harness commits the rows it writes, as it writes them.
 
@@ -687,7 +702,17 @@ def commit_harness_state(paths: list[Path], message: str) -> None:
     concerned. Path-limited, so a campaign's uncommitted work is never swept
     in.
     """
-    relative = [str(path.relative_to(REPO)) for path in paths if path.exists()]
+    # A path in the integration checkout is committed there, not here: with
+    # workers, `sessions.jsonl` lives outside the worktree so that an open
+    # campaign is visible to the fleet.
+    outside = [path for path in paths if path.exists() and not path.is_relative_to(REPO)]
+    for path in outside:
+        commit_in(CONTROL, [path], message)
+    relative = [
+        str(path.relative_to(REPO))
+        for path in paths
+        if path.exists() and path.is_relative_to(REPO)
+    ]
     if not relative:
         return
     status = git("status", "--porcelain", "--", *relative).strip()
@@ -716,13 +741,42 @@ def read_jsonl(path: Path) -> list[dict]:
 
 
 def sessions_path() -> Path:
-    return STATE / "sessions.jsonl"
+    """One file for the whole fleet, in the integration checkout.
+
+    A campaign's *record* is its own work and belongs on its branch. Its
+    session row is not: it is how everything else — the dashboard, the stall
+    count, the audit cadence, another worker — knows a campaign exists. Kept
+    per branch, three workers each appended to their own copy and none of them
+    was visible anywhere until the campaign closed and merged, which is
+    exactly the window worth watching.
+
+    Concurrent appends are safe as written: each row is a single `write` of
+    well under `PIPE_BUF` to a file opened `O_APPEND`, which Linux does not
+    interleave. `.gitattributes` union-merges it for the case where a branch
+    carries one anyway.
+    """
+    return CONTROL / "state" / "sessions.jsonl"
+
+
+def session_rows() -> list[dict]:
+    """Every session row this tree can see.
+
+    The fleet's file, plus a worktree-local one when they differ. The local
+    one exists only for campaigns opened before the file moved, and for a
+    branch that carried a merged copy; reading both means a campaign that
+    opened under the old layout can still close.
+    """
+    rows = read_jsonl(sessions_path())
+    local = STATE / "sessions.jsonl"
+    if local.resolve() != sessions_path().resolve():
+        rows += read_jsonl(local)
+    return sorted(rows, key=lambda row: row.get("started") or row.get("ended") or "")
 
 
 def campaigns_of(owner: str) -> list[dict]:
     """Latest row per campaign id, oldest campaign first."""
     latest: dict[str, dict] = {}
-    for row in read_jsonl(sessions_path()):
+    for row in session_rows():
         if row.get("loop") == owner:
             merged = latest.setdefault(row["campaign"], {})
             merged.update(row)
@@ -1776,7 +1830,7 @@ def claimed_gaps(owner: str, exclude: str = "") -> set[str]:
     backstop is the rebase.
     """
     open_rows: dict[str, dict] = {}
-    for row in read_jsonl(sessions_path()):
+    for row in session_rows():
         if row.get("loop") != owner:
             continue
         open_rows.setdefault(row["campaign"], {}).update(row)
@@ -1975,7 +2029,7 @@ def line_counts_at(commit: str) -> dict[str, int]:
 def cmd_backfill_lines(args: argparse.Namespace) -> int:
     """Give already-closed campaigns their line counts, so the chart has a
     history rather than starting at whatever runs next."""
-    rows = read_jsonl(sessions_path())
+    rows = session_rows()
     have = {row["campaign"] for row in rows if row.get("lines")}
     todo = [
         row
@@ -2006,7 +2060,7 @@ def cmd_backfill_lines(args: argparse.Namespace) -> int:
 
 def cmd_campaign_close(args: argparse.Namespace) -> int:
     phase, config = loop_config(args.loop)
-    rows = [row for row in read_jsonl(sessions_path()) if row.get("campaign") == args.id]
+    rows = [row for row in session_rows() if row.get("campaign") == args.id]
     if not rows:
         die(f"no campaign {args.id} in state/sessions.jsonl")
     opened = rows[0]
