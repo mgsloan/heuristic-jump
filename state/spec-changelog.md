@@ -656,3 +656,36 @@ about". The campaign changed no code here; `fixture()` is untouched and
 predates it.
 
 **Campaign:** 51628b98-b5ea-48b1-bb77-696ecc51face
+
+## CHANGE-conformance-016 — deps.md#2-channels — the removed `unbounded` lint is recorded where it used to fire
+
+**Contradiction:** §2 said "`crossbeam-channel`, `unbounded()` everywhere, per
+`shim.md` §2", and `shim.md:173` said "All channels are unbounded." Against
+both, `clippy.toml:53` denied `crossbeam_channel::unbounded` by name —
+"Unbounded channels hide backpressure and are usually where a
+recv_timeout/select was intended. Use bounded unless sender and receiver share
+a thread." — under a `disallowed_methods = "deny"` that `[workspace.lints.clippy]`
+sets. Following §2 would have meant an `#[expect]` at every transport channel,
+which is §15's own stated failure mode for a lint.
+
+**Resolution:** ruled on in `state/decisions/conformance-016.md`, answered
+`accepted` for option B: the design documents win and the `clippy.toml` entry
+is gone. §2 now records that the entry existed and why it was removed, because
+a removed lint leaves no trace where it used to fire and its reasoning was good
+enough to be re-added by someone who had not read the section.
+
+The narrower point the ruling turns on is now in §2 as well: in the transport a
+full channel does not apply backpressure, it deadlocks — the sender is a
+pipe-reader thread, so blocking it stops the fd being drained, which blocks the
+child's write. A lint cannot be right about that by default, because the answer
+differs per channel; `driver/src/files.rs`'s `bounded(1)` stays correct. What
+replaces the lint is not a lint: the `core` inbox depth is logged and watched,
+with `shim.md` §10's shed-load rule bounding memory, which is the mitigation §2
+already named.
+
+**This document was moved and no code moved with it.** The campaign built no
+channels and changed none; `files.rs` predates it. The escalation was filed
+before the conflict was blocking precisely so that it would not be discovered
+mid-build by the phase-2b loop.
+
+**Campaign:** 51628b98-b5ea-48b1-bb77-696ecc51face

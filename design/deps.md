@@ -112,6 +112,29 @@ could stall a reader. That is correct but it means memory is bounded only by
 the shed-load rule in `shim.md` §10, so the `core` inbox length is a number we
 should log and watch, not just assert about.
 
+**`clippy.toml` denied `crossbeam_channel::unbounded` and no longer does**, on
+the ruling on `state/decisions/conformance-016.md`. The entry is recorded here
+because a removed lint leaves no trace where it used to fire, and its reasoning
+was good enough to be re-added by someone who had not read this section: it
+said unbounded channels hide backpressure and are usually where a
+`recv_timeout` or a `select` was intended.
+
+What is wrong with it is narrower than that reasoning. In the transport a full
+channel does not apply backpressure — it deadlocks. The sender is a pipe-reader
+thread, so blocking it stops the fd being drained, which blocks the child's
+write, and `shim.md` §1 forbids a stalled reader outright. A lint cannot be
+right about that by default, because the right answer genuinely differs per
+channel: `driver/src/files.rs` uses `bounded(1)` and states why, and that
+remains correct.
+
+So the bound is a per-channel judgement rather than a repository-wide rule, and
+the only mechanism left is the one this section already named — log the `core`
+inbox depth and watch it, with `shim.md` §10's shed-load rule bounding memory.
+Carrying `#[expect(clippy::disallowed_methods, …)]` at the transport sites was
+considered and rejected: it buys too little for a rule that is wrong in the one
+subsystem it most matters in, and `deps.md` §15 makes exactly that argument
+about `indexing_slicing`.
+
 ## 3. LSP types: our own, not `lsp-types`
 
 **Chosen: hand-written wire types in `shared::proto`. `lsp-types` stays as a
