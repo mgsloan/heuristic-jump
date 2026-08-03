@@ -345,6 +345,8 @@ Summary of the per-crate `license` fields:
 | | License |
 |---|---|
 | `crates/*` — everything we write | `MIT` |
+| `crates/similarity` | `GPL-3.0-or-later` (ported, see below) |
+| `crates/lang_*` | `GPL-3.0-or-later`, because they depend on `similarity` |
 | `vendor/rope` | `GPL-3.0-or-later` (Zed's, unchanged) |
 | `vendor/sum_tree` | `Apache-2.0` (Zed's, unchanged) |
 | the shipped binary | `GPL-3.0-or-later` |
@@ -353,9 +355,26 @@ Summary of the per-crate `license` fields:
 compatible into GPL-3.0, and it is not the constraint here. The handful of
 Apache-2.0 lines folded into `rope` become GPL-encumbered in our copy, which
 costs nothing — they are four lines of bit magic, a panic macro, and a test
-iterator, and they leave with `rope` if `rope` ever leaves. **`rope` is the
-only GPL input**, which is exactly why keeping everything else permissive
-keeps the exit open.
+iterator, and they leave with `rope` if `rope` ever leaves.
+
+**There are two GPL inputs, not one.** An earlier revision of this section
+said `rope` was the only one, and treated keeping everything else permissive
+as an exit: replace `rope`, relicense nothing, and the workspace could go
+permissive. `crates/similarity` closes that exit for the handler layer. It is
+ported from the prior implementation (`resolution.md` §5), whose
+`text_similarity` came out of Zed's `edit_prediction_context`, and every
+`lang_*` depends on it.
+
+That was taken deliberately rather than discovered. The exit was a hedge, and
+it was worth less than it looked: the shipped binary links `rope` and is
+GPL-3.0-or-later either way, so nothing about what ships changes. What changes
+is that going permissive would now mean replacing two things instead of one,
+and the second is the piece §5 calls genuinely hard to rewrite well.
+
+`shared`, `driver`, `measure_core` and `measure_<lang>` stay MIT: none of them
+depends on `similarity`, which is a `lang_*` dependency and not a driver one
+(`core.md` §9's graph). So the permissive surface is the seam and the
+measurement program — which is the part a third party would want anyway.
 
 ## 6. Tree-sitter
 
@@ -843,8 +862,8 @@ Two places we deliberately differ:
 ```
 Cargo.toml
 rust-toolchain.toml     pin 1.95.0, so grammar/rope behaviour is reproducible
-LICENSE-MIT             covers crates/*
-LICENSE-GPL             covers the combined binary, via vendor/rope
+LICENSE-MIT             covers crates/*, except similarity and lang_*
+LICENSE-GPL             covers the combined binary, and crates/similarity
 LICENSE-APACHE          covers vendor/sum_tree
                         -- all three symlinked into each crate, see above
 vendor/
@@ -855,6 +874,8 @@ crates/
   shared/           MIT -- vocabulary newtypes, LanguageHandler, proto, Error
   driver/           MIT -- the LSP driver
   heuristic_jump/   MIT -- binary crate; the artifact it builds is GPL
+  similarity/       GPL-3.0-or-later -- ported; see section 5
+  lang_*/           GPL-3.0-or-later -- they depend on similarity
 ```
 
 Crate names carry no project prefix — these are `publish = false` crates in a
@@ -866,10 +887,11 @@ shadows Rust's own and `core.md` already uses "core" for the actor; and
 — which takes a two-line `[[bin]]` rename, since cargo names a binary target
 after its package verbatim (`core.md` §9, CHANGE-conformance-001).
 
-A `cargo-deny` config asserting that `GPL` appears in the graph only via
-`vendor/rope` is worth having from the start: it is the check that notices if
-a second GPL input ever sneaks in, which is the thing that would quietly
-foreclose the exit §5 is preserving.
+A `cargo-deny` config asserting that `GPL` reaches the graph only through
+`vendor/rope` and `crates/similarity` is worth having from the start. Those
+two are the ruled-on inputs (§5); the check is what notices a *third* arriving
+without anyone deciding, which is how a licence surface grows — not by a
+decision but by a dependency.
 
 `similarity`, `lang_*`, `measure_core`, and `measure_<lang>` are in `core.md`
 §9's layout but are not created by this piece of work.

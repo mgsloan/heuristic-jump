@@ -1,0 +1,368 @@
+//! Occurrence multisets and the similarity metrics over them.
+//!
+//! Ported from the prior implementation's `src/text_similarity/occurrences.rs`
+//! (`resolution.md` §5), which keeps it for being well-factored, generic over
+//! the occurrence source, and explicit about its `u32`-hash tradeoff.
+
+use hashbrown::HashTable;
+use itertools::Itertools;
+use smallvec::SmallVec;
+use std::{cmp::Ordering, fmt::Debug, marker::PhantomData};
+
+/// Similarity metrics that use a set of occurrences.
+pub trait Similarity<T> {
+    fn jaccard_similarity(&self, other: &T) -> f32;
+    fn overlap_coefficient(&self, other: &T) -> f32;
+}
+
+/// Similarity metrics that use a multiset of occurrences.
+pub trait WeightedSimilarity<T> {
+    fn weighted_jaccard_similarity(&self, other: &T) -> f32;
+    fn weighted_overlap_coefficient(&self, other: &T) -> f32;
+}
+
+/// Multiset of hash occurrences used in similarity metrics.
+#[derive(Debug, Clone)]
+pub struct Occurrences<S> {
+    table: HashTable<OccurrenceEntry<S>>,
+    total_count: u32,
+    _source: PhantomData<S>,
+}
+
+#[derive(Debug, Copy, Clone)]
+struct OccurrenceEntry<S> {
+    hash: HashFrom<S>,
+    count: u32,
+}
+
+/// Small set of hash occurrences. Since this does not track the number of times each has occurred,
+/// this only implements `Similarity` and not `WeightedSimilarity`.
+#[derive(Debug, Clone)]
+pub struct SmallOccurrences<const N: usize, S> {
+    hashes: SmallVec<[HashFrom<S>; N]>,
+    _source: PhantomData<S>,
+}
+
+/// Occurrence hash from a particular source type.
+///
+/// u32 hash values are used instead of u64 since this uses half as much memory and is a bit faster.
+/// The rationale for this is that these similarity metrics are being used as heuristics and
+/// precision is not needed. The probability of a hash collision is 50% with 77k hashes. The
+/// probability that a hash collision will actually cause different behavior is far lower.
+pub struct HashFrom<S: ?Sized> {
+    value: u32,
+    _source: PhantomData<S>,
+}
+
+impl<S> Occurrences<S> {
+    pub fn new(hashes: impl IntoIterator<Item = HashFrom<S>>) -> Self {
+        let mut occurrences = Occurrences::default();
+        for hash in hashes {
+            occurrences.add_hash(hash);
+        }
+        occurrences
+    }
+
+    pub fn clear(&mut self) {
+        self.table.clear();
+        self.total_count = 0;
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.total_count == 0
+    }
+
+    pub fn len(&self) -> u32 {
+        self.total_count
+    }
+
+    pub fn distinct_len(&self) -> usize {
+        self.table.len()
+    }
+
+    pub fn add_hash(&mut self, hash: HashFrom<S>) -> u32 {
+        let new_count = self
+            .table
+            .entry(
+                u64::from(hash.value),
+                |entry| entry.hash == hash,
+                |entry| u64::from(entry.hash.value),
+            )
+            .and_modify(|entry| entry.count += 1)
+            .or_insert(OccurrenceEntry { hash, count: 1 })
+            .get()
+            .count;
+        self.total_count += 1;
+        new_count
+    }
+
+    pub fn remove_hash(&mut self, hash: HashFrom<S>) -> u32 {
+        let entry = self.table.entry(
+            u64::from(hash.value),
+            |entry| entry.hash == hash,
+            |entry| u64::from(entry.hash.value),
+        );
+        match entry {
+            hashbrown::hash_table::Entry::Occupied(mut entry) => {
+                let new_count = entry.get().count.checked_sub(1);
+                if let Some(new_count) = new_count {
+                    if new_count == 0 {
+                        entry.remove();
+                    } else {
+                        entry.get_mut().count = new_count;
+                    }
+                    debug_assert!(self.total_count != 0);
+                    self.total_count = self.total_count.saturating_sub(1);
+                    new_count
+                } else {
+                    // Ported from a `debug_panic!`, which is Zed's. The
+                    // saturating result is what the release build already did.
+                    debug_assert!(false, "hash removed more times than it was added");
+                    0
+                }
+            }
+            hashbrown::hash_table::Entry::Vacant(_) => {
+                debug_assert!(false, "hash removed more times than it was added");
+                0
+            }
+        }
+    }
+
+    pub fn contains_hash(&self, hash: HashFrom<S>) -> bool {
+        self.get_count(hash) != 0
+    }
+
+    pub fn get_count(&self, hash: HashFrom<S>) -> u32 {
+        self.table
+            .find(u64::from(hash.value), |entry| entry.hash == hash)
+            .map(|entry| entry.count)
+            .unwrap_or(0)
+    }
+}
+
+impl<const N: usize, S> SmallOccurrences<N, S> {
+    pub fn new(hashes: impl IntoIterator<Item = HashFrom<S>>) -> Self {
+        let mut this = SmallOccurrences::default();
+        this.hashes.extend(hashes);
+        this.hashes.sort_unstable();
+        this.hashes.dedup();
+        this.hashes.shrink_to_fit();
+        this
+    }
+
+    pub fn distinct_len(&self) -> usize {
+        self.hashes.len()
+    }
+
+    fn contains_hash(&self, hash: HashFrom<S>) -> bool {
+        self.hashes.iter().contains(&hash)
+    }
+}
+
+impl<S> Default for Occurrences<S> {
+    fn default() -> Self {
+        Occurrences {
+            table: Default::default(),
+            total_count: 0,
+            _source: PhantomData,
+        }
+    }
+}
+
+impl<const N: usize, S> Default for SmallOccurrences<N, S> {
+    fn default() -> Self {
+        SmallOccurrences {
+            hashes: SmallVec::new(),
+            _source: PhantomData,
+        }
+    }
+}
+
+impl<S> Similarity<Occurrences<S>> for Occurrences<S> {
+    fn jaccard_similarity<'a>(&'a self, mut other: &'a Self) -> f32 {
+        let mut this = self;
+        if this.table.len() > other.table.len() {
+            std::mem::swap(&mut this, &mut other);
+        }
+        let intersection = this
+            .table
+            .iter()
+            .filter(|entry| other.contains_hash(entry.hash))
+            .count();
+        let union = this.table.len() + other.table.len() - intersection;
+        ratio(intersection, union)
+    }
+
+    fn overlap_coefficient<'a>(&'a self, mut other: &'a Self) -> f32 {
+        let mut this = self;
+        if this.table.len() > other.table.len() {
+            std::mem::swap(&mut this, &mut other);
+        }
+        let intersection = this
+            .table
+            .iter()
+            .filter(|entry| other.contains_hash(entry.hash))
+            .count();
+        let smaller = this.table.len();
+        ratio(intersection, smaller)
+    }
+}
+
+impl<const N: usize, S> Similarity<Occurrences<S>> for SmallOccurrences<N, S> {
+    fn jaccard_similarity(&self, other: &Occurrences<S>) -> f32 {
+        let intersection = self
+            .hashes
+            .iter()
+            .filter(|hash| other.contains_hash(**hash))
+            .count();
+        let union = self.hashes.len() + other.table.len() - intersection;
+        ratio(intersection, union)
+    }
+
+    fn overlap_coefficient(&self, other: &Occurrences<S>) -> f32 {
+        let intersection = self
+            .hashes
+            .iter()
+            .filter(|hash| other.contains_hash(**hash))
+            .count();
+        let smaller = self.hashes.len().min(other.table.len());
+        ratio(intersection, smaller)
+    }
+}
+
+impl<const N: usize, const O: usize, S> Similarity<SmallOccurrences<O, S>>
+    for SmallOccurrences<N, S>
+{
+    fn jaccard_similarity(&self, other: &SmallOccurrences<O, S>) -> f32 {
+        let intersection = self
+            .hashes
+            .iter()
+            .filter(|hash| other.contains_hash(**hash))
+            .count();
+        let union = self.hashes.len() + other.hashes.len() - intersection;
+        ratio(intersection, union)
+    }
+
+    fn overlap_coefficient(&self, other: &SmallOccurrences<O, S>) -> f32 {
+        let intersection = self
+            .hashes
+            .iter()
+            .filter(|hash| other.contains_hash(**hash))
+            .count();
+        let smaller = self.hashes.len().min(other.hashes.len());
+        ratio(intersection, smaller)
+    }
+}
+
+impl<S> WeightedSimilarity<Occurrences<S>> for Occurrences<S> {
+    fn weighted_jaccard_similarity<'a>(&'a self, mut other: &'a Self) -> f32 {
+        let mut this = self;
+        if this.table.len() > other.table.len() {
+            std::mem::swap(&mut this, &mut other);
+        }
+
+        let mut numerator = 0;
+        let mut this_denominator = 0;
+        let mut other_used_count = 0;
+        for entry in this.table.iter() {
+            let this_count = entry.count;
+            let other_count = other.get_count(entry.hash);
+            numerator += this_count.min(other_count);
+            this_denominator += this_count.max(other_count);
+            other_used_count += other_count;
+        }
+
+        let denominator = this_denominator + (other.total_count - other_used_count);
+        ratio(numerator as usize, denominator as usize)
+    }
+
+    fn weighted_overlap_coefficient<'a>(&'a self, mut other: &'a Self) -> f32 {
+        let mut this = self;
+        if this.table.len() > other.table.len() {
+            std::mem::swap(&mut this, &mut other);
+        }
+
+        let mut numerator = 0;
+        for entry in this.table.iter() {
+            let this_count = entry.count;
+            let other_count = other.get_count(entry.hash);
+            numerator += this_count.min(other_count);
+        }
+
+        let denominator = this.total_count.min(other.total_count);
+        ratio(numerator as usize, denominator as usize)
+    }
+}
+
+impl<S> From<u32> for HashFrom<S> {
+    fn from(value: u32) -> Self {
+        Self {
+            value,
+            _source: PhantomData,
+        }
+    }
+}
+
+impl<S> From<HashFrom<S>> for u32 {
+    fn from(hash: HashFrom<S>) -> Self {
+        hash.value
+    }
+}
+
+impl<S> Debug for HashFrom<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.value.fmt(f)
+    }
+}
+
+impl<S> PartialEq for HashFrom<S> {
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value
+    }
+}
+
+impl<S> PartialOrd for HashFrom<S> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<S> Ord for HashFrom<S> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.value.cmp(&other.value)
+    }
+}
+
+impl<S> Clone for HashFrom<S> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<S> Eq for HashFrom<S> {}
+impl<S> Copy for HashFrom<S> {}
+
+impl<S> AsRef<Occurrences<S>> for Occurrences<S> {
+    fn as_ref(&self) -> &Occurrences<S> {
+        self
+    }
+}
+
+/// A ratio of set sizes, which is what Jaccard and the overlap coefficient
+/// both are, and the one place the integers have to become a float.
+///
+/// The counts are bounded by the amount of text being compared, which is
+/// orders of magnitude below 2^24 — where `f32` stops representing every
+/// integer exactly. A collision-tolerant heuristic (see [`HashFrom`]'s note on
+/// the `u32` tradeoff) does not need more precision than that.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "occurrence counts are bounded by document size, far below f32's exact-integer range"
+)]
+fn ratio(numerator: usize, denominator: usize) -> f32 {
+    if denominator == 0 {
+        0.0
+    } else {
+        numerator as f32 / denominator as f32
+    }
+}

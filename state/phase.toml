@@ -59,6 +59,10 @@ crates = [
   "lang_rust",
   "rope",
   "sum_tree",
+  # Ported and frozen, and denied to every loop outside a whole-repository
+  # phase — but built and tested here, because a crate nothing gates is a
+  # crate that rots. Its lints are ours, unlike `vendor/*`.
+  "similarity",
 ]
 
 # `crates/lang_rust/` is named here and not globbed, deliberately. Phase 1a's

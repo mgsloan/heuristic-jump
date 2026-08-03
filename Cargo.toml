@@ -4,6 +4,7 @@ members = [
   "crates/driver",
   "crates/heuristic_jump",
   "crates/shared",
+  "crates/similarity",
   "vendor/rope",
   "vendor/sum_tree",
 ]
@@ -24,6 +25,7 @@ rust-version = "1.95.0"
 [workspace.dependencies]
 driver = { path = "crates/driver" }
 shared = { path = "crates/shared" }
+similarity = { path = "crates/similarity" }
 rope = { path = "vendor/rope" }
 sum_tree = { path = "vendor/sum_tree" }
 
@@ -37,6 +39,16 @@ sum_tree = { path = "vendor/sum_tree" }
 # `default-features = false` is the whole reason the crate count is bearable:
 # it drops the six-crate `anstream`/`colorchoice` terminal-colour stack, which
 # a process that talks JSON-RPC over stdio has no use for (`deps.md` §11).
+# Ported with `similarity` from the prior implementation (`resolution.md` §5).
+# The occurrence machinery is written against these three, and rewriting it
+# around `Vec` would make the port a rewrite of the one piece the design calls
+# "genuinely hard to rewrite well". `hashbrown`'s raw `HashTable` is what lets
+# an occurrence multiset be probed by a `u32` hash without rehashing;
+# `smallvec`'s `const_generics` is what `SmallOccurrences<N, S>` is.
+hashbrown = "0.16.1"
+itertools = "0.14.0"
+smallvec = { version = "1.15.1", features = ["const_generics"] }
+
 clap = { version = "4.5", default-features = false, features = [
   "derive",
   "std",

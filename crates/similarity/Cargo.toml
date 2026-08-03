@@ -1,0 +1,31 @@
+[package]
+name = "similarity"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+# GPL, unlike the rest of `crates/*`: this is ported from the prior
+# implementation (`resolution.md` §5), whose `text_similarity` module came out
+# of Zed's `edit_prediction_context`. Every `lang_*` depends on it, so the
+# handler layer is GPL too. The shipped binary was already GPL through
+# `vendor/rope`, so nothing about what ships changes (`deps.md` §5).
+license = "GPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/similarity.rs"
+doctest = false
+
+# The three the original is written against, plus `rustc-hash` for the 32-bit
+# hasher the occurrence hashes come from. `arraydeque` is *not* here: it served
+# the n-gram window, and `resolution.md` §5 drops body-text similarity.
+[dependencies]
+hashbrown.workspace = true
+itertools.workspace = true
+smallvec.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
