@@ -16,12 +16,19 @@ phase = "1a"
 # campaign that closes with no audit since it opened is excluded from the
 # stall count unless it made progress — otherwise the cadence itself would
 # stop the loop.
-# Lowered from 3. The audit is the only oracle, and at 3 it was firing
-# rarely enough that a section's verdict was often several campaigns stale
-# by the time anything read it — and `audit_due` was additionally skipping
-# campaigns recorded `crashed`, four of which had committed real work, so
-# the effective cadence was slower than the number said.
-audit_every = 2
+# Lowered from 3, then to 1 when the core loop went to three workers.
+#
+# The number counts campaign *closes*, and the audit now runs once per round
+# rather than once per close, so with three workers a setting of 2 meant one
+# audit every six campaigns — slower in campaigns than the single-worker
+# cadence it replaced, not faster. At 1 it is one audit per round, which is
+# what "audit each time the picture has moved" means when a round is the unit
+# that moves it.
+#
+# The audit is the only oracle, and a stale verdict is worse here than it was:
+# the planner divides the next round from the gap list, so an audit not run is
+# three campaigns planned against what was true two rounds ago.
+audit_every = 1
 
 # Phase 1a is one writer, and it runs as a conformance loop. The one carve-out
 # is the seam — `LanguageHandler`, `Query`, `Outcome`, `ProjectView`, the
