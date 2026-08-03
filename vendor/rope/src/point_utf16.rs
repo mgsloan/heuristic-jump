@@ -117,3 +117,24 @@ impl Ord for PointUtf16 {
         }
     }
 }
+
+// -- Ours, not upstream's ---------------------------------------------------
+//
+// `design/rope-modifications.md` §2. Distinct from `ByteColumn` in `point.rs`,
+// and that distinction is most of the value of this change: the two are
+// currently interchangeable `u32`s and must not be.
+
+/// `PointUtf16.column`: UTF-16 code units into the line.
+#[derive(Copy, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct Utf16Column(pub u32);
+
+impl Utf16Column {
+    pub const ZERO: Self = Self(0);
+    pub const MAX: Self = Self(u32::MAX);
+}
+
+impl std::fmt::Display for Utf16Column {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}

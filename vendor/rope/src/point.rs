@@ -144,3 +144,64 @@ impl Ord for Point {
         }
     }
 }
+
+// -- Ours, not upstream's ---------------------------------------------------
+//
+// `design/rope-modifications.md` §2 puts the line-shaped newtypes here, beside
+// the type whose fields they will become. They are inert until §4's signature
+// sweep converts `Point` itself; this file's own `row: u32` is still bare.
+//
+// `CharCount` lands here rather than in `point_utf16.rs` because it is not a
+// UTF-16 quantity: it counts Unicode scalar values, and it exists precisely
+// because `Chunk::first_line_chars` and `Point.column` are both "how far into
+// a line" in different units.
+//
+// None of the four gets arithmetic. Adding two line numbers is meaningless and
+// there is no length interpretation to rescue it, so rope unwraps explicitly
+// where it needs the arithmetic and the unwrap is visible where it happens.
+
+/// A zero-based line.
+#[derive(Copy, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct LineIndex(pub u32);
+
+/// `Point.column`: bytes into the line.
+#[derive(Copy, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct ByteColumn(pub u32);
+
+/// Unicode scalar values -- the fourth unit this crate measures in, after
+/// bytes, UTF-16 code units and lines.
+#[derive(Copy, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct CharCount(pub u32);
+
+impl LineIndex {
+    pub const ZERO: Self = Self(0);
+    pub const MAX: Self = Self(u32::MAX);
+}
+
+impl ByteColumn {
+    pub const ZERO: Self = Self(0);
+    pub const MAX: Self = Self(u32::MAX);
+}
+
+impl CharCount {
+    pub const ZERO: Self = Self(0);
+    pub const MAX: Self = Self(u32::MAX);
+}
+
+impl fmt::Display for LineIndex {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl fmt::Display for ByteColumn {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl fmt::Display for CharCount {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}

@@ -65,6 +65,20 @@ property (`deps.md` §14).
    module. It `#[path]`-includes `src/test_support.rs` instead, so there is
    still one copy. See `state/spec-changelog.md`, CHANGE-conformance-002.
 
+5. **The vocabulary newtypes are added** — `src/byte_offset.rs`
+   (`ByteOffset`, `ByteLen`, `ByteRange`), `LineIndex` / `ByteColumn` /
+   `CharCount` at the end of `src/point.rs`, `Utf16Column` at the end of
+   `src/point_utf16.rs`, and `ByteOffset`'s two seek-dimension impls beside
+   `OffsetUtf16`'s in `src/rope.rs`. They live here rather than in `shared`
+   because `shared` depends on `rope` and the dependency cannot run the other
+   way (`rope-modifications.md` §2).
+
+   **The substantive half of that document is still to do.** These types are
+   inert: not one of rope's ~51 public signatures has been converted, so
+   `Rope::len()` still returns `usize` and `Point.row` is still a bare `u32`.
+   The sweep is `rope-modifications.md` §4 and is a campaign of its own; the
+   29 kept tests are what will check it.
+
 ## Patches to `sum_tree`
 
 1. **`src/tree_map.rs` deleted** (`TreeMap`, `TreeSet`, `MapSeekTarget`),
