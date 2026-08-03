@@ -1,0 +1,1443 @@
+# Phase 1b's decision: which repositories the corpus is made of.
+# `design/data-collection.md` section 1.
+#
+# This file is the human half of repository selection. The machine half is
+# `harness/corpus-lock.toml` beside it, which `harness/corpus clone` writes:
+# one pinned SHA per repository plus what it measured when it was pinned.
+#
+# The two together are the whole corpus. Everything under the corpus root --
+# the checkouts and the generated `manifest.toml` files -- rebuilds from them,
+# so the corpus directory is derived output rather than something that has to
+# survive. What it cannot rebuild is a commit that upstream has destroyed.
+#
+# Three properties of the selection are load-bearing, and all three are
+# expensive or impossible to fix later:
+#
+# * **The split is decided here and never revisited.** Once a repository has
+#   been in the tuning corpus, moving it to held-out does not un-teach it
+#   (`design/loops.md` section 12). Editing a `split` on an existing entry is
+#   therefore not a correction, it is corpus damage.
+#
+# * **A repository is never bumped.** A newer commit is a different corpus. If
+#   one must be replaced, `retired = true` goes on the old entry and the new
+#   one is *added*; the manifest grows rather than changes
+#   (`design/data-collection.md` section 1).
+#
+# * **`[[considered]]` is not decoration.** It is what makes selection bias
+#   auditable when a metric later looks suspiciously good and the question is
+#   whether the corpus earned it. Every candidate that was looked at and
+#   passed over is here with the reason, including the ones rejected for
+#   nothing more interesting than size.
+#
+# Line counts in `[[considered]]` are estimates from the GitHub API --
+# primary-language bytes over an average bytes-per-line -- taken on
+# 2026-08-02 during selection. They are what the reject decisions were made
+# against, and they are deliberately *not* refreshed: the estimate is the
+# evidence for a decision that was already made. Selected repositories carry
+# a measured count in the manifest instead.
+#
+# Dependency resolution is **not** established here. Phase 1b is clone and
+# pin only; `design/data-collection.md` section 1 wants full resolution
+# verified by LSP probe, and there are no servers until phase 1c. Phase 1c
+# writes what each repository needed into a `dependencies` field on its
+# `[[repo]]` entry here, rather than into the generated manifest, so that it
+# survives the corpus being rebuilt.
+
+corpus_root = "../heuristic-jump-corpus"
+
+# Languages, named by their LSP `languageId` so the corpus directory and
+# `shared::vocabulary::LanguageId` agree. TSX is not a separate directory --
+# `design/data-collection.md` treats TypeScript/TSX as one language and the
+# `.tsx` files live inside the typescript repositories.
+languages = ["c", "cpp", "go", "javascript", "python", "rust", "typescript"]
+
+# Selection criteria, recorded so the manifest states what the repositories
+# were chosen *for* rather than only what was chosen.
+[criteria]
+size_lines = [20000, 200000]
+size_reason = "below 20k a whole-project search finishes instantly and the latency budgets are never exercised; above 200k server indexing dominates collection"
+popular = "actively maintained, real production code -- not tutorials, benchmark suites, or one-person experiments"
+varied = "different organisations, a mix of applications and libraries, different domains"
+handwritten = "not dominated by generated bindings"
+split = "five tuning, five held out, per language, assigned at selection time"
+
+# --------------------------------------------------------------------------
+# Rust
+
+[[repo]]
+name = "ripgrep"
+url = "https://github.com/BurntSushi/ripgrep"
+language = "rust"
+split = "training"
+domain = "CLI text search"
+
+[[repo]]
+name = "tantivy"
+url = "https://github.com/quickwit-oss/tantivy"
+language = "rust"
+split = "training"
+domain = "search engine library"
+
+[[repo]]
+name = "alacritty"
+url = "https://github.com/alacritty/alacritty"
+language = "rust"
+split = "training"
+domain = "GPU terminal emulator"
+
+[[repo]]
+name = "clap"
+url = "https://github.com/clap-rs/clap"
+language = "rust"
+split = "training"
+domain = "CLI argument parsing library"
+
+[[repo]]
+name = "typst"
+url = "https://github.com/typst/typst"
+language = "rust"
+split = "training"
+domain = "typesetting compiler"
+
+[[repo]]
+name = "helix"
+url = "https://github.com/helix-editor/helix"
+language = "rust"
+split = "test"
+domain = "modal text editor"
+
+[[repo]]
+name = "tokio"
+url = "https://github.com/tokio-rs/tokio"
+language = "rust"
+split = "test"
+domain = "async runtime library"
+
+[[repo]]
+name = "egui"
+url = "https://github.com/emilk/egui"
+language = "rust"
+split = "test"
+domain = "immediate-mode GUI library"
+
+[[repo]]
+name = "starship"
+url = "https://github.com/starship/starship"
+language = "rust"
+split = "test"
+domain = "shell prompt"
+
+[[repo]]
+name = "gitui"
+url = "https://github.com/gitui-org/gitui"
+language = "rust"
+split = "test"
+domain = "git terminal UI"
+
+# --------------------------------------------------------------------------
+# Go
+
+[[repo]]
+name = "caddy"
+url = "https://github.com/caddyserver/caddy"
+language = "go"
+split = "training"
+domain = "web server"
+
+[[repo]]
+name = "restic"
+url = "https://github.com/restic/restic"
+language = "go"
+split = "training"
+domain = "backup tool"
+
+[[repo]]
+name = "esbuild"
+url = "https://github.com/evanw/esbuild"
+language = "go"
+split = "training"
+domain = "JavaScript bundler and compiler"
+
+[[repo]]
+name = "gin"
+url = "https://github.com/gin-gonic/gin"
+language = "go"
+split = "training"
+domain = "web framework library"
+
+[[repo]]
+name = "k9s"
+url = "https://github.com/derailed/k9s"
+language = "go"
+split = "training"
+domain = "Kubernetes terminal UI"
+
+[[repo]]
+name = "syncthing"
+url = "https://github.com/syncthing/syncthing"
+language = "go"
+split = "test"
+domain = "file synchronization"
+
+
+[[repo]]
+name = "go-git"
+url = "https://github.com/go-git/go-git"
+language = "go"
+split = "test"
+domain = "version control library"
+
+
+[[repo]]
+name = "goreleaser"
+url = "https://github.com/goreleaser/goreleaser"
+language = "go"
+split = "test"
+domain = "release automation"
+
+[[repo]]
+name = "micro"
+url = "https://github.com/zyedidia/micro"
+language = "go"
+split = "test"
+domain = "terminal text editor"
+
+[[repo]]
+name = "pocketbase"
+url = "https://github.com/pocketbase/pocketbase"
+language = "go"
+split = "test"
+domain = "backend application and database"
+
+# --------------------------------------------------------------------------
+# Python
+
+[[repo]]
+name = "fastapi"
+url = "https://github.com/fastapi/fastapi"
+language = "python"
+split = "training"
+domain = "web framework"
+
+[[repo]]
+name = "scrapy"
+url = "https://github.com/scrapy/scrapy"
+language = "python"
+split = "training"
+domain = "web crawler"
+
+[[repo]]
+name = "pytest"
+url = "https://github.com/pytest-dev/pytest"
+language = "python"
+split = "training"
+domain = "test framework"
+
+[[repo]]
+name = "rich"
+url = "https://github.com/Textualize/rich"
+language = "python"
+split = "training"
+domain = "terminal rendering library"
+
+[[repo]]
+name = "black"
+url = "https://github.com/psf/black"
+language = "python"
+split = "training"
+domain = "code formatter"
+
+[[repo]]
+name = "celery"
+url = "https://github.com/celery/celery"
+language = "python"
+split = "test"
+domain = "distributed task queue"
+
+[[repo]]
+name = "poetry"
+url = "https://github.com/python-poetry/poetry"
+language = "python"
+split = "test"
+domain = "packaging and dependency tool"
+
+[[repo]]
+name = "beets"
+url = "https://github.com/beetbox/beets"
+language = "python"
+split = "test"
+domain = "music library manager"
+
+[[repo]]
+name = "pydantic"
+url = "https://github.com/pydantic/pydantic"
+language = "python"
+split = "test"
+domain = "data validation library"
+
+# Band-marginal at ~202k estimated. `tornado` is the named reserve and
+# replaces it if the measured count lands over 200k.
+[[repo]]
+name = "networkx"
+url = "https://github.com/networkx/networkx"
+language = "python"
+split = "test"
+domain = "graph algorithms"
+band_exception = "202,644 lines measured, 1.3% over. Kept: 0% vendored and no generated output, so the overshoot is entirely its own hand-written source, and the band exists to bound server indexing time rather than to be exact. Python otherwise has no numeric or scientific repository in the corpus."
+
+# --------------------------------------------------------------------------
+# JavaScript
+#
+# The held-out half is entirely libraries, which is a known weakness of this
+# language's row rather than an oversight: JavaScript-primary *applications*
+# in the 20k-200k band have largely migrated to TypeScript, and NodeBB was the
+# one found that had not. It is in the tuning half.
+
+[[repo]]
+name = "prettier"
+url = "https://github.com/prettier/prettier"
+language = "javascript"
+split = "training"
+domain = "code formatter"
+
+[[repo]]
+name = "mongoose"
+url = "https://github.com/Automattic/mongoose"
+language = "javascript"
+split = "training"
+domain = "MongoDB object modelling"
+
+[[repo]]
+name = "nodebb"
+url = "https://github.com/NodeBB/NodeBB"
+language = "javascript"
+split = "training"
+domain = "forum application"
+
+
+[[repo]]
+name = "videojs"
+url = "https://github.com/videojs/video.js"
+language = "javascript"
+split = "training"
+domain = "media player"
+
+[[repo]]
+name = "jsdom"
+url = "https://github.com/jsdom/jsdom"
+language = "javascript"
+split = "test"
+domain = "DOM implementation"
+
+[[repo]]
+name = "codemirror5"
+url = "https://github.com/codemirror/codemirror5"
+language = "javascript"
+split = "test"
+domain = "editor component"
+
+[[repo]]
+name = "jquery"
+url = "https://github.com/jquery/jquery"
+language = "javascript"
+split = "test"
+domain = "DOM manipulation library"
+
+[[repo]]
+name = "leaflet"
+url = "https://github.com/Leaflet/Leaflet"
+language = "javascript"
+split = "test"
+domain = "interactive maps"
+
+[[repo]]
+name = "axios"
+url = "https://github.com/axios/axios"
+language = "javascript"
+split = "test"
+domain = "HTTP client"
+
+[[repo]]
+name = "mathjs"
+url = "https://github.com/josdejong/mathjs"
+language = "javascript"
+split = "training"
+domain = "mathematics and utility library"
+
+# --------------------------------------------------------------------------
+# TypeScript / TSX
+
+[[repo]]
+name = "vite"
+url = "https://github.com/vitejs/vite"
+language = "typescript"
+split = "training"
+domain = "build tool"
+
+[[repo]]
+name = "nest"
+url = "https://github.com/nestjs/nest"
+language = "typescript"
+split = "training"
+domain = "server framework"
+
+[[repo]]
+name = "material-ui"
+url = "https://github.com/mui/material-ui"
+language = "typescript"
+split = "training"
+domain = "React component library (TSX)"
+band_exception = "207,131 lines measured, 3.6% over. Kept: 0% vendored, and a third of it is docs/data and docs/src -- hand-written TSX usage sites, which are exactly the convention-dense code the corpus is for. Dropping it would leave the TypeScript tuning half without a TSX component library."
+
+[[repo]]
+name = "rxjs"
+url = "https://github.com/ReactiveX/rxjs"
+language = "typescript"
+split = "training"
+domain = "reactive streams library"
+
+[[repo]]
+name = "echarts"
+url = "https://github.com/apache/echarts"
+language = "typescript"
+split = "training"
+domain = "charting library"
+
+[[repo]]
+name = "vue-core"
+url = "https://github.com/vuejs/core"
+language = "typescript"
+split = "test"
+domain = "web framework core"
+
+[[repo]]
+name = "puppeteer"
+url = "https://github.com/puppeteer/puppeteer"
+language = "typescript"
+split = "test"
+domain = "browser automation"
+
+[[repo]]
+name = "react-router"
+url = "https://github.com/remix-run/react-router"
+language = "typescript"
+split = "test"
+domain = "routing (TS and TSX)"
+
+[[repo]]
+name = "mermaid"
+url = "https://github.com/mermaid-js/mermaid"
+language = "typescript"
+split = "test"
+domain = "diagramming"
+
+[[repo]]
+name = "zod"
+url = "https://github.com/colinhacks/zod"
+language = "typescript"
+split = "test"
+domain = "schema validation, generics-heavy"
+
+# --------------------------------------------------------------------------
+# C
+#
+# The held-out half skews to autotools and meson, which is a phase 1c cost
+# rather than a selection flaw: `compile_commands.json` for those needs
+# `bear`, where the tuning half's cmake and make builds emit it natively.
+
+[[repo]]
+name = "zstd"
+url = "https://github.com/facebook/zstd"
+language = "c"
+split = "training"
+domain = "compression"
+
+[[repo]]
+name = "libuv"
+url = "https://github.com/libuv/libuv"
+language = "c"
+split = "training"
+domain = "async I/O library"
+
+
+[[repo]]
+name = "tmux"
+url = "https://github.com/tmux/tmux"
+language = "c"
+split = "training"
+domain = "terminal multiplexer"
+
+[[repo]]
+name = "quickjs"
+url = "https://github.com/quickjs-ng/quickjs"
+language = "c"
+split = "training"
+domain = "JavaScript engine"
+
+[[repo]]
+name = "openssh"
+url = "https://github.com/openssh/openssh-portable"
+language = "c"
+split = "test"
+domain = "security and networking"
+
+[[repo]]
+name = "htop"
+url = "https://github.com/htop-dev/htop"
+language = "c"
+split = "test"
+domain = "system monitor"
+
+[[repo]]
+name = "lua"
+url = "https://github.com/lua/lua"
+language = "c"
+split = "test"
+domain = "language runtime"
+
+[[repo]]
+name = "sway"
+url = "https://github.com/swaywm/sway"
+language = "c"
+split = "test"
+domain = "Wayland compositor"
+
+[[repo]]
+name = "memcached"
+url = "https://github.com/memcached/memcached"
+language = "c"
+split = "test"
+domain = "cache server"
+
+[[repo]]
+name = "libjpeg-turbo"
+url = "https://github.com/libjpeg-turbo/libjpeg-turbo"
+language = "c"
+split = "training"
+domain = "image codec"
+
+# --------------------------------------------------------------------------
+# C++
+
+[[repo]]
+name = "imgui"
+url = "https://github.com/ocornut/imgui"
+language = "cpp"
+split = "training"
+domain = "immediate-mode GUI library"
+
+
+[[repo]]
+name = "faiss"
+url = "https://github.com/facebookresearch/faiss"
+language = "cpp"
+split = "training"
+domain = "vector search and machine learning"
+
+[[repo]]
+name = "drogon"
+url = "https://github.com/drogonframework/drogon"
+language = "cpp"
+split = "training"
+domain = "web framework"
+
+[[repo]]
+name = "osrm-backend"
+url = "https://github.com/Project-OSRM/osrm-backend"
+language = "cpp"
+split = "training"
+domain = "routing engine"
+
+
+[[repo]]
+name = "googletest"
+url = "https://github.com/google/googletest"
+language = "cpp"
+split = "test"
+domain = "test framework"
+
+[[repo]]
+name = "libzmq"
+url = "https://github.com/zeromq/libzmq"
+language = "cpp"
+split = "test"
+domain = "messaging library"
+
+[[repo]]
+name = "mumble"
+url = "https://github.com/mumble-voip/mumble"
+language = "cpp"
+split = "test"
+domain = "VoIP desktop application (Qt)"
+
+[[repo]]
+name = "leveldb"
+url = "https://github.com/google/leveldb"
+language = "cpp"
+split = "test"
+domain = "embedded key-value store"
+
+[[repo]]
+name = "re2"
+url = "https://github.com/google/re2"
+language = "cpp"
+split = "training"
+domain = "regular expression engine"
+
+[[repo]]
+name = "glm"
+url = "https://github.com/g-truc/glm"
+language = "cpp"
+split = "test"
+domain = "3D mathematics for graphics"
+
+# --------------------------------------------------------------------------
+# Reserves
+#
+# Named replacements, so that a repository failing its measured band check --
+# or failing dependency resolution in phase 1c -- is a substitution somebody
+# already thought about rather than a fresh selection made under pressure.
+# Promoting one means moving it to a `[[repo]]` entry with the split of the
+# repository it replaces, and recording the replaced repository under
+# `[[considered]]` with the measurement that disqualified it.
+#
+# `measured` is present on a reserve that has been cloned and counted with the
+# same rule the corpus uses. The first round of reserves was mostly unmeasured
+# and mostly did not survive contact with measurement -- `nfpm` was under the
+# band, `taskflow` vendored Eigen and TBB into 667k lines, `fmt` carried a
+# bundled googletest larger than its own source -- which is why measuring a
+# reserve before naming it is now the practice rather than an afterthought.
+
+[[reserve]]
+name = "tornado"
+url = "https://github.com/tornadoweb/tornado"
+language = "python"
+domain = "async web server"
+replaces = "networkx"
+
+[[reserve]]
+name = "less.js"
+url = "https://github.com/less/less.js"
+language = "javascript"
+domain = "CSS preprocessor"
+measured = 22627
+
+[[reserve]]
+name = "validator.js"
+url = "https://github.com/validatorjs/validator.js"
+language = "javascript"
+domain = "string validation library"
+measured = 24265
+
+[[reserve]]
+name = "ember.js"
+url = "https://github.com/emberjs/ember.js"
+language = "javascript"
+domain = "web framework"
+measured = 108451
+
+[[reserve]]
+name = "chakra-ui"
+url = "https://github.com/chakra-ui/chakra-ui"
+language = "typescript"
+domain = "React component library (TSX)"
+
+[[reserve]]
+name = "jest"
+url = "https://github.com/jestjs/jest"
+language = "typescript"
+domain = "test framework"
+
+[[reserve]]
+name = "nuxt"
+url = "https://github.com/nuxt/nuxt"
+language = "typescript"
+domain = "web framework"
+
+[[reserve]]
+name = "libevent"
+url = "https://github.com/libevent/libevent"
+language = "c"
+domain = "event notification library"
+measured = 100615
+
+[[reserve]]
+name = "libsodium"
+url = "https://github.com/jedisct1/libsodium"
+language = "c"
+domain = "cryptography library"
+measured = 73223
+
+[[reserve]]
+name = "janet"
+url = "https://github.com/janet-lang/janet"
+language = "c"
+domain = "language runtime"
+
+[[reserve]]
+name = "catch2"
+url = "https://github.com/catchorg/Catch2"
+language = "cpp"
+domain = "test framework"
+measured = 74867
+
+[[reserve]]
+name = "bat"
+url = "https://github.com/sharkdp/bat"
+language = "rust"
+domain = "syntax-highlighting pager"
+
+[[reserve]]
+name = "iced"
+url = "https://github.com/iced-rs/iced"
+language = "rust"
+domain = "GUI framework"
+
+[[reserve]]
+name = "fzf"
+url = "https://github.com/junegunn/fzf"
+language = "go"
+domain = "fuzzy finder"
+measured = 31754
+
+# --------------------------------------------------------------------------
+# Considered and passed over
+#
+# Estimated line counts from the GitHub API on 2026-08-02, over primary-language
+# bytes. Frozen: these are the numbers the decisions were made against.
+
+[[considered]]
+name = "hyper"
+url = "https://github.com/hyperium/hyper"
+language = "rust"
+est_lines = 34594
+reason = "in band, passed over for domain or organisation overlap with a selected repository"
+
+[[considered]]
+name = "zellij"
+url = "https://github.com/zellij-org/zellij"
+language = "rust"
+est_lines = 384769
+reason = "over the band at ~384769 lines"
+
+[[considered]]
+name = "cargo"
+url = "https://github.com/rust-lang/cargo"
+language = "rust"
+est_lines = 351854
+reason = "over the band at ~351854 lines"
+
+[[considered]]
+name = "difftastic"
+url = "https://github.com/Wilfred/difftastic"
+language = "rust"
+est_lines = 19196
+reason = "under the band at ~19196 lines"
+
+[[considered]]
+name = "nushell"
+url = "https://github.com/nushell/nushell"
+language = "rust"
+est_lines = 464999
+reason = "over the band at ~464999 lines"
+
+[[considered]]
+name = "lapce"
+url = "https://github.com/lapce/lapce"
+language = "rust"
+est_lines = 79051
+reason = "in band, passed over for domain or organisation overlap with a selected repository"
+
+[[considered]]
+name = "hugo"
+url = "https://github.com/gohugoio/hugo"
+language = "go"
+est_lines = 214847
+reason = "over the band at ~214847 lines"
+
+[[considered]]
+name = "traefik"
+url = "https://github.com/traefik/traefik"
+language = "go"
+est_lines = 241300
+reason = "over the band at ~241300 lines"
+
+[[considered]]
+name = "nats-server"
+url = "https://github.com/nats-io/nats-server"
+language = "go"
+est_lines = 453944
+reason = "over the band at ~453944 lines"
+
+[[considered]]
+name = "minio"
+url = "https://github.com/minio/minio"
+language = "go"
+est_lines = 313764
+reason = "over the band at ~313764 lines"
+
+[[considered]]
+name = "prometheus"
+url = "https://github.com/prometheus/prometheus"
+language = "go"
+est_lines = 401299
+reason = "over the band at ~401299 lines"
+
+[[considered]]
+name = "etcd"
+url = "https://github.com/etcd-io/etcd"
+language = "go"
+est_lines = 207658
+reason = "over the band at ~207658 lines"
+
+[[considered]]
+name = "django"
+url = "https://github.com/django/django"
+language = "python"
+est_lines = 575387
+reason = "over the band at ~575387 lines"
+
+[[considered]]
+name = "scikit-learn"
+url = "https://github.com/scikit-learn/scikit-learn"
+language = "python"
+est_lines = 407077
+reason = "over the band at ~407077 lines"
+
+[[considered]]
+name = "mypy"
+url = "https://github.com/python/mypy"
+language = "python"
+est_lines = 214399
+reason = "over the band at ~214399 lines"
+
+[[considered]]
+name = "sqlalchemy"
+url = "https://github.com/sqlalchemy/sqlalchemy"
+language = "python"
+est_lines = 610383
+reason = "over the band at ~610383 lines"
+
+[[considered]]
+name = "textual"
+url = "https://github.com/Textualize/textual"
+language = "python"
+est_lines = 126018
+reason = "in band, passed over for domain or organisation overlap with a selected repository"
+
+[[considered]]
+name = "flask"
+url = "https://github.com/pallets/flask"
+language = "python"
+est_lines = 17127
+reason = "under the band at ~17127 lines"
+
+[[considered]]
+name = "eslint"
+url = "https://github.com/eslint/eslint"
+language = "javascript"
+est_lines = 341441
+reason = "over the band at ~341441 lines"
+
+[[considered]]
+name = "webpack"
+url = "https://github.com/webpack/webpack"
+language = "javascript"
+est_lines = 353701
+reason = "over the band at ~353701 lines"
+
+[[considered]]
+name = "three.js"
+url = "https://github.com/mrdoob/three.js"
+language = "javascript"
+est_lines = 402345
+reason = "over the band at ~402345 lines"
+
+[[considered]]
+name = "babel"
+url = "https://github.com/babel/babel"
+language = "javascript"
+est_lines = 37313
+reason = "only 23% of the repository is javascript; the nominal language is no longer the primary one"
+
+[[considered]]
+name = "Ghost"
+url = "https://github.com/TryGhost/Ghost"
+language = "javascript"
+est_lines = 570895
+reason = "over the band at ~570895 lines"
+
+[[considered]]
+name = "ace"
+url = "https://github.com/ajaxorg/ace"
+language = "javascript"
+est_lines = 397041
+reason = "over the band at ~397041 lines"
+
+[[considered]]
+name = "date-fns"
+url = "https://github.com/date-fns/date-fns"
+language = "javascript"
+est_lines = 2921
+reason = "only 3% of the repository is javascript; the nominal language is no longer the primary one"
+
+[[considered]]
+name = "vue"
+url = "https://github.com/vuejs/vue"
+language = "javascript"
+est_lines = 1051
+reason = "only 1% of the repository is javascript; the nominal language is no longer the primary one"
+
+[[considered]]
+name = "uppy"
+url = "https://github.com/transloadit/uppy"
+language = "javascript"
+est_lines = 2345
+reason = "only 3% of the repository is javascript; the nominal language is no longer the primary one"
+
+[[considered]]
+name = "fabric.js"
+url = "https://github.com/fabricjs/fabric.js"
+language = "javascript"
+est_lines = 16616
+reason = "only 15% of the repository is javascript; the nominal language is no longer the primary one"
+
+[[considered]]
+name = "excalidraw"
+url = "https://github.com/excalidraw/excalidraw"
+language = "typescript"
+est_lines = 219476
+reason = "over the band at ~219476 lines"
+
+[[considered]]
+name = "playwright"
+url = "https://github.com/microsoft/playwright"
+language = "typescript"
+est_lines = 362845
+reason = "over the band at ~362845 lines"
+
+[[considered]]
+name = "lexical"
+url = "https://github.com/facebook/lexical"
+language = "typescript"
+est_lines = 258273
+reason = "over the band at ~258273 lines"
+
+[[considered]]
+name = "svelte"
+url = "https://github.com/sveltejs/svelte"
+language = "typescript"
+est_lines = 6909
+reason = "only 4% of the repository is typescript; the nominal language is no longer the primary one"
+
+[[considered]]
+name = "outline"
+url = "https://github.com/outline/outline"
+language = "typescript"
+est_lines = 267568
+reason = "over the band at ~267568 lines"
+
+[[considered]]
+name = "typeorm"
+url = "https://github.com/typeorm/typeorm"
+language = "typescript"
+est_lines = 321921
+reason = "over the band at ~321921 lines"
+
+[[considered]]
+name = "ant-design"
+url = "https://github.com/ant-design/ant-design"
+language = "typescript"
+est_lines = 249294
+reason = "over the band at ~249294 lines"
+
+[[considered]]
+name = "tldraw"
+url = "https://github.com/tldraw/tldraw"
+language = "typescript"
+est_lines = 418460
+reason = "over the band at ~418460 lines"
+
+[[considered]]
+name = "trpc"
+url = "https://github.com/trpc/trpc"
+language = "typescript"
+est_lines = 87384
+reason = "in band, passed over for domain or organisation overlap with a selected repository"
+
+[[considered]]
+name = "redis"
+url = "https://github.com/redis/redis"
+language = "c"
+est_lines = 329311
+reason = "over the band at ~329311 lines"
+
+[[considered]]
+name = "curl"
+url = "https://github.com/curl/curl"
+language = "c"
+est_lines = 307580
+reason = "over the band at ~307580 lines"
+
+[[considered]]
+name = "libgit2"
+url = "https://github.com/libgit2/libgit2"
+language = "c"
+est_lines = 295887
+reason = "over the band at ~295887 lines"
+
+[[considered]]
+name = "jq"
+url = "https://github.com/jqlang/jq"
+language = "c"
+est_lines = 18832
+reason = "under the band at ~18832 lines"
+
+[[considered]]
+name = "SDL"
+url = "https://github.com/libsdl-org/SDL"
+language = "c"
+est_lines = 1079173
+reason = "over the band at ~1079173 lines"
+
+[[considered]]
+name = "git"
+url = "https://github.com/git/git"
+language = "c"
+est_lines = 431759
+reason = "only 49% of the repository is c; the nominal language is no longer the primary one"
+
+[[considered]]
+name = "micropython"
+url = "https://github.com/micropython/micropython"
+language = "c"
+est_lines = 698010
+reason = "over the band at ~698010 lines"
+
+[[considered]]
+name = "nginx"
+url = "https://github.com/nginx/nginx"
+language = "c"
+est_lines = 235669
+reason = "over the band at ~235669 lines"
+
+[[considered]]
+name = "FFmpeg"
+url = "https://github.com/FFmpeg/FFmpeg"
+language = "c"
+est_lines = 2498982
+reason = "over the band at ~2498982 lines"
+
+[[considered]]
+name = "neovim"
+url = "https://github.com/neovim/neovim"
+language = "c"
+est_lines = 400200
+reason = "only 26% of the repository is c; the nominal language is no longer the primary one"
+
+[[considered]]
+name = "mpv"
+url = "https://github.com/mpv-player/mpv"
+language = "c"
+est_lines = 260813
+reason = "over the band at ~260813 lines"
+
+[[considered]]
+name = "llama.cpp"
+url = "https://github.com/ggml-org/llama.cpp"
+language = "cpp"
+est_lines = 625377
+reason = "over the band at ~625377 lines"
+
+[[considered]]
+name = "tesseract"
+url = "https://github.com/tesseract-ocr/tesseract"
+language = "cpp"
+est_lines = 250321
+reason = "over the band at ~250321 lines"
+
+[[considered]]
+name = "solidity"
+url = "https://github.com/ethereum/solidity"
+language = "cpp"
+est_lines = 255282
+reason = "over the band at ~255282 lines"
+
+[[considered]]
+name = "bitcoin"
+url = "https://github.com/bitcoin/bitcoin"
+language = "cpp"
+est_lines = 489381
+reason = "over the band at ~489381 lines"
+
+[[considered]]
+name = "rocksdb"
+url = "https://github.com/facebook/rocksdb"
+language = "cpp"
+est_lines = 959356
+reason = "over the band at ~959356 lines"
+
+[[considered]]
+name = "assimp"
+url = "https://github.com/assimp/assimp"
+language = "cpp"
+est_lines = 604656
+reason = "over the band at ~604656 lines"
+
+[[considered]]
+name = "abseil-cpp"
+url = "https://github.com/abseil/abseil-cpp"
+language = "cpp"
+est_lines = 339078
+reason = "over the band at ~339078 lines"
+
+[[considered]]
+name = "poco"
+url = "https://github.com/pocoproject/poco"
+language = "cpp"
+est_lines = 609697
+reason = "over the band at ~609697 lines"
+
+[[considered]]
+name = "qBittorrent"
+url = "https://github.com/qbittorrent/qBittorrent"
+language = "cpp"
+est_lines = 131891
+reason = "in band, passed over for domain or organisation overlap with a selected repository"
+
+[[considered]]
+name = "bgfx"
+url = "https://github.com/bkaradzic/bgfx"
+language = "cpp"
+est_lines = 107389
+reason = "only 40% of the repository is cpp; the nominal language is no longer the primary one"
+
+[[considered]]
+name = "ncnn"
+url = "https://github.com/Tencent/ncnn"
+language = "cpp"
+est_lines = 740917
+reason = "over the band at ~740917 lines"
+
+[[considered]]
+name = "pip-tools"
+url = "https://github.com/jazzband/pip-tools"
+language = "python"
+est_lines = 14620
+reason = "under the band at ~14620 lines"
+
+[[considered]]
+name = "core"
+url = "https://github.com/home-assistant/core"
+language = "python"
+est_lines = 3481794
+reason = "over the band at ~3481794 lines"
+
+[[considered]]
+name = "numpy"
+url = "https://github.com/numpy/numpy"
+language = "python"
+est_lines = 381333
+reason = "over the band at ~381333 lines"
+
+[[considered]]
+name = "pdf.js"
+url = "https://github.com/mozilla/pdf.js"
+language = "javascript"
+est_lines = 229688
+reason = "over the band at ~229688 lines"
+
+[[considered]]
+name = "ember.js"
+url = "https://github.com/emberjs/ember.js"
+language = "javascript"
+est_lines = 93607
+reason = "only 40% of the repository is javascript; the nominal language is no longer the primary one"
+
+[[considered]]
+name = "plotly.js"
+url = "https://github.com/plotly/plotly.js"
+language = "javascript"
+est_lines = 340243
+reason = "over the band at ~340243 lines"
+
+[[considered]]
+name = "parcel"
+url = "https://github.com/parcel-bundler/parcel"
+language = "javascript"
+est_lines = 128388
+reason = "in band, passed over for domain or organisation overlap with a selected repository"
+
+[[considered]]
+name = "moment"
+url = "https://github.com/moment/moment"
+language = "javascript"
+est_lines = 320433
+reason = "over the band at ~320433 lines"
+
+[[considered]]
+name = "strapi"
+url = "https://github.com/strapi/strapi"
+language = "javascript"
+est_lines = 69146
+reason = "only 12% of the repository is javascript; the nominal language is no longer the primary one"
+
+[[considered]]
+name = "serverless"
+url = "https://github.com/serverless/serverless"
+language = "javascript"
+est_lines = 209081
+reason = "over the band at ~209081 lines"
+
+[[considered]]
+name = "phaser"
+url = "https://github.com/photonstorm/phaser"
+language = "javascript"
+est_lines = 503344
+reason = "over the band at ~503344 lines"
+
+[[considered]]
+name = "mantine"
+url = "https://github.com/mantinedev/mantine"
+language = "typescript"
+est_lines = 338193
+reason = "over the band at ~338193 lines"
+
+[[considered]]
+name = "pixijs"
+url = "https://github.com/pixijs/pixijs"
+language = "typescript"
+est_lines = 175022
+reason = "in band, passed over for domain or organisation overlap with a selected repository"
+
+[[considered]]
+name = "astro"
+url = "https://github.com/withastro/astro"
+language = "typescript"
+est_lines = 209700
+reason = "over the band at ~209700 lines"
+
+[[considered]]
+name = "query"
+url = "https://github.com/TanStack/query"
+language = "typescript"
+est_lines = 134163
+reason = "in band, passed over for domain or organisation overlap with a selected repository"
+
+[[considered]]
+name = "prisma"
+url = "https://github.com/prisma/prisma"
+language = "typescript"
+est_lines = 599702
+reason = "over the band at ~599702 lines"
+
+[[considered]]
+name = "apollo-client"
+url = "https://github.com/apollographql/apollo-client"
+language = "typescript"
+est_lines = 258167
+reason = "over the band at ~258167 lines"
+
+[[considered]]
+name = "directus"
+url = "https://github.com/directus/directus"
+language = "typescript"
+est_lines = 333878
+reason = "over the band at ~333878 lines"
+
+[[considered]]
+name = "libarchive"
+url = "https://github.com/libarchive/libarchive"
+language = "c"
+est_lines = 276092
+reason = "over the band at ~276092 lines"
+
+[[considered]]
+name = "weechat"
+url = "https://github.com/weechat/weechat"
+language = "c"
+est_lines = 367653
+reason = "over the band at ~367653 lines"
+
+[[considered]]
+name = "libvips"
+url = "https://github.com/libvips/libvips"
+language = "c"
+est_lines = 207437
+reason = "over the band at ~207437 lines"
+
+[[considered]]
+name = "brotli"
+url = "https://github.com/google/brotli"
+language = "c"
+est_lines = 77719
+reason = "only 11% of the repository is c; the nominal language is no longer the primary one"
+
+[[considered]]
+name = "kilo"
+url = "https://github.com/antirez/kilo"
+language = "c"
+est_lines = 1485
+reason = "under the band at ~1485 lines"
+
+[[considered]]
+name = "wrk"
+url = "https://github.com/wg/wrk"
+language = "c"
+est_lines = 7214
+reason = "under the band at ~7214 lines"
+
+[[considered]]
+name = "capnproto"
+url = "https://github.com/capnproto/capnproto"
+language = "cpp"
+est_lines = 228423
+reason = "over the band at ~228423 lines"
+
+[[considered]]
+name = "libtorrent"
+url = "https://github.com/arvidn/libtorrent"
+language = "cpp"
+est_lines = 257705
+reason = "over the band at ~257705 lines"
+
+[[considered]]
+name = "box2d"
+url = "https://github.com/erincatto/box2d"
+language = "cpp"
+est_lines = 542
+reason = "only 1% of the repository is cpp; the nominal language is no longer the primary one"
+
+[[considered]]
+name = "simdjson"
+url = "https://github.com/simdjson/simdjson"
+language = "cpp"
+est_lines = 470436
+reason = "over the band at ~470436 lines"
+
+[[considered]]
+name = "pybind11"
+url = "https://github.com/pybind11/pybind11"
+language = "cpp"
+est_lines = 0
+reason = "only 0% of the repository is cpp; the nominal language is no longer the primary one"
+
+# Cloned, measured, and rejected. These are the ones the GitHub estimate was
+# wrong about, and the reason it was wrong is the same every time: the estimate
+# counts a repository's bytes without asking whose code they are. A repository
+# that is three-quarters vendored third-party source is not the repository that
+# was selected -- uniform sampling would spend three-quarters of its positions
+# on code that belongs to somebody else's project and teaches none of this
+# one's conventions.
+
+[[considered]]
+name = "lazygit"
+url = "https://github.com/jesseduffield/lazygit"
+language = "go"
+est_lines = 528506
+reason = "cloned and measured: 73% vendored (vendor/golang.org, vendor/github.com), leaving 138k of its own"
+
+[[considered]]
+name = "delve"
+url = "https://github.com/go-delve/delve"
+language = "go"
+est_lines = 478214
+reason = "cloned and measured: 74% vendored, leaving 117k of its own"
+
+[[considered]]
+name = "raylib"
+url = "https://github.com/raysan5/raylib"
+language = "c"
+est_lines = 461198
+reason = "cloned and measured: 65% vendored (src/external -- glfw, miniaudio, stb)"
+
+[[considered]]
+name = "mold"
+url = "https://github.com/rui314/mold"
+language = "cpp"
+est_lines = 350618
+reason = "cloned and measured: 89% vendored (third-party/tbb, xxhash, zstd, zlib), leaving 37k of its own"
+
+[[considered]]
+name = "sfml"
+url = "https://github.com/SFML/SFML"
+language = "cpp"
+est_lines = 367011
+reason = "cloned and measured: 64% vendored (extlibs/headers -- OpenGL, vulkan, glad)"
+
+[[considered]]
+name = "lodash"
+url = "https://github.com/lodash/lodash"
+language = "javascript"
+est_lines = 119092
+reason = "cloned and measured: in band, but 38% vendored bundles and dist/lodash.js is a byte-identical duplicate of lodash.js -- 14% of the repository is a second copy of itself, and a position sampled there has its correct answer in a file nobody reads"
+
+[[considered]]
+name = "nfpm"
+url = "https://github.com/goreleaser/nfpm"
+language = "go"
+est_lines = 15924
+reason = "measured as a reserve: under the band"
+
+[[considered]]
+name = "ghcli"
+url = "https://github.com/cli/cli"
+language = "go"
+est_lines = 267008
+reason = "measured as a replacement candidate: over the band"
+
+[[considered]]
+name = "ollama"
+url = "https://github.com/ollama/ollama"
+language = "go"
+est_lines = 282630
+reason = "measured as a replacement candidate: over the band"
+
+[[considered]]
+name = "taskflow"
+url = "https://github.com/taskflow/taskflow"
+language = "cpp"
+est_lines = 667097
+reason = "measured as a reserve: 3rd-party/eigen and 3rd-party/tbb are 68% of it"
+
+[[considered]]
+name = "fmt"
+url = "https://github.com/fmtlib/fmt"
+language = "cpp"
+est_lines = 69058
+reason = "measured as a reserve: test/gtest is a bundled googletest at 56% of the repository, and googletest is already in the corpus"
+
+[[considered]]
+name = "glfw"
+url = "https://github.com/glfw/glfw"
+language = "c"
+est_lines = 95694
+reason = "measured as a replacement candidate: 45% vendored (deps/glad and friends)"
+
+[[considered]]
+name = "ramda"
+url = "https://github.com/ramda/ramda"
+language = "javascript"
+est_lines = 35920
+reason = "measured as a replacement candidate: ships dist/ in git, 30% of the repository duplicating source/"
+
+[[considered]]
+name = "serverless"
+url = "https://github.com/serverless/serverless"
+language = "javascript"
+est_lines = 215847
+reason = "measured as a replacement candidate: over the band"
+
+[[considered]]
+name = "parcel"
+url = "https://github.com/parcel-bundler/parcel"
+language = "javascript"
+est_lines = 171308
+reason = "in band and clean, but its .js carries Flow type annotations, which the JavaScript servers parse poorly -- a systematically biased truth file rather than an honest one"
+
+[[considered]]
+name = "express"
+url = "https://github.com/expressjs/express"
+language = "javascript"
+est_lines = 15128
+reason = "under the band"

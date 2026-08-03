@@ -46,8 +46,62 @@ boundary, which is safe because every experiment commits or reverts.
 | `prompts/` | one prompt per variety of phase. Not one template with a swapped middle |
 | `trailer-format.md`, `decision-template.md` | the commit trailer convention and the decision-record shape, spliced into the prompts at launch so there is one copy of each |
 | `section-baseline.toml` | the denominator, frozen for the phase. See below |
+| `corpus`, `corpus-selection.toml`, `corpus-lock.toml` | phase 1b: which repositories the corpus is made of, and rebuilding it. See below |
 
 Run `harness/hj --help` for the subcommands.
+
+## The corpus lives here; the corpus directory is derived
+
+Two files are the corpus:
+
+* **`corpus-selection.toml`** — the phase 1b decision. Seventy repositories,
+  five tuning and five held out per language, with the domain each was chosen
+  for and the reason every candidate that lost was passed over. Hand-edited.
+* **`corpus-lock.toml`** — the pins. One SHA per repository plus what it
+  measured when it was pinned. Written by `clone`, never by hand.
+
+`harness/corpus clone` turns those into checkouts and a generated
+`manifest.toml` per (split, language) under `../heuristic-jump-corpus/`.
+
+```sh
+harness/corpus clone            # rebuild anything missing, at its pin
+harness/corpus verify           # every checkout at its pin, every tree clean
+harness/corpus status           # what is pinned, what is on disk, what is out of band
+```
+
+Four things about it are worth knowing before using it.
+
+**Losing the corpus directory costs bandwidth, not the corpus.** Everything
+under it regenerates from the two files above, and a rebuilt checkout is
+verifiably the same code because a git SHA is a content hash — which is also
+why there are no checksums here. `clone` re-measures a rebuilt tree and refuses
+it if the counts disagree with the lock. The one loss no pin protects against
+is upstream: a force-push or a deleted repository takes its history with it.
+`design/data-collection.md` §1 says the checkout is the artifact and cannot be
+reconstructed; that remains true for exactly that case and no longer for the
+rest.
+
+**`verify` is the part that outlives phase 1b.** `collect` and `replay` are
+required to run it before touching a repository, and the clean-tree half is the
+half that matters: a modified or untracked file changes byte offsets and *does
+not change `HEAD`*, so a corpus that drifts that way produces truth files that
+are wrong with nothing saying so.
+
+**A repository is never bumped.** The pin is written the first time a
+repository is cloned; after that `clone` fetches *that commit* rather than
+whatever the default branch has moved on to, and refuses a checkout that has
+drifted off it. A newer commit is a different corpus and invalidates every
+position and truth file that references it. Replacing one means recording the
+old entry under `[[considered]]` — or `retired = true` if it was ever really in
+the corpus — and adding the new one.
+
+**Out of band is a decision, not a tolerance.** A repository outside
+20k–200k lines is reported until either a reserve is promoted or a
+`band_exception` with a reason is written into the selection file. The same
+applies to what the band does not catch: the first clone found four
+repositories that were majority vendored third-party source and one that
+shipped a byte-identical copy of itself in `dist/`, none of which the size
+criterion would have flagged on its own.
 
 ## Two things about the gate
 

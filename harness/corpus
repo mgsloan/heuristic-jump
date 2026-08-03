@@ -1,0 +1,716 @@
+#!/usr/bin/env python3
+"""Phase 1b: choose the corpus, pin it, and be able to rebuild it.
+`design/data-collection.md` section 1.
+
+Two files in this repository hold everything the corpus is:
+
+* `harness/corpus-selection.toml` -- the human decision. Which repositories,
+  which split, which domain each was chosen for, and why every candidate that
+  lost was passed over.
+* `harness/corpus-lock.toml` -- the machine record, written by `clone`. The
+  pinned SHA per repository, plus what it measured when it was pinned.
+
+Everything under the corpus root is *derived* from those two:
+
+    ../heuristic-jump-corpus/
+      training/<language>/repos/<name>/      checkout at the pinned commit
+      training/<language>/manifest.toml      generated from selection + lock
+      test/                                  same shape, held out
+
+So a lost corpus directory costs bandwidth and an afternoon rather than the
+corpus. `design/data-collection.md` section 1 says the opposite -- that the
+checkout is the artifact and the corpus cannot be reconstructed -- and that is
+still true in the one case that matters: an upstream repository that is
+force-pushed, renamed, or deleted takes its history with it, and no pin here
+can conjure it back. What the lock buys is that every *other* way of losing the
+corpus is now recoverable, and that a rebuilt checkout is verifiably the same
+code, because a git SHA is a content hash. That is also why there are no
+checksums here: git already is one.
+
+A repository is never bumped. The pin is written the first time a repository is
+cloned, and after that `clone` fetches *that commit* rather than whatever the
+default branch has moved on to. A newer commit is a different corpus: it
+invalidates every position and every truth file that references it.
+
+`verify` is the half that outlives this phase. `collect` and `replay` are
+required to run it before touching a repository, because the two ways a
+checkout drifts have very different visibility:
+
+* `git rev-parse HEAD` against the lock catches an accidental `git pull`;
+* `git status --porcelain` being empty catches everything else, and is the one
+  that matters -- a modified or extra file changes byte offsets and *does not
+  change HEAD*. Untracked files count, because the file list downstream is a
+  filesystem walk (`design/core.md` section 4), so an untracked file that is
+  not gitignored is a file the search will find and the truth file has never
+  heard of.
+
+Dependency resolution is not attempted here and is not a silent omission: it
+needs a language server to verify (`design/data-collection.md` section 1) and
+there are none until phase 1c. Phase 1c records what each repository needed in
+the `dependencies` field of its selection entry, which is in this repository
+and so survives the corpus being rebuilt.
+
+Owned by nobody, like the rest of `harness/`.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+import tomllib
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+from datetime import date
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+SELECTION = REPO / "harness" / "corpus-selection.toml"
+LOCK = REPO / "harness" / "corpus-lock.toml"
+
+SPLITS = ("training", "test")
+
+# How a checkout is made. Recorded in the lock because it is part of what the
+# working tree *is*: skipping the LFS smudge leaves pointer files where a
+# smudging clone would leave assets, and a rebuild that disagreed with the
+# original about that would be a different corpus at the same SHA.
+CLONE_STYLE = "depth 1, single branch, no tags, LFS smudge skipped"
+
+# Files a position can be sampled from, per language. `.h` belongs to both C
+# and C++ and is counted for both, which is the same ambiguity the handlers
+# will have to live with.
+EXTENSIONS = {
+    "c": (".c", ".h"),
+    "cpp": (".cpp", ".cc", ".cxx", ".c++", ".hpp", ".hh", ".hxx", ".h", ".ipp", ".inl"),
+    "go": (".go",),
+    "javascript": (".js", ".mjs", ".cjs", ".jsx"),
+    "python": (".py", ".pyi"),
+    "rust": (".rs",),
+    "typescript": (".ts", ".tsx", ".mts", ".cts"),
+}
+
+# Carried from the selection entry into the generated manifest. None of these
+# are measured, so the lock does not hold them -- they would be a second copy
+# of something a human wrote.
+SELECTION_FIELDS = ("domain", "dependencies", "band_exception", "notes", "retired")
+
+
+def die(message: str) -> None:
+    print(f"corpus: {message}", file=sys.stderr)
+    raise SystemExit(2)
+
+
+class GitError(Exception):
+    pass
+
+
+def git(*arguments: str, cwd: Path) -> str:
+    result = subprocess.run(
+        ("git", *arguments),
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise GitError(f"git {' '.join(arguments)} in {cwd}: {result.stderr.strip()}")
+    return result.stdout
+
+
+def git_environment() -> dict[str, str]:
+    environment = dict(os.environ)
+    # A repository whose large files live in LFS would otherwise pull gigabytes
+    # of assets no language server reads. The pointer files are what the index
+    # has, so the tree stays clean either way.
+    environment["GIT_LFS_SKIP_SMUDGE"] = "1"
+    environment["GIT_TERMINAL_PROMPT"] = "0"
+    return environment
+
+
+# --------------------------------------------------------------------------
+# The selection, the lock, and the manifests
+
+
+@dataclass
+class Selection:
+    root: Path
+    criteria: dict
+    repos: list[dict]
+    reserves: list[dict]
+    considered: list[dict]
+
+    def for_group(self, split: str, language: str) -> list[dict]:
+        return [
+            repo
+            for repo in self.repos
+            if repo["split"] == split and repo["language"] == language
+        ]
+
+    @property
+    def groups(self) -> list[tuple[str, str]]:
+        seen = []
+        for repo in self.repos:
+            key = (repo["split"], repo["language"])
+            if key not in seen:
+                seen.append(key)
+        return seen
+
+
+def load_selection() -> Selection:
+    if not SELECTION.exists():
+        die(f"{SELECTION} does not exist")
+    document = tomllib.loads(SELECTION.read_text())
+    for repo in document["repo"]:
+        if repo["split"] not in SPLITS:
+            die(f"{repo['name']}: split {repo['split']!r} is not one of {SPLITS}")
+        if repo["language"] not in EXTENSIONS:
+            die(f"{repo['name']}: no extension set for language {repo['language']!r}")
+    names = [(repo["split"], repo["language"], repo["name"]) for repo in document["repo"]]
+    duplicates = {name for name in names if names.count(name) > 1}
+    if duplicates:
+        die(f"duplicate entries: {sorted(duplicates)}")
+    return Selection(
+        root=(REPO / document["corpus_root"]).resolve(),
+        criteria=document["criteria"],
+        repos=document["repo"],
+        reserves=document.get("reserve", []),
+        considered=document.get("considered", []),
+    )
+
+
+def key_of(repo: dict) -> tuple[str, str, str]:
+    return (repo["split"], repo["language"], repo["name"])
+
+
+def load_lock() -> dict[tuple[str, str, str], dict]:
+    if not LOCK.exists():
+        return {}
+    document = tomllib.loads(LOCK.read_text())
+    return {key_of(entry): entry for entry in document.get("repo", [])}
+
+
+def toml_string(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def toml_value(value) -> str:
+    if isinstance(value, bool):
+        return str(value).lower()
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, list):
+        return f"[{', '.join(toml_value(item) for item in value)}]"
+    return toml_string(str(value))
+
+
+def emit_table(name: str, entry: dict) -> list[str]:
+    return [f"[[{name}]]"] + [f"{key} = {toml_value(value)}" for key, value in entry.items()]
+
+
+LOCK_HEADER = """\
+# The pins. Generated by `harness/corpus clone`; do not edit by hand.
+#
+# This file plus `harness/corpus-selection.toml` is the whole corpus. Running
+# `harness/corpus clone` against them rebuilds every checkout at the commit
+# recorded here, which is why the corpus directory itself is derived output
+# rather than something that has to be backed up.
+#
+# `sha` is written once, the first time a repository is cloned, and is never
+# bumped afterwards: a newer commit is a different corpus and invalidates every
+# position and truth file that references it. Replacing a repository means
+# adding a new entry, not editing this one.
+#
+# The counts are what the pinned tree measured when it was pinned, and they are
+# an integrity check as much as a description -- a rebuilt checkout that counts
+# differently at the same SHA means the clone style changed underneath it.
+# `lines` counts every line of primary-language source in tracked files, blanks
+# included, with no exclusion for vendored or generated directories: those files
+# are in the checkout, so the walk that enumerates positions will find them.
+"""
+
+
+def write_lock(selection: Selection, entries: dict[tuple[str, str, str], dict]) -> None:
+    order = [key_of(repo) for repo in selection.repos]
+    order += [key for key in entries if key not in order]
+    lines = [LOCK_HEADER.rstrip("\n"), ""]
+    for key in order:
+        entry = entries.get(key)
+        if entry is None:
+            continue
+        lines += emit_table("repo", entry) + [""]
+    LOCK.write_text("\n".join(lines).rstrip("\n") + "\n")
+
+
+def manifest_path(root: Path, split: str, language: str) -> Path:
+    return root / split / language / "manifest.toml"
+
+
+MANIFEST_HEADER = """\
+# Generated by `harness/corpus clone` from `harness/corpus-selection.toml` and
+# `harness/corpus-lock.toml` in the source repository. Derived output: editing
+# it changes nothing, and the next clone overwrites it.
+#
+# It is written here anyway because `design/data-collection.md` section 0 puts
+# it here, and because a corpus directory that has been copied to another
+# machine should be able to say what it holds without the source repository
+# beside it.
+"""
+
+
+def write_manifest(
+    path: Path,
+    selection: Selection,
+    split: str,
+    language: str,
+    entries: list[dict],
+) -> None:
+    lines = [MANIFEST_HEADER.rstrip("\n"), ""]
+    lines += [f"split = {toml_string(split)}", f"language = {toml_string(language)}", ""]
+    lines += ["[criteria]"]
+    lines += [f"{key} = {toml_value(value)}" for key, value in selection.criteria.items()]
+
+    for entry in entries:
+        lines += [""] + emit_table("repo", entry)
+
+    reserves = [item for item in selection.reserves if item["language"] == language]
+    if reserves:
+        lines += [
+            "",
+            "# Named replacements for a repository that has to be dropped, so a",
+            "# substitution is a decision somebody already made.",
+        ]
+        for item in reserves:
+            lines += [""] + emit_table("reserve", item)
+
+    considered = [item for item in selection.considered if item["language"] == language]
+    if considered:
+        lines += [
+            "",
+            "# Looked at and passed over, with the reason. This is what makes",
+            "# selection bias auditable later.",
+        ]
+        for item in considered:
+            lines += [""] + emit_table("considered", item)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n")
+
+
+def manifest_entry(repo: dict, pin: dict) -> dict:
+    entry = {
+        "name": pin["name"],
+        "url": pin["url"],
+        "sha": pin["sha"],
+        "branch": pin["branch"],
+    }
+    for field_name in SELECTION_FIELDS:
+        if repo.get(field_name):
+            entry[field_name] = repo[field_name]
+    entry["dependencies"] = repo.get("dependencies", "")
+    for field_name in ("lines", "lines_nonblank", "source_files", "tracked_files"):
+        entry[field_name] = pin[field_name]
+    entry["clone"] = pin["clone"]
+    entry["added"] = pin["added"]
+    return entry
+
+
+# --------------------------------------------------------------------------
+# Measurement
+
+
+@dataclass
+class Measurement:
+    files: int = 0
+    lines: int = 0
+    lines_nonblank: int = 0
+    files_tracked: int = 0
+
+
+def measure(checkout: Path, language: str) -> Measurement:
+    extensions = EXTENSIONS[language]
+    tracked = git("ls-files", "-z", cwd=checkout).split("\0")
+    result = Measurement()
+    for relative in tracked:
+        if not relative:
+            continue
+        result.files_tracked += 1
+        if not relative.endswith(extensions):
+            continue
+        path = checkout / relative
+        try:
+            data = path.read_bytes()
+        except OSError as error:
+            print(f"corpus: unreadable {path}: {error}", file=sys.stderr)
+            continue
+        result.files += 1
+        result.lines += data.count(b"\n") + (
+            1 if data and not data.endswith(b"\n") else 0
+        )
+        result.lines_nonblank += sum(1 for line in data.split(b"\n") if line.strip())
+    return result
+
+
+# --------------------------------------------------------------------------
+# Clone and verify
+
+
+@dataclass
+class Result:
+    repo: dict
+    entry: dict | None = None
+    action: str = ""
+    problems: list[str] = field(default_factory=list)
+
+
+def checkout_path(root: Path, repo: dict) -> Path:
+    return root / repo["split"] / repo["language"] / "repos" / repo["name"]
+
+
+def clone_at_head(url: str, staging: Path) -> None:
+    """First time only: take the default branch and let the caller pin it."""
+    result = subprocess.run(
+        ("git", "clone", "--depth", "1", "--single-branch", "--no-tags", url, str(staging)),
+        capture_output=True,
+        text=True,
+        check=False,
+        env=git_environment(),
+    )
+    if result.returncode != 0:
+        raise GitError(f"clone {url}: {result.stderr.strip().splitlines()[-1:]}")
+
+
+def clone_at_pin(url: str, sha: str, staging: Path) -> None:
+    """Rebuild a pinned checkout.
+
+    A shallow fetch of one commit is what makes rebuilding cheap, and GitHub
+    serves arbitrary SHAs that way. A host that does not falls back to fetching
+    the history and checking the commit out of it, which is slower and still
+    correct; a commit that has been garbage-collected upstream fails here, and
+    that is the one loss no pin can protect against.
+    """
+    staging.mkdir(parents=True)
+    git("init", "-q", cwd=staging)
+    git("remote", "add", "origin", url, cwd=staging)
+    environment = git_environment()
+    shallow = subprocess.run(
+        ("git", "fetch", "--depth", "1", "--no-tags", "origin", sha),
+        cwd=staging,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+    if shallow.returncode != 0:
+        full = subprocess.run(
+            ("git", "fetch", "--no-tags", "origin"),
+            cwd=staging,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=environment,
+        )
+        if full.returncode != 0:
+            raise GitError(f"fetch {url} at {sha[:12]}: {full.stderr.strip()}")
+    git("checkout", "-q", "--detach", sha, cwd=staging)
+
+
+def clone_one(root: Path, repo: dict, pin: dict | None) -> Result:
+    result = Result(repo=repo)
+    destination = checkout_path(root, repo)
+
+    if not destination.exists():
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        staging = destination.with_name(destination.name + ".partial")
+        if staging.exists():
+            shutil.rmtree(staging)
+        try:
+            if pin is not None:
+                clone_at_pin(repo["url"], pin["sha"], staging)
+                result.action = "rebuilt"
+            else:
+                clone_at_head(repo["url"], staging)
+                result.action = "cloned"
+        except GitError as error:
+            if staging.exists():
+                shutil.rmtree(staging)
+            result.problems.append(str(error))
+            return result
+        staging.rename(destination)
+    else:
+        result.action = "present"
+
+    try:
+        head = git("rev-parse", "HEAD", cwd=destination).strip()
+        branch = git("rev-parse", "--abbrev-ref", "HEAD", cwd=destination).strip()
+        dirty = git("status", "--porcelain", cwd=destination).strip()
+    except GitError as error:
+        result.problems.append(str(error))
+        return result
+
+    if pin is not None and pin["sha"] != head:
+        result.problems.append(
+            f"HEAD {head[:12]} does not match the pin {pin['sha'][:12]}; "
+            "a repository is never bumped -- record this entry under "
+            "[[considered]] and add a new one"
+        )
+        return result
+    if dirty:
+        result.problems.append(
+            f"working tree is not clean ({len(dirty.splitlines())} entries)"
+        )
+        return result
+
+    counted = measure(destination, repo["language"])
+    if pin is not None and pin["lines"] != counted.lines:
+        result.problems.append(
+            f"rebuilt at the pin but measures {counted.lines} lines against the "
+            f"locked {pin['lines']}; the clone style changed underneath it"
+        )
+        return result
+
+    result.entry = {
+        "name": repo["name"],
+        "language": repo["language"],
+        "split": repo["split"],
+        "url": repo["url"],
+        "sha": head,
+        # A rebuild is detached, so the branch it came from is only observable
+        # the first time and is carried forward from the lock afterwards.
+        "branch": pin["branch"] if pin is not None else branch,
+        "lines": counted.lines,
+        "lines_nonblank": counted.lines_nonblank,
+        "source_files": counted.files,
+        "tracked_files": counted.files_tracked,
+        "clone": CLONE_STYLE,
+        "added": pin["added"] if pin is not None else date.today().isoformat(),
+    }
+    return result
+
+
+def verify_one(root: Path, repo: dict, pin: dict) -> list[str]:
+    destination = checkout_path(root, repo)
+    label = f"{repo['split']}/{repo['language']}/{repo['name']}"
+    if not destination.exists():
+        return [f"{label}: missing checkout at {destination}"]
+    try:
+        head = git("rev-parse", "HEAD", cwd=destination).strip()
+        dirty = git("status", "--porcelain", cwd=destination).strip()
+    except GitError as error:
+        return [f"{label}: {error}"]
+    problems = []
+    if head != pin["sha"]:
+        problems.append(f"{label}: HEAD {head[:12]} != pinned {pin['sha'][:12]}")
+    if dirty:
+        entries = dirty.splitlines()
+        for line in entries[:5]:
+            problems.append(f"{label}: dirty: {line}")
+        if len(entries) > 5:
+            problems.append(f"{label}: dirty: and {len(entries) - 5} more")
+    return problems
+
+
+# --------------------------------------------------------------------------
+# Commands
+
+
+def selected(selection: Selection, arguments) -> list[dict]:
+    repos = selection.repos
+    if arguments.language:
+        repos = [repo for repo in repos if repo["language"] == arguments.language]
+    if arguments.split:
+        repos = [repo for repo in repos if repo["split"] == arguments.split]
+    if not repos:
+        die("no repositories match that filter")
+    return repos
+
+
+def command_clone(arguments) -> int:
+    selection = load_selection()
+    wanted = selected(selection, arguments)
+    lock = load_lock()
+    selection.root.mkdir(parents=True, exist_ok=True)
+
+    low, high = selection.criteria["size_lines"]
+    failures = 0
+    out_of_band = []
+
+    with ThreadPoolExecutor(max_workers=arguments.jobs) as pool:
+        results = list(
+            pool.map(lambda repo: clone_one(selection.root, repo, lock.get(key_of(repo))), wanted)
+        )
+
+    for result in results:
+        repo = result.repo
+        label = f"{repo['language']}/{repo['split']}/{repo['name']}"
+        if result.problems:
+            failures += 1
+            for problem in result.problems:
+                print(f"FAIL {label}: {problem}")
+            continue
+        entry = result.entry
+        band = ""
+        if not low <= entry["lines"] <= high:
+            if repo.get("band_exception"):
+                band = "  band exception"
+            else:
+                band = "  OUT OF BAND"
+                out_of_band.append((label, entry["lines"]))
+        print(
+            f"{result.action:8} {label:36} {entry['sha'][:12]} "
+            f"{entry['lines']:>8} lines{band}"
+        )
+        lock[key_of(repo)] = entry
+
+    stale = [key for key in lock if key not in {key_of(repo) for repo in selection.repos}]
+    for split, language, name in stale:
+        # An entry the selection no longer names was rejected before it was ever
+        # a corpus member. One that really was in the corpus is retired in place
+        # instead -- the selection keeps it, carrying `retired = true`.
+        print(f"dropping {split}/{language}/{name}: no longer selected")
+        del lock[(split, language, name)]
+
+    write_lock(selection, lock)
+
+    for split, language in selection.groups:
+        entries = []
+        for repo in selection.for_group(split, language):
+            pin = lock.get(key_of(repo))
+            if pin is not None:
+                entries.append(manifest_entry(repo, pin))
+        if entries:
+            write_manifest(
+                manifest_path(selection.root, split, language),
+                selection,
+                split,
+                language,
+                entries,
+            )
+
+    if out_of_band:
+        print()
+        print(f"{len(out_of_band)} repositories measured outside {low}-{high} lines:")
+        for label, lines in out_of_band:
+            print(f"  {label}: {lines}")
+        print("Promote the named reserve in harness/corpus-selection.toml, or record")
+        print("a band_exception with a reason -- an out-of-band repository kept by")
+        print("default is the tolerance the criteria refuse to grant silently.")
+
+    if failures:
+        print(f"\n{failures} repositories failed", file=sys.stderr)
+        return 1
+    return 0
+
+
+def command_verify(arguments) -> int:
+    selection = load_selection()
+    wanted = selected(selection, arguments)
+    lock = load_lock()
+    if not lock:
+        die(f"no pins in {LOCK}; run `harness/corpus clone` first")
+    problems: list[str] = []
+    checked = 0
+    for repo in wanted:
+        pin = lock.get(key_of(repo))
+        if pin is None:
+            problems.append(
+                f"{repo['split']}/{repo['language']}/{repo['name']}: not in the lock"
+            )
+            continue
+        checked += 1
+        problems += verify_one(selection.root, repo, pin)
+    for problem in problems:
+        print(f"FAIL {problem}")
+    print(f"verified {checked} checkouts, {len(problems)} problems")
+    return 1 if problems else 0
+
+
+def command_status(arguments) -> int:
+    selection = load_selection()
+    lock = load_lock()
+    low, high = selection.criteria["size_lines"]
+    print(f"corpus root: {selection.root}")
+    print(f"pins:        {LOCK.relative_to(REPO)} ({len(lock)} recorded)")
+    print()
+    print(f"{'LANGUAGE':<12}{'SPLIT':<10}{'REPOS':>6}{'LINES':>12}{'MEDIAN':>10}{'ON DISK':>9}")
+    total_repos = 0
+    total_lines = 0
+    for split, language in sorted(selection.groups):
+        pins = [
+            lock[key_of(repo)]
+            for repo in selection.for_group(split, language)
+            if key_of(repo) in lock
+        ]
+        if not pins:
+            print(f"{language:<12}{split:<10}{'-':>6}{'not pinned':>12}")
+            continue
+        counts = sorted(pin["lines"] for pin in pins)
+        present = sum(
+            1
+            for repo in selection.for_group(split, language)
+            if checkout_path(selection.root, repo).exists()
+        )
+        total_repos += len(counts)
+        total_lines += sum(counts)
+        print(
+            f"{language:<12}{split:<10}{len(counts):>6}{sum(counts):>12}"
+            f"{counts[len(counts) // 2]:>10}{present:>9}"
+        )
+    print()
+    print(f"{total_repos} repositories pinned, {total_lines} lines of primary-language source")
+    missing = [
+        f"{repo['language']}/{repo['split']}/{repo['name']}"
+        for repo in selection.repos
+        if not checkout_path(selection.root, repo).exists()
+    ]
+    if missing:
+        print(f"\n{len(missing)} checkouts missing -- `harness/corpus clone` rebuilds them:")
+        for line in missing:
+            print(f"  {line}")
+    outside = [
+        f"{repo['language']}/{repo['split']}/{repo['name']}: {lock[key_of(repo)]['lines']}"
+        f"{'  (band exception recorded)' if repo.get('band_exception') else ''}"
+        for repo in selection.repos
+        if key_of(repo) in lock and not low <= lock[key_of(repo)]["lines"] <= high
+    ]
+    if outside:
+        print(f"\noutside the {low}-{high} band:")
+        for line in sorted(outside):
+            print(f"  {line}")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog="corpus", description=__doc__)
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    def add_filters(target):
+        target.add_argument("--language", help="restrict to one language")
+        target.add_argument("--split", choices=SPLITS, help="restrict to one split")
+
+    clone = subparsers.add_parser(
+        "clone",
+        help="clone what is missing, at its pin if it has one, and write the lock",
+    )
+    add_filters(clone)
+    clone.add_argument("--jobs", type=int, default=8, help="concurrent clones")
+    clone.set_defaults(run=command_clone)
+
+    verify = subparsers.add_parser(
+        "verify", help="every checkout is at its pin and its tree is clean"
+    )
+    add_filters(verify)
+    verify.set_defaults(run=command_verify)
+
+    status = subparsers.add_parser("status", help="what the corpus holds")
+    add_filters(status)
+    status.set_defaults(run=command_status)
+
+    arguments = parser.parse_args()
+    return arguments.run(arguments)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
