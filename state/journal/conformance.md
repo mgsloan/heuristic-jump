@@ -1443,3 +1443,82 @@ pipeline fixture writes its own truth with server `"oracle"` and never calls
 its own scan, on purpose. This belongs to `#where-the-corpus-lives` /
 `#two-modes-collect-and-replay`, and it is a genuine open gap that the audit
 has not noticed.
+
+## a482daad — core.md#both-sides-are-sets
+
+One target, one experiment, one commit. The gap read *"driver exposes only
+`Config` and `dispatch` — there is no run loop, no pending-query record, and no
+construction site for `ShowMessageParams` outside tests"*, and the run loop is
+the false blocker the findings file warns about: delete that clause and what
+remains is a struct, a map, and a comparison. None of it needs a transport to
+exist, and — the part that mattered — none of it needs one to be *tested*,
+because `dispatch` already produces the `Answer` the record stores and
+`Agreement::classify` already consumes what it hands back.
+
+**The thing worth carrying forward is how the two claims were made
+mechanical**, because both are the kind that a wrong implementation satisfies
+in prose:
+
+* *"The order is load-bearing."* A `Vec<Location>` field cannot say this — a
+  vector is ordered whether or not anyone respects the order. What says it is
+  that `answered_by_shim` takes `&Answer` rather than `Vec<Location>`, so a
+  caller has nothing to sort on the way in, and that `resolve` is the only
+  readout, so there is nothing to sort on the way out. The claim then lives in
+  one three-line function instead of at every call site.
+* *"Reported on mismatch only."* Written as a `match` on `Agreement` returning
+  `None` twice, this is a rule the next caller can decline to follow.
+  `Divergence::of` instead starts `let severity = agreement.severity()?;` —
+  `severity()` is `None` on both match arms and a `Divergence` cannot be built
+  without one, so on a `match_contained` there is no report to suppress.
+
+**Two test mistakes, both instructive, both caught by running rather than by
+reading.** The two fixture files live in `src/`, so a cross-file mismatch is
+`NearModule`, not `Unrelated` — `same_module_tree` is "same containing
+directory" and a fixture has to put files in different directories to reach
+`Unrelated`. And the first draft of the message-content test ranked the child's
+own location *second* in the shim's list, which makes the query a
+`match_contained` and therefore produces no report at all. That one is worth
+remembering because it is the section's own rule biting the test that asserts
+it: any fixture that wants a divergence must have **no** shim location within
+three lines of any child location.
+
+**Three mutations, all fire.** `ours.iter().rev()` in `resolve` kills
+`the_stored_rank_decides_top1`; `ours.last()` instead of `ours.first()` in the
+report kills `the_report_names_where_the_user_was_sent`; and
+`agreement.severity().unwrap_or(Severity::Unrelated)` kills
+`a_report_is_produced_on_mismatch_only`. Note that the first two are
+independent — reversing the classification input does *not* fail the message
+test, because the message reads the stored list directly. Two separate
+mutations were needed to cover what looked like one property.
+
+**Deliberately not done, and it is `shim.md`'s to do.** §9 wants the report to
+name *the symbol queried*, and the record cannot recover it: it holds a
+`ByteOffset` into a document version that may be several edits gone by the time
+the child replies, and resolving one to a token needs that version's tree. The
+symbol has to be captured at answer time, in the worker, where the snapshot is
+still alive — which means `Answer` growing a field, which is `dispatch.rs` and
+its tests. Out of scope for a phase whose audit reads `core.md` only, and
+`Divergence`'s doc comment says so rather than leaving it as an unexplained
+omission.
+
+**Approaches considered and dropped:**
+
+* *Extending to `#86-modelling-errors`.* It is the other half of "driver has no
+  core-actor state" and it looked adjacent from a distance. It is not: it needs
+  `shared/src/document.rs`, the `didChange`/`didSave` params in `proto.rs`, a
+  document map that does not exist, and three self-checks whose section this
+  campaign never opened. Nothing it touches was already in context, which is
+  the test step 1 sets. It is a full campaign and a fresh session will do it
+  cheaper.
+* *Building the actor to give `PendingQueries` a caller.* Tempting, because
+  until `driver::run` grows one the module is a library API nothing in the
+  binary reaches. Dropped: the section's claim is about the record's shape and
+  the reporting rule, both of which are now code and both of which are tested;
+  an actor built to satisfy an audit rather than a transport would be a much
+  larger, much less examined thing arriving in the same commit.
+* *Reaching for §7's two remaining gaps* (`10d2239070`, `c4505d900b`), which
+  mention "once both answers are known" and so read as adjacent. Both are dated
+  `06:54` and both are stale in the way this loop keeps rediscovering: they say
+  `measure_core` is not a workspace member and that `Outcome` carries one
+  `stratum`, and neither has been true for several campaigns. Checked, not
+  worked.
