@@ -420,6 +420,103 @@ fn the_licence_text_is_symlinked_into_every_member() {
     }
 }
 
+/// `deps.md` §6, which splits one crate family into two rules that are
+/// opposites and are easy to apply to the wrong half.
+///
+/// > The tree-sitter **runtime** version is ours to choose and tracks a recent
+/// > release; `high-level.md`'s requirement is that the *grammars* match Zed's
+/// > pinned revisions, not that the runtime does.
+///
+/// The document's preamble calls this the one pin "that is a design constraint
+/// rather than a resolution detail", and `CLAUDE.md` states it as a hard
+/// constraint: "Tree-sitter grammars are pinned to the revisions Zed uses. Do
+/// not bump a grammar crate."
+///
+/// A caret range is what defeats it, quietly. `tree-sitter-rust = "0.24"`
+/// looks like a pin and is not: cargo takes the newest 0.24.x on any
+/// `cargo update`, so the grammar Zed pinned and the grammar we parse with
+/// drift apart without a diff anywhere, and the first symptom is a corpus
+/// number that moved for no reason in the commit range. So the assertion is
+/// that every grammar names all three components, or a git revision — which is
+/// what §6 says the two exceptions will need, `tree-sitter-typescript` and
+/// `tree-sitter-cpp`.
+///
+/// The runtime is asserted *not* to be pinned that way, which is the half that
+/// makes this a real check rather than "everything is exact": the two rules
+/// point in opposite directions, and a scan that could not tell them apart
+/// would pass a workspace that had pinned the runtime and floated the grammar.
+///
+/// §6's third claim, `[profile.dev.package.tree-sitter] opt-level = 3`, is
+/// here because it is a measurement precondition rather than a convenience:
+/// "parsing in a debug build is otherwise slow enough to distort every latency
+/// observation made while developing", which for this project would mean
+/// tuning against a fiction.
+#[test]
+fn the_grammars_are_pinned_and_the_runtime_is_not() {
+    let declared = table_of(&workspace_file("Cargo.toml"), "workspace.dependencies");
+
+    let grammars: Vec<&String> = declared
+        .iter()
+        .filter(|line| line.starts_with("tree-sitter-"))
+        .collect();
+    assert!(
+        !grammars.is_empty(),
+        "no tree-sitter-* grammar in [workspace.dependencies], so this test would pass \
+         vacuously"
+    );
+
+    for grammar in grammars {
+        let version = grammar
+            .split('"')
+            .nth(1)
+            .map(str::to_owned)
+            .unwrap_or_default();
+        let pinned = grammar.contains("rev = ") || version.split('.').count() == 3;
+        assert!(
+            pinned,
+            "the grammar `{grammar}` names {version:?}, which is a range rather than a pin: \
+             cargo takes the newest matching release on any update, so the revision Zed pinned \
+             and the one we parse with drift apart with no diff anywhere — and the first \
+             symptom is a corpus number that moved for no reason"
+        );
+    }
+
+    let runtime = declared
+        .iter()
+        .find(|line| line.starts_with("tree-sitter "))
+        .or_else(|| {
+            declared
+                .iter()
+                .find(|line| line.starts_with("tree-sitter="))
+        })
+        .map(String::as_str)
+        .unwrap_or_default();
+    assert!(
+        !runtime.is_empty(),
+        "the tree-sitter runtime is not declared in [workspace.dependencies], so the \
+         distinction this test exists to make is unreadable"
+    );
+    assert_ne!(
+        runtime.split('"').nth(1).map(|v| v.split('.').count()),
+        Some(3),
+        "the tree-sitter runtime is pinned as `{runtime}`: deps.md §6 makes the runtime ours \
+         to choose and tracks a recent release, and it is the *grammars* that match Zed's \
+         revisions — the two meet through tree-sitter-language's ABI rather than through a \
+         version constraint, which is what lets them differ"
+    );
+
+    let manifest = workspace_file("Cargo.toml");
+    assert!(
+        manifest.contains("[profile.dev.package.tree-sitter]")
+            && table_of(&manifest, "profile.dev.package.tree-sitter")
+                .iter()
+                .any(|line| line.replace(' ', "") == "opt-level=3"),
+        "no `[profile.dev.package.tree-sitter] opt-level = 3`: deps.md §6 wants it because \
+         parsing in a debug build is otherwise slow enough to distort every latency \
+         observation made while developing, which would mean tuning against a fiction"
+    );
+}
+
 /// `deps.md` §4's two feature decisions, which are the whole of what a
 /// manifest can carry about JSON and are both invisible when wrong.
 ///
