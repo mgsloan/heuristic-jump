@@ -1795,3 +1795,106 @@ The five answered decisions (`conformance-002`, `-006`, `-009`, `-012`,
 `grep -r DECISION-` is now empty; an answered ruling reads
 `` `conformance-006` (answered) ``. `provisional_decisions` in the metrics row
 went 12 → 0.
+
+## 51628b98 — `deps.md`'s manifest layer, ten sections
+
+`deps.md` had just joined the audited documents with all 38 of its sections
+unjudged. Ten of them are claims about `Cargo.toml`, the nine member
+manifests, and the crate directories beside them — one piece of reading, and
+`crates/driver/tests/seam.rs` was already the home for a manifest-shaped
+assertion (it carries §12's `lsp-types` check). Took §14, §5's licensing
+subsection, §13 and §0 as the campaign; extended twice into §15, §1, §12, §4,
+§6 and §2 without opening a new file.
+
+Only one of the ten was actually broken. That was expected and is the useful
+shape to know for next time: **`deps.md` is largely satisfied and almost
+entirely unheld.** The manifests were written against it and quote it in their
+comments, so the work is mechanism, not repair.
+
+### The thing worth carrying forward: three assertions that cannot fail
+
+My own carried finding says a scan nobody has seen fail is not mechanical. I
+mutated every property. Three mutations never reached the test, and each was a
+different reason:
+
+* **`vendor/*` must not inherit `[lints] workspace = true`.** Adding `[lints]`
+  beside `vendor/rope`'s existing `[lints.rust]` is a **duplicate TOML key**;
+  cargo refuses the manifest and *no test runs at all*. Replacing those tables
+  wholesale, or adding one to `sum_tree`, makes the crate **stop compiling** —
+  `elided_lifetimes_in_paths` and `unused_qualifications` alone give dozens of
+  errors before `unwrap_used` is reached. Which is §14's own argument for the
+  exemption, measured.
+* **`serde_json` must carry `raw_value`.** Dropping it fails to build, because
+  `shared` and `measure_core` already `use serde_json::value::RawValue`.
+  `Cargo.toml`'s comment still claims "a serde_json without it silently
+  compiles" — true when §4 was written and there were no users. **A feature is
+  silent only until something imports what it gates.**
+
+All three assertions were kept, with the reason written into the doc comment
+in place. The rule I would state: when the compiler already enforces a
+property, say so at the assertion rather than deleting it *or* implying
+coverage — the compiler's enforcement is incidental (it holds while upstream's
+text happens to trip a denied lint, or while an import happens to exist) and
+the assertion is what says the property was intended.
+
+The first vendor control **produced no test result at all** and I nearly
+scored it as passing. That is the failure mode the control exists to catch,
+and it also exposed a real defect: the lints scan was matching `[lints]` and
+`workspace = true` *anywhere* in a manifest rather than inside the table.
+Fixed with `table_of`. **Grep the control output for `test result`, not just
+for a failure.**
+
+### Approaches considered and not taken
+
+* **Scanning `Cargo.lock` for §13's rejected crates.** Do not retry this.
+  Six of the names — `once_cell`, `regex`, `memchr`, `aho-corasick`,
+  `walkdir`, `indexmap` — are in the lock right now, transitively through
+  `ignore`, `toml`, `proptest`, `criterion` and `tracing-subscriber`. §13 is
+  about what we *reach for*; a lock scan is red on arrival and stays red for
+  reasons nobody can act on. Assert declarations.
+* **Transcribing §15's lint block into a constant in the test.** Rejected in
+  favour of parsing `design/deps.md` itself, which makes the document the
+  fixture. That is the only assertion in the file where editing the *document*
+  fails the test — worth knowing, because this loop's one uncatchable way of
+  faking progress is moving the spec toward the code.
+* **Asserting §0's table as an equality.** Wrong direction. §14's "each
+  arrives with its first user" means `rayon`, `lru`, `insta` and `notify` are
+  chosen and undeclared *on purpose*. Subset only.
+* **Forcing `notify` into `Cargo.toml`.** §7 says it should be there as an
+  optional dependency "so the decision is visible, not lost", and it is not.
+  Left alone: it is a dependency-set change, and I already had two records
+  open. **§7 cannot go clean until this is settled** — its other claim
+  (`ignore` belongs to `shared`, not `driver`) is already true.
+
+### Licensing: the rule was not the one the document states
+
+Six of seven `crates/*` had no licence text beside them — §14's stated failure
+mode with the copies absent rather than stale. Fixing it surfaced the real
+finding: §5's prose says `measure_<lang>` stays MIT because "none of them
+depends on `similarity`", which is **false** — `measure_rust` → `lang_rust` →
+`similarity`. But the conclusion survives, because `heuristic_jump` depends on
+every `lang_*` and §14 lists it "MIT -- binary crate; the artifact it builds
+is GPL". So "reaching GPL makes you GPL" was already false in this workspace.
+`conformance-014` settled the rule: **a `license` field describes copyright in
+that crate's own text.** `measure_rust` moved GPL → MIT.
+
+Still open, and a clean next target: §5 states *two* rules and marks `lang_*`
+by the one just rejected. It may still be GPL for the other reason —
+`similarity` is a port and so a derivative work, which is not the claim "it
+depends on GPL". Until §5 says which, `expected_licence` in `seam.rs` is the
+only place the two are distinguished.
+
+### Three escalations, two answered inside the campaign
+
+`conformance-014` (licence rule) and `conformance-015` (`tempfile` →
+rejected, `CARGO_TARGET_TMPDIR` stands) were both answered while I worked, and
+both rulings named a spec edit as their point. Applied both, with
+`CHANGE-conformance-015` and `-016` flagging plainly that a document moved and
+no code moved with it.
+
+`conformance-016` is the one to know about: **`clippy.toml` denied
+`crossbeam_channel::unbounded` while `deps.md` §2 and `shim.md`:173 both
+require unbounded channels**, and no loop may edit `clippy.toml`. Answered for
+the documents; the entry is gone and §2 now records that it existed. Filed
+before it was blocking — the transport channels are phase 2b's — which is the
+whole value: the alternative was the phase-2b loop finding it mid-build.
