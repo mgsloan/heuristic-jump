@@ -366,7 +366,8 @@ def panel_loops() -> str:
                 target = re.search(r"## Target\n+(.+?)(?=\n## )", path.read_text(), re.DOTALL)
                 if target:
                     text = re.sub(r"<!--.*?-->", "", target.group(1), flags=re.DOTALL).strip()
-                    record = text[:400] or "target not written yet"
+                    first = text.splitlines()[0] if text.splitlines() else ""
+                    record = (first[:120] + ("…" if len(first) > 120 else "")) or "target not written yet"
 
         last_commit = hj.git("log", "-1", "--format=%h %s", check=False).strip()
         rows.append(f"""
@@ -386,6 +387,82 @@ def panel_loops() -> str:
 
 
 # --- panel 3: metrics ------------------------------------------------------
+
+
+def line_chart(
+    series: list[tuple[str, str, list[float]]],
+    caption: str,
+    x_label: str,
+    width: int = 640,
+    height: int = 190,
+) -> str:
+    """A small multi-series line chart, inline SVG, no dependencies.
+
+    Two series maximum here on purpose: `design/loops.md` section 10 keeps the
+    frontier to two axes because non-domination becomes free past that, and the
+    same discipline is worth applying to a chart nobody asked to be busy. Hues
+    are categorical slots 1 and 2, validated for both surfaces and for CVD;
+    identity is never colour alone — every series is directly labelled at its
+    last point and named in the legend.
+    """
+    points = max(len(values) for _, _, values in series)
+    if points < 2:
+        return empty("Not enough audits yet to draw a trend.")
+    top = max(max(values) for _, _, values in series) or 1
+    pad_l, pad_r, pad_t, pad_b = 34, 96, 12, 26
+    plot_w, plot_h = width - pad_l - pad_r, height - pad_t - pad_b
+
+    def x(index: int) -> float:
+        return pad_l + (index / (points - 1)) * plot_w
+
+    def y(value: float) -> float:
+        return pad_t + plot_h - (value / top) * plot_h
+
+    # Four gridlines, recessive, with the value on the axis rather than on the
+    # marks — a number on every point is the anti-pattern.
+    grid = "".join(
+        f'<line class="grid" x1="{pad_l}" y1="{y(top * f):.1f}" x2="{pad_l + plot_w}" y2="{y(top * f):.1f}"/>'
+        f'<text class="tick" x="{pad_l - 6}" y="{y(top * f) + 4:.1f}" text-anchor="end">{round(top * f)}</text>'
+        for f in (0, 0.5, 1)
+    )
+    body = ""
+    for name, colour, values in series:
+        path = " ".join(f"{x(i):.1f},{y(v):.1f}" for i, v in enumerate(values))
+        last_x, last_y = x(len(values) - 1), y(values[-1])
+        body += (
+            f'<polyline class="series" style="stroke:{colour}" points="{path}"/>'
+            f'<circle class="marker" cx="{last_x:.1f}" cy="{last_y:.1f}" r="4" style="fill:{colour}"/>'
+            f'<text class="direct" x="{last_x + 9:.1f}" y="{last_y + 4:.1f}">{round(values[-1])} {esc(name)}</text>'
+        )
+    legend = (
+        "".join(
+            f'<span class="key"><i style="background:{colour}"></i>{esc(name)}</span>'
+            for name, colour, _ in series
+        )
+        if len(series) > 1
+        else ""
+    )
+    return (
+        f'<figure class="chart"><svg viewBox="0 0 {width} {height}" role="img" '
+        f'aria-label="{esc(caption)}">{grid}{body}'
+        f'<text class="tick" x="{pad_l}" y="{height - 6}">{esc(x_label)}</text></svg>'
+        f'<figcaption>{esc(caption)}<span class="legend">{legend}</span></figcaption></figure>'
+    )
+
+
+def audit_series() -> tuple[list[float], list[float]]:
+    """Cumulative found and closed, one point per audit."""
+    found: set[str] = set()
+    closed: set[str] = set()
+    found_at, closed_at = [], []
+    for row in hj.read_jsonl(hj.GAP_LOG):
+        found.update(row.get("opened", []))
+        found.update(row.get("closed", []))
+        closed.update(row.get("closed", []))
+        closed.difference_update(row.get("opened", []))
+        found_at.append(len(found))
+        closed_at.append(len(closed))
+    return found_at, closed_at
 
 
 def sparkline(values: list[float], width: int = 320, height: int = 40) -> str:
@@ -408,6 +485,16 @@ def panel_metrics() -> str:
         rows = hj.read_jsonl(hj.metrics_path(owner))
         clean = [row.get("sections_clean", 0) for row in rows]
         counts = hj.audit_counts(config.docs)
+        found_at, closed_at = audit_series()
+        charts = line_chart(
+            [("found", "var(--series-1)", found_at), ("closed", "var(--series-2)", closed_at)],
+            "Gaps found and gaps closed, cumulative",
+            "one point per audit",
+        ) + line_chart(
+            [("clean", "var(--series-1)", clean)],
+            f"Sections clean, of {counts['sections_total']}",
+            "one point per commit",
+        )
         ledger = hj.gap_ledger(config.docs)
         # Gaps closed leads. Sections clean cannot move until every claim in a
         # section lands, and the sections are large, so early on it reads as
@@ -474,10 +561,8 @@ def panel_metrics() -> str:
         <article class="metrics">
           <h3>{esc(owner)}</h3>
           {headline}
-          {sparkline(clean)}
+          {charts}
           <p class="note">{len(rows)} metrics row(s). The history is a cache — replay is deterministic, so any row can be recomputed from its commit.</p>
-          {outstanding}
-          {settled}
         </article>""")
 
     note = "the frontier chart is a phase 2a object; there is nothing to plot until there is a corpus"
@@ -485,6 +570,59 @@ def panel_metrics() -> str:
 
 
 # --- panel 4: cost ---------------------------------------------------------
+
+
+def panel_sections() -> str:
+    """The work queue at section granularity. Its own view because it is long
+    and answers a different question from the overview: not "is this going
+    well" but "what exactly is left"."""
+    phase = hj.load_phase()
+    blocks = []
+    for owner, config in sorted(phase.loops.items()):
+        buckets: dict[str, list[str]] = {"gaps": [], "unjudged": [], "clean": []}
+        for doc in config.docs:
+            verdicts = hj.read_audit(doc)
+            for section in hj.sections_of(doc):
+                verdict = verdicts.get(section.key)
+                state = verdict.state if verdict else "unjudged"
+                detail = ""
+                if verdict and verdict.gaps:
+                    items = "".join(
+                        f"<li><code>{esc(hj.gap_id(section.key, gap.claim))}</code> "
+                        f"<strong>{esc(gap.claim)}</strong><br>{esc(gap.found)}<br>"
+                        f"<code>{esc(gap.where)}</code></li>"
+                        for gap in verdict.gaps
+                    )
+                    detail += f"<ul class='gaps'>{items}</ul>"
+                if verdict and verdict.minors:
+                    items = "".join(
+                        f"<li>{esc(minor.claim)} — {esc(minor.note)} <code>{esc(minor.where)}</code></li>"
+                        for minor in verdict.minors
+                    )
+                    detail += f"<ul class='minors'>{items}</ul>"
+                buckets[state].append(
+                    f"<tr class='{state}'><td><code>{esc(section.anchor)}</code></td>"
+                    f"<td>{esc(section.heading)}</td><td class='state'>{esc(state)}</td>"
+                    f"<td>{detail}</td></tr>"
+                )
+
+        header = "<thead><tr><th>anchor</th><th>section</th><th>state</th><th>gaps and minor items</th></tr></thead>"
+
+        def table_of(state: str, rows: dict = buckets) -> str:
+            return f'<table class="sections">{header}<tbody>{"".join(rows[state])}</tbody></table>'
+
+        outstanding = (
+            table_of("gaps")
+            if buckets["gaps"]
+            else empty("No section in scope has a gap. What is left is the unjudged list, and the minor items.")
+        )
+        folded = "".join(
+            f'<details><summary>{len(buckets[state])} section(s) {label}</summary>{table_of(state)}</details>'
+            for state, label in (("unjudged", "not reached yet"), ("clean", "clean"))
+            if buckets[state]
+        )
+        blocks.append(f'<article class="metrics"><h3>{esc(owner)}</h3>{outstanding}{folded}</article>')
+    return panel("Sections and gaps", "".join(blocks), note="gap ids are what a campaign names in its target")
 
 
 def panel_cost() -> str:
@@ -569,9 +707,18 @@ def panel_sessions() -> str:
                 if path.exists()
                 else '<span class="empty">no transcript</span>'
             )
+            anchors = [a.strip() for a in (campaign.get("target") or "").split(",") if a.strip()]
+            if len(anchors) > 1:
+                items = "".join(f"<li><code>{esc(a)}</code></li>" for a in anchors)
+                target_cell = (
+                    f'<details><summary>{len(anchors)} targets</summary>'
+                    f'<ul class="sites">{items}</ul></details>'
+                )
+            else:
+                target_cell = f"<code>{esc(anchors[0])}</code>" if anchors else "—"
             rows.append(
                 f"<tr><td><code>{esc(identifier[:8])}</code></td><td>{esc(owner)}</td>"
-                f"<td>{esc(campaign.get('target') or '—')}</td>"
+                f"<td>{target_cell}</td>"
                 f"<td>{esc(campaign.get('outcome') or 'open')}</td>"
                 f"<td>{esc(campaign.get('commits', 0))}</td>"
                 f"<td><code>{esc((campaign.get('prompt_sha') or '')[:12])}</code></td>"
@@ -608,15 +755,71 @@ def panel_interventions() -> str:
     )
 
 
-def fragment() -> str:
-    return (
-        panel_decisions()
-        + panel_loops()
-        + panel_metrics()
-        + panel_cost()
-        + panel_sessions()
-        + panel_interventions()
+def current_campaign() -> tuple[str, str] | None:
+    """The campaign a transcript is still being written for, else the newest."""
+    phase = hj.load_phase()
+    newest = None
+    for owner in phase.loops:
+        for campaign in hj.campaigns_of(owner):
+            identifier = campaign.get("campaign", "")
+            if not identifier:
+                continue
+            newest = (owner, identifier)
+            if not campaign.get("outcome"):
+                return (owner, identifier)
+    return newest
+
+
+def panel_live(tail: int = 30) -> str:
+    """The last turns of the session that is running now.
+
+    Reading a campaign while it works is the one thing `state/` cannot answer:
+    the journal and the record are written at close, so until then the
+    transcript is the only account of what it is doing.
+    """
+    current = current_campaign()
+    if current is None:
+        return panel("Live", empty("No campaign has run yet."))
+    owner, identifier = current
+    path = Path(adapter("transcript-path", owner, identifier).strip() or "/nonexistent")
+    if not path.exists():
+        return panel("Live", empty(f"No transcript for {identifier[:8]} yet."))
+
+    events = [json.loads(line) for line in adapter("parse-stream", str(path)).splitlines() if line.strip()]
+    running = campaign_is_running(identifier)
+    state = "running" if running else "finished"
+    head = (
+        f'<p class="meta">campaign <code>{esc(identifier[:8])}</code> · {esc(state)} · '
+        f'{len(events)} events · showing the last {min(tail, len(events))} · '
+        f'<a href="/transcript/{urllib.parse.quote(owner)}/{urllib.parse.quote(identifier)}">whole transcript</a></p>'
     )
+    body = "".join(render_event(event) for event in events[-tail:])
+    return panel("Live", head + (body or empty("Nothing yet.")), note="written as it happens; the journal is not")
+
+
+def campaign_is_running(identifier: str) -> bool:
+    try:
+        return hj.campaign_is_alive(identifier)
+    except Exception:
+        return False
+
+
+VIEWS = (
+    ("overview", "Overview"),
+    ("sections", "Sections and gaps"),
+    ("interventions", "Interventions"),
+    ("live", "Live"),
+)
+
+
+def fragment(view: str = "overview") -> str:
+    if view == "sections":
+        return panel_sections()
+    if view == "interventions":
+        return panel_interventions()
+    if view == "live":
+        return panel_live()
+    return panel_decisions() + panel_loops() + panel_metrics() + panel_cost() + panel_sessions()
 
 
 # --------------------------------------------------------------------------
@@ -737,6 +940,11 @@ body { margin:0; font:14px/1.5 -apple-system, "Segoe UI", system-ui, sans-serif;
 header { padding:14px 20px; border-bottom:1px solid var(--line); display:flex;
          align-items:baseline; gap:14px; position:sticky; top:0; background:var(--bg); z-index:2; }
 header h1 { font-size:15px; margin:0; font-weight:600; }
+header nav { display:flex; gap:6px; margin-left:8px; }
+.tab { font-size:12px; padding:4px 11px; border-radius:999px; text-decoration:none;
+       color:var(--dim); border:1px solid var(--line); white-space:nowrap; }
+.tab:hover { color:var(--fg); }
+.tab.on { background:var(--fg); color:var(--bg); border-color:var(--fg); }
 main { padding:0 20px 60px; max-width:1100px; }
 .panel { margin:26px 0; }
 .panel > h2 { font-size:13px; text-transform:uppercase; letter-spacing:.08em; margin:0 0 10px;
@@ -773,6 +981,27 @@ th { color:var(--dim); font-weight:500; white-space:nowrap; }
 .headline { font-size:22px; margin:4px 0; }
 .headline strong { font-size:30px; }
 .spark { width:100%; height:40px; }
+
+/* Categorical slots 1 and 2, validated for both surfaces and for CVD
+   (scripts/validate_palette.js: all six checks pass in each mode). Dark is
+   selected against the dark surface, not an automatic flip. */
+.panel { --series-1:#2a78d6; --series-2:#eb6834; }
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) .panel { --series-1:#3987e5; --series-2:#d95926; }
+}
+:root[data-theme="dark"] .panel { --series-1:#3987e5; --series-2:#d95926; }
+
+.chart { margin:14px 0 4px; }
+.chart svg { width:100%; height:auto; overflow:visible; }
+.chart .grid { stroke:var(--line); stroke-width:1; }
+.chart .tick { fill:var(--dim); font-size:10px; font-family:inherit; }
+.chart .series { fill:none; stroke-width:2; stroke-linejoin:round; stroke-linecap:round; }
+.chart .marker { stroke:var(--card); stroke-width:2; }
+.chart .direct { fill:var(--fg); font-size:11px; font-family:inherit; }
+figcaption { color:var(--dim); font-size:12px; display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
+.legend { display:flex; gap:12px; }
+.key { display:inline-flex; align-items:center; gap:5px; }
+.key i { width:10px; height:2px; border-radius:1px; display:inline-block; }
 .spark polyline { fill:none; stroke:var(--accent); stroke-width:1.5; vector-effect:non-scaling-stroke; }
 tr.clean td.state { color:var(--good); }
 tr.gaps td.state { color:var(--bad); }
@@ -807,7 +1036,8 @@ async function tick() {
     for (const field of document.querySelectorAll('form.answer textarea')) {
       if (field.value.trim()) return;
     }
-    const html = await (await fetch('/fragment')).text();
+    const view = document.querySelector('main').dataset.view;
+    const html = await (await fetch('/fragment?view=' + encodeURIComponent(view))).text();
     document.querySelector('main').innerHTML = html;
     token = fresh;
     document.getElementById('token').textContent = 'updated ' + new Date().toLocaleTimeString();
@@ -817,7 +1047,14 @@ setInterval(tick, 2000);
 """
 
 
-def page(title: str, body: str, poll: bool = True) -> str:
+def nav(view: str) -> str:
+    return "".join(
+        f'<a class="tab{" on" if name == view else ""}" href="/?view={name}">{esc(label)}</a>'
+        for name, label in VIEWS
+    )
+
+
+def page(title: str, body: str, poll: bool = True, view: str = "overview") -> str:
     script = ""
     if poll:
         script = f"<script>{POLL.replace('%TOKEN%', json.dumps(version_token()))}</script>"
@@ -832,8 +1069,9 @@ def page(title: str, body: str, poll: bool = True) -> str:
 <style>{STYLE}</style></head>
 <body>
 <header><h1>heuristic-jump</h1><span class="note">phase {esc(phase)}</span>
+<nav>{nav(view)}</nav>
 <span class="note" id="token"></span></header>
-<main>{body}</main>
+<main data-view="{esc(view)}">{body}</main>
 {script}
 </body></html>"""
 
@@ -955,9 +1193,13 @@ class Handler(BaseHTTPRequestHandler):
         query = urllib.parse.parse_qs(parsed.query)
         try:
             if route == "/":
-                self.send(200, page("Dashboard", fragment()))
+                view = query.get("view", ["overview"])[0]
+                if view not in dict(VIEWS):
+                    view = "overview"
+                self.send(200, page("Dashboard", fragment(view), view=view))
             elif route == "/fragment":
-                self.send(200, fragment())
+                view = query.get("view", ["overview"])[0]
+                self.send(200, fragment(view if view in dict(VIEWS) else "overview"))
             elif route == "/version":
                 self.send(200, version_token(), "text/plain; charset=utf-8")
             elif route.startswith("/transcript/"):
