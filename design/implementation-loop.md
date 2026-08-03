@@ -1435,7 +1435,7 @@ timestamp, kind, target, answer, rationale, resulting commit
 `kind` covers the full set: decision answered, phase-3 behaviour change
 approved or refused, frontier point selected, stall unblocked, budget
 raised, ratchet exception granted, spec edited by hand, loop killed or
-restarted, ledger corrected.
+restarted, ledger corrected, **prompt revised**.
 
 **The log is the mechanism, not a record of it.** Answering a decision
 *means* appending to this file; the harness derives the decision's
@@ -1446,6 +1446,24 @@ POST endpoint is what makes this free: every answer given through the
 page is logged by construction. Out-of-band interventions cannot all be
 caught, but the two common ones can — a git hook flags hand-authored
 commits, and the harness logs its own kills.
+
+**A prompt revision is the one intervention that cannot be replayed**,
+and it is worth separating from the others for that reason. Every other
+change here is recoverable after the fact: code is re-measurable because
+replay is deterministic, a metric redefinition triggers a sweep, a
+corpus change triggers recollection. A prompt change alters the
+*generator* of campaigns, and past campaigns cannot be regenerated under
+the new one. Metrics either side of it are not strictly comparable and
+nothing downstream can detect that.
+
+So it gets one extra mechanism rather than just an honest log entry:
+prompt files live in `harness/prompts/`, in git, owned by nobody like
+the rest of `harness/` — and **each campaign records the prompt sha it
+ran under**. Segmenting behaviour by prompt version is then a join
+rather than an archaeology exercise, and "cost per progress rose after
+campaign 40" becomes attributable to a diff instead of a hunch. The
+intervention log entry carries the commit and the reasoning; git carries
+the diff.
 
 **`rationale` is the field that matters and the one that will get
 skipped**, so the page should refuse to submit without it. A decision
@@ -1506,7 +1524,8 @@ The per-campaign row in `state/sessions.jsonl` stays as the index:
 
 ```
 campaign id (= session id), loop, phase, language, server, target,
-started, ended, commits produced, tokens, outcome, transcript path
+prompt sha, started, ended, commits produced, tokens, outcome,
+transcript path
 ```
 
 ### Reading a transcript
