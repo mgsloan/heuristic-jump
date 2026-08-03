@@ -132,6 +132,20 @@ fn bodies() -> impl Strategy<Value = Vec<Vec<u8>>> {
     )
 }
 
+/// The other side of the property below, stated rather than left implied by a
+/// generator: the codec trims the header value, so a length is a length however
+/// it is padded. It has to — `Content-Length: 42` puts a space there, and every
+/// real frame has one.
+#[test]
+fn a_length_is_still_a_length_when_it_is_padded() {
+    for text in ["42", " 42", "\t42", "42\t"] {
+        let stream = format!("Content-Length: {text}\r\n\r\n{}", "x".repeat(42)).into_bytes();
+        let mut stream = reader(stream, 7);
+        let body = read(&mut stream).expect("a padded length is a length");
+        assert_eq!(body.len(), 42, "for {text:?}");
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
 
@@ -173,9 +187,23 @@ proptest! {
 
     /// The bogus-`Content-Length` case in the half that does not parse. Every
     /// one of these is refused as a length rather than read as a body.
+    ///
+    /// The filter is the property's premise and not a convenience. The regex
+    /// alone encodes "does not *start* with a digit", which is a stronger
+    /// claim than "is not a number" and one the codec does not make: it trims
+    /// the value — which it must, since the header is `Content-Length: 42` and
+    /// the space is part of every real frame — so `"\t0"` is a length, and
+    /// Rust's own parser accepts `"+5"` as one too. A random seed found the
+    /// first of those after this test had been passing for a while, which is
+    /// the failure mode of a generator that restates the implementation
+    /// instead of the claim.
     #[test]
     fn a_content_length_that_is_not_a_number_is_refused(
-        text in "[^0-9\r\n:][^\r\n:]{0,20}",
+        text in "[^0-9\r\n:][^\r\n:]{0,20}"
+            .prop_filter(
+                "a value that parses after trimming is a length, however it starts",
+                |text| text.trim().parse::<usize>().is_err(),
+            ),
         chunk in 1_usize..40,
     ) {
         let stream = format!("Content-Length: {text}\r\n\r\n{{}}").into_bytes();
