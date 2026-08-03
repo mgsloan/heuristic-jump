@@ -177,12 +177,7 @@ fn the_measurement_crates_have_the_edges_section_9_gives_them() {
 /// doc comment but not the registry is exactly the failure being caught.
 #[test]
 fn the_language_list_is_enumerated_in_heuristic_jump() {
-    let root = workspace_file("Cargo.toml");
-    let languages: Vec<&str> = root
-        .lines()
-        .filter_map(|line| line.trim().trim_matches(['"', ',']).strip_prefix("crates/"))
-        .filter(|member| member.starts_with("lang_"))
-        .collect();
+    let languages = language_members();
     assert!(
         !languages.is_empty(),
         "no crates/lang_* workspace member, so this test would pass vacuously"
@@ -192,7 +187,7 @@ fn the_language_list_is_enumerated_in_heuristic_jump() {
     let declared = dependencies_in(&manifest_text("heuristic_jump"));
     for language in languages {
         assert!(
-            declared.iter().any(|name| name == language),
+            declared.iter().any(|name| name == &language),
             "{language} is a workspace member and heuristic_jump does not depend on it: \
              core.md §9 has an edge from heuristic_jump to every lang_*"
         );
@@ -203,6 +198,104 @@ fn the_language_list_is_enumerated_in_heuristic_jump() {
              from it is a language the shipped binary does not have"
         );
     }
+}
+
+/// `core.md` §8.4: `PositionEncoding` "reaches the dispatch wrapper and stops
+/// there", which is §3's rule that no encoding crosses the handler seam, seen
+/// from the outbound side.
+///
+/// The compiler enforces the inbound half — `Query` has no encoding field, so
+/// a handler has nothing to read — and enforces none of the outbound half. A
+/// language crate can reach `shared::proto` directly, build a `WirePosition`
+/// with `encode`, and hand the driver something already in the negotiated
+/// units; the answer would be right for whatever encoding that author assumed
+/// and silently wrong for the one the two ends actually negotiated. Nothing
+/// in the build would notice, because the types line up.
+///
+/// So the rule is asserted against the source: the wire vocabulary is not
+/// nameable from a `lang_*` crate. `driver` and `shared` are where it lives,
+/// and `measure_core` is an LSP client that legitimately encodes the position
+/// it *sends* — what neither it nor a handler does is put an answer on a wire
+/// (CHANGE-conformance-012).
+#[test]
+fn no_language_crate_can_name_the_wire_vocabulary() {
+    const WIRE: &[&str] = &[
+        "PositionEncoding",
+        "WireLocation",
+        "WirePosition",
+        "WireRange",
+        "shared::proto",
+    ];
+
+    let languages = language_members();
+    assert!(
+        !languages.is_empty(),
+        "no crates/lang_* workspace member, so this test would pass vacuously"
+    );
+
+    for language in languages {
+        for (file, source) in sources_of(&language) {
+            assert!(
+                !source.is_empty(),
+                "{file} is missing or empty, so the scan below would pass vacuously"
+            );
+            for name in WIRE {
+                assert!(
+                    !source.contains(name),
+                    "{file} names {name}: core.md §8.4 hands the encoding to the dispatch \
+                     wrapper and stops there, so a handler that can reach the wire \
+                     vocabulary can encode an answer in units nobody negotiated"
+                );
+            }
+        }
+    }
+}
+
+/// The `crates/lang_*` workspace members, which is the list every language
+/// rule below is quantified over — six more of them arrive by copying the
+/// template, and a rule that named `lang_rust` would stop applying the moment
+/// it stopped being the only one.
+fn language_members() -> Vec<String> {
+    workspace_file("Cargo.toml")
+        .lines()
+        .filter_map(|line| {
+            line.trim()
+                .trim_matches(['"', ','])
+                .strip_prefix("crates/")
+                .filter(|member| member.starts_with("lang_"))
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+/// A crate's sources, as (path, contents).
+///
+/// `read_dir` is banned by `clippy.toml`, so this follows the crate root's own
+/// `mod` declarations rather than listing a directory — which is the stricter
+/// reading anyway: a file no `mod` reaches is a file the crate does not
+/// compile. `CLAUDE.md` fixes the two names it needs, forbidding `mod.rs` and
+/// naming the library root after the crate.
+///
+/// Pure, like `workspace_file` and for the same reason: a missing file comes
+/// back as an empty string, and the caller asserts it is not one.
+fn sources_of(crate_name: &str) -> Vec<(String, String)> {
+    let root = format!("crates/{crate_name}/src/{crate_name}.rs");
+    let text = workspace_file(&root);
+
+    let mut sources = vec![(root, text.clone())];
+    for line in text.lines() {
+        let declared = line
+            .trim()
+            .strip_prefix("mod ")
+            .or_else(|| line.trim().strip_prefix("pub mod "))
+            .and_then(|rest| rest.strip_suffix(';'));
+        if let Some(module) = declared {
+            let path = format!("crates/{crate_name}/src/{module}.rs");
+            let source = workspace_file(&path);
+            sources.push((path, source));
+        }
+    }
+    sources
 }
 
 /// `core.md` §9 gives `shared`'s dependencies and says "this list is the
