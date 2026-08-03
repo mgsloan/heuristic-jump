@@ -1231,3 +1231,82 @@ under `explicitly_imported`, 14 `match_top1` under `ambiguous_name`.
 than only printing it — not a stdout capture, and not a second table
 implementation in the test, which would fork the metric §7 exists to keep
 single.
+
+---
+
+## Campaign 571b1bb0 — `core.md#4-project-file-enumeration`, all three gaps
+
+Confirmed. Two commits: `FileListCache` in `driver` plus a small widening of
+`shared`, then routing `driver`'s existing dispatch tests through the cache.
+
+**The stated blocker was, for the fifth or sixth campaign running, not one.**
+All three gaps read as "there is no owner" / "blocked on `shim.md`'s routing",
+and none of that mattered. The owner is a plain struct with `&mut self`
+methods and a named background thread; it needs neither the actor loop, nor
+the transport, nor the codec. The rule from the previous findings held exactly:
+*ask what remains after removing the named blocker, and it is usually ordinary
+code*. This is now the sixth data point and it should be treated as the
+default reading of a `found:` that names a missing subsystem.
+
+**What made the three claims mechanical rather than asserted.** This is the
+part worth copying, because two of the three could easily have been written as
+a comment plus a test that passes vacuously:
+
+* *"never reads the payload"* — `watched_files_changed()` takes no argument.
+  There is nothing to read, so no test is needed and no future edit can quietly
+  start reading. A `watched_files_changed(&DidChangeWatchedFilesParams)` with a
+  comment saying it ignores its argument would have been the same claim and
+  worth nothing.
+* *"`NoCandidates` specifically, not any abstention"* —
+  `AbstainReason::file_list_evidence` is an exhaustive match, and it had to go
+  in `shared`: the enum is `#[non_exhaustive]`, so the same match written in
+  `driver` needs the wildcard arm `CLAUDE.md` bans, and that arm would classify
+  the next variant as inconclusive instead of failing to compile. **This is a
+  general rule for the seam's `#[non_exhaustive]` enums** — a consumer that
+  wants to case-split on one is asking for a method on it, not a `match`.
+* *"the two triggers share one debounce rather than one each"* — both triggers
+  call one private `mark_stale`, and the debounce is one `Refresh` field. There
+  is nowhere for a second timer to live, so the claim is structural.
+
+**Both mutation-checked before committing**, which is the only reason to
+believe the tests. Flipping `file_list_evidence` to return `Stale` for every
+variant fails `no_candidates_is_the_only_abstention…`; making `install` leave
+the state `Pending` fails `the_two_triggers_share_one_debounce…`. Do this — a
+test written against code that already passes proves nothing about whether it
+would notice.
+
+**Abandoned: a test that a failed rescan leaves the list in hand.** It cannot
+be written, because `FileList::enumerate` never returns `Err`: an unreadable
+entry is logged and skipped, and a root that does not exist walks to an empty
+list. So the failure mode is not "the walk errors", it is "the walk succeeds
+and returns nothing", and *that* one does replace a good list with an empty
+one. That is the posture `enumerate`'s own comment already takes (a partial
+walk is the same failure mode as a stale one, and both cost recall rather than
+correctness), so it was left alone rather than special-cased — but a future
+campaign that wants a rescan to refuse to install a suspiciously empty walk
+should know the `Err` arm in `install` is close to dead code, not the guard it
+looks like.
+
+**Deliberately not done: constructing the cache in `driver::run`.** `run` has
+no roots — workspace folders arrive in `initialize`, which nothing handles —
+so a cache built there would be over `vec![]`. The cache's real caller is the
+`core` actor, and that is `#both-sides-are-sets`' gap. What *was* done instead
+is `FileListCache::view`, making the cache the only route to a `ProjectView`
+inside `driver`, and moving the two dispatch suites onto it; that is a real
+caller on the real query path rather than a stub.
+
+**Two mechanical notes.**
+
+* `crossbeam-channel` arrived with its first user, as `deps.md` §14 wants. It
+  is on §9's graph annotation for `driver` already, so this narrows the
+  `#the-dependency-graph[7f3a1bb4ec]` divergence rather than widening it.
+  `clippy.toml` bans blocking `Receiver::recv`; the scanner thread needs it and
+  carries an `#[expect]` saying why (it owes no answer, and the channel closing
+  is its shutdown signal). `unbounded` is banned too — both channels are
+  `bounded(1)`, which is sound because `Refresh::InFlight` keeps at most one
+  walk outstanding.
+* A test that needs time to *move* cannot use `FrozenClock`. `DrivenClock` is a
+  base `Instant` read once from `SystemClock` plus an `AtomicU64` of elapsed
+  milliseconds — atomic rather than a cell because `Clock` is `Sync`, and not a
+  lock. Copy it; every debounce, health-probe and report-window test will want
+  the same thing.
