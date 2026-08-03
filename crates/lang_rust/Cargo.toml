@@ -1,0 +1,31 @@
+[package]
+name = "lang_rust"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+# GPL through `similarity`, which is ported from the prior implementation. Every
+# `lang_*` inherits it, which is the whole handler layer (`deps.md` §5).
+license = "GPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/lang_rust.rs"
+doctest = false
+
+# `core.md` §9's template manifest, verbatim: shared, similarity, the grammar.
+# Nothing else — and in particular not `measure_core`, which is the whole
+# reason `measure_rust` is a crate rather than a `[[bin]]` here.
+#
+# `similarity` is declared and not yet used. It is what a real handler's
+# ranking is written against (`resolution.md` §5) and it is in the template's
+# manifest so that instantiating the template does not also mean discovering
+# which crates a handler is allowed to reach for.
+[dependencies]
+shared.workspace = true
+similarity.workspace = true
+tree-sitter.workspace = true
+tree-sitter-rust.workspace = true

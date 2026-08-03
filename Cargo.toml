@@ -3,6 +3,7 @@ resolver = "3"
 members = [
   "crates/driver",
   "crates/heuristic_jump",
+  "crates/lang_rust",
   "crates/shared",
   "crates/similarity",
   "vendor/rope",
@@ -24,6 +25,7 @@ rust-version = "1.95.0"
 # is MIT and the vendored crates keep what they arrived with (`deps.md` §5).
 [workspace.dependencies]
 driver = { path = "crates/driver" }
+lang_rust = { path = "crates/lang_rust" }
 shared = { path = "crates/shared" }
 similarity = { path = "crates/similarity" }
 rope = { path = "vendor/rope" }
@@ -74,6 +76,13 @@ thiserror = "2.0"
 # opinion about where it goes.
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tree-sitter = "0.26"
+# The *grammar*, and the one dependency here that is not ours to pick:
+# `high-level.md` requires the grammars to match Zed's, so this is
+# `../zed/Cargo.toml`'s value and moves only when Zed's does (`deps.md` §6).
+# The runtime above is a separate question and tracks a recent release; the two
+# meet through `tree-sitter-language`'s ABI rather than through a version
+# constraint, which is what lets them differ.
+tree-sitter-rust = "0.24.2"
 url = "2.5"
 
 # Held at `../zed/Cargo.toml`'s values at `90d024b8`, because the vendored

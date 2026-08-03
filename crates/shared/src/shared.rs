@@ -14,6 +14,7 @@ mod deadline;
 mod document;
 mod error;
 mod handler;
+mod identifier;
 mod project;
 mod vocabulary;
 
@@ -30,6 +31,7 @@ pub use error::{EncodingError, Error, HandlerError, ParseError, ProjectError, Pr
 pub use handler::{
     AbstainReason, CommitPolicy, LanguageHandler, Outcome, Query, ServerProfile, Stratum,
 };
+pub use identifier::{Identifiers, identifier_at, identifiers};
 pub use project::{FileChunks, FileList, FileText, ProjectPath, ProjectRoot, ProjectView, RelPath};
 // All seven of §1's text-shaped newtypes, not just the four `shared` itself
 // uses: `ByteColumn`, `Utf16Column` and `CharCount` are on the same list, and
