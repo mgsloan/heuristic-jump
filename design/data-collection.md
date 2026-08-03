@@ -9,13 +9,23 @@ after it is wrong and nothing says so."
 ## 0. What it produces, and when it is done
 
 ```
-../heuristic-jump-corpus/training/<lang>/
-  repos/<name>/                 checkout at a pinned commit
-  positions/<name>.jsonl        every query position, enumerated once
-  truth/<server>/<name>.jsonl   one per server
-  manifest.toml                 what was chosen and why
-../heuristic-jump-corpus/test/  same shape, select + final splits
+../heuristic-jump-corpus/
+  servers.toml                    per language, each server's command and
+                                  pinned version -- what `collect` resolves
+                                  `--server <name>` against
+  training/<lang>/
+    repos/<name>/                 checkout at a pinned commit
+    positions/<name>.jsonl        every query position, enumerated once
+    truth/<server>/<name>.jsonl   one per server
+    manifest.toml                 what was chosen and why
+  test/                           held out. Same shape, five repositories
 ```
+
+`servers.toml` is the machine-readable half of what phase 1c produces;
+`external-dependencies.md` is the human half, covering how each server
+was installed and what it needed. The split matters because `collect`
+must record what it actually ran, and a prose document cannot be
+resolved by a program.
 
 **Gate:** for at least one language, every repository has positions, a
 truth file per server with a valid provenance header, and
@@ -25,7 +35,7 @@ oracle-determinism check in [section 5](#5-validate-the-oracle-before-trusting-i
 ## 1. Repository selection
 
 Seven languages: C, C++, Go, JavaScript, TypeScript/TSX, Rust, Python.
-Ten repositories each, minus the split below.
+Ten repositories each — five for training, five held out.
 
 **Size: 20k–200k lines.** This is a criterion with a reason, not a
 vibe. Below ~20k a whole-project search finishes instantly and the
@@ -97,12 +107,28 @@ distribution slightly wrong in a way no metric names.
 
 ### The split is decided here
 
-Tune / select / final, roughly 6–7 / 2 / 1–2 per language, assigned at
-selection time and placed in the correct root immediately. Once a
-repository has been in the tuning corpus it cannot be moved to held-out
-— nothing un-teaches it. The third split exists because frontier
-selection at phase gates consumes the second one
-(`loops.md` §12).
+**Five tuning, five held out**, per language, assigned at selection time
+and placed in the correct root immediately. Once a repository has been
+in the tuning corpus it cannot be moved to held-out — nothing un-teaches
+it.
+
+Two consequences worth being explicit about, because the split is the
+one phase-1b decision that cannot be revisited.
+
+**Half the corpus is spent on validation**, which is a lot, and it is
+the right trade under `loops.md` §12: the tuned/held-out gap is the only
+signal that distinguishes a real improvement from a loop that has
+learned five repositories, and a thin held-out set makes that signal
+noisy exactly when it matters.
+
+**Held-out is a selection set, not an untouched one.** Frontier
+selection at every phase gate reads it (`loops.md` §10), so over ten
+gates it is being optimised against, slowly and by a human. The remedy
+if that starts to matter is to carve a final set out of these five and
+stop selecting on it — which stays available precisely because they have
+never been in the tuning corpus. **The split can be made finer later and
+never coarser**, so five and five now preserves the option rather than
+foreclosing it.
 
 ### `manifest.toml`, and repositories are never bumped
 

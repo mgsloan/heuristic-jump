@@ -178,6 +178,43 @@ pub enum Outcome {
     Abstain { reason: AbstainReason, stratum: Stratum },
 }
 
+/// One per row of `high-level.md`'s stratification list, plus a placeholder.
+/// What each means, and how a query is assigned one, is `resolution.md` §8.
+pub enum Stratum {
+    LocalBinding,
+    SameFileModule,
+    ExplicitImport,
+    WildcardImport,
+    AmbiguousName,
+    ExternalDependency,
+    MacroGenerated,
+    TypeInferenceRequired,
+    /// The language crate template, unmodified. No real handler may return
+    /// this -- see section 9. Its presence in a metrics table means the
+    /// template has not been replaced, which is a gate check rather than
+    /// something anybody has to notice.
+    Unimplemented,
+}
+
+#[non_exhaustive]
+pub enum AbstainReason {
+    /// The cursor is not on a resolvable identifier.
+    NotAnIdentifier,
+    /// An identifier, but of a kind this language does not resolve.
+    UnsupportedRole,
+    /// Searched exhaustively, found nothing.
+    NoCandidates,
+    /// The deadline expired mid-search. The one latency-shaped abstention
+    /// `high-level.md` allows, and the only reason here that is not a fact
+    /// about the code.
+    Deadline,
+    /// The only plausible target is outside the workspace. Carries the name
+    /// because standalone puts it in the error text (`shim.md` §8).
+    External { name: Box<str> },
+    NoParse,
+    HandlerError,
+}
+
 /// Stratum -> minimum Confidence. Empty in v1, where `decide` returns
 /// `Committed` for every input. Handlers never construct `Outcome::Committed`
 /// themselves; every path ends here.
@@ -201,11 +238,14 @@ Notes on the shape:
   the deadline expired —and it should not share a type with "something went
   wrong." Under the future precision floor it also becomes the mechanism that
   holds the floor, which is a further reason not to model it as an error.
-* **`Stratum` and `AbstainReason` are defined in `resolution.md` §8**, not
-  here, even though they are seam types that `shared` must contain. Phase 1a
-  therefore reads that section too — it is the one place the seam's definition
-  crosses documents, and the split is worth knowing about rather than
-  discovering.
+* **`AbstainReason` carries no resolution vocabulary.** Earlier revisions had
+  `UnsupportedRole { role: ReferenceRole }` and `External { name: Namespace }`,
+  which would have dragged two of `resolution.md`'s internal types into the
+  seam — and `ReferenceRole`'s variant set is a claim about what kinds of
+  reference exist, which is exactly the per-language decision
+  [`resolution.md` §1.2] refuses to centralise. The variants are unit or carry
+  primitives; the detail a handler knows stays in the handler, and reaches the
+  metrics through the trace record rather than the seam.
 *  ** `Stratum` is reported on both arms**, because coverage per stratum is
   meaningless without knowing which stratum the abstentions belonged to.
 *  ** `Confidence` exists now** even though nothing compares it against a
@@ -996,8 +1036,50 @@ Three reasons for the split, in ascending order of importance:
   `training/` rather than a subdirectory of it for exactly that reason, and
   `loops.md` §12 relies on it being a filesystem boundary.
 
-`--corpus <dir>` on both subcommands; no default, because a defaulted corpus
-path is one that eventually points at the wrong one.
+### The command line
+
+Three subcommands, one per stage of `data-collection.md`. The binary is
+per-language, so the language is never an argument.
+
+```
+measure-<lang> enumerate --corpus <dir> [--repo <name>]... [--limit N] [--seed N]
+measure-<lang> collect   --corpus <dir> --server <name> [--repo <name>]... [--restart]
+measure-<lang> replay    --corpus <dir> --server <name> [--repo <name>]...
+                         [--format table|json]
+```
+
+* **`enumerate`** parses each repository, samples positions, writes
+  `positions/<repo>.jsonl`. `--limit` defaults to 20 000 and `--seed` makes the
+  sample reproducible — an unseeded sample is a corpus that cannot be
+  regenerated, which defeats freezing it.
+* **`collect`** drives the server named in the corpus root's `servers.toml`,
+  which carries its command and pinned version. Naming a server rather than
+  passing a command line is what lets the provenance header record what was
+  actually run without trusting the invocation to be repeated correctly.
+  Resuming is the default; `--restart` discards a partial truth file, which is
+  the destructive option and therefore the explicit one.
+* **`replay`** reads the frozen truth and prints the per-stratum table.
+  `--format json` is what the harness consumes. It **writes nothing** — the
+  harness decides what to record, so `measure_core` needs no knowledge of
+  `state/`.
+
+Three properties the flags are chosen to give:
+
+* **`--corpus <dir>` is required and has no default.** A defaulted corpus path
+  is one that eventually points at the wrong one.
+* **There is no `--held-out` flag**, and there must not be. Held-out is
+  selected by passing a different `--corpus` path, so a session that is not
+  given the path cannot reach the data. A flag is something a loop can set;
+  a path it was never told is not
+  ([`loops.md`](loops.md#12-held-out-integrity)).
+* **`replay` is deterministic.** Same corpus, same commit, same table, byte for
+  byte — which is what makes it usable as a gate rather than a report, and is
+  the property the whole [replay design](#two-modes-collect-and-replay) rests
+  on.
+
+Exit status is about whether the run happened, not about whether the numbers
+are good: `replay` exits zero having printed a table full of zeroes. Judging
+the table is the gate's job, not the measurement's.
 
 ## 8. Protocol types
 

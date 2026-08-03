@@ -63,8 +63,9 @@ sibling splits, so that held-out data is separated by a path rather
 than by an honour system:
 
 ```
-../heuristic-jump-corpus/training/   repos, sampled positions, ground truth
-../heuristic-jump-corpus/test/       the select and final splits
+../heuristic-jump-corpus/servers.toml  each server's command and pinned version
+../heuristic-jump-corpus/training/     5 repos per language: sources, positions, truth
+../heuristic-jump-corpus/test/         5 more, held out and never passed to a loop
 ```
 
 ## The design documents

@@ -30,7 +30,7 @@ constraint. The rule now is `high-level.md`'s:
 Every place the earlier version of this document used a confidence threshold,
 a margin test, or a uniqueness requirement to *decline*, that mechanism now
 computes a number and commits anyway. The numbers are still computed, for the
-reason the core doc gives in [section 12]: a floor can only be derived from
+reason the core doc gives in [section 1]: a floor can only be derived from
 `(stratum, confidence, agreed?)` triples collected while nothing was being
 gated, and retrofitting a confidence notion into handlers written without one
 means revisiting every resolution path.
@@ -104,8 +104,8 @@ And what a handler may **not** assume:
   ([section 1.3](#13-the-search-is-exhaustive-and-the-clock-may-only-abort-it)),
   so a handler neither sizes its search nor rations it. What it owes is
   polling `expired()` often enough that the abort is prompt — the deadline
-  differs by mode (750ms proxying, 2000ms standalone, core doc
-  [section 17.6]) and a handler never learns which.
+  differs by mode (750ms proxying, 2000ms standalone, `shim.md`
+  [section 14.6]) and a handler never learns which.
 * **That it is called once per user gesture.** The retry protocol, speculative
   editor requests, and `measure replay` all produce repeats at the same spot.
   Resolution must be deterministic — see below.
@@ -221,7 +221,7 @@ document's §14 depends on it.
 Also new, and it changes what "correct" means in every other section of this
 document.
 
-Core doc [section 11] establishes that two language servers for the same
+Core doc [section 7] establishes that two language servers for the same
 language genuinely disagree, and not because one is wrong: go-to-definition on
 a re-exported name has two defensible answers, and so do declaration versus
 definition, trait method versus impl method, and whether a `use` resolves to
@@ -247,7 +247,7 @@ Four consequences here:
   divides the data per cell — a real cost, and an argument for fewer buckets
   ([open question 10](#open-questions)).
 * **The profile is not a config format, and the pressure to make it one is
-  strong.** Core doc [section 12] says so, citing
+  strong.** Core doc [section 1] says so, citing
   [section 1.2](#12-the-pipeline-is-a-shape-not-a-type) and
   [section 9](#9-what-is-shared-and-what-is-not) of this document by name. The
   same rule applies: `ServerProfile` starts empty (just a `ServerId`), and a
@@ -266,7 +266,7 @@ Four consequences here:
   question asks whether re-export chains should be followed, and says it needs
   corpus evidence first. The set of positions where servers disagree *is*
   largely a map of where re-export and alias chains matter — core doc
-  [section 11] makes exactly this observation. So the evidence arrives as a
+  [section 7] makes exactly this observation. So the evidence arrives as a
   by-product of measurement rather than needing its own experiment.
 
 The open end is standalone, which has no server to stand in for and therefore
@@ -466,7 +466,7 @@ sections ([6](#6-candidate-verification), [7](#7-confidence-and-the-commit-decis
 
 The handler's entire view of the world outside its own document.
 
-**It is a concrete struct in `shared`, not a trait.** Core doc [section 12] now
+**It is a concrete struct in `shared`, not a trait.** Core doc [section 1] now
 settles this, reversing an earlier arrangement that both this document and that
 one assumed: the trait lived in `shared` and the implementation in `driver`,
 because the file list cache and the scope rules are the driver's. Two things
@@ -547,7 +547,7 @@ of an accident.
 
 ### `read` resolves open documents
 
-Core doc [section 5] argues at length that `didChange` must be tracked, because
+`shim.md` [section 5] argues at length that `didChange` must be tracked, because
 the tool's value window coincides with the user having just typed something.
 That argument only pays off if it reaches the search path: a definition added
 thirty seconds ago is in the editor's buffer, not on disk, and a handler that
@@ -810,7 +810,7 @@ literals, import statements, other references, macro invocation arguments it
 cannot see into.
 
 **`Candidate` carries the node it was classified from, and that is how the
-line gets filled in.** Core doc [section 12] has `Location` carrying
+line gets filled in.** Core doc [section 1] has `Location` carrying
 `line: LineIndex` alongside `range`, constructible only via
 `Location::at_node`, on the reasoning that a handler gets the row for free from
 a tree-sitter node it has already verified and the driver would otherwise
@@ -840,7 +840,7 @@ barrel file means the container path a reference implies is not the container
 path the definition has, and a hard qualifier filter would eliminate the
 correct answer.
 
-Core doc [section 11] adds a reason this is even more true than it looked: the
+Core doc [section 7] adds a reason this is even more true than it looked: the
 re-export case is one where *servers themselves disagree*, some answering the
 re-export site and some the original definition, with both defensible. So
 "the correct answer" here is not a fact about the language being approximated
@@ -989,7 +989,7 @@ That definition is only worth anything if it is measured, so:
 * The resulting table *is* the calibration.
 
 Note that calibration is now cheap to redo and does not need a language server.
-Core doc [section 11] freezes the LSP's answers into `truth.jsonl` once per
+Core doc [section 7] freezes the LSP's answers into `truth.jsonl` once per
 (repo commit, server version), so re-fitting a confidence model is a replay
 over stored data — minutes, not an afternoon. That is what makes
 [section 7.2](#72-how-a-threshold-would-be-derived-when-there-is-one) a
@@ -1088,7 +1088,7 @@ parameter, a trait method call, and a rule for handler authors, all to express
 a policy that currently has no content. The case for building it anyway is
 narrow but, I think, sufficient:
 
-* Core doc [section 17.6] already asserts that a per-mode floor is "a data
+* `shim.md` [section 14.6] already asserts that a per-mode floor is "a data
   change rather than a code change," and cites this section by name. Without
   the funnel that claim is false, and the cost of making it true later is
   auditing every commit site in every language crate — the work scaling with
@@ -1137,25 +1137,13 @@ are *measurements*, and the alternative was an empty table plus a guess.
 
 ## 8. Strata and abstention reasons
 
-```rust
-pub enum Stratum {
-    LocalBinding,
-    SameFileModule,
-    ExplicitImport,
-    WildcardImport,
-    AmbiguousName,
-    ExternalDependency,
-    MacroGenerated,
-    TypeInferenceRequired,
-    /// The language crate template, unmodified. No real handler may return
-    /// this -- see `core.md` §9. Its presence in a metrics table means the
-    /// template has not been replaced, which is a gate check rather than
-    /// something anybody has to notice.
-    Unimplemented,
-}
-```
+**`Stratum` and `AbstainReason` are defined in `core.md` §1**, with the rest of
+the seam, because `Outcome` carries them and `shared` is where the seam lives.
+This section says what they mean and how a query gets one — the part that is
+resolution's business rather than the driver's.
 
-One per row of `high-level.md`'s stratification list, plus the placeholder.
+One stratum per row of `high-level.md`'s stratification list, plus
+`Unimplemented` for the untouched language template.
 
 ### Assignment is a-priori, with one refinement
 
@@ -1197,25 +1185,21 @@ disappointment.
 
 ### Abstention reasons
 
-```rust
-#[non_exhaustive]
-pub enum AbstainReason {
-    /// The cursor is not on a resolvable identifier.
-    NotAnIdentifier,
-    /// An identifier, but of a kind this language does not resolve.
-    UnsupportedRole { role: ReferenceRole },
-    /// Searched exhaustively, found nothing.
-    NoCandidates,
-    /// The deadline expired mid-search. The one latency-shaped abstention
-    /// `high-level.md` allows, and the only reason that is not a fact about
-    /// the code -- see section 1.3.
-    Deadline,
-    /// The only plausible target is outside the workspace.
-    External { name: Namespace },
-    NoParse,
-    HandlerError,
-}
-```
+Also `core.md` §1. Two things about the shape are worth stating here, since
+this is where the reasons are actually produced.
+
+**They carry no resolution vocabulary.** An earlier revision had
+`UnsupportedRole { role: ReferenceRole }` and `External { name: Namespace }`.
+Both types are this document's, and `ReferenceRole` in particular is a claim
+about what kinds of reference a language has — which
+[section 1.2](#12-the-pipeline-is-a-shape-not-a-type) refuses to centralise.
+So the variants are unit or carry primitives, and a handler that wants the
+detail recorded puts it in the trace record.
+
+**`Deadline` is the only one that is not a fact about the code.** Every other
+reason is reproducible from the same snapshot; that one depends on the budget,
+which is why `core.md` §7 makes replay enforce budgets deterministically
+rather than by wall clock.
 
 Three variants from earlier revisions are gone, and their absence is the
 clearest single summary of what the last two decisions did:
@@ -1236,13 +1220,15 @@ differ on it, which is why `measure replay` never produces it and why a
 nonzero rate of it in the field is a latency finding rather than a resolution
 one.
 
-**These strings reach the user.** Core doc [section 17.5] answers every
-standalone abstention with a `RequestFailed` error naming the reason, because a
-standalone user has no second opinion to fall back on. So each variant carries
-what a message needs and nothing else: `UnsupportedRole` names the role,
-`External` names the namespace it declined to leave the workspace for. Rendering
-is `Display` on the enum, in `shared`, not a `match` in the driver — the
-driver's job is to put the text in an error response, not to know what the
+**These strings reach the user.** `shim.md` §14.5 answers every standalone
+abstention with a `RequestFailed` error naming the reason, because a standalone
+user has no second opinion to fall back on. That is the one place a variant's
+payload earns its keep, and it is why `External` carries a name at all — "the
+definition is outside the workspace" is less useful than naming what it
+declined to leave for. Everything else says enough as a bare variant.
+
+Rendering is `Display` on the enum, in `shared`, not a `match` in the driver —
+the driver's job is to put the text in an error response, not to know what the
 reasons mean.
 
 It is `#[non_exhaustive]` and, per `CLAUDE.md`, **no wildcard match arms**.
@@ -1253,7 +1239,7 @@ falling into a `_ => "could not resolve"` arm and shipping a worse message than
 the one they replaced.
 
 One consequence is worth flagging as a live problem rather than a solved one.
-Core doc [section 17.5]'s worked example of a good abstention message is
+`shim.md` §14.5's worked example of a good abstention message is
 "could not resolve `parse_config`: ambiguous, 7 candidates" — which is
 precisely the variant v1 no longer has. With the floor dropped, standalone's
 abstentions are dominated by `NotAnIdentifier`, which fires whenever the user
@@ -1702,7 +1688,7 @@ documents do not rot.
    truncate or abstain.
 
 6. **Is an error response per abstention still right in standalone?**
-   Core doc [section 17.5] answers every standalone abstention with
+   `shim.md` §14.5 answers every standalone abstention with
    `RequestFailed` naming the reason, and already flags this as worth
    revisiting. Dropping the floor changes the input to that decision: the
    abstention mix is now dominated by `NotAnIdentifier` — the user pressed

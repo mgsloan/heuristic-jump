@@ -1173,15 +1173,19 @@ runs a hundred times more iterations.
   that means the last several iterations were probably net negative,
   and it needs a human to look at the diff.
 
-**A three-way split is probably needed.** Once held-out is used to
-*select* a version at every phase gate, it stops being untouched — it
-is being optimised against, just at a coarser cadence and by a human.
-Over ten gates that is real leakage. The standard remedy applies:
-tune / select / final, with the final set evaluated once, at the end,
-and never used to choose anything. With ~10 repositories per language
-that is roughly 6-7 / 2 / 1-2. This follows directly from making the
-frontier selectable and is easy to miss, because the second split was
-introduced for a different purpose.
+**The split is five and five** (`data-collection.md` §1), and held-out
+is therefore a *selection* set rather than an untouched one. Once it
+picks the version that proceeds at every phase gate it is being
+optimised against — slowly, at a coarse cadence, and by a human, but
+optimised against. Over ten gates that is real leakage.
+
+The remedy, if it starts to matter, is to stop selecting on part of it:
+carve a final set out of the five, evaluate it once at the end, and
+never let it choose anything. That stays available precisely because
+those repositories have never been in the tuning corpus — **the split
+can be made finer later and never coarser.** Deciding it now would mean
+guessing how much leakage ten gates actually cause, which the first few
+gates will say.
 
 ## 13. Shared code, and when it may exist
 
@@ -1874,12 +1878,18 @@ independently of anything here.
 | 2b LSP shim | high | weeks, parallel | small | driver test surface |
 | 3 whole-repository optimisation | moderate | days, serial | high (release builds) | how much duplication accumulated |
 
-**Calibration is the first ten iterations of each loop.**
-[Section 18](#18-what-to-build-first) already calls for watching ten
-iterations before trusting the machinery; those ten are also the cost
-measurement, and every estimate in the table above gets rewritten from
-them before the phase is allowed to run to completion. An estimate that
-is never compared against an actual is decoration.
+**Calibration is the first ten campaigns of each loop**, starting with
+phase 1a's conformance loop — which is also the first time any of this
+machinery runs against real work. Those ten are the cost measurement,
+and every estimate in the table above gets rewritten from them before
+the phase is allowed to run to completion. An estimate that is never
+compared against an actual is decoration.
+
+The other thing to watch across those ten: does the loop pick sensible
+targets, does it leave the tree green, and does the journal accumulate
+anything a human would have wanted written down. If the answer to the
+third is no, the state file design is wrong and nothing downstream will
+save it.
 
 ### Levers, by which resource they move
 
@@ -2217,22 +2227,33 @@ than a milestone to pass through.
 
 ### What that needs from this document
 
-Almost none of it, which is the point:
+**Phase 1a runs as a conformance loop**, so the machinery that loop
+depends on is in scope and the rest is not:
 
-* **The gate script**, in `harness/`. Useful from the first commit even
-  under a human, and cheap.
-* **The commit-trailer convention**, so `git log` is queryable later
-  ([section 4](#4-the-iteration-contract)).
-* **The auditor**, if phase 1a is run as a loop at all
-  ([section 5](#5-the-auditor-and-the-conformance-loops-number)). It is
-  the only feedback a conformance phase has.
+* **The gate** — `fmt`, `clippy`, `nextest`, diff scope
+  ([section 4](#4-the-iteration-contract)). In `harness/`, written by a
+  human, denied to the loop.
+* **The auditor** ([section 5](#5-the-auditor-and-the-conformance-loops-number)),
+  and with it `state/audit/`. This is the only feedback a conformance
+  phase has, so it is not optional and not deferrable — without it the
+  loop has no number and no work queue.
+* **Campaign records and the journal**
+  ([section 4](#campaigns-are-the-unit-of-fresh-context)), plus the
+  commit-trailer convention so `git log` is queryable later.
+* **The conformance and auditor prompts**
+  ([section 14](#prompts-as-starting-points)), which are the two least
+  validated artifacts here — expect to revise them during the first ten
+  campaigns and to log each revision
+  ([section 16](#every-intervention-is-logged)).
 
-That is the list. Phase 1a is small, is specified in detail by
-`core.md`, and is the phase this document already calls hand-driven or
-heavily supervised — so running it as a supervised sequence of ordinary
-sessions is legitimate, and a conformance loop is an option rather than
-a requirement. Phases 1b and 1c are human work with scripts. Phase 1.5
-is machine work with no model in it at all.
+What a single loop does **not** need: the supervisor, since one bash
+loop is not a fleet; worktrees and branches, since with one writer
+`master` is uncontended; the dashboard, since with one loop the audit
+state and the gap list are two files to read. Those arrive with 2a,
+when there is more than one of anything.
+
+Phases 1b and 1c are human work with scripts. Phase 1.5 is machine work
+with no model in it at all.
 
 ### What is deliberately not built yet
 
@@ -2262,7 +2283,7 @@ an improvement from sampling noise (decided question 8). The followup
 should revisit sections 9, 10, and 15 against real numbers rather than
 implementing them as written.
 
-## 19. How this goes wrong## 19. How this goes wrong
+## 19. How this goes wrong
 
 Stated plainly, because each of these has a countermeasure above and
 the countermeasures are the weakest part of this document.
@@ -2311,9 +2332,10 @@ the countermeasures are the weakest part of this document.
   a campaign can confirm a hypothesis that is not there — and the
   frontier will record the point as real.
 * **Selection leaks the held-out set.** Choosing a version at every
-  gate is optimisation against it, slowly. The three-way split in
-  [section 12](#12-held-out-integrity) is the remedy and it costs
-  corpus size, which is the scarce thing.
+  gate is optimisation against it, slowly. With five held-out
+  repositories and no final split, nothing currently detects it; the
+  remedy in [section 12](#12-held-out-integrity) costs corpus size,
+  which is the scarce thing.
 
 ## Decided
 

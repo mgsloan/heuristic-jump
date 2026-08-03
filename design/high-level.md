@@ -206,17 +206,20 @@ defensible rather than one being wrong. So the tool's behaviour varies
 with the server behind it, metrics are reported per (language, server),
 and they are never averaged across servers.
 
-Of the ~10 repos per language, 3-4 are held out and never seen by
+Of the 10 repos per language, 5 are held out and never seen by
 tuning sessions. Since the plan is Claude code sessions iterating
 against the corpus, learning a particular repo's local conventions is
 the default outcome rather than a risk. Both numbers get reported, and
 a gap between tuned and held-out repos is the overfitting signal.
 
-The held-out share is split again, into *select* and *final*: choosing
-a version at a phase gate is itself optimisation against whatever it is
-chosen on, so the set used for that is not the set the last number is
-reported from. Roughly 6-7 / 2 / 1-2 - `data-collection.md` §1 and
-`loops.md` §12.
+Half the corpus going to validation is a lot, and it is deliberate: the
+tuned/held-out gap is the only thing separating a real improvement from
+a loop that has learned five repositories, and a thin held-out set makes
+that signal noisy exactly when it matters. Note that choosing a version
+at a phase gate is itself optimisation against whatever it is chosen on,
+so the held-out set is a *selection* set rather than an untouched one -
+`data-collection.md` §1 and `loops.md` §12 have what to do if that
+starts to cost.
 
 The held-out repos and their truth files live in a **separate corpus
 split**, outside the workspace: `../heuristic-jump-corpus/test/`,
