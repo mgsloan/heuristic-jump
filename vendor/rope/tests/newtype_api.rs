@@ -334,7 +334,10 @@ fn the_public_surface_speaks_in_the_units_it_measures_in() {
     // operator.
     let span: ByteRange = ByteRange::new(Offset(0), Offset(3));
     let span_length: ByteLen = span.len();
-    assert_eq!((span_length, rope.slice(span).len()), (ByteLen(3), ByteLen(3)));
+    assert_eq!(
+        (span_length, rope.slice(span).len()),
+        (ByteLen(3), ByteLen(3))
+    );
 
     // §4: `TextSummary` is converted too, all nine fields. A field is not a
     // signature, so `no_public_field_names_a_bare_primitive` catches only a
@@ -351,13 +354,30 @@ fn the_public_surface_speaks_in_the_units_it_measures_in() {
     let longest_characters: CharCount = summary.longest_row_chars;
     assert_eq!(
         (summary_length, characters, utf16_length, lines),
-        (ByteLen(7), CharCount(6), OffsetUtf16(6), Point::new(LineIndex(2), ByteColumn::ZERO)),
+        (
+            ByteLen(7),
+            CharCount(6),
+            OffsetUtf16(6),
+            Point::new(LineIndex(2), ByteColumn::ZERO)
+        ),
         "the three ways of measuring the same text disagree, which is the \
          point of measuring them in different types"
     );
     assert_eq!(
-        (first_line, last_line, last_line_utf16, longest, longest_characters),
-        (CharCount(2), CharCount::ZERO, Utf16Column::ZERO, LineIndex::ZERO, CharCount(2))
+        (
+            first_line,
+            last_line,
+            last_line_utf16,
+            longest,
+            longest_characters
+        ),
+        (
+            CharCount(2),
+            CharCount::ZERO,
+            Utf16Column::ZERO,
+            LineIndex::ZERO,
+            CharCount(2)
+        )
     );
 
     // §4's second table: the four functions that are *not* byte offsets and
@@ -374,12 +394,20 @@ fn the_public_surface_speaks_in_the_units_it_measures_in() {
     let (chunk_longest, chunk_longest_characters): (LineIndex, CharCount) =
         slice.longest_row(&mut total_characters);
     assert_eq!(
-        (slice_length, chunk_first_line, chunk_last_line, chunk_last_line_utf16),
+        (
+            slice_length,
+            chunk_first_line,
+            chunk_last_line,
+            chunk_last_line_utf16
+        ),
         (ByteLen(6), CharCount(2), CharCount(2), Utf16Column(2)),
         "`aé` is two chars and two UTF-16 code units but three bytes, so the \
          first line's length is a different number in each unit"
     );
-    assert_eq!((chunk_longest, chunk_longest_characters), (LineIndex::ZERO, CharCount(2)));
+    assert_eq!(
+        (chunk_longest, chunk_longest_characters),
+        (LineIndex::ZERO, CharCount(2))
+    );
 }
 
 /// §4: each newtype gets `ZERO` and `MAX` "so a literal never has to appear",
@@ -516,6 +544,214 @@ fn the_four_units_round_trip_against_each_other() {
     }
 }
 
+/// §7: "**Every test is preserved**", because upstream's tests "are the only
+/// independent check that a signature sweep and the body edits that follow
+/// from it did not change behaviour".
+///
+/// This one is here because its absence had already cost something. §7 and
+/// `vendor/README.md` both said `#[gpui::test(iterations = N)]` was on **nine**
+/// functions and that nine were converted; there are eight `seeded` sites.
+/// Settling it needed the upstream revision fetched, and the answer was that
+/// nine attributes became eight `seeded` conversions and one plain `#[test]`
+/// (CHANGE-core-001). Nothing in the repository could tell that apart from a
+/// dropped test, which is what these counts now do.
+#[test]
+fn every_upstream_randomised_test_is_still_run() {
+    let text = fs::read_to_string(source("rope.rs")).expect("reading rope.rs")
+        + &fs::read_to_string(source("chunk.rs")).expect("reading chunk.rs");
+
+    let mut run: Vec<&str> = seeded_call_sites(&text);
+    let mut defined: Vec<&str> = text
+        .match_indices("fn ")
+        .filter_map(|(index, _)| {
+            let rest = &text[index + "fn ".len()..];
+            let end = rest.find('(')?;
+            let name = &rest[..end];
+            name.ends_with("_inner").then_some(name)
+        })
+        .collect();
+    run.sort_unstable();
+    defined.sort_unstable();
+
+    assert_eq!(
+        run, defined,
+        "every `_inner` body is one of upstream's randomised tests with its \
+         attribute replaced, so a body with no `seeded` call in front of it is \
+         a test that no longer runs (`design/rope-modifications.md` §7)"
+    );
+    assert_eq!(
+        run.len(),
+        8,
+        "upstream has nine `#[gpui::test]` at the pinned revision, of which \
+         eight carry `iterations = N` and become a `seeded` call. The ninth \
+         takes no `rng` and is a plain `#[test]`. If this number falls, a \
+         randomised test was dropped rather than converted"
+    );
+
+    assert!(
+        text.contains("fn test_point_utf16_to_offset_clips_to_correct_absolute_offset"),
+        "the ninth conversion -- upstream's one bare `#[gpui::test]` -- is a \
+         plain `#[test]` and has no `seeded` call to be counted by, so it is \
+         named here or it is held by nothing"
+    );
+
+    let tests = text.matches("#[test]").count();
+    assert_eq!(
+        tests, 24,
+        "upstream has 24 test functions in these two files and so do we. \
+         Upstream's tests are the verification of the sweep, so this number \
+         going down is the sweep losing its oracle; a test of *ours* belongs \
+         in this directory rather than in `src/`, which is why the number is \
+         exact rather than a floor"
+    );
+}
+
+/// §7's three substitutions, from the other side: what the vendored copy must
+/// no longer mention. `gpui`, `zlog` and `ctor` are "**not** vendored and not
+/// depended on", and the `#[ctor::ctor]` logger initialisers "only initialise
+/// logging and nothing asserts on it". `util` is folded in (§4), so it is on
+/// the same list.
+///
+/// **The compiler is the real enforcement here, and this records the intent.**
+/// Written back today, `use gpui;` does not resolve and the crate does not
+/// build — so the failure this scan is written for cannot be reached by
+/// planting the text alone, which is why its control below runs on synthetic
+/// input rather than on the crate. The regression it *can* see is the real
+/// one: a re-sync that brings back `#[ctor::ctor] fn init_logger` together
+/// with the dev-dependency compiles perfectly well, and puts a crate §7 spent
+/// a paragraph removing back into the build.
+///
+/// The names all survive in prose — `test_support.rs` quotes
+/// `#[gpui::test(iterations = N)]` to say what it replaces, and every
+/// relocated `util` item carries an attribution naming its upstream path — so
+/// this looks for the ways they would be *used*, and skips comments.
+#[test]
+fn neither_vendored_crate_reaches_for_gpui_zlog_or_ctor() {
+    let mut offenders = Vec::new();
+    for directory in ["rope", "sum_tree"] {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join(directory);
+        let manifest = fs::read_to_string(path.join("Cargo.toml")).expect("reading a manifest");
+        offenders.extend(
+            banished_dependencies(&manifest)
+                .into_iter()
+                .map(|name| format!("{directory}/Cargo.toml depends on {name}")),
+        );
+        for source in sources_in(&path.join("src")) {
+            let text = fs::read_to_string(&source).expect("reading a vendored source file");
+            offenders.extend(banished_uses(&text).into_iter().map(|used| {
+                format!(
+                    "{directory}/src/{}: {used}",
+                    source.file_name().unwrap_or_default().to_string_lossy()
+                )
+            }));
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "a vendored crate reaches for something `design/rope-modifications.md` \
+         §7 says is not vendored and not depended on. `util` is folded in \
+         (§4), and `gpui`, `zlog` and `ctor` were what stood between \
+         upstream's test modules and a plain `cargo test`:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The control for the scan above, on synthetic input for the reason that
+/// scan's own comment gives: planting `use gpui;` in the crate does not fail
+/// the test, it fails the *build*, and a test that cannot run is not evidence.
+#[test]
+fn the_banished_crate_scan_finds_what_it_is_looking_for() {
+    let planted = "
+        // Replaces `#[gpui::test(iterations = N)]`, which does one job.
+        //! Lifted from Zed's `crates/util/src/util.rs`.
+        use util::RandomCharIter;
+        #[ctor::ctor]
+        fn init_logger() { zlog::init_test(); }
+    ";
+
+    assert_eq!(
+        banished_uses(planted),
+        vec!["use util::", "ctor::ctor", "zlog::"],
+        "the scan must see the substitutions coming back and must not see the \
+         comments that record them having gone"
+    );
+
+    let manifest = "
+[dev-dependencies]
+rand.workspace = true
+ctor = \"0.2\"
+gpui = { path = \"../gpui\" }
+";
+    assert_eq!(
+        banished_dependencies(manifest),
+        vec!["ctor", "gpui"],
+        "a dependency is how the attribute above gets to compile, so it is \
+         half of the same check"
+    );
+}
+
+/// The crates §7 removed, in the order it names them, so a failure reads the
+/// way the section does.
+const BANISHED: [&str; 4] = ["gpui", "zlog", "ctor", "util"];
+
+/// Every non-comment line in `text` that uses one of the banished crates. A
+/// comment naming one is the record of its removal, which is required rather
+/// than forbidden.
+fn banished_uses(text: &str) -> Vec<&'static str> {
+    const USES: [&str; 5] = [
+        "use gpui",
+        "#[gpui::test",
+        "zlog::",
+        "ctor::ctor",
+        "use util::",
+    ];
+
+    let mut used = Vec::new();
+    for line in text.lines() {
+        let line = line.trim_start();
+        if line.starts_with("//") {
+            continue;
+        }
+        for marker in USES {
+            if line.contains(marker) && !used.contains(&marker) {
+                used.push(marker);
+            }
+        }
+    }
+    used
+}
+
+/// Every banished crate `manifest` declares as a dependency. A dependency line
+/// starts at the beginning of a line and the crate name is what precedes the
+/// `=` or the `.`, which is what keeps `rand.workspace` from reading as one.
+fn banished_dependencies(manifest: &str) -> Vec<&'static str> {
+    manifest
+        .lines()
+        .filter(|line| !line.starts_with(char::is_whitespace))
+        .filter_map(|line| {
+            let name = line.split(['=', '.']).next()?.trim();
+            BANISHED.iter().copied().find(|banished| *banished == name)
+        })
+        .collect()
+}
+
+/// The `_inner` function each `seeded` call runs. `seeded(100,
+/// test_random_rope_inner)` takes the function by value, so the name is the
+/// second argument and nothing else in the crate has this shape.
+fn seeded_call_sites(text: &str) -> Vec<&str> {
+    text.match_indices("seeded(")
+        .filter_map(|(index, _)| {
+            let rest = &text[index + "seeded(".len()..];
+            let end = rest.find(')')?;
+            let (_, name) = rest[..end].split_once(',')?;
+            Some(name.trim())
+        })
+        .collect()
+}
+
 /// The offset one past the last byte of `row`, which is where `line_len`'s
 /// column has to land. Computed from the `&str` rather than from the rope, so
 /// the comparison above has an oracle that is not the thing under test.
@@ -531,9 +767,16 @@ fn line_end(text: &str, row: LineIndex) -> Offset {
 }
 
 fn sources() -> Vec<PathBuf> {
-    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut sources: Vec<PathBuf> = fs::read_dir(&directory)
-        .expect("reading this crate's src directory")
+    sources_in(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"))
+}
+
+fn source(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(name)
+}
+
+fn sources_in(directory: &Path) -> Vec<PathBuf> {
+    let mut sources: Vec<PathBuf> = fs::read_dir(directory)
+        .expect("reading a src directory")
         .map(|entry| entry.expect("a directory entry").path())
         .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
         .collect();
@@ -616,9 +859,7 @@ fn operator_impls(text: &str) -> Vec<String> {
 
     impl_headers(text)
         .into_iter()
-        .filter(|header| {
-            implemented_trait(header).is_some_and(|name| OPERATORS.contains(&name))
-        })
+        .filter(|header| implemented_trait(header).is_some_and(|name| OPERATORS.contains(&name)))
         .collect()
 }
 
@@ -683,9 +924,7 @@ fn mentions_bare_primitive(signature: &str) -> bool {
             let before = signature[..index].chars().next_back();
             let after = signature[index + primitive.len()..].chars().next();
             let boundary = |character: Option<char>| {
-                character.is_none_or(|character| {
-                    !character.is_alphanumeric() && character != '_'
-                })
+                character.is_none_or(|character| !character.is_alphanumeric() && character != '_')
             };
             boundary(before) && boundary(after)
         })
