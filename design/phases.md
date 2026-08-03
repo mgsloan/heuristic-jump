@@ -2,6 +2,13 @@ Headers prefixed with the same number are run in parallel. The letter suffixes
 are stable names the other documents refer to — `loops.md` §8
 and `data-collection.md` use them throughout.
 
+**Scope of the initial implementation: phases 1a through 1.5, then stop.**
+Everything from 2a onward is a followup, planned once there is a working
+corpus and a working measurement to plan against. `loops.md` §18 says what
+that does and does not require building, and the exit criterion is that
+`measure_rust replay` prints a per-stratum table over real truth data,
+twice, identically.
+
 # 1a: Core needed for measurement
 
 Build out only the parts of core needed for implementing `measure_core` and

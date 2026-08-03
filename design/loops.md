@@ -62,10 +62,18 @@ different oracle, which is [section 2](#2-two-loops-two-oracles).
 
 ## 1. Current state, and what it forces
 
-There is no code. There are four design documents, a `clippy.toml`, and
+There is no code. There are the design documents, a `clippy.toml`, and
 a `CLAUDE.md`. Every loop described here is blocked on a bootstrap that
 is not itself loopable in any interesting sense, because there is
 nothing to measure yet.
+
+**So most of this document is not yet in scope.** The initial
+implementation covers phases 1a through 1.5 and stops
+([section 18](#18-scope-phases-1-and-15-first)); everything from 2a
+onward is a followup. What follows is specified now because specifying
+it is what makes the followup cheap, and because several phase-1
+decisions — the corpus split, the shape of the measurement record —
+are only correct if you know what will consume them.
 
 More consequentially: there is no shared resolution crate, and per
 `resolution.md` §9 there must not be one until working handlers
@@ -2179,31 +2187,82 @@ this design turns on — status advancing only when a named test passes.
 The two things worth taking are EARS notation and the "constitution"
 idea, and the constitution already exists as `CLAUDE.md`.
 
-## 18. What to build first
+## 18. Scope: phases 1 and 1.5 first
 
-Minimum viable version, in order:
+**The initial implementation stops after phase 1.5.** Everything from
+2a onward is a followup, planned once there is a working corpus and a
+working measurement to plan against.
 
-1. Ledger extraction for **phase 1 only**, reviewed by hand.
-2. The gate script, in `harness/`, denied to every loop.
-3. The commit-trailer convention and stall detection.
-4. One loop, conformance, on phase 1a. Watch it for ten iterations.
+That boundary is not arbitrary. Phases 1a through 1.5 produce the
+oracle; every loop described in this document is judged by it, and none
+of them can be evaluated — or usefully designed — before it exists.
+Building the campaign machinery first would mean building it against a
+guess at how a tuning loop behaves, and the way to stop guessing is
+three phases long.
 
-Everything else — held-out isolation, the frontier,
-the proposal protocol, per-language billing — is phase 3+ machinery.
-Building it now is the premature optimisation `CLAUDE.md` opens by
-warning about, and it would be built against a guess at how the loop
-behaves rather than an observation. The metrics history is the one
-thing worth starting early even though nothing consumes it yet, and
-even that is recoverable later by a replay sweep
-([section 9](#9-the-inner-loop-must-be-fast)).
+### What the initial implementation is
 
-The thing to watch in those first ten iterations: does it pick sensible
-items, does it leave the tree green, and does the journal accumulate
-anything a human would have wanted written down. If the answer to the
-third is no, the state file design is wrong and nothing downstream will
-save it.
+* **Phase 1a** — `vendor/rope`, `sum_tree`, `shared`, the language crate
+  template, `measure_core`, `measure_rust`.
+* **Phase 1b** — the repository corpus, split and pinned
+  (`data-collection.md` §1).
+* **Phase 1c** — the language servers, installed and documented.
+* **Phase 1.5** — ground truth for every (repository, server), frozen.
 
-## 19. How this goes wrong
+**Exit criterion: `measure_rust replay` prints a per-stratum table over
+real truth data, and produces the same table twice.** At that point the
+tool has an oracle. Nothing before that point has one, and nothing after
+it lacks one — which is why it is the place to stop and reassess rather
+than a milestone to pass through.
+
+### What that needs from this document
+
+Almost none of it, which is the point:
+
+* **The gate script**, in `harness/`. Useful from the first commit even
+  under a human, and cheap.
+* **The commit-trailer convention**, so `git log` is queryable later
+  ([section 4](#4-the-iteration-contract)).
+* **The auditor**, if phase 1a is run as a loop at all
+  ([section 5](#5-the-auditor-and-the-conformance-loops-number)). It is
+  the only feedback a conformance phase has.
+
+That is the list. Phase 1a is small, is specified in detail by
+`core.md`, and is the phase this document already calls hand-driven or
+heavily supervised — so running it as a supervised sequence of ordinary
+sessions is legitimate, and a conformance loop is an option rather than
+a requirement. Phases 1b and 1c are human work with scripts. Phase 1.5
+is machine work with no model in it at all.
+
+### What is deliberately not built yet
+
+The supervisor, the dashboard, campaigns and their digests, the
+frontier, held-out selection, per-language billing, cost accounting,
+worktree parallelism, and the findings protocol. Each is specified here
+because the specification is what makes the followup cheap — but every
+one of them exists to serve tuning loops, and there are none until 2a.
+
+Two exceptions worth starting early because retrofitting them is
+expensive:
+
+* **The metrics history** ([section 10](#the-metrics-history)), even
+  though nothing consumes it during phase 1. It is recoverable later by
+  a replay sweep, so this is a preference rather than a requirement.
+* **The corpus split** — tune, select, and final decided at 1b and
+  physically separated ([section 12](#12-held-out-integrity)). This one
+  is *not* recoverable: once a repository has been in the tuning corpus,
+  moving it to held-out does not un-teach it.
+
+### What the followup will know that this document does not
+
+Phase 1.5's output is what turns several guesses here into
+measurements — how long a replay actually takes, how noisy a stratum is,
+what a campaign costs, whether the corpus is large enough to distinguish
+an improvement from sampling noise (decided question 8). The followup
+should revisit sections 9, 10, and 15 against real numbers rather than
+implementing them as written.
+
+## 19. How this goes wrong## 19. How this goes wrong
 
 Stated plainly, because each of these has a countermeasure above and
 the countermeasures are the weakest part of this document.
