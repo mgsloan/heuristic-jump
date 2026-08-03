@@ -40,16 +40,25 @@ worked through in sequence.
    **You may take more than one, and you may take a specific gap rather than a
    whole section** — a gap is named `anchor[id]` in the list below, and the
    ones in a section are independent claims that do not have to be closed
-   together. Take several only when they are **related**: the same claim seen
-   from two sides, gaps that share the code that would satisfy them, gaps that
-   cannot be closed independently without writing the same thing twice, or the
-   remaining gaps of one section when clearing them all is what makes it clean.
+   together.
 
-   **Not related** means one campaign, one target. Batching unrelated gaps to
-   cover more ground makes a `partial` or a stall say nothing about which part
-   failed, and it is the same fiction as splitting one item into ten — motion
-   without a hypothesis behind it. If you cannot state in one sentence why
-   these belong together, they do not.
+   **The test for taking several is shared context, not interdependence.**
+   They do not have to be one claim seen from two sides, and neither has to
+   block the other. It is enough that closing them means working in the same
+   files, reading the same types, or having the same design sections open. A
+   gap you would satisfy while already looking at the code is nearly free; the
+   reading is what a campaign actually spends.
+
+   **What that rules out is a grab-bag.** If a target needs its own reading —
+   different files, different sections, nothing you already have open — it is
+   a different campaign, and it will be cheaper there: a fresh session starts
+   without your accumulated context to re-read on every turn. The check is
+   concrete rather than a matter of taste: *name the files or sections these
+   targets share.* If there is no honest answer, they are not one campaign.
+
+   Batching targets with nothing in common also costs attribution — a
+   `partial` or a stall over a grab-bag says nothing about which part failed —
+   so if you close `partial`, say which targets landed and which did not.
 
    Write what you took and why into `{{campaign_record}}`, naming the specific
    gaps rather than only the sections.
@@ -81,16 +90,17 @@ worked through in sequence.
    session its whole context budget on diagnosis, and it will not know the
    breakage was deliberate.
 
-4. **When the target is done, take another if it is cheap to.** Closing with
-   a warm context throws away everything you have read. If there is a gap
-   whose work is in code you already have open — the same files, the same
-   types, the same section — take it and say so in `{{campaign_record}}`;
-   your `TARGET` line lists all of them.
+4. **When the target is done, take another if it meets the same test.**
+   Closing with a warm context throws away everything you have read, so look
+   before you close — but the bar is the one in step 1, not a lower one
+   because you happen to be here already. Shared files, shared types, shared
+   sections. Add it to `{{campaign_record}}` and to your `TARGET` line.
 
-   Stop extending at the first target that would need fresh reading. That is
-   the boundary, and it is not a matter of taste: a target you have to read
-   for is one a fresh session does better and cheaper, because it starts
-   without your accumulated context to re-read on every turn.
+   Stop extending at the first target that would need fresh reading. A target
+   you have to read for is one a fresh session does better and cheaper, and a
+   cheap-to-reach target that shares nothing with what you did is still a
+   grab-bag — leave it, and it will be picked up at full price, which is the
+   right price.
 
    **Close** when the target's claim is satisfied and no cheap next target
    remains, or three experiments produce no commit, or you have done as much
