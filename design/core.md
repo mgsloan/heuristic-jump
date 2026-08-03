@@ -1079,6 +1079,32 @@ exists, so the shipped `heuristic-jump` binary never links an LSP client, and
 it keeps
 the dependency direction one-way.
 
+**Why not a `[[bin]]` inside `lang_<lang>` instead?** It is the more usual
+Rust layout, and it was asked for directly, so the answer belongs here rather
+than in a decision record. Cargo has no bin-only dependency: a `[[bin]]` in
+`lang_rust` makes `measure_core` and `clap` dependencies of the *crate*, and
+`heuristic_jump` depends on every `lang_*`, so the shipped shim would link the
+measurement client's LSP stack, JSON handling and CLI. `optional = true` with
+`required-features` escapes that on paper, but feature unification across a
+workspace can enable the feature for a build that only wanted the library, and
+the symptom is a larger binary rather than an error — a guard whose failure is
+invisible is not a guard.
+
+Two smaller things go with it. `loops.md`
+[section 11](loops.md#measure_lang-size-covers-the-size-gap) makes the
+stripped size of `measure_<lang>` the size proxy *because* it is built in
+isolation; a binary sharing the shim's dependency set does not measure what
+that ratchet reads. And `loops.md`
+[section 13](loops.md#mechanics-isolation-in-four-layers) gives
+`measure_<lang>` to the conformance loop rather than the language loop,
+because a loop must not own the code that scores it — a path glob can carve
+`src/bin/` out of a crate the language loop otherwise owns, but a directory
+boundary states it once instead of relying on two globs staying in the right
+order.
+
+The saving being declined is one directory and one `Cargo.toml`, against a
+dependency boundary the shipped binary's size depends on.
+
 Aggregating across languages — the combined table, the frontier — is done over
 the emitted records, which are data. Nothing that aggregates needs to link a
 handler at all.
