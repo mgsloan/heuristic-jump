@@ -33,6 +33,15 @@ docs = ["core.md"]
 
 # Cargo packages, matched as globs against the workspace members that
 # actually exist. A row for a crate not yet created costs nothing.
+#
+# `rope` and `sum_tree` are here so the gate *tests* them — their 29 upstream
+# tests are the only independent check that the newtype sweep did not change
+# rope's behaviour, and the campaign that performs that sweep is the one that
+# will believe a green gate (`conformance-003`). They are not linted or
+# format-checked: `hj crates --lintable` drops members whose manifest sits
+# under `vendor/`, because `deps.md` §14 withholds the workspace lints from
+# `vendor/*` deliberately and both `clippy -D warnings` and `fmt --check` fail
+# on unedited upstream text.
 crates = [
   "shared",
   "driver",
@@ -40,6 +49,8 @@ crates = [
   "measure_core",
   "measure_rust",
   "lang_rust",
+  "rope",
+  "sum_tree",
 ]
 
 # `crates/lang_rust/` is named here and not globbed, deliberately. Phase 1a's
