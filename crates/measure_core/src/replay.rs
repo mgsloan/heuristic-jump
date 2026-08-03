@@ -50,6 +50,31 @@ impl Replay<'_> {
         let path = self.corpus.truth(self.server, &repository.name);
         let truth = Truth::read(&path)?;
         verify_checkout(repository, Some(&truth.provenance.commit))?;
+        // §7: the header "names exactly one server and version", which is what
+        // makes a truth file comparable to itself over time and never silently
+        // merged with another's. The commit check above is about the *corpus*
+        // having moved; this one is about the file being the wrong file, and
+        // the `truth/<server>/` path is not a check — a file copied or hand-
+        // moved into it would be replayed under a name it was not collected
+        // under, and every metric would be attributed to the wrong oracle.
+        for (field, recorded, found) in [
+            ("server", &truth.provenance.server, self.server),
+            (
+                "language",
+                &truth.provenance.language,
+                self.corpus.language().as_str(),
+            ),
+        ] {
+            if &**recorded != found {
+                return Err(shared::ConfigError::ProvenanceDrift {
+                    path,
+                    field,
+                    recorded: recorded.clone(),
+                    found: found.into(),
+                }
+                .into());
+            }
+        }
 
         // One `FileList` per repository, and a `ProjectView` per query over
         // it: the walk is the expensive part and the scope rules are what the

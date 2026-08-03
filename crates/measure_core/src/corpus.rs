@@ -27,6 +27,18 @@ use shared::{ConfigError, Error, LanguageId};
 /// shadowed by whatever directory the run happened to start in.
 const SERVERS_MANIFEST: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../servers.toml");
 
+/// The workspace lockfile, embedded at build time.
+///
+/// `core.md` §7 makes the grammar revision part of a truth file's provenance,
+/// and the revision is not something the linked grammar can be asked for —
+/// `tree_sitter::Language` reports an ABI version, which every grammar built
+/// against the same runtime shares. What pins a grammar is the lockfile, so
+/// that is what is read. Embedded rather than opened, because the header must
+/// name the grammar this binary was *built* with and not whatever the working
+/// copy has become since; `rustc` records the include in its dep-info, so
+/// re-locking the grammar rebuilds this crate.
+const LOCKFILE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.lock"));
+
 /// One corpus split, for one language. The two are taken together because
 /// every path below is `<split>/<language>/…` and neither half is meaningful
 /// alone.
@@ -204,6 +216,96 @@ pub(crate) fn resolve_server(language: LanguageId, name: &str) -> Result<ServerE
             }
             .into()
         })
+}
+
+/// The `grammar` field of the provenance header this build would write.
+///
+/// Public alongside [`locked_grammar`] because the two claims are different
+/// ones: that a pin distinguishes two lockfiles, and that the pin this binary
+/// ships names the grammar the workspace declares. The second is only
+/// assertable against the embedded lockfile, which is what this reads.
+pub fn grammar_pin(language: LanguageId) -> Result<Box<str>, Error> {
+    locked_grammar(LOCKFILE, language)
+}
+
+/// The locked identity of `language`'s grammar crate, by the crate-name
+/// convention every tree-sitter grammar follows: `tree-sitter-<language id>`.
+///
+/// Public, and taking the lockfile's text rather than reading it, for the same
+/// reason `replay_table` is public: the claim is that two different pins
+/// produce two different headers, and a function nothing can call with two
+/// lockfiles is a claim nothing can assert.
+///
+/// The revision is the checksum for a registry grammar and the commit for a
+/// git one, which are the two shapes a lock entry has. Neither present is an
+/// error rather than a shorter pin: a header that names a grammar it cannot
+/// identify is the failure this whole field exists to prevent.
+pub fn locked_grammar(lockfile: &str, language: LanguageId) -> Result<Box<str>, Error> {
+    let package = format!("tree-sitter-{}", language.as_str());
+    let Some(locked) = locked_package(lockfile, &package) else {
+        return Err(ConfigError::GrammarNotLocked {
+            package: package.into(),
+        }
+        .into());
+    };
+    let Some(revision) = locked.revision() else {
+        return Err(ConfigError::GrammarUnidentified {
+            package: package.into(),
+        }
+        .into());
+    };
+    Ok(format!("{package} {} ({revision})", locked.version).into_boxed_str())
+}
+
+#[derive(Debug)]
+struct LockedPackage<'a> {
+    version: &'a str,
+    checksum: Option<&'a str>,
+    source: Option<&'a str>,
+}
+
+impl LockedPackage<'_> {
+    /// Cargo writes a checksum for a registry package and puts the resolved
+    /// commit in the fragment of the source URL for a git one.
+    fn revision(&self) -> Option<&str> {
+        self.checksum.or_else(|| {
+            self.source
+                .and_then(|source| source.rsplit_once('#'))
+                .map(|(_, revision)| revision)
+        })
+    }
+}
+
+fn locked_package<'a>(lockfile: &'a str, package: &str) -> Option<LockedPackage<'a>> {
+    for block in lockfile.split("[[package]]").skip(1) {
+        // The entry ends at the next table header of any kind, so a `[metadata]`
+        // section after the last package is not read as part of it.
+        let block = block.split("\n[").next().unwrap_or(block);
+        let (mut name, mut version, mut checksum, mut source) = (None, None, None, None);
+        for line in block.lines() {
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+            let value = value.trim().trim_matches('"');
+            match key.trim() {
+                "name" => name = Some(value),
+                "version" => version = Some(value),
+                "checksum" => checksum = Some(value),
+                "source" => source = Some(value),
+                _ => {}
+            }
+        }
+        if name == Some(package)
+            && let Some(version) = version
+        {
+            return Some(LockedPackage {
+                version,
+                checksum,
+                source,
+            });
+        }
+    }
+    None
 }
 
 /// `external-dependencies.md` §1: `servers_root` is relative to the manifest

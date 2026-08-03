@@ -25,21 +25,110 @@ use shared::{CodecError, ConfigError, Error};
 ///
 /// It names exactly one server and version, which is what makes a truth file
 /// comparable to itself over time and never silently merged with another's.
+///
+/// Public because [`check_resumable`] is, and that is public because the
+/// property it holds — a resume refuses a header this run would not have
+/// written — is one a test has to be able to drive with a header of its own.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct Provenance {
-    pub(crate) repository: Box<str>,
+pub struct Provenance {
+    pub repository: Box<str>,
     /// Replay refuses to run against a truth file whose repository commit does
     /// not match the checkout, rather than silently reporting metrics for
     /// positions that have since moved.
-    pub(crate) commit: Box<str>,
-    pub(crate) language: Box<str>,
-    pub(crate) server: Box<str>,
-    pub(crate) server_version: Box<str>,
-    pub(crate) grammar: Box<str>,
-    pub(crate) measure_version: Box<str>,
+    pub commit: Box<str>,
+    pub language: Box<str>,
+    pub server: Box<str>,
+    pub server_version: Box<str>,
+    /// The locked revision of the grammar the positions were enumerated with,
+    /// from `corpus::locked_grammar`. A literal here is the failure mode: two
+    /// collections under different grammar pins would produce identical
+    /// headers.
+    pub grammar: Box<str>,
+    pub measure_version: Box<str>,
     /// A partially collected truth file is marked incomplete and is never
     /// consumed by replay.
-    pub(crate) complete: bool,
+    pub complete: bool,
+}
+
+impl Provenance {
+    /// Every field but `complete`, in declaration order.
+    ///
+    /// A resume appends rows to a file whose header is already written, so the
+    /// only honest condition is that the header this run *would* write is the
+    /// header already there — not just its server version, which was the whole
+    /// of the check while a resume was free to write the current `HEAD` over
+    /// rows collected at an older one.
+    ///
+    /// Written as a full destructuring rather than a list of comparisons, so a
+    /// new provenance field is a compile error here rather than a field nothing
+    /// checks. `complete` is the one exclusion and is named as one: a resume
+    /// exists precisely because the file on disk is incomplete.
+    pub(crate) fn drift(&self, wanted: &Self) -> Option<Drift> {
+        let Self {
+            repository,
+            commit,
+            language,
+            server,
+            server_version,
+            grammar,
+            measure_version,
+            complete: _,
+        } = self;
+
+        [
+            ("repository", repository, &wanted.repository),
+            ("commit", commit, &wanted.commit),
+            ("language", language, &wanted.language),
+            ("server", server, &wanted.server),
+            ("server_version", server_version, &wanted.server_version),
+            ("grammar", grammar, &wanted.grammar),
+            ("measure_version", measure_version, &wanted.measure_version),
+        ]
+        .into_iter()
+        .find(|(_, recorded, found)| recorded != found)
+        .map(|(field, recorded, found)| Drift {
+            field,
+            recorded: recorded.clone(),
+            found: found.clone(),
+        })
+    }
+}
+
+/// One field of a header that does not agree with the run reading it.
+#[derive(Debug)]
+pub(crate) struct Drift {
+    pub(crate) field: &'static str,
+    pub(crate) recorded: Box<str>,
+    pub(crate) found: Box<str>,
+}
+
+impl Drift {
+    pub(crate) fn at(self, path: &Path) -> Error {
+        ConfigError::ProvenanceDrift {
+            path: path.to_path_buf(),
+            field: self.field,
+            recorded: self.recorded,
+            found: self.found,
+        }
+        .into()
+    }
+}
+
+/// `collect` resumes by default, and this is what makes resuming safe: the
+/// partial file on disk must carry the header this run would have written.
+///
+/// Public for the reason `replay_table` is — a property nothing can call is a
+/// property nothing can assert, and `collect` itself cannot be driven from a
+/// test without a language server. Nothing on disk is `Ok(())`: there is no
+/// resume, so there is nothing to disagree with.
+pub fn check_resumable(path: &Path, wanted: &Provenance) -> Result<(), Error> {
+    match Truth::read_partial(path)? {
+        Some(existing) => match existing.provenance.drift(wanted) {
+            Some(drift) => Err(drift.at(path)),
+            None => Ok(()),
+        },
+        None => Ok(()),
+    }
 }
 
 /// `data-collection.md` §4's four outcomes, kept distinct. Collapsing `Error`

@@ -106,15 +106,27 @@ pub enum ConfigError {
         #[source]
         source: serde_json::Error,
     },
-    /// `data-collection.md` §4: resuming a truth file whose server has moved
-    /// underneath it is refused, because half a file from one version and half
-    /// from another is the one outcome with no honest provenance header.
-    #[error("{path} was collected against {recorded}, and the installed server is {installed}")]
-    ServerVersionDrift {
+    /// `data-collection.md` §4: resuming a truth file whose provenance has
+    /// moved underneath it is refused, because half a file from one commit —
+    /// or one server version, or one grammar — and half from another is the
+    /// one outcome with no honest provenance header. Also what `core.md` §7's
+    /// "never silently merged with another's" is on the replay side.
+    #[error("{path} was collected with {field} {recorded}, and this run has {found}")]
+    ProvenanceDrift {
         path: PathBuf,
+        field: &'static str,
         recorded: Box<str>,
-        installed: Box<str>,
+        found: Box<str>,
     },
+    /// `core.md` §7 puts the grammar revision in that header, and the revision
+    /// is the lockfile's: `tree_sitter::Language` reports an ABI version, which
+    /// every grammar built against the same runtime shares. A language whose
+    /// grammar crate is not locked has no revision to record, and inventing
+    /// one is what this refuses.
+    #[error("the workspace lockfile locks no {package}, so no grammar revision could be recorded")]
+    GrammarNotLocked { package: Box<str> },
+    #[error("the workspace lockfile locks {package} with neither a checksum nor a source revision")]
+    GrammarUnidentified { package: Box<str> },
 }
 
 /// Framing, in both directions. The shim's codec and `measure_core`'s client

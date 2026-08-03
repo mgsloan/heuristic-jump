@@ -18,7 +18,7 @@ use shared::proto::{
 use shared::{ChildError, Clock, DocumentUri, DocumentVersion, Error, Offset, Rope};
 
 use crate::client::{Client, OFFERED_ENCODINGS, RawResult, settled_encoding};
-use crate::corpus::{Corpus, Repository, ServerEntry, verify_checkout};
+use crate::corpus::{Corpus, Repository, ServerEntry, grammar_pin, verify_checkout};
 use crate::positions::{self, Position};
 use crate::truth::{self, Outcome, Provenance, Row, Truth};
 
@@ -44,16 +44,38 @@ impl Collection<'_> {
         let commit = verify_checkout(repository, None)?;
         let path = self.corpus.truth(&self.server.name, &repository.name);
 
+        // Built before anything is read, because it is also the *condition* on
+        // resuming: `data-collection.md` §4 says a fresh collection against a
+        // different server version warns and continues, since the version in
+        // the header is what makes the file interpretable, while a resume
+        // refuses — half a file from one version and half from another is the
+        // one outcome with no honest provenance header. The same argument is
+        // what makes the commit part of the check and not just the version: a
+        // resume that wrote the current `HEAD` over rows collected at an older
+        // one produces a file whose header is true of none of it.
+        let provenance = Provenance {
+            repository: repository.name.clone(),
+            commit,
+            language: self.corpus.language().as_str().into(),
+            server: self.server.name.clone(),
+            server_version: self.server.version.clone(),
+            grammar: grammar_pin(self.corpus.language())?,
+            measure_version: env!("CARGO_PKG_VERSION").into(),
+            complete: false,
+        };
+
         let existing = if self.restart {
-            if path.exists() {
-                fs::remove_file(&path).ok();
+            if let Err(error) = remove_partial(&path) {
+                tracing::warn!(%error, path = %path.display(), "discarding the partial truth file");
             }
             None
         } else {
             Truth::read_partial(&path)?
         };
-        if let Some(existing) = &existing {
-            self.check_resumable(&path, existing)?;
+        if let Some(existing) = &existing
+            && let Some(drift) = existing.provenance.drift(&provenance)
+        {
+            return Err(drift.at(&path));
         }
 
         let all = positions::read(&self.corpus.positions(&repository.name))?;
@@ -67,19 +89,7 @@ impl Collection<'_> {
 
         let mut client = Client::start(&self.server.command)?;
         let encoding = self.initialize(&mut client, repository)?;
-        let mut writer = truth::Writer::create(
-            &path,
-            Provenance {
-                repository: repository.name.clone(),
-                commit,
-                language: self.corpus.language().as_str().into(),
-                server: self.server.name.clone(),
-                server_version: self.server.version.clone(),
-                grammar: GRAMMAR_PIN.into(),
-                measure_version: env!("CARGO_PKG_VERSION").into(),
-                complete: false,
-            },
-        )?;
+        let mut writer = truth::Writer::create(&path, provenance)?;
         for row in &rows {
             writer.append(row)?;
         }
@@ -115,23 +125,6 @@ impl Collection<'_> {
 
         client.stop(self.clock);
         writer.finish(&rows)
-    }
-
-    /// `data-collection.md` §4: a fresh collection against a different version
-    /// warns and continues, since the version in the header is what makes the
-    /// file interpretable; a *resume* against a different version refuses,
-    /// because half a file from one version and half from another is the one
-    /// outcome with no honest provenance header.
-    fn check_resumable(&self, path: &Path, existing: &Truth) -> Result<(), Error> {
-        if existing.provenance.server_version != self.server.version {
-            return Err(shared::ConfigError::ServerVersionDrift {
-                path: path.to_path_buf(),
-                recorded: existing.provenance.server_version.clone(),
-                installed: self.server.version.clone(),
-            }
-            .into());
-        }
-        Ok(())
     }
 
     fn initialize(
@@ -304,10 +297,17 @@ impl Collection<'_> {
     }
 }
 
-/// Which grammar produced the positions, for the provenance header. A pin
-/// rather than a query because `tree_sitter::Language` reports an ABI version
-/// and not the revision `high-level.md` requires to match Zed's.
-const GRAMMAR_PIN: &str = "tree-sitter (grammar revision pinned in Cargo.toml)";
+/// `--restart` is the destructive option and therefore the explicit one, so
+/// what it destroys is reported rather than dropped. The effect would be right
+/// either way — `Writer::create` truncates — but a fallible operation on the
+/// destructive path that says nothing is the one that hides a permissions
+/// problem until the rewrite fails hours later.
+fn remove_partial(path: &Path) -> Result<(), std::io::Error> {
+    match fs::remove_file(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        other => other,
+    }
+}
 
 #[derive(Debug, serde::Serialize)]
 struct EmptyParams {}

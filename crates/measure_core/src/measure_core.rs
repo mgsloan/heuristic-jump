@@ -39,7 +39,9 @@ use shared::{Error, FileList, LanguageHandler, ProjectPath, SystemClock};
 
 pub use cli::{Cli, Command, Format, Replay};
 pub use client::{MAX_FRAME_BYTES, MAX_HEADER_BYTES, read_frame};
+pub use corpus::{grammar_pin, locked_grammar};
 pub use record::{Decision, Mode, QueryRecord, StratumName};
+pub use truth::{Provenance, check_resumable};
 
 /// The whole of a `measure_<lang>` binary, after `Cli::parse()`.
 ///

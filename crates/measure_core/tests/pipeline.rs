@@ -77,6 +77,45 @@ const RECORD_FIELDS: &[&str] = &[
 const SOURCE: &str =
     "pub fn alpha() -> u32 {\n    7\n}\n\npub fn beta() -> u32 {\n    alpha()\n}\n";
 
+/// The grammar the workspace pins, read from the manifest rather than from the
+/// lockfile the implementation embeds: asserting a value against the file it
+/// was computed from asserts nothing.
+const WORKSPACE_MANIFEST: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.toml"));
+
+/// Two lockfiles differing only in which revision of the grammar they pin.
+/// Written out rather than generated, so what the pin has to distinguish is
+/// visible: the same crate at two versions, with the checksums cargo records
+/// for them.
+const LOCKED_ONE: &str = "\
+version = 4
+
+[[package]]
+name = \"tree-sitter\"
+version = \"0.26.11\"
+source = \"registry+https://github.com/rust-lang/crates.io-index\"
+checksum = \"af1c71c1c4cc0920b20d6b0f6572e7682cd07a6a2faec71067a31fa394c586df\"
+
+[[package]]
+name = \"tree-sitter-rust\"
+version = \"0.24.2\"
+source = \"registry+https://github.com/rust-lang/crates.io-index\"
+checksum = \"439e577dbe07423ec2582ac62c7531120dbfccfa6e5f92406f93dd271a120e45\"
+
+[metadata]
+\"checksum unrelated\" = \"0\"
+";
+
+const LOCKED_TWO: &str = "\
+version = 4
+
+[[package]]
+name = \"tree-sitter-rust\"
+version = \"0.25.0\"
+source = \"registry+https://github.com/rust-lang/crates.io-index\"
+checksum = \"0000000000000000000000000000000000000000000000000000000000000000\"
+";
+
 struct TestHandler;
 
 impl LanguageHandler for TestHandler {
@@ -288,6 +327,145 @@ fn the_printed_table_is_byte_identical_across_runs() {
     }
 }
 
+/// §7: "`truth.jsonl` carries its provenance in a header record: repository
+/// path and commit, server name and version, **grammar revision**, and the
+/// `measure` version that wrote it."
+///
+/// A literal in that field is the failure mode the whole header exists to
+/// prevent: two collections under different grammar pins produce identical
+/// provenance, so nothing downstream can tell that the positions were
+/// enumerated by a different parser. The pin is therefore read out of the
+/// lockfile, and this is the assertion that two lockfiles cannot produce one
+/// pin — which no amount of reading a constant would give.
+#[test]
+fn two_grammar_pins_produce_two_headers() {
+    let rust = LanguageId::new("rust");
+
+    let one = measure_core::locked_grammar(LOCKED_ONE, rust).expect("a locked grammar");
+    let two = measure_core::locked_grammar(LOCKED_TWO, rust).expect("a locked grammar");
+
+    assert!(
+        one.contains("0.24.2") && one.contains("439e577dbe07423e"),
+        "a pin that names neither the locked version nor its revision is not a \
+         grammar revision: {one}"
+    );
+    assert_ne!(
+        one, two,
+        "two lockfiles pinning different revisions of the same grammar produced \
+         the same provenance header. core.md §7 puts the grammar revision in \
+         that header so a truth file says which parser enumerated it, and a \
+         value that does not move when the pin moves says nothing"
+    );
+}
+
+/// The other half: the pin this build would actually write names the grammar
+/// the workspace declares. Asserted against `Cargo.toml` rather than against
+/// the lockfile the crate embeds, so the two would have to drift together —
+/// reading the same file the implementation reads would assert nothing.
+#[test]
+fn the_shipped_grammar_pin_names_the_declared_grammar() {
+    let declared = between(WORKSPACE_MANIFEST, "tree-sitter-rust = \"", "\"");
+    assert!(
+        !declared.is_empty(),
+        "the workspace declares no tree-sitter-rust"
+    );
+
+    let pin = measure_core::grammar_pin(LanguageId::new("rust")).expect("the locked grammar");
+    assert!(
+        pin.contains("tree-sitter-rust") && pin.contains(declared),
+        "the provenance header would name {pin}, and the workspace pins \
+         tree-sitter-rust {declared}. deps.md §6 makes the grammar the one \
+         dependency that is not ours to pick, so a header that names a \
+         different one is a truth file attributed to the wrong parser"
+    );
+
+    let missing = measure_core::grammar_pin(LanguageId::new("fortran"))
+        .expect_err("no tree-sitter-fortran is locked");
+    let Error::Config(shared::ConfigError::GrammarNotLocked { package }) = &missing else {
+        panic!("an unlocked grammar reported {missing} rather than naming itself");
+    };
+    assert_eq!(&**package, "tree-sitter-fortran");
+}
+
+/// §7: "replay refuses to run against a truth file whose repository commit
+/// does not match the checkout, rather than silently reporting metrics for
+/// positions that have since moved" — which a resume could defeat from the
+/// other side, by writing the current `HEAD` into the header of a file whose
+/// rows were collected at an older one.
+///
+/// The loop is over *every* field the header carries, because the check that
+/// was there compared one of them. A field added to `Provenance` and not to
+/// `drift` fails to compile in the implementation; a field added here and not
+/// mutated fails this test.
+#[test]
+fn a_resume_refuses_every_provenance_field_that_moved() {
+    let corpus = fixture("resume_drift");
+    enumerate(&corpus);
+    write_truth(&corpus);
+    let path = truth_path(&corpus, "oracle");
+
+    measure_core::check_resumable(&path, &fixture_provenance(&corpus))
+        .expect("the header this run would write is the header already on disk");
+
+    /// Named so the table below reads as what it is: one field of the header,
+    /// moved.
+    type Moved = fn(&mut measure_core::Provenance);
+
+    let moved: [(&str, Moved); 7] = [
+        ("repository", |header| header.repository = "two".into()),
+        ("commit", |header| header.commit = "0".repeat(40).into()),
+        ("language", |header| header.language = "python".into()),
+        ("server", |header| header.server = "other".into()),
+        ("server_version", |header| {
+            header.server_version = "1".into();
+        }),
+        ("grammar", |header| {
+            header.grammar = "tree-sitter-rust 9.9.9 (deadbeef)".into();
+        }),
+        ("measure_version", |header| {
+            header.measure_version = "9".into();
+        }),
+    ];
+
+    for (field, moved) in moved {
+        let mut wanted = fixture_provenance(&corpus);
+        moved(&mut wanted);
+
+        let refused = measure_core::check_resumable(&path, &wanted)
+            .expect_err("a resume against a header this run would not have written was allowed");
+        let Error::Config(shared::ConfigError::ProvenanceDrift { field: named, .. }) = &refused
+        else {
+            panic!("{field} drift was reported as {refused}, not as provenance drift");
+        };
+        assert_eq!(
+            *named, field,
+            "a resume whose {field} moved was refused for {named} instead. Half \
+             a file collected under one provenance and half under another is \
+             the one outcome with no honest header, and which field moved is \
+             what tells the operator whether to re-collect or to fix the \
+             checkout"
+        );
+    }
+}
+
+/// The replay-side half of "a truth file is never silently merged with
+/// another's" (§7). `truth/<server>/` is a path and not a check: a file copied
+/// into it replays under a server name it was never collected against, and
+/// every metric is then attributed to the wrong oracle.
+#[test]
+fn a_replay_refuses_a_truth_file_collected_against_another_server() {
+    let corpus = fixture("provenance_mismatch");
+    enumerate(&corpus);
+    write_truth_as(&corpus, "oracle", "other");
+
+    let refused = replay_result(&corpus, measure_core::Format::Json)
+        .expect_err("a truth file whose header names another server was replayed");
+    let Error::Config(shared::ConfigError::ProvenanceDrift { field, .. }) = &refused else {
+        panic!("the wrong oracle's truth file was refused as {refused}");
+    };
+    assert_eq!(*field, "server");
+}
+
 #[test]
 fn a_run_given_one_split_cannot_reach_its_sibling() {
     let corpus = fixture("isolation");
@@ -433,6 +611,21 @@ fn replay_with(handler: &dyn LanguageHandler, corpus: &Fixture, records: Option<
 /// handle that `cargo test` does not capture, which is why `replay_table` is
 /// public at all.
 fn table_of(corpus: &Fixture, format: measure_core::Format) -> String {
+    replay_result(corpus, format).expect("replay")
+}
+
+/// The same run, as a `Result`, for the assertions about what a replay
+/// *refuses*: a corpus-integrity failure is not a panic, and a test that could
+/// only observe one through `expect` could not say which failure it expected.
+fn replay_result(corpus: &Fixture, format: measure_core::Format) -> Result<String, Error> {
+    measure_core::replay_table(
+        &TestHandler,
+        &shared::SystemClock,
+        &replay_arguments(corpus, format),
+    )
+}
+
+fn replay_arguments(corpus: &Fixture, format: measure_core::Format) -> measure_core::Replay {
     let cli = measure_core::Cli::parse_from([
         "measure-test",
         "replay",
@@ -446,19 +639,52 @@ fn table_of(corpus: &Fixture, format: measure_core::Format) -> String {
             measure_core::Format::Json => "json",
         },
     ]);
-    let arguments = match cli.command {
+    match cli.command {
         measure_core::Command::Replay(arguments) => arguments,
         measure_core::Command::Enumerate(_) | measure_core::Command::Collect(_) => {
             panic!("`replay` parsed as another subcommand")
         }
-    };
-    measure_core::replay_table(&TestHandler, &shared::SystemClock, &arguments).expect("replay")
+    }
 }
 
 /// A truth file whose oracle answered `null` everywhere. The handler abstains
 /// everywhere, so every row is a mutual "no definition here" — which §6 calls
 /// a match, and which makes the expected table computable without a server.
 fn write_truth(corpus: &Fixture) {
+    write_truth_as(corpus, "oracle", "oracle");
+}
+
+fn truth_path(corpus: &Fixture, directory: &str) -> PathBuf {
+    corpus
+        .split
+        .join("rust")
+        .join("truth")
+        .join(directory)
+        .join("one.jsonl")
+}
+
+/// The header `write_truth_as` writes, as a value: what a resume of that
+/// fixture would have to match, field for field. `complete` is deliberately
+/// the opposite of the file's, since a resume is what happens *because* the
+/// file on disk is incomplete, and a check that compared it would refuse every
+/// resume there is.
+fn fixture_provenance(corpus: &Fixture) -> measure_core::Provenance {
+    measure_core::Provenance {
+        repository: "one".into(),
+        commit: corpus.commit.as_str().into(),
+        language: "rust".into(),
+        server: "oracle".into(),
+        server_version: "0".into(),
+        grammar: "fixture".into(),
+        measure_version: "0".into(),
+        complete: false,
+    }
+}
+
+/// `directory` is the `truth/<server>/` the file is written under and
+/// `recorded` is the server its header claims. They differ in exactly one test,
+/// which is the one asserting that the path is not the check.
+fn write_truth_as(corpus: &Fixture, directory: &str, recorded: &str) {
     let positions = fs::read_to_string(
         corpus
             .split
@@ -470,7 +696,7 @@ fn write_truth(corpus: &Fixture) {
 
     let mut text = format!(
         "{{\"repository\":\"one\",\"commit\":\"{}\",\"language\":\"rust\",\
-         \"server\":\"oracle\",\"server_version\":\"0\",\"grammar\":\"fixture\",\
+         \"server\":\"{recorded}\",\"server_version\":\"0\",\"grammar\":\"fixture\",\
          \"measure_version\":\"0\",\"complete\":true}}\n",
         corpus.commit
     );
@@ -483,12 +709,7 @@ fn write_truth(corpus: &Fixture) {
         ));
     }
 
-    let path = corpus
-        .split
-        .join("rust")
-        .join("truth")
-        .join("oracle")
-        .join("one.jsonl");
+    let path = truth_path(corpus, directory);
     fs::create_dir_all(path.parent().expect("a truth directory")).expect("the truth directory");
     fs::write(path, text).expect("the truth file");
 }
