@@ -14,27 +14,15 @@
 
 use std::ffi::OsString;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use driver::{
     Answer, Config, DeadlineMs, DeadlineOverride, Dispatched, Heuristics, Mode, hard_cap,
 };
 use shared::{
     Clock, Confidence, Deadline, Error, HandlerError, Outcome, ParseError, Strata, Stratum,
-    SystemClock, Trace,
+    TestClock, Trace,
 };
-
-/// The one clock a test may read, since `clippy.toml` bans `Instant::now` and
-/// `disallowed_methods` does not honour `allow-*-in-tests`. Every instant
-/// below is this one plus an offset, so nothing here races real time.
-#[derive(Debug)]
-struct FrozenClock(Instant);
-
-impl Clock for FrozenClock {
-    fn now(&self) -> Instant {
-        self.0
-    }
-}
 
 /// An answer with no locations, which is the only `Answer` reachable without
 /// a document to encode against (`core.md` §8.4): the wire form of no
@@ -54,12 +42,14 @@ fn an_answer() -> Dispatched {
 
 #[test]
 fn an_answer_that_arrives_after_the_deadline_is_dropped() {
-    let arrived_at = SystemClock.now();
+    let clock = Arc::new(TestClock::new());
+    let arrived_at = clock.now();
     let budget = DeadlineMs::PROXYING.budget();
+    let deadline = Deadline::new(Arc::clone(&clock) as Arc<dyn Clock>, arrived_at, budget);
     // The handler returned one millisecond too late. It polled cooperatively
-    // or it did not; §5 says the driver does not have to know which.
-    let clock = FrozenClock(arrived_at + budget + Duration::from_millis(1));
-    let deadline = Deadline::new(Arc::new(clock), arrived_at, budget);
+    // or it did not; §5 says the driver does not have to know which. Advanced
+    // *after* the deadline was built, which is the order the real path has.
+    clock.advance(budget + Duration::from_millis(1));
 
     match hard_cap(&deadline, an_answer()) {
         Dispatched::DeadlineExpired => {}
@@ -71,14 +61,14 @@ fn an_answer_that_arrives_after_the_deadline_is_dropped() {
 
 #[test]
 fn an_answer_that_arrives_in_time_is_kept() {
-    let arrived_at = SystemClock.now();
+    let clock = Arc::new(TestClock::new());
+    let arrived_at = clock.now();
     let budget = DeadlineMs::PROXYING.budget();
+    let deadline = Deadline::new(Arc::clone(&clock) as Arc<dyn Clock>, arrived_at, budget);
     // Subtracting the millisecond in the integer rather than from the
     // `Duration`: `Duration - Duration` underflows and panics, which
     // `unchecked_time_subtraction` denies workspace-wide.
-    let just_inside = Duration::from_millis(DeadlineMs::PROXYING.get() - 1);
-    let clock = FrozenClock(arrived_at + just_inside);
-    let deadline = Deadline::new(Arc::new(clock), arrived_at, budget);
+    clock.advance(Duration::from_millis(DeadlineMs::PROXYING.get() - 1));
 
     match hard_cap(&deadline, an_answer()) {
         Dispatched::Decided(answer) => match answer.outcome() {
@@ -105,10 +95,11 @@ fn an_answer_that_arrives_in_time_is_kept() {
 /// `expired()` rather than the time.
 #[test]
 fn a_cancelled_query_drops_its_answer_before_the_clock_runs_out() {
-    let arrived_at = SystemClock.now();
+    let clock = Arc::new(TestClock::new());
+    let arrived_at = clock.now();
     let budget = DeadlineMs::STANDALONE.budget();
-    let clock = FrozenClock(arrived_at);
-    let deadline = Deadline::new(Arc::new(clock), arrived_at, budget);
+    let deadline = Deadline::new(Arc::clone(&clock) as Arc<dyn Clock>, arrived_at, budget);
+    // The clock never moves: what expires this deadline is the flag alone.
     deadline.cancel();
 
     match hard_cap(&deadline, an_answer()) {
@@ -124,10 +115,11 @@ fn a_cancelled_query_drops_its_answer_before_the_clock_runs_out() {
 /// different rows in `core.md` §7's table.
 #[test]
 fn a_late_failure_is_still_recorded_as_a_failure() {
-    let arrived_at = SystemClock.now();
+    let clock = Arc::new(TestClock::new());
+    let arrived_at = clock.now();
     let budget = DeadlineMs::PROXYING.budget();
-    let clock = FrozenClock(arrived_at + budget);
-    let deadline = Deadline::new(Arc::new(clock), arrived_at, budget);
+    let deadline = Deadline::new(Arc::clone(&clock) as Arc<dyn Clock>, arrived_at, budget);
+    clock.advance(budget);
     let broken = Dispatched::Failed(Error::Handler(HandlerError::DeadlineExpired));
 
     match hard_cap(&deadline, broken) {

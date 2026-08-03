@@ -17,13 +17,13 @@
 )]
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use proptest::prelude::{Strategy, prop_assert_eq};
 use proptest::proptest;
 use shared::{
     ByteLen, ByteRange, Clock, Deadline, DocumentSnapshot, DocumentUri, DocumentVersion, Error,
-    HandlerError, LanguageId, Offset, Rope, SnapshotSeed, SystemClock, input_edit,
+    HandlerError, LanguageId, Offset, Rope, SnapshotSeed, TestClock, input_edit,
 };
 use tree_sitter::{InputEdit, Language, Point};
 
@@ -33,19 +33,6 @@ const RUST: LanguageId = LanguageId::new("rust");
 /// interval and never calls the callback — which is the point of
 /// `a_parse_too_small_to_report_progress_is_not_abandoned`.
 const SMALL: &str = "fn caller() {\n    target();\n}\n";
-
-/// The clock the deadline tests read, since `clippy.toml` bans `Instant::now`
-/// and `disallowed_methods` does not honour `allow-*-in-tests`. Every instant
-/// is `SystemClock`'s one reading plus an offset, so nothing here races real
-/// time.
-#[derive(Debug)]
-struct FrozenClock(Instant);
-
-impl Clock for FrozenClock {
-    fn now(&self) -> Instant {
-        self.0
-    }
-}
 
 /// §2's central claim, and the reason `tree()` is infallible: there is one
 /// tree and it was produced from `text`.
@@ -117,13 +104,14 @@ fn an_incremental_reparse_produces_a_tree_for_the_new_text() {
 /// `ParseError` would log every slow parse as a handler bug.
 #[test]
 fn a_parse_that_runs_past_its_deadline_is_abandoned_rather_than_failed() {
-    let started = SystemClock.now();
+    let clock = Arc::new(TestClock::new());
+    let started = clock.now();
     let budget = Duration::from_millis(20);
+    let deadline = Deadline::new(Arc::clone(&clock) as Arc<dyn Clock>, started, budget);
     // Already over, before the parse begins. §5's deadline is absolute and
     // starts at request arrival, so a query that queued for longer than its
     // budget arrives in exactly this state.
-    let clock = FrozenClock(started + budget + Duration::from_millis(1));
-    let deadline = Deadline::new(Arc::new(clock), started, budget);
+    clock.advance(budget + Duration::from_millis(1));
 
     match seed(&large()).realise(&deadline) {
         Err(Error::Handler(HandlerError::DeadlineExpired)) => {}

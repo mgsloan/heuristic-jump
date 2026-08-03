@@ -25,7 +25,7 @@ mod vocabulary;
 pub mod proto;
 
 pub use agreement::{Agreement, DefinitionSite, Severity};
-pub use deadline::{Clock, Deadline, SystemClock};
+pub use deadline::{Clock, Deadline, SystemClock, TestClock};
 pub use document::{DocumentSnapshot, ParseKind, SnapshotSeed, input_edit};
 pub use error::{
     ChildError, CodecError, ConfigError, DocumentError, DocumentNotification, EncodingError, Error,

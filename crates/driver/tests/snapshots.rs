@@ -28,7 +28,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use driver::{
     DebounceMs, Dispatched, Documents, FileListCache, OpenDocument, Queried, Registry, Request,
@@ -42,23 +42,13 @@ use shared::proto::PositionEncoding;
 use shared::{
     ByteLen, ByteRange, Clock, CommitPolicy, Confidence, Deadline, DocumentUri, DocumentVersion,
     Error, FileExtension, InputEdit, LanguageHandler, LanguageId, Offset, Outcome, ParseKind,
-    ProjectView, Query, Rope, ServerProfile, SnapshotSeed, Strata, Stratum, SystemClock, Trace,
-    input_edit,
+    ProjectView, Query, Rope, ServerProfile, SnapshotSeed, Strata, Stratum, SystemClock, TestClock,
+    Trace, input_edit,
 };
 use tree_sitter::{Language, Parser, Point, Tree};
 
 const LANGUAGE_IDS: &[LanguageId] = &[LanguageId::new("rust")];
 const FILE_EXTENSIONS: &[FileExtension] = &[FileExtension::new("rs")];
-
-/// The clock the deadline tests read, since `clippy.toml` bans `Instant::now`.
-#[derive(Debug)]
-struct FrozenClock(Instant);
-
-impl Clock for FrozenClock {
-    fn now(&self) -> Instant {
-        self.0
-    }
-}
 
 /// The parse is in front of the handler, and the deadline is in front of the
 /// parse.
@@ -70,10 +60,11 @@ impl Clock for FrozenClock {
 #[test]
 fn a_parse_that_runs_out_of_time_never_reaches_the_handler() {
     let root = fixture("expired_parse");
-    let started = SystemClock.now();
+    let clock = Arc::new(TestClock::new());
+    let started = clock.now();
     let budget = Duration::from_millis(20);
-    let clock = FrozenClock(started + budget + Duration::from_millis(1));
-    let deadline = Deadline::new(Arc::new(clock), started, budget);
+    let deadline = Deadline::new(Arc::clone(&clock) as Arc<dyn Clock>, started, budget);
+    clock.advance(budget + Duration::from_millis(1));
     let view = view(&root, &deadline);
     let handler = Recording::default();
 

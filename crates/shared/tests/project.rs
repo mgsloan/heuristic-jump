@@ -16,11 +16,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use shared::{
     Clock, Deadline, Error, FileExtension, FileList, Generation, HandlerError, ProjectPath,
-    ProjectRoot, ProjectView, RelPath, ScanRequest, SearchOrigin, SystemClock,
+    ProjectRoot, ProjectView, RelPath, ScanRequest, SearchOrigin, TestClock,
 };
 use tree_sitter::Language;
 
@@ -220,9 +220,14 @@ fn a_scan_past_its_deadline_reports_nothing_rather_than_less() {
     let candidates = view.candidates(&[RUST], &origin);
     let request = ScanRequest::new("alpha", &candidates).expect("an identifier literal");
 
-    let arrived_at = SystemClock.now();
-    let clock = Arc::new(FrozenClock(arrived_at + Duration::from_millis(1))) as Arc<dyn Clock>;
-    let expired = Deadline::new(clock, arrived_at, Duration::ZERO);
+    let clock = Arc::new(TestClock::new());
+    let arrived_at = clock.now();
+    let expired = Deadline::new(
+        Arc::clone(&clock) as Arc<dyn Clock>,
+        arrived_at,
+        Duration::ZERO,
+    );
+    clock.advance(Duration::from_millis(1));
     let stopped = ProjectView::new(Arc::new(file_list(&root)), expired, grammar());
 
     match stopped.scan(&request) {
@@ -312,17 +317,6 @@ fn grammar() -> Language {
 fn file_list(root: &Path) -> FileList {
     let roots = [root.to_path_buf()];
     FileList::enumerate(&roots).expect("enumerating the fixture")
-}
-
-/// The one clock a test may read: `clippy.toml` bans `Instant::now`, and
-/// `disallowed_methods` does not honour `allow-*-in-tests`.
-#[derive(Debug)]
-struct FrozenClock(Instant);
-
-impl Clock for FrozenClock {
-    fn now(&self) -> Instant {
-        self.0
-    }
 }
 
 fn path(view: &ProjectView, root: &Path, relative: &str) -> ProjectPath {

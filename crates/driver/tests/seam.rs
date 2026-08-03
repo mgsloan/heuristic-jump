@@ -1432,6 +1432,103 @@ fn sources_of(crate_name: &str) -> Vec<(String, String)> {
     sources
 }
 
+/// `deps.md` §12's last line, which is the one row of its table that names no
+/// crate: "The injected clock for `shim.md` §12's protocol race tests is a
+/// `trait Clock` with a `TestClock` impl in `shared`, not a dependency."
+///
+/// The trait and `SystemClock` were in `shared`; the test impl was not, and
+/// five suites had each written their own — four copies of a frozen clock and
+/// one drivable one, in `shared/tests/{project,document}.rs` and
+/// `driver/tests/{deadline,snapshots,file_list}.rs`. That is the failure §12
+/// describes with the dependency declined and the replacement never built, and
+/// it is not free: the driven copy converted through `as_millis`, so a suite
+/// advancing by less than a millisecond advanced by nothing and asserted
+/// against a clock that had not moved.
+///
+/// Placing it in `shared` rather than behind a `test-support` feature creates
+/// one risk in exchange — a clock production code could drive — so that is what
+/// the scan below checks. The behavioural half is asserted too, because "a
+/// `TestClock` in `shared`" is satisfied by a type of that name that does
+/// nothing, and the whole point is that `Deadline` reads it.
+///
+/// What this cannot reach is the `tests/` directories: `sources_of` follows the
+/// crate root's `mod` declarations, and a test file is reached by none. A sixth
+/// hand-rolled `impl Clock` in a suite would not fail here. What stops it is
+/// that there is now no reason to write one.
+#[test]
+fn the_injected_clock_is_shareds_and_only_the_tests_can_drive_it() {
+    let defined_in = std::any::type_name::<shared::TestClock>();
+    assert!(
+        defined_in.starts_with("shared::"),
+        "TestClock is defined in {defined_in}: deps.md §12 puts it in shared, so that every \
+         suite injects the same double rather than five that differ where nobody compared them"
+    );
+
+    // It is a `Clock`, and driving it moves a `Deadline` — which is the claim,
+    // rather than the existence of a type with the right name.
+    let clock = std::sync::Arc::new(shared::TestClock::new());
+    let arrived_at = shared::Clock::now(clock.as_ref());
+    let budget = std::time::Duration::from_millis(20);
+    let deadline = shared::Deadline::new(
+        std::sync::Arc::clone(&clock) as std::sync::Arc<dyn shared::Clock>,
+        arrived_at,
+        budget,
+    );
+    assert!(
+        !deadline.expired(),
+        "a deadline built against an unadvanced TestClock is already expired, so the clock is \
+         not the one it reads"
+    );
+    // Sub-millisecond, which is the resolution the driven copy in
+    // file_list.rs truncated away: it advanced in whole milliseconds, so this
+    // step would have moved nothing.
+    clock.advance(budget + std::time::Duration::from_micros(1));
+    assert!(
+        deadline.expired(),
+        "advancing the TestClock past the budget left the deadline live: core.md §5's cap is \
+         enforced by reading the clock, so a double the deadline does not read makes every \
+         expiry test assert on nothing"
+    );
+
+    let members = crate_members();
+    assert!(
+        !members.is_empty(),
+        "no crates/* workspace member, so this test would pass vacuously"
+    );
+
+    for member in &members {
+        for (file, source) in sources_of(member) {
+            assert!(
+                !source.is_empty(),
+                "{file} is missing or empty, so the scan below would pass vacuously"
+            );
+            let defines_it = file == "crates/shared/src/deadline.rs";
+            for line in source.lines() {
+                if !line.contains("TestClock") {
+                    continue;
+                }
+                // The crate root is the other place the name legitimately
+                // appears, and only on the re-export: a `TestClock` reached
+                // from a function body there would be the thing being caught.
+                let re_exports_it =
+                    file == "crates/shared/src/shared.rs" && line.starts_with("pub use deadline::");
+                assert!(
+                    defines_it || re_exports_it,
+                    "{file} names TestClock in `{line}`: it is exported unconditionally rather \
+                     than behind a feature, and the price of that is that production code must \
+                     not be able to reach a clock it can drive — a shim whose deadline never \
+                     expires abstains for nobody"
+                );
+            }
+            assert!(
+                defines_it || !source.contains("impl Clock for"),
+                "{file} implements Clock: deps.md §12 has one trait and the two impls shared \
+                 provides, and a third is a suite writing its own double again"
+            );
+        }
+    }
+}
+
 /// `deps.md`'s "`FxHashMap` and `FxHashSet` are the default", whose two rules
 /// are both about what a *use site* is allowed to name:
 ///
