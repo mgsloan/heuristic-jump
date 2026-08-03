@@ -883,3 +883,81 @@ by a concurrent human session, which makes `harness/gate conformance` (no
 unstaged paths. `harness/gate conformance --rev <sha>` after committing only
 one's own paths is the way through, and it is worth reaching for immediately
 rather than diagnosing twice.
+
+## de2706af — the wiring edge: `heuristic_jump` -> `lang_rust` -> `driver::run`
+
+Targets: `#the-dependency-graph`'s three gaps and `#adding-a-language`'s one.
+All four are the same claim seen from four sides — an edge in §9's graph — and
+the missing edge was the one that makes the shipped binary contain a handler.
+
+**What was actually wrong.** `main` resolved a `Config`, logged it and exited.
+`lang_rust` had existed since `864661d` and was in nothing that builds for
+release, so the crate whose stated job is "the single place the language list
+is enumerated" enumerated nothing, and `Registry` — written two campaigns
+earlier — had no construction site outside a test. Fixing it is twenty lines.
+The reason it was worth a campaign is everything around it: §9's printed `main`
+did not compile against the code, and nothing failed when a language was
+missing from the list.
+
+**`driver::run` is a stub, and that was the judgement call.** `shim.md` §13
+puts `run()` in `driver.rs` beside the thread wiring and the child spawn; there
+is no transport, no codec and no actor, so the body reports the resolved
+configuration and returns `Ok(())`. Writing it anyway is what gives the
+registry an owner — a `Registry` built and dropped in `main` would satisfy the
+same manifest scan while linking nothing that matters. The alternative
+considered was leaving `main` self-contained until the transport exists, which
+keeps §9's `main` uncompilable for however many campaigns that takes, and makes
+the eventual transport campaign move the language list as well as add the loop.
+
+**§9's printed `main` could not be satisfied as printed** — CHANGE-conformance-009.
+It named `HandlerRegistry`, which appears in no other document, and passed
+`Cli::parse()` to a crate that `deps.md` §11 and `shim.md` §13 both keep `clap`
+out of. Note that `Config::from(cli)` is *not* available as the crossing:
+`From` is foreign and `Config` is `driver`'s, so an `impl From<Cli> for Config`
+in `heuristic_jump` is an orphan-rule violation. The snippet elides the
+resolution rather than printing a method pair that the code does not have.
+
+**The test that is worth copying.** The compiler checks the edge for a language
+that is *named* and cannot check the one that is not: a `crates/lang_python/`
+added and never wired builds perfectly, ships nothing and reports no error —
+the first sign is a metrics table with no Python rows.
+`the_language_list_is_enumerated_in_heuristic_jump` reads the workspace members
+and requires each `crates/lang_*` in both the manifest and the registry
+literal. It scans for `<crate>::Handler::new()` rather than the crate name,
+because a language that reached the manifest and a doc comment but not the
+registry is precisely the failure.
+
+**`vec![Arc::new(h)]` needs the `as Arc<dyn LanguageHandler>`.** Element
+coercion inside `vec!` did not fire from the parameter type, so `heuristic_jump`
+names `shared::LanguageHandler` — which it needs `shared` for anyway, since
+§9's own `main` returns `Result<(), shared::Error>` and `From`/`Into` cannot
+launder it.
+
+**The authoritative-list gap was four campaigns old and cost nothing to close**
+— CHANGE-conformance-010. `shared` has declared `tracing` since `ProjectView`
+first logged; §9's list, in the sentence calling itself authoritative, did not
+have it, and `deps.md` §9 calls `tracing` unavoidable because `rope` depends on
+it. Class A, and deliberately argued as such in the changelog: it selects no
+dependency and widens nothing. The test is a **subset** assertion — §9 lists
+`rayon`, which `shared` will not declare until `ProjectView::scan` exists, and
+`deps.md` §14 has each dependency arrive with its first user. An equality
+assertion would have failed on the intended state and been "fixed" by adding
+`rayon` with no user.
+
+**What the campaign could not close: `similarity` has no `shared` edge.** §9
+draws one and its bullet asserts it; `crates/similarity/Cargo.toml` declares
+four crates and none of them is `shared`, and nothing in the ported code names
+a `shared` type. `crates/similarity/**` is denied to every loop in every phase,
+so the manifest cannot be fixed here, and deleting the edge from §9 is a spec
+edit toward the code on a layering claim. Escalated as `conformance-011` with
+*neither* option taken provisionally, which is the unusual shape: there is no
+site this loop may write that the answer would change, so the record is the
+tag. Do not spend another campaign rediscovering this — it is a human write or
+a human ruling.
+
+**Splitting one gate-green tree into two commits.** Both experiments were
+written before the first commit, and the second commit's test asserts a list
+the first commit's spec did not yet have. Lifting the second test out to a
+temp file, committing, then splicing it back is three minutes and leaves each
+commit's tests matching its own spec state. Worth doing rather than collapsing
+to one commit, because the audit reads commits.
