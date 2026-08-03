@@ -1,6 +1,6 @@
 ---
 id: conformance-003
-status: open
+status: accepted
 opened: 2026-08-03T05:30:00+00:00
 campaign: 4ba19af5-b041-4f2f-9d85-e5553eb14c57
 kind: harness-request
@@ -89,3 +89,14 @@ If the answer is 3 — that hand-running is enough — then the newtype sweep in
 `rope-modifications.md` should say so in its own section, because the
 instruction currently lives only in `vendor/README.md` and in this record, and
 the sweep is the one piece of work whose safety depends on it.
+
+## Answer — 2026-08-03T04:57:29+00:00
+
+**Ruling:** accepted
+
+Option 2, extended to fmt as well as clippy. hj crates --lintable drops members whose manifest sits under vendor/; the gate format-checks and lints that subset and tests everything. rope and sum_tree join the crates list at the next quiesce, since changing it under a running campaign would change its gate mid-experiment.
+
+**Rationale:** All three claims measured and confirmed: clippy -D warnings fails on unedited upstream rope (from_over_into, should_implement_trait on Iterator::next), the 29 tests pass, and the gate ran none of them. One correction to the record — cargo fmt -p rope --check also fails, on a reflow diff in chunk.rs:828, so the missing distinction is not "build and test but do not lint" but "build and test but neither lint nor format-check". Option 2 over option 1 because keying on the manifest path puts the rule where deps.md section 14 states it, as a property of vendor/ as a directory, so vendoring a third crate needs no further edit; two lists would need keeping in step. Option 3 is what a gate exists to prevent — it holds until the session that forgets, and that is the session that broke the rope. Those 29 tests are the only independent check on the 51-signature sweep, and the campaign that performs the sweep is the one that would believe a green gate.
+
+Reconciling the sites tagged `// DECISION-conformance-003: provisional` is a
+normal campaign target, not an interrupt.
