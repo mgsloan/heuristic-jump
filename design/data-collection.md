@@ -142,7 +142,11 @@ be aligned, and the agreement / divergence split that
 `core.md` §11 builds the whole per-server design
 on would have nothing to join on.
 
-A position record is `(file, byte offset, text, node kind, class)`.
+A position record is `(file, byte offset, text, node kind, class)`, where
+`class` is derived from the grammar — the node kind grouped into something
+coarser, such as identifier versus operator versus literal. It is **not** a
+stratum: strata are defined by the resolution logic and do not exist at
+collection time, which is the circularity [§3](#3-sampling) refuses.
 
 ### Which positions count as identifiers
 

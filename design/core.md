@@ -845,6 +845,12 @@ contents beyond the parse LRU.**
   abstains, since it cannot wait for a rescan inside the deadline, but the
   next query on that spot sees a fresh list.
 
+  The mechanism is `AbstainReason::NoCandidates` specifically, not any
+  abstention (`resolution.md` §8). That reason means an *exhaustive* search
+  found nothing, which is evidence about the file list; `Deadline` means the
+  search was cut off, which is evidence about nothing, and rescanning on it
+  would spend I/O in the window that just proved to be short of it.
+
   This pairs neatly with the retry protocol: a second query on the same spot
   is already the expected path, so the rescan usually lands exactly when it
   is needed. Rescans are debounced, so a burst of misses triggers at most one.
@@ -874,6 +880,9 @@ Signals, in order of reliability:
 1. **`InitializeResult` received.** `Starting` to `Warming`.
 2. **Silence with work outstanding.** Requests pending beyond a threshold with
    no frames of any kind arriving moves to `Unresponsive`.
+3. **A definition answered.** `Warming` or `Unresponsive` to `Ready`, on the
+   same predicate both directions — the adapter's
+   `definition_indicates_ready` ([below](#the-generic-warming-signal)).
 
 Note what is *not* on that list: `$/progress`. It looks like the obvious
 generic signal for `Warming`, and it is a trap. rust-analyzer emits progress
@@ -884,6 +893,21 @@ answering — meant for cold start — fire all day, inverting the tool's whole
 risk profile. Nothing generic can distinguish "still starting up" from
 "running a background check," because the distinction lives entirely in the
 work-done title and token, which are server-specific strings.
+
+`Unresponsive` is a claim about a server that is not answering, so the thing
+that retracts it is the server answering. Nothing else does, and that is
+narrower than it first looks: a server emitting progress notifications, or
+answering hovers, stays `Unresponsive`. That is deliberate. The state exists
+to decide whether the shim should serve go-to-definition itself, so the
+evidence that ends it should be a go-to-definition, not liveness in general —
+a server that has resumed logging but still cannot navigate is exactly the
+case the heuristic is for.
+
+**Swallowed responses count here too**, for the same reason they do for the
+`Warming` signal below: while `Unresponsive` the shim answers eagerly, so the
+child's response is dropped before it reaches the editor. The signal is that
+the child produced one. Keyed on the editor receiving it, a server that
+recovered would never be observed to have recovered.
 
 ### Per-server adapters
 
@@ -964,11 +988,17 @@ trades precision for coverage: the shim answers more queries with its own
 guess instead of waiting for the child's. That is the direction this version
 of the tool wants ([intro](#core-implementation-design)) — and it is
 self-limiting, because a single real answer from the child ends the eager
-window for the rest of the session.
+window.
 
 If a language server has not yet answered a single go-to-definition, it is
 plausibly still indexing. The moment it answers one, health becomes `Ready`
-and the retry rule takes over for the rest of the session.
+and the retry rule takes over.
+
+Not permanently, though: `Ready` is a claim that can be withdrawn. Signal 2
+takes a server that stops answering back to `Unresponsive` and eager, and
+signal 3 brings it back. So the eager window is not a startup phase the shim
+passes through once — it is whatever intervals the server spends unable to
+navigate, which is precisely the set of intervals the tool exists to cover.
 
 This calibrates itself across every server, repository size, and machine,
 with no timer to tune and nothing to configure. It also fails in the safe
@@ -1222,6 +1252,33 @@ found", and it is a claim the shim has no basis for making. An error says the
 request could not be served, which is both true and something clients surface
 as a transient failure rather than an answer.
 
+### The `Unresponsive` error can discard a real answer, and the retry covers it
+
+Worth stating, because the hazard is real and the reason it is tolerable is
+not obvious. Once the shim has answered request `id`, `writer:editor` drops
+the child's later response to `id`
+([section 3.2](#32-the-swallow-decision-belongs-to-writereditor)). So a child
+that was merely wedged, and recovers, has its correct answer thrown away — the
+user was told the request failed, and the answer existed.
+
+The two exceptions above are therefore not quite the same case after all.
+Standalone *knows* nothing will answer. `Unresponsive` only predicts it, and
+[section 7](#7-server-health-model)'s signal 3 exists precisely because the
+prediction is often wrong.
+
+What makes this acceptable is the retry protocol, and only in combination with
+that signal. The child's swallowed response still counts as evidence, so
+answering moves health to `Ready`; the user's second press then finds a
+`Ready` child, and an abstention there is silent rather than an error, so the
+child's answer reaches them. The cost is one wasted press during a window
+where the server was wedged anyway.
+
+Which means **the recovery path depends on swallowed responses counting**. If
+health could not be retracted, the second press would be eager as well, the
+abstention would be another error, and there would be no press at which the
+child's answer could ever arrive. A grace timer before sending the error would
+also work and is not needed; this is written down so it is not reinvented.
+
 ## 10. Divergence reporting
 
 ### The agreement predicate
@@ -1243,19 +1300,33 @@ whether the client advertised `linkSupport`. All shapes collapse to a set of
 `Location` — `(DocumentUri, ByteRange)` — taking `targetSelectionRange` for
 links.
 
-**The predicate reads nothing.** Both sides carry a line: the shim's answer
-because `Location` does
+**The predicate compares `(uri, line)`, and nothing else.** Both sides carry
+a line: the shim's answer because `Location` does
 ([section 18.4](#184-location-is-byte-based-and-this-fixes-a-real-inconsistency)),
-and the child's because that is what came off the wire. So the comparison is
-URI, then line, then range, with no file text needed — which matters because
-divergence is classified when the child responds, seconds after the answer,
-when the per-query read cache is long gone and the target document may never
-have been open.
+and the child's because that is what came off the wire. So it **reads
+nothing** — which matters, because divergence is classified when the child
+responds, seconds after the answer, when the per-query read cache is long
+gone and the target document may never have been open.
 
-Ranges themselves are compared in byte space when both sides refer to the same
-line, like everything else inside the shim
-([section 18](#18-protocol-types)); the child's columns are converted at the
-edge, using the one line rather than the file.
+**Columns are deliberately not compared**, and the reason is that the 3-line
+tolerance below already settles the question. If landing three lines from the
+proper LSP's answer counts as a match — because the definition is on screen
+and the user is already reading it — then landing forty columns away on the
+*same* line must count too. Comparing ranges would be a stricter test nested
+inside a looser one, which is not merely redundant but inconsistent: the row
+it would decide is subsumed by the row beneath it, since two overlapping
+ranges are on the same line by construction.
+
+What it costs is the case of two definitions on one line — `int x, y;`, a
+one-line TypeScript interface, dense generated code — which score as a match
+when the shim picked the wrong one. That is a real if small overstatement of
+precision, and it is preferred because it is a *uniform stated* tolerance,
+strictly tighter than the ±3 lines already granted, rather than a hidden one.
+Reopen it if the tolerance is ever tightened below a line; a column
+comparison only starts to mean something then.
+
+`Location.range` is unaffected and still earns its place — it is the jump
+target on the wire. It simply is not an input to agreement.
 
 Then, comparing one of the shim's locations against one of the child's. This
 pairwise relation is not itself the `agreement` field: neither side is a
@@ -1268,7 +1339,6 @@ number that gets measured stop being the same number.
 
 | Relation | Pairwise | `severity` |
 |---|---|---|
-| Same file, ranges overlap | matches | — |
 | Same file, within 3 lines | matches | — |
 | Same file, more than 3 lines apart | differs | `same_file` |
 | Different file, same module tree | differs | `near_module` |
@@ -1425,12 +1495,17 @@ resolved as abstained):
 
 ```json
 {
-  "uri": "...", "position": [12, 30], "language": "rust",
+  "uri": "...", "position": 4821, "language": "rust",
   "mode": "proxy",
   "server_health": "Warming",
   "decision": "committed",
-  "stratum": "explicitly_imported",
+  "stratum_prior": "explicitly_imported",
+  "stratum_final": "explicitly_imported",
   "confidence": 0.94,
+  "margin": 0.62,
+  "considered": 7,
+  "bytes_scanned": 1841203,
+  "files_parsed": 14,
   "heuristic_latency_us": 8300,
   "heuristic_locations": ["..."],
   "returned": 3,
@@ -1444,9 +1519,40 @@ resolved as abstained):
 
 This single record type covers coverage, precision, error severity
 classification, per-stratum breakdown, latency percentiles, and the
-LSP-latency value weighting. `stratum` and `confidence` are reported *by the
-handler*, since only it knows which resolution path produced the answer; the
-driver classifies `agreement` and `severity`, since only it has both answers.
+LSP-latency value weighting. Everything from `stratum_prior` through
+`files_parsed` is reported *by the handler*, since only it knows which
+resolution path produced the answer and what it cost; the driver classifies
+`agreement` and `severity`, since only it has both answers.
+
+**`position` is a byte offset**, like every other position inside the shim
+([section 18](#18-protocol-types)). It is what `data-collection.md` records
+and what `measure replay` joins on, so a line/column pair here would need a
+conversion in the one place the two halves of the metric have to line up
+exactly.
+
+**The stratum is two fields, not one.** `resolution.md` §8 assigns a stratum
+a-priori from the reference, then permits one refinement during search — to
+`AmbiguousName` or `ExternalDependency`, neither of which is knowable before
+the search runs. Coverage is reported on `stratum_prior` so the denominator
+is fixed by the reference and does not move when the implementation changes;
+precision is reported on `stratum_final` so an answer is judged against the
+class it turned out to be. One field cannot do both, and collapsing them
+makes `high-level.md`'s central table non-comparable across versions — the
+one property it needs.
+
+**`margin` and `considered` are the features a floor would be set on.**
+Nothing reads them in v1. They are recorded because a threshold can only be
+derived from data collected while nothing was being gated, and a corpus run
+that kept only the collapsed `confidence` could never answer *what would a
+floor have cost?* — which is the question the permissive posture exists to
+ask (`resolution.md` §7.1).
+
+**`bytes_scanned` and `files_parsed` are counters, not limits.** Nothing
+compares them against a budget and no search stops because of them
+(`resolution.md` §1.3); they are here so a latency regression can be
+attributed to a diff rather than guessed at. Read as a proxy for cost they
+are approximate — parse cost is superlinear in file size for some grammars,
+and a cold read is dominated by seek latency rather than length.
 
 `heuristic_locations` is **ordered**, and `returned` is its length —
 redundant, and worth carrying anyway, because the result-count distribution is
@@ -1592,23 +1698,30 @@ Constraints that make a replay trustworthy:
   the `measure` version that wrote it. Replay refuses to run against a truth
   file whose repository commit does not match the checkout, rather than
   silently reporting metrics for positions that have since moved.
-* **Replay does not enforce deadlines by wall clock.** This is the constraint
-  that makes replay worth having, and it is easy to get wrong by doing the
-  obvious thing. A wall-clock deadline makes abstention depend on machine
-  load: the same handler on the same snapshot truncates a search on a busy
-  machine and completes it on an idle one, so *coverage* — not just
-  latency — becomes a property of what else was running. Metrics that move
-  with background load cannot be compared across runs, and a tuning session
-  cannot tell an improvement from a quiet minute.
+* **Replay enforces no deadline at all.** This is the constraint that makes
+  replay worth having, and it is easy to get wrong by doing the obvious
+  thing. A wall-clock deadline makes abstention depend on machine load: the
+  same handler on the same snapshot gives up on a busy machine and finishes
+  on an idle one, so *coverage* — not just latency — becomes a property of
+  what else was running. Metrics that move with background load cannot be
+  compared across runs, and a tuning session cannot tell an improvement from
+  a quiet minute.
 
-  So replay substitutes the deterministic surrogate the design already
-  carries: the per-query byte budget from
-  [section 13](#13-parallel-dispatch-and-resource-limits), plus the file and
-  parse counts that go with it. Same abstention behaviour, same truncation
-  points, same answer, every time, on any machine. Choosing the surrogate
-  budget that corresponds to a given wall-clock deadline is a calibration —
-  `resolution.md` open question 13 is exactly this question — and it
-  is measured once rather than re-derived per run.
+  Replay therefore runs the handler to completion and records what it found.
+  That is sound because a search is **exhaustive**: it reads every candidate
+  file and stops only when it runs out of them, so with the clock removed
+  there is nothing left that could vary. An earlier revision instead
+  substituted a per-query byte budget as a reproducible surrogate for the
+  clock, which worked but had to be calibrated against a wall-clock deadline
+  to mean anything; `resolution.md` §1.3 drops the budget and gets the
+  determinism structurally instead.
+
+  The consequence to be explicit about: **replay reports an upper bound on
+  what the shim delivers.** The shim has a deadline and will sometimes abstain
+  where replay answered. That gap is a latency fact, and it is measured as
+  one — work counters per iteration, wall clock at phase gates
+  (`implementation-loop.md` §10). Handler coverage from replay is a statement
+  about resolution, not a promise about the field.
 * **Only the heuristic side is re-measured, and its timing is an observation,
   not a control input.** `heuristic_latency_us` is recorded during replay
   because it is the same handler code on the same snapshot, but nothing in
@@ -1848,9 +1961,12 @@ pub trait LanguageHandler: Send + Sync {
 pub struct Query<'a> {
     pub doc: &'a DocumentSnapshot,       // rope + tree, immutable
     pub position: ByteOffset,
-    pub project: &'a ProjectView,        // file list, roots, scoped reads
+    /// Scoped reads, parses, and search execution -- see below.
+    pub project: &'a ProjectView,
     pub deadline: &'a Deadline,
     pub server: &'a ServerProfile,       // which oracle we are standing in for
+    /// The commit decision. Inert in v1; the only way to build an Outcome.
+    pub policy: &'a CommitPolicy,
 }
 
 /// The behavioural differences between language servers for one language,
@@ -1874,6 +1990,21 @@ pub enum Outcome {
     },
     Abstain { reason: AbstainReason, stratum: Stratum },
 }
+
+/// Stratum -> minimum Confidence. Empty in v1, where `decide` returns
+/// `Committed` for every input. Handlers never construct `Outcome::Committed`
+/// themselves; every path ends here.
+pub struct CommitPolicy { /* ... */ }
+
+impl CommitPolicy {
+    pub fn decide(&self, stratum: Stratum, confidence: Confidence,
+                  locations: Vec<Location>) -> Outcome;
+}
+
+/// A file known to be inside a workspace root and not gitignored.
+/// Private field, private constructor: only `ProjectView` mints one.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct ProjectPath(Arc<ProjectPathInner>);
 ```
 
 Notes on the shape:
@@ -1907,9 +2038,30 @@ Notes on the shape:
 * **Handlers get a snapshot, not a lock.** `DocumentSnapshot` holds cloned
   `Rope` and `Tree` handles, both O(1), taken at dispatch — so a handler is
   immune to edits that arrive while it runs, and `core` is never blocked.
-* **Handlers do their own disk reads through `ProjectView`**, so the driver can
-  enforce the scope rules (workspace only, gitignore respected), cache reads
-  within a query, and account I/O against the deadline.
+* **Handlers do their own disk reads, parses, and searches through
+  `ProjectView`**, so the driver can enforce the scope rules (workspace only,
+  gitignore respected), cache reads within a query, reuse the parse LRU from
+  [section 5](#5-document-state), and run the literal scan on the bounded pool
+  from [section 13](#13-parallel-dispatch-and-resource-limits) rather than on
+  threads a handler spawned. `read`, `parse`, and `scan` are all on it;
+  `resolution.md` §3 has the full signature list.
+* **`ProjectPath` is unforgeable, and that is what makes the scope rule true
+  rather than customary.** A handler cannot build one from a string — every
+  path it holds came from `ProjectView::candidates` or `::lookup`, both of
+  which consult the `ignore`-crate file list from
+  [section 6](#6-project-file-enumeration). Without this the rule is a
+  convention every language author has to remember, and the one-line change
+  that peeks at `~/.cargo/registry` would work, pass review, and quietly move
+  the tool into a scope whose latency nothing has accounted for.
+* **Handlers never construct `Outcome::Committed`.** Every path ends through
+  `policy.decide(..)`. In v1 that returns `Committed` for every input, so the
+  funnel is inert and buys nothing today; what it buys is that the claim in
+  [section 17.6](#176-the-budgets-change-because-what-they-are-traded-against-changed)
+  — a per-mode floor is a data change rather than a code change — is true
+  when the floor arrives. The alternative is auditing every commit site
+  in every `lang_*` crate at the moment when there are the most of them, and
+  half-adopting it is worse than either choice. `resolution.md` §7.4 argues
+  it at length.
 * **Handlers are `Send + Sync` and re-entrant.** The same handler serves
   concurrent queries; per-query mutable state lives in locals.
 * **`grammar()` is what keeps `driver` language-free.** The driver needs to
@@ -1995,8 +2147,15 @@ Additional limits:
 * **Max in-flight heuristic queries** (start at 4). Beyond that, new queries
   abstain immediately rather than queueing. Queueing cannot help under a
   wall-clock deadline; it only guarantees the queued queries blow it.
-* **Per-query byte budget** on files read, so one query over a pathological
-  repository cannot monopolise the pool.
+* **The deadline is the only bound on a single query's work.** There is no
+  per-query byte or file budget: a search reads every candidate file
+  (`resolution.md` §1.3). That is a deliberate trade — it buys a global
+  uniqueness signal that a clipped scan cannot earn, and a replay that is
+  deterministic without calibration, at the cost of making a pathological
+  repository a latency problem rather than a bounded one. The protections
+  that remain are the deadline, the in-flight cap above, and cooperative
+  polling; if a repository can exhaust the deadline on ordinary queries, that
+  is a phase 3 finding rather than something a budget should have hidden.
 * **No heuristic work while `core` is behind.** If the event queue is backed
   up, forwarding and state transitions take priority. The prime invariant
   again.
@@ -2306,8 +2465,8 @@ Three things stated here because they change this section's own claims:
 * `ByteOffset`, `ByteLen`, `ByteRange`, `LineIndex`, `ByteColumn`,
   `Utf16Column`, and `CharCount` are *defined in* `rope` and re-exported by
   `shared`, since the dependency direction forbids the reverse. `ByteLen` is
-  also what a handler uses for its per-query byte budget — one byte quantity,
-  not two.
+  also what a handler counts `bytes_scanned` in — one byte quantity, not
+  two.
 * The "re-sync is a clean diff" claim is weakened, in the ways that document
   sets out.
 * **Upstream's tests and benchmark are kept, not deleted.** We are editing this
@@ -2605,11 +2764,12 @@ keyword or in whitespace. An error response for *that* is noise, and unlike the
 ambiguity case it teaches the user nothing.
 
 So the open question is not only "error or `null`" but "for which reasons".
-The plausible split is an error for the reasons that say something — the target
-is outside the workspace, the search ran out of budget — and `null` for the
-cursor simply not being on a resolvable identifier, where "no definition found"
-is very nearly true and is what the user expects. Left open because it depends
-on what editors actually render for each, which is unmeasured.
+The plausible split is an error for the reasons that say something — the
+target is outside the workspace, the deadline cut the search off — and `null`
+for the cursor simply not being on a resolvable identifier, where "no
+definition found" is very nearly true and is what the user expects. Left open
+because it depends on what editors actually render for each, which is
+unmeasured.
 
 ### 17.6 The budgets change, because what they are traded against changed
 
@@ -2882,10 +3042,10 @@ strictly it is. It is there because the alternative is worse in two places:
   UTF-16 column.
 * The agreement predicate ([section 10](#the-agreement-predicate)) is
   line-based by definition — every severity tier is "within 3 lines" or
-  "further than 3 lines". With the line in hand it compares URI, then line,
-  then range, and **reads nothing at all**, including in the same-file case
-  where the document is closed and the divergence arrives seconds later with
-  no per-query cache left.
+  "further than 3 lines", and columns are not compared at all. With the line
+  in hand it compares `(uri, line)` and **reads nothing**, including in the
+  same-file case where the document is closed and the divergence arrives
+  seconds later with no per-query cache left.
 
 A handler pays nothing for it: it verified the candidate by parsing, so
 `node.start_position()` already has the row. And it is not an encoding leak —

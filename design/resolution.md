@@ -12,8 +12,7 @@ Out of scope: the LSP shim, document state, the actor, dispatch, and
 observability plumbing. Those are `core.md`, referred to
 below as "the core doc." This document takes its seam —
 `LanguageHandler`, `Query`, `Outcome`, `DocumentSnapshot`, `Deadline` — as
-given, and says what changes to it are needed
-([section 1.3](#13-what-this-changes-in-the-core-design)).
+given.
 
 Three types the core doc names but does not define — `ProjectView`, `Stratum`,
 and `AbstainReason` — are defined here, because their shape is determined by
@@ -74,14 +73,15 @@ From core doc [section 12], a handler receives a `Query` and returns an
   driver drops it — it produces wasted CPU during the exact window the whole
   no-index decision exists to protect.
 * **The clock may stop work, but may not choose the answer.** New, and the
-  strongest obligation in this list; [section 1.4](#14-the-answer-is-a-function-of-the-budget-not-the-clock)
+  strongest obligation in this list, and
+  [section 1.3](#13-the-search-is-exhaustive-and-the-clock-may-only-abort-it)
   is why.
 * **`Send + Sync` and re-entrant.** Per-query state lives in locals. No handler
   may memoize across queries; all caching is the driver's, reached through
   `ProjectView`.
 * **All I/O through `ProjectView`.** Not a style rule. It is what lets the
-  driver enforce scope, count bytes against the budget, and reuse the parse
-  cache.
+  driver enforce scope, count bytes and files for the trace record, and reuse
+  the parse cache.
 * **Every failure is `shared::Error`.** Per `CLAUDE.md` and core doc
   [section 16], there is one system-wide enum, and resolution's failures are
   variants of it rather than a local error type per crate. Abstention is
@@ -99,11 +99,13 @@ And what a handler may **not** assume:
   lazily. A miss is a miss, not a proof of absence — which is why
   `AbstainReason::NoCandidates` exists as a distinct signal
   ([section 8](#8-strata-and-abstention-reasons)).
-* **That the resource budget is a fixed number.** Standalone raises the
-  deadline to 2000ms and makes it configurable (core doc [section 17.6]), and
-  the budget scales with it. A handler that sizes its search from a hardcoded
-  constant rather than from the budget it was handed will under-search
-  standalone, which is the mode with no second opinion.
+* **That it has unlimited time, or that it should manage its own.** The
+  search runs to completion and the deadline aborts it
+  ([section 1.3](#13-the-search-is-exhaustive-and-the-clock-may-only-abort-it)),
+  so a handler neither sizes its search nor rations it. What it owes is
+  polling `expired()` often enough that the abort is prompt — the deadline
+  differs by mode (750ms proxying, 2000ms standalone, core doc
+  [section 17.6]) and a handler never learns which.
 * **That it is called once per user gesture.** The retry protocol, speculative
   editor requests, and `measure replay` all produce repeats at the same spot.
   Resolution must be deterministic — see below.
@@ -150,115 +152,71 @@ something the first already wrote, it copies. When a third wants it, it moves
 to `resolve`. Deduplication is allowed to lag, because a shared utility
 extracted from two examples is usually the wrong shape.
 
-### 1.3 What this changes in the core design
-
-Six things, called out rather than smuggled in. None of them is adopted in the
-core doc yet.
-
-1. **`ProjectView` gains `parse` and `scan`.** The parse LRU and the worker
-   pool stay driver-owned, as core doc sections 5 and 13 require, but handlers
-   reach them through the view instead of parsing and walking on their own.
-   Core doc [section 12] currently describes `ProjectView` as "file list,
-   roots, scoped reads", which is two capabilities short of what stage 5 needs.
-2. **`AbstainReason::NoCandidates` is the file-list rescan trigger.** Core doc
-   [section 6] says "when a query finishes without a good candidate, that is
-   itself the signal the file list may be stale" but names no mechanism. This
-   is it.
-3. **The trace record gains `stratum_prior`, `margin`, `considered`,
-   `bytes_scanned`, `files_parsed`, and `truncated`.** Core doc [section 11]
-   has `stratum` and `confidence`; that was sufficient under a floor, where
-   the interesting question was whether an answer cleared its threshold.
-   Without `stratum_prior`, per-stratum coverage has a moving denominator
-   ([section 8](#8-strata-and-abstention-reasons)). Without `margin` and
-   `considered`, there is no way to ask the question the whole permissive
-   posture exists to answer — *what would a floor have cost?* — because the
-   features a threshold would be set on were never recorded. Without
-   `bytes_scanned` and `files_parsed`, a latency regression cannot be
-   attributed. `truncated` has a second job as of this revision: it
-   distinguishes the reproducible budget truncation from the wall-clock one,
-   which is what lets a replay comparison exclude rows it could never
-   reproduce ([section 1.4](#14-the-answer-is-a-function-of-the-budget-not-the-clock)).
-   Its first job is in [section 4](#truncation-no-longer-blocks-a-commit).
-4. **`ProjectPath` is unforgeable.** Core doc [section 12] says handlers read
-   through `ProjectView` "so the driver can enforce the scope rules." Making
-   that true rather than customary requires that a handler cannot construct a
-   path at all ([section 3](#3-projectview)).
-5. **`AbstainReason` is a user-facing type, not just a log field.** Core doc
-   [section 17.5] specifies that standalone answers every abstention with a
-   `RequestFailed` error *naming the reason*, because the user has no second
-   opinion. That makes the enum's payloads and its `Display` part of the
-   interface rather than diagnostics, and it means a reason may not carry
-   anything the user cannot act on. [Section 8](#8-strata-and-abstention-reasons)
-   is written to that constraint.
-6. **`Query` gains `policy: &CommitPolicy`** — the weakest of the six, and the
-   only one that would be reasonable to drop. Under the floor this carried the
-   threshold. In v1 the policy always says commit, so threading it through
-   buys nothing today; what it buys is that core doc [section 17.6]'s claim —
-   "the commit policy is a table, so a per-mode table is a data change rather
-   than a code change" — is true when the floor arrives, instead of requiring
-   every handler to be revisited at that point. Argued in
-   [section 7.4](#74-where-the-decision-lives) and left as
-   [open question 3](#open-questions).
-
-Two things this document previously needed have landed on the core side and
-are no longer proposals. `ByteLen` is now a `shared` vocabulary type, described
-there as what `resolve` counts a query's byte budget in, and
-`rope-modifications.md` §4 argues at length against a separate
-`ScannedBytes` — so the budget arithmetic in [section 3](#3-projectview) uses
-it directly. And `Location` has gained `line: LineIndex`, constructed only via
-`Location::at_node`, which changes how [section 6](#6-candidate-verification)
-builds its result.
-
-### 1.4 The answer is a function of the budget, not the clock
+### 1.3 The search is exhaustive, and the clock may only abort it
 
 New in this revision, and everything below is written against it.
 
-Core doc [section 11] now specifies `measure replay`: tuning re-runs the
-handler against a frozen `truth.jsonl` with no language server, and it
-**disables the wall clock**, substituting the per-query byte budget plus the
-file and parse counts as a deterministic surrogate. The stated requirement is
-"same abstention behaviour, same truncation points, same answer, every time,
-on any machine."
+**A search reads everything it is entitled to read.** There is no per-query
+byte budget, no file cap, and no parse cap. Stage 5 scans every project file
+with a matching extension; a stage that has candidates left has not finished.
+The only thing that can stop a search early is the deadline, and when it does
+the query **abstains entirely** rather than committing from a partial view.
 
-That is a requirement on resolution, not on the measurement harness, and it is
-easy to satisfy accidentally and then break. It has one statement:
+One statement follows, and the whole document is written against it:
 
-> **The committed answer must be a function of `(snapshot, position, project
-> state, budget)` alone.** No branch that affects the result may read a clock.
+> **The committed answer is a function of the snapshot, the position, and
+> the project state alone.** No branch that affects the result may read a
+> clock. The clock decides *whether* there is an answer, never *which*
+> answer.
+
+An earlier revision bought this property with a reproducible byte budget,
+carefully calibrated so that replay's early stops matched the shim's. Removing
+the budget gets the same property for free and more strongly: **an exhaustive
+search has nothing to vary.** There is no stopping rule to reproduce, so
+determinism is structural rather than calibrated, and the budget↔deadline
+mapping that used to be load-bearing does not have to exist.
 
 The consequences run through the whole document:
 
-* **The byte budget is the primary control; the deadline is a backstop.** The
-  ordering matters and is the opposite of what the earlier revision assumed.
-  A search stops because it has read its allotted bytes, parsed its allotted
-  files, or exhausted its candidates — all countable, all reproducible. It
-  should reach that limit *before* the wall clock, and the calibration that
-  keeps that true is [open question 13](#open-questions), which core doc
-  [section 11] now cites by name.
-* **A wall-clock expiry is an anomaly, not a mode of operation.** If
-  `deadline.expired()` fires, the machine was slower than the budget assumed,
-  and that query's record is not reproducible by replay. It must therefore be
-  *marked* rather than silently included: `Truncation::Deadline` on the trace
-  is the signal to exclude that row when comparing against a replay. A live
-  run where deadline truncation is common is a miscalibrated budget, and the
-  rate of it is worth watching for that reason alone.
+* **Replay and live measure different things, and that is now explicit.**
+  `measure replay` has no clock, so it always completes and always answers.
+  The shim, on a large repository, may not. Replay therefore reports handler
+  coverage as an **upper bound** on what the shim delivers, and the gap is a
+  *latency* fact rather than a resolution one. That is the right split: phase
+  2a optimises resolution against replay, phase 3 optimises cost against the
+  wall clock, and neither is measuring the other's problem
+  (`implementation-loop.md` §10).
+* **A deadline expiry is a whole-query abstention.** Not a partial commit,
+  and not a marked row to be filtered later — `AbstainReason::Deadline`, and
+  nothing is returned. A handler interrupted at an arbitrary point has an
+  arbitrary candidate set, so committing from it would be the one answer in
+  the system whose quality nothing bounds.
 * **Iteration order must be stable.** Fan-out over candidate files is
   parallel, but the *reduction* may not depend on completion order — results
   are collected and then sorted by the total order in
-  [section 6.4](#64-the-output-is-a-ranked-list), never
-  reduced as they arrive. This is the single most likely way to break replay
-  determinism without noticing, because it passes every test on an idle
-  machine.
-* **Nothing may vary with pool occupancy.** A handler must not sample how much
-  budget is left and search harder when the machine is quiet.
+  [section 6.4](#64-the-output-is-a-ranked-list), never reduced as they
+  arrive. With the budget gone this is the *only* remaining way to break
+  replay determinism, and it passes every test on an idle machine.
+* **Nothing may vary with pool occupancy or remaining time.** A handler must
+  not sample how much of the deadline is left and search harder when the
+  machine is quiet. Reading the clock to decide whether to stop is allowed;
+  reading it to decide what to look at is not.
 
-The payoff is what `implementation-loop.md` is built on: because replay
-is deterministic, a metric that moves has a cause in the diff, so per-stratum
+The cost, stated plainly: the deadline is now the only bound on a runaway
+query, so on a large enough repository the shim's coverage becomes a
+wall-clock outcome. That is a real regression against the budgeted design and
+it is accepted deliberately — it converts an unmeasurable calibration problem
+into a measurable latency problem, which is the one phase 3 exists to solve.
+The abstention rate attributable to the deadline is therefore a number worth
+watching from the first corpus run.
+
+The payoff is what `implementation-loop.md` is built on: because replay is
+deterministic, a metric that moves has a cause in the diff, so per-stratum
 numbers can be ratcheted in a baseline file rather than treated as noisy
 observations. [Section 11](#11-testing) makes the property a test, and that
 document's §14 depends on it.
 
-### 1.5 The correct answer depends on which server
+### 1.4 The correct answer depends on which server
 
 Also new, and it changes what "correct" means in every other section of this
 document.
@@ -558,16 +516,11 @@ impl ProjectView {
     /// Parsed tree, from the parse LRU when possible.
     pub fn parse(&self, path: &ProjectPath, text: &FileText) -> Option<Tree>;
 
-    /// Literal search over candidate files, executed on the worker pool
-    /// and accounted against the query's budget.
+    /// Literal search over every candidate file, executed on the worker
+    /// pool. Exhaustive: see section 1.3.
     pub fn scan(&self, req: &ScanRequest) -> ScanOutcome;
 }
 ```
-
-`parse` and `scan` were listed in
-[section 1.3](#13-what-this-changes-in-the-core-design) as changes this
-document needs from the core seam. They still are — the move from trait to
-struct does not add them.
 
 ### `ProjectPath` is unforgeable
 
@@ -616,43 +569,41 @@ Both expose `chunks()`, `slice(ByteRange)`, and `len() -> ByteLen`. Handlers
 work in chunks where they can, so a large open file is not flattened to a
 `String` to check one line.
 
-### Reads are cached and budgeted per query
+### Reads are cached per query, and counted but not capped
 
 The view is instantiated per query. Within it:
 
 * Each file is read at most once, so stages 3, 5, and 6 touching the same file
   cost one read.
-* Bytes read accumulate against a budget counted in `ByteLen` — the `shared`
-  vocabulary type, not a parallel one, per `rope-modifications.md` §4. The
-  budget is sized from the deadline rather than fixed, so standalone's larger
-  deadline (core doc [section 17.6]) buys a correspondingly larger search
-  instead of leaving the extra time unused. Exceeding it is a truncation, not
-  an error ([section 4](#4-the-search-primitive)).
-* **The budget, not the clock, is what a handler is expected to hit.** Per
-  [section 1.4](#14-the-answer-is-a-function-of-the-budget-not-the-clock), the
-  byte, file, and parse counts are the reproducible limits and the ones
-  `measure replay` substitutes for wall time. The view therefore exposes what
-  remains of each, and a handler decides whether to read one more file from
-  those numbers.
+* Bytes read accumulate in a counter typed `ByteLen` — the `shared` vocabulary
+  type, not a parallel one, per `rope-modifications.md` §4. It **is not a
+  budget**: nothing compares it against a limit, and a search never stops
+  because of it — see
+  [section 1.3](#13-the-search-is-exhaustive-and-the-clock-may-only-abort-it).
+  It exists so that `bytes_scanned` and `files_parsed` reach the trace record,
+  where they are what attributes a latency regression to a diff.
+* **The view exposes no remaining-budget number**, and deliberately: a handler
+  that could read one would be able to make the answer depend on how much
+  earlier stages happened to consume, which is a coupling between stages that
+  nothing else in the design has.
 * Every read still checks the deadline first and fails with the deadline
-  variant of `shared::Error` rather than starting I/O that cannot be used —
-  but reaching that check means the budget calibration was wrong for this
-  machine, so it is also what sets `Truncation::Deadline` and marks the record
-  as unreplayable.
+  variant of `shared::Error` rather than starting I/O that cannot be used.
+  That is an abort, not a limit — the query abstains with
+  `AbstainReason::Deadline` and returns nothing.
 
 ### Why `scan` lives here rather than in the handler
 
 The split: **the handler builds the pattern and interprets the matches;
 `ProjectView` executes the search.** Execution belongs to the view because it
-owns the three things a search must respect — the bounded pool from core doc
-[section 13], the budget, and the deadline — and because a handler that
-spawned its own threads would take back exactly the CPU headroom the no-index
-decision exists to preserve.
+owns the two things a search must respect — the bounded pool from core doc
+[section 13] and the deadline — and because a handler that spawned its own
+threads would take back exactly the CPU headroom the no-index decision exists
+to preserve.
 
 The earlier version of this section said execution "has to be the driver's."
 That is no longer the right word now that `ProjectView` is a `shared` struct:
-the pool and budget are handed to it at construction, so `measure_core` builds
-one the same way `driver` does, which is precisely the property that forced the
+the pool is handed to it at construction, so `measure_core` builds one the
+same way `driver` does, which is precisely the property that forced the
 move. The rule for handlers is unchanged, and is the part that matters: no
 handler creates threads, opens files, or walks directories itself.
 
@@ -677,8 +628,10 @@ tell an `impl` header from a definition.
 
 The parse is not free — call it a millisecond per ten thousand lines — and a
 whole-project search for a name like `new`, `get`, or `id` hits thousands of
-lines. Parsing every file with a hit blows the budget on exactly the queries
-that are already hardest.
+lines. Parsing every file with a hit blows the deadline on exactly the
+queries that are already hardest — and with the scan exhaustive
+([section 1.3](#13-the-search-is-exhaustive-and-the-clock-may-only-abort-it))
+every file with a hit does reach that stage.
 
 So a language may supply cheap lexical hints that prune the set before parsing:
 
@@ -722,75 +675,59 @@ default above is "requesting folder first," and nothing here forecloses the
 pagerank-style
 ranking it suggests; see [section 6.3](#63-what-ranking-deliberately-does-not-use).
 
-### Truncation no longer blocks a commit
+### The scan is exhaustive, and uniqueness is therefore earned
 
-A scan can end early for two reasons, and both must be reported, not silently
-absorbed:
+A scan reads every candidate file. It does not stop on a byte budget, a file
+count, or a parse count, and there is no partial-scan outcome to report:
 
 ```rust
 pub struct ScanOutcome {
     pub hits: Vec<FileHits>,
-    pub truncated: Option<Truncation>,   // Deadline | ByteBudget
     pub files_scanned: FileCount,
     pub bytes_scanned: ByteLen,
 }
 ```
 
-The hazard is real and unchanged: **a partial scan cannot distinguish "the only
-definition of this name in the project" from "the first of eleven."** Global
-uniqueness is the main confidence signal for stages 4 and 5, so a truncated
-search that commits is reporting a confidence it did not earn — and it does so
-preferentially on large repositories, which is where the corpus measurements
-are least likely to catch it.
+The two counters are for the trace record, not for control flow
+([section 3](#reads-are-cached-per-query-and-counted-but-not-capped)).
 
-The earlier version of this document turned that into a hard rule: a truncated
-search could commit only if its confidence did not depend on global uniqueness.
-**That rule is withdrawn**, because it is a confidence-based abstention and
-`high-level.md` now allows only two — emptiness and the latency budget. Truncation is
-adjacent to the second but is not the same thing: the budget ran out, and the
-handler nonetheless has a candidate in hand.
+This settles a hazard the earlier revision spent most of this section
+managing. **A partial scan cannot distinguish "the only definition of this
+name in the project" from "the first of eleven"** — and global uniqueness is
+the main confidence signal for stages 4 and 5, so a clipped search that
+committed was reporting a confidence it had not earned, preferentially on
+large repositories, which is exactly where the corpus is least able to catch
+it. An exhaustive scan earns the signal instead of approximating it: when it
+says a name is unique, it is.
 
-So the v1 rule is:
+The successive positions this document held are worth recording, because the
+question keeps coming back in a new costume. First: a truncated search may
+commit only if its confidence does not depend on uniqueness — withdrawn,
+because that is a confidence-based abstention and `high-level.md` allows only
+two. Then: a truncated search commits its best candidate and marks the row —
+withdrawn here, because it made the *measurement* conditional on a flag that
+every consumer then had to filter on, and made replay agree with the shim only
+by calibration. Neither problem exists once nothing is clipped.
 
-> A truncated search commits its best candidate, with `truncated` set on the
-> trace record and the uniqueness component of its confidence withheld.
+What this costs is real and is paid in latency rather than in correctness: the
+search that used to stop now runs to completion, so on a large repository the
+deadline is what ends it, and the query abstains outright
+([section 1.3](#13-the-search-is-exhaustive-and-the-clock-may-only-abort-it)).
+That trades a *silently overclaimed* answer for an *absent* one, which is the
+direction `high-level.md` prices correctly: an abstention costs the user a
+wait they were already having.
 
-Three things make this the right call under the current posture rather than
-merely the permitted one:
+Two consequences elsewhere:
 
-* **It is exactly the measurement the permissive posture exists to produce.**
-  "Is a truncated commit meaningfully worse than a complete one?" is answerable
-  from one corpus run with a `truncated` column, and unanswerable if truncated
-  queries abstain. Under the old rule the row would have been empty, and the
-  threshold for reinstating it would have had to be guessed — which is the
-  specific failure `high-level.md`'s reversal is arguing against.
-* **The alternative silently deletes large repositories.** Truncation is not
-  uniformly distributed; it concentrates on the biggest repos and the commonest
-  names, which is where the proper LSP is slowest and where the tool is
-  therefore worth the most. Abstaining there costs coverage exactly where
-  coverage is most valuable under `high-level.md`'s value weighting.
-* **Withholding the uniqueness component keeps the number honest.** The
-  confidence a truncated stage-5 answer reports is the confidence of "best of
-  what I saw", not of "the only one there is". So the answer is committed and
-  the overclaim is not, which is the split the floor would have needed anyway.
-
-`AbstainReason::Truncated` therefore survives only for the case where the scan
-was truncated **and found nothing** — which is an emptiness abstention that
-happens to know it might be wrong, and is worth distinguishing from a complete
-scan that found nothing, because only one of the two says anything about the
-heuristic.
-
-**The two truncation kinds are not interchangeable.** `ByteBudget` is
-deterministic and reproduces under `measure replay`; `Deadline` does not, and a
-row carrying it is excluded from replay comparison
-([section 1.4](#14-the-answer-is-a-function-of-the-budget-not-the-clock)). So
-`Truncation` is reported as which of the two fired, never collapsed to a
-boolean — the distinction is the difference between "this is how the heuristic
-behaves" and "this machine was busy."
-
-The consistency property that used to fall out of the old rule has to be
-asserted directly now; see
-[section 11](#11-testing).
+* `AbstainReason::TruncatedEmpty` is gone. An empty exhaustive scan is
+  `NoCandidates` and means what it says — the name is not in the project —
+  which is also what makes it a trustworthy file-list rescan trigger
+  ([section 8](#8-strata-and-abstention-reasons)).
+* **`DefinitionHints` matters more, not less.** With every hit file now
+  reaching the parse stage, the lexical prefilter is the only thing keeping a
+  whole-project search for `new` from parsing thousands of files.
+  [Open question 11](#open-questions) was "does it earn its complexity"; the
+  answer is now closer to yes than it was.
 
 ## 5. Reuse from the prior implementation
 
@@ -908,7 +845,7 @@ re-export case is one where *servers themselves disagree*, some answering the
 re-export site and some the original definition, with both defensible. So
 "the correct answer" here is not a fact about the language being approximated
 imperfectly — it is a per-oracle choice
-([section 1.5](#15-the-correct-answer-depends-on-which-server)).
+([section 1.4](#14-the-correct-answer-depends-on-which-server)).
 A hard filter would not merely lose coverage; it would encode one server's
 convention as if it were the language's. Scoring keeps both candidates alive
 so a profile field can later prefer one, which is the shape that
@@ -1015,7 +952,7 @@ this decision improves the strata the tool is worst at.
 The comparator is still a total order, and determinism is still required —
 by the retry protocol, by the core doc's mode-equivalence test (17.9), and by
 `measure replay`
-([section 1.4](#14-the-answer-is-a-function-of-the-budget-not-the-clock)).
+([section 1.3](#13-the-search-is-exhaustive-and-the-clock-may-only-abort-it)).
 Score, then import tier, then `(ProjectPath, name_range.start)`
 lexicographically. Applied to a *collected* result set, never to candidates
 reduced in fan-out completion order — and now the whole ordering matters, not
@@ -1070,9 +1007,12 @@ permanent one:
   a higher number must mean "more likely to agree". The mapping from score to
   probability can be fitted later; the *ordering* cannot, because a fitting
   procedure cannot repair a score that ranks wrong answers above right ones.
-* **The features are recorded alongside it**, not just the collapsed number
-  ([section 1.3](#13-what-this-changes-in-the-core-design), change 3). Then
-  recalibration is a re-fit over stored data rather than a re-run of the
+* **The features are recorded alongside it**, not just the collapsed number.
+  `margin` and `considered` go on the trace record for exactly this reason:
+  they are what a threshold would later be set on, and a corpus run that kept
+  only the collapsed confidence could never answer *what would a floor have
+  cost?* — the question the whole permissive posture exists to ask. With them
+  stored, recalibration is a re-fit over data rather than a re-run of the
   corpus.
 
 This is the same argument the core doc makes for building `Confidence` at all
@@ -1140,8 +1080,7 @@ impl CommitPolicy {
 }
 ```
 
-`Query` gains `policy: &'a CommitPolicy`
-([section 1.3](#13-what-this-changes-in-the-core-design), change 6). Handlers
+`Query` carries `policy: &'a CommitPolicy` (core doc [section 12]). Handlers
 never construct `Outcome::Committed` directly.
 
 **In v1 this funnel is inert**, and that is the honest objection to it: it is a
@@ -1260,11 +1199,12 @@ pub enum AbstainReason {
     NotAnIdentifier,
     /// An identifier, but of a kind this language does not resolve.
     UnsupportedRole { role: ReferenceRole },
-    /// Searched, found nothing.
+    /// Searched exhaustively, found nothing.
     NoCandidates,
-    /// Searched partially, found nothing. Distinct from NoCandidates
-    /// because only one of the two says anything about the heuristic.
-    TruncatedEmpty { by: Truncation },
+    /// The deadline expired mid-search. The one latency-shaped abstention
+    /// `high-level.md` allows, and the only reason that is not a fact about
+    /// the code -- see section 1.3.
+    Deadline,
     /// The only plausible target is outside the workspace.
     External { name: Namespace },
     NoParse,
@@ -1272,15 +1212,24 @@ pub enum AbstainReason {
 }
 ```
 
-Two variants from the previous revision are gone, and their absence is the
-clearest single summary of what dropping the floor did:
+Three variants from earlier revisions are gone, and their absence is the
+clearest single summary of what the last two decisions did:
 
 * **`Ambiguous { considered }`** — ambiguity now commits.
 * **`BelowThreshold { confidence }`** — there is no threshold.
+* **`TruncatedEmpty { by: Truncation }`** — nothing is truncated, so an empty
+  search is `NoCandidates` and nothing else
+  ([section 4](#the-scan-is-exhaustive-and-uniqueness-is-therefore-earned)).
 
-Both return with the floor, and `Ambiguous` is the one to reinstate first,
-since it is the abstention with the best precision-per-unit-coverage trade in
-the predicted table.
+The first two return with the floor, and `Ambiguous` is the one to reinstate
+first, since it is the abstention with the best precision-per-unit-coverage
+trade in the predicted table. The third does not return at all.
+
+`Deadline` is the newcomer, and it is the only reason here that is not a
+property of the code: two runs of the same query on the same snapshot can
+differ on it, which is why `measure replay` never produces it and why a
+nonzero rate of it in the field is a latency finding rather than a resolution
+one.
 
 **These strings reach the user.** Core doc [section 17.5] answers every
 standalone abstention with a `RequestFailed` error naming the reason, because a
@@ -1311,10 +1260,14 @@ Two of these the driver acts on rather than merely logging:
 
 * **`NoCandidates`** triggers the background file-list rescan from core doc
   [section 6], debounced. The query that triggered it still abstains; the
-  retry sees a fresh list. This is the mechanism that section assumed.
-  `TruncatedEmpty` does **not** trigger it — nothing suggests the file list is
-  stale, only that it was not fully read, and rescanning would spend I/O
-  during the window when the query already ran out of budget.
+  retry sees a fresh list. This is the mechanism that section assumed, and it
+  is trustworthy precisely because the scan was exhaustive: "not found" now
+  means the name is not in the file list, which is evidence about the list.
+  Under the old partial-scan rule it meant "not found *yet*", which is
+  evidence about nothing. **`Deadline` does not trigger it** — the search was
+  cut off rather than completed, so it says nothing about the list, and
+  rescanning would spend I/O in the window that just proved to be short of
+  it.
 * **`HandlerError`** feeds the repeated-panic handler disable in core doc
   [section 14].
 
@@ -1543,7 +1496,7 @@ snapshot, or the corpus metrics themselves. Failing seeds are committed under
   most volume and the least tolerance for error. Property-shaped: generate
   nested scopes with repeated names and assert the innermost binding wins.
 * **Determinism.** The property the rest of the system is now built on
-  ([section 1.4](#14-the-answer-is-a-function-of-the-budget-not-the-clock)).
+  ([section 1.3](#13-the-search-is-exhaustive-and-the-clock-may-only-abort-it)).
   Two other documents now depend on this section by name, and the second
   dependency is much heavier than the first:
   * `implementation-loop.md` cites it when arguing that metrics can be
@@ -1554,39 +1507,35 @@ snapshot, or the corpus metrics themselves. Failing seeds are committed under
     after and comparing byte for byte. That converts a judgment call
     ("is this exchange of coverage for latency worth it?") into a yes/no, and
     it only works because the handler is a pure function of its inputs.
-    `implementation-loop.md` carves out exactly one legitimate
-    difference: a query that previously exhausted its budget and now completes.
-    That carve-out is mechanical rather than a matter of taste **only because
-    the record carries `truncated`**
-    ([section 1.3](#13-what-this-changes-in-the-core-design), change 3), which
-    is now the second thing that field is load-bearing for.
+    That gate has **no carve-out**, and did not always: an earlier revision
+    exempted queries that had exhausted their byte budget and now completed,
+    since making the search cheaper legitimately changed their answers. With
+    the budget gone there is no such class, so any difference at all fails the
+    gate — which is the strongest form the constraint can take and needs no
+    flag on the record to administer.
 
   Three `proptest` properties, not one:
   * **Repeatability.** The same query twice against the same snapshot,
     including deliberately constructed ties, yields byte-identical `Outcome`.
   * **Clock independence.** The same query under an artificially slowed clock
-    yields the same `Outcome`, provided the budget is unchanged and no
-    `Truncation::Deadline` fired. This is the one that catches a handler
-    branching on remaining time.
+    yields the same `Outcome`, provided the deadline did not fire. This is the
+    one that catches a handler branching on remaining time — the failure the
+    exhaustive-scan rule exists to make impossible rather than merely
+    discouraged.
   * **Order independence.** With fan-out forced to complete in a shuffled
     order, the `Outcome` is unchanged. This catches reduce-as-you-go, which
     is the failure mode that passes every test on an idle machine.
-* **Truncation consistency, restated.** The old property — a clipped run may
-  abstain but must never commit a *different* answer — is no longer true by
-  construction, since a truncated scan now commits from what it saw. What
-  replaces it is weaker but still worth asserting mechanically:
-  * a clipped run that commits a different location than the full run **must**
-    have `truncated` set on its record. An unmarked truncated commit is the
-    actual bug, because it is the one that corrupts the measurement rather than
-    merely being wrong;
-  * a clipped run must never commit a location the full run *rejected*
-    (`classify` returning `None` is budget-independent), which catches the real
-    hazard of accepting an unparsed hit under time pressure.
-
-  The lost half of the property — that clipping cannot change the answer — is
-  then a *measurement* rather than an assertion: the corpus run reports how
-  often full and clipped disagree, which is the number that decides whether the
-  old rule comes back ([open question 1](#open-questions)).
+* **Exhaustiveness.** For a fixture repository small enough to enumerate by
+  hand, assert that a stage-5 search visited every file with a matching
+  extension. This is what the removal of the byte budget is worth: the
+  property that used to require a calibration now requires an assertion, and
+  it is the premise the uniqueness signal rests on
+  ([section 4](#the-scan-is-exhaustive-and-uniqueness-is-therefore-earned)).
+* **Deadline abstention is all-or-nothing.** With the clock forced to expire
+  part-way through a search, assert the `Outcome` is
+  `Abstain { reason: Deadline, .. }` and never a `Committed` built from what
+  had been seen. The failure being caught is a partial commit that looks
+  exactly like a complete one.
 * **Scope escape.** Assert `ProjectView` yields nothing outside the workspace
   roots and nothing gitignored, including via `..` in a `lookup` argument.
   Fuzz-shaped rather than enumerated: the interesting inputs are the ones
@@ -1693,17 +1642,15 @@ question keeps its number and says what was decided, so references from other
 documents do not rot.
 
 1. **Should a truncated search commit?**
-   [Section 4](#truncation-no-longer-blocks-a-commit) says yes, reversing this
-   document's previous hard rule, on the grounds that a confidence-based
-   abstention is no longer permitted and that abstaining here deletes coverage
-   preferentially on large repositories. The counter is that a truncated scan
-   is not merely less confident, it is *systematically* less confident in a way
-   no recorded feature captures — the unscanned remainder is unknowable, not
-   just unmeasured. The v1 answer commits and marks. The deciding measurement
-   is the clipped-vs-full disagreement rate from
-   [section 11](#11-testing); if it is high, this is the first rule to
-   reinstate, and it can be reinstated without a calibration table because it
-   needs no threshold.
+   **Resolved — the question is void: nothing truncates.**
+   [Section 4](#the-scan-is-exhaustive-and-uniqueness-is-therefore-earned)
+   removes the per-query byte budget, so a scan either completes or the
+   deadline aborts the whole query. Two answers were held and withdrawn
+   before this one — commit only when confidence does not rest on uniqueness,
+   then commit always and mark the row — and both were attempts to price an
+   unscanned remainder that no recorded feature could describe. Deleting the
+   remainder is what actually settles it. The cost moves to latency, which is
+   [question 15](#open-questions) and phase 3's problem.
 
 2. **Should `TypeInferenceRequired` be exempted from the permissive rule?**
    **Resolved — no exemption needed.** The question existed because
@@ -1716,15 +1663,15 @@ documents do not rot.
    "order plausibly."
 
 3. **Is `CommitPolicy` worth threading through `Query` in v1?**
-   [Section 7.4](#74-where-the-decision-lives) keeps it, and it is the weakest
-   of the six core-doc changes in
-   [section 1.3](#13-what-this-changes-in-the-core-design) — a parameter and a
-   discipline for handler authors, expressing a policy with no content. The
-   case for it is that core doc [section 17.6] already promises a per-mode
-   floor is a data change, and the case against is YAGNI applied to the exact
-   kind of seam that is cheap now and expensive later. Worth a decision rather
-   than drift, because half-adopting it (some handlers funnel, some don't) is
-   worse than either.
+   **Resolved — yes, adopted.** [Section 7.4](#74-where-the-decision-lives)
+   keeps it and core doc [section 12] now carries it. It is a parameter and a
+   discipline for handler authors, expressing a policy with no content today,
+   which is the whole case against. The case for is that the alternative
+   migration — auditing every `Outcome::Committed` site in every `lang_*`
+   crate when the floor arrives — scales with the number of languages, and
+   this project plans to grow a lot of them. Half-adopting it (some handlers
+   funnel, some don't) is worse than either choice, which is why it was worth
+   deciding rather than leaving to drift.
 
 4. **Per-stratum or global, when the floor arrives?**
    [Section 7.3](#73-per-stratum-not-global) argues per-stratum on
@@ -1757,8 +1704,8 @@ documents do not rot.
    go-to-definition on a keyword — rather than by the informative
    "ambiguous, 7 candidates" case the core doc uses as its example. An error
    for a keyword press is noise. Options: keep the error only for reasons that
-   say something (`External`, `TruncatedEmpty`, `NoCandidates`) and answer
-   `null` for `NotAnIdentifier`, or keep it uniform and accept the noise. The
+   say something (`External`, `NoCandidates`, `Deadline`) and answer `null`
+   for `NotAnIdentifier`, or keep it uniform and accept the noise. The
    core doc's example message should be updated either way, since it names a
    variant v1 does not have.
 
@@ -1804,17 +1751,22 @@ documents do not rot.
     made it harder, since a table indexed by
     `(language, server, stratum, bucket)` divides the same corpus across
     several times as many cells
-    ([section 1.5](#15-the-correct-answer-depends-on-which-server)).
+    ([section 1.4](#14-the-correct-answer-depends-on-which-server)).
     Pooling across servers is not available, because that is exactly the
     average `high-level.md` refuses.
 
 11. **Does `DefinitionHints` earn its complexity?** It exists to keep the parse
-    set small on common names. If the literal scan turns out cheap enough that
-    parsing every hit file fits the budget, deleting it removes a per-language
-    regex surface — and regexes that may only reject are still regexes that can
-    be wrong. `CLAUDE.md`'s "implement the slow simple version first" argues
-    for starting without it and adding it only if the p99 measurement demands
-    it.
+    set small on common names. Deleting it would remove a per-language regex
+    surface, and regexes that may only reject are still regexes that can be
+    wrong. `CLAUDE.md`'s "implement the slow simple version first" argues for
+    starting without it and adding it only if the p99 measurement demands it.
+
+    **The exhaustive-scan decision moved this question a long way toward
+    yes.** With no byte budget, every file with a literal hit reaches the
+    parse stage, so on a name like `new` the prefilter is the only thing
+    between the query and thousands of parses — and the deadline, which is now
+    the sole bound, converts that directly into abstentions. Expect to need
+    it; measure anyway.
 
 12. **Should stage 5 search all extensions or only the requesting language's?**
     Only its own is the assumption throughout. Polyglot references — a TS file
@@ -1822,59 +1774,53 @@ documents do not rot.
     and the handler registry already knows every extension.
 
 13. **Should the byte budget scale with the deadline, and how?**
-    [Section 3](#reads-are-cached-and-budgeted-per-query) says it should, so
-    standalone's 2000ms buys a proportionally larger search. Linear scaling is
-    the obvious default and is probably wrong — search cost is dominated by I/O
-    latency on cold files rather than by bytes — so the relationship needs a
-    measurement. Getting it wrong in the conservative direction leaves
-    standalone, the mode with no fallback, quietly under-searching.
-
-    **This was a minor question and is now a load-bearing one.** Core doc
-    [section 11] cites it by name as the calibration that lets `measure replay`
-    substitute the byte budget for the wall clock, so the budget↔deadline
-    mapping is what makes replay reproduce live behaviour rather than merely
-    reproduce itself. A badly chosen mapping does not just under-search — it
-    makes every tuning number a measurement of a configuration nobody runs.
-    It should be measured once, early, and recorded as a constant with its
-    derivation, not tuned per language.
+    **Resolved — void, there is no byte budget.**
+    [Section 1.3](#13-the-search-is-exhaustive-and-the-clock-may-only-abort-it)
+    removes it. This had grown from a minor question into a load-bearing one,
+    because the budget↔deadline mapping was what made `measure replay`
+    reproduce live behaviour rather than merely reproduce itself, and a badly
+    chosen mapping would have made every tuning number a measurement of a
+    configuration nobody runs. Deleting the budget deletes the calibration:
+    replay is deterministic because the search is exhaustive, not because a
+    constant was fitted well.
 
 14. **Is the deterministic budget rich enough to be the only control?**
-    [Section 1.4](#14-the-answer-is-a-function-of-the-budget-not-the-clock)
-    requires that bytes, files, and parses fully determine where a search
-    stops. That is an assumption about what search cost is made of, and it has
-    a known gap: parse cost is superlinear in file size for some grammars, and
-    a cold file's *read* is dominated by seek latency rather than by its
-    length. If either turns out to matter, the surrogate needs another counter
-    — parse-nodes, or a per-file fixed charge — and adding one later is a
-    corpus regeneration, not a code change. Worth probing before the first
-    `collect` run rather than after.
+    **Resolved — void, same reason.** The question was whether bytes, files,
+    and parses fully describe search cost, given that parse cost is
+    superlinear in file size for some grammars and a cold read is dominated by
+    seek latency rather than length. That mattered only while those counters
+    decided where a search stopped. They are now recorded and nothing branches
+    on them, so an incomplete cost model is a reporting imprecision rather
+    than a behavioural one. The underlying observation survives as a note to
+    whoever reads `bytes_scanned` as if it were latency: it is not.
 
 15. **What happens to a query the clock kills mid-search?**
-    The design marks it `Truncation::Deadline` and excludes it from replay
-    comparison, which is right for the metric but leaves the *user-facing*
-    behaviour underspecified: a handler interrupted at an arbitrary point has
-    a partial candidate set, and committing from it is a strictly worse guess
-    than committing from a budget-truncated one, because nothing bounded which
-    files it got to. Options: commit anyway and accept an unmeasurable tail;
-    abstain on wall-clock truncation specifically, making it the one
-    latency-shaped abstention `high-level.md` already allows; or treat a nonzero
-    rate of it as a configuration bug and alert. Interacts with question 13 —
-    if the budget is calibrated correctly this case is rare enough not to
-    matter, and how rare is exactly what needs measuring.
+    **Resolved — it abstains, whole.** `AbstainReason::Deadline`, nothing
+    returned, no partial commit
+    ([section 4](#the-scan-is-exhaustive-and-uniqueness-is-therefore-earned)).
+    A handler interrupted at an arbitrary point has an arbitrary candidate
+    set, so committing from it would be the one answer in the system whose
+    quality nothing bounds.
+
+    **What remains open is the rate, and it is now more important than the
+    rule.** The deadline is the only bound on a search, so this is no longer a
+    rare anomaly at the tail of a well-calibrated budget — it is the mechanism
+    by which large repositories lose coverage. A nonzero rate is expected; a
+    large one means the search is too slow for the budget in
+    `high-level.md`, which is a phase 3 finding. Report it per stratum and per
+    repository size from the first corpus run, since it is the number that
+    says whether the exhaustive-scan decision was affordable.
 
 16. **Does `ProjectView` need to expose remaining budget?**
-    [Section 3](#reads-are-cached-and-budgeted-per-query) says handlers decide
-    whether to read one more file from the remaining counts, which means the
-    counts are part of the seam and a handler can branch on them. That is
-    necessary for the handler to stop cleanly, and it is also the most direct
-    route to accidentally making the answer depend on something the earlier
-    stages consumed a variable amount of — a query that read a large file in
-    stage 3 would then search differently in stage 5 than one that did not.
-    That is still deterministic, so it does not break replay, but it is a
-    coupling between stages that nothing else in the design has. The
-    alternative is per-stage sub-budgets fixed in advance. Undecided; the
-    single-budget version is simpler and is what
-    [section 3](#reads-are-cached-and-budgeted-per-query) currently specifies.
+    **Resolved — no, and there is none to expose.**
+    [Section 3](#reads-are-cached-per-query-and-counted-but-not-capped) keeps
+    the byte and file counters as trace fields and exposes no remaining-budget
+    number. The hazard this avoids was the reason to be nervous about the
+    budget in the first place: a handler that can read what is left can make
+    the answer depend on how much earlier stages happened to consume, so a
+    query that read a large file in stage 3 would search differently in stage 5
+    than one that did not. Deterministic, but a coupling between stages that
+    nothing else in the design has.
 
 17. **What does a handler do with no oracle?**
     `open-questions.md` question 15 asks which server standalone should imitate
@@ -1885,7 +1831,7 @@ documents do not rot.
     the shared logic happens to do," which is a default rather than a decision.
     The sharp version: shared logic is developed and measured on positions
     where all servers agree
-    ([section 1.5](#15-the-correct-answer-depends-on-which-server)),
+    ([section 1.4](#14-the-correct-answer-depends-on-which-server)),
     so on the positions where they *disagree* it is untuned by construction —
     and those are exactly the positions an empty profile has to answer.
     Standalone is therefore not "the average server", it is "the server nobody
@@ -1895,7 +1841,7 @@ documents do not rot.
     that server's truth file, which at least makes the choice measurable.
 
 18. **Does the shared/profile split hold, or does it leak?**
-    [Section 1.5](#15-the-correct-answer-depends-on-which-server)
+    [Section 1.4](#14-the-correct-answer-depends-on-which-server)
     adopts core doc [section 11]'s decomposition: shared logic owns the
     positions where servers agree, profiles own the rest. It is a good split
     and it may not survive contact. The failure mode is a divergence that is

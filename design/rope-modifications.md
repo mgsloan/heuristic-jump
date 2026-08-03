@@ -331,15 +331,20 @@ There is deliberately **no `From<ByteLen> for ByteOffset`**. Turning a length
 into a position means measuring from somewhere, so it is spelled
 `ByteOffset::ZERO + len`, which names the origin.
 
-**`ByteLen` is one type, shared with `resolve`.** `resolution.md` needs
-a byte quantity for its per-query budget — bytes read across candidate files —
-and that is this type, not a parallel one. The two uses look different (a
-document's length; a running total across files) but they are the same
-quantity with the same arithmetic, and the one place they meet is charging a
-file's length against a budget. A separate `ScannedBytes` would put a
-conversion at exactly that point, which is the one place a unit error would be
-invisible anyway. So `shared` re-exports `ByteLen` and `resolve` uses it
-directly.
+**`ByteLen` is one type, shared with `resolve`.** `resolution.md` needs a byte
+quantity for `bytes_scanned` — the running total across the files a query
+read — and that is this type, not a parallel one. The two uses look different
+(a document's length; a running total across files) but they are the same
+quantity with the same arithmetic, and the one place they meet is adding a
+file's length to the total. A separate `ScannedBytes` would put a conversion
+at exactly that point, which is the one place a unit error would be invisible
+anyway. So `shared` re-exports `ByteLen` and `resolve` uses it directly.
+
+Note the total is a *counter*, not a budget: nothing compares it against a
+limit, since a search reads every candidate file (`resolution.md` §1.3). An
+earlier revision justified this type by the budget arithmetic, which no longer
+exists; the sharing argument survives the change because it never depended on
+the comparison, only on the addition.
 
 ### Folding `vendor/util` in
 

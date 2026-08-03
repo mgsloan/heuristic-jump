@@ -241,6 +241,92 @@ The conformance loops sit close to pure Ralph, because ledger items
 genuinely are independent and the spec is the memory. Tuning sits
 furthest from it, for the reasons in [section 0](#0-the-shape-of-the-idea).
 
+### Campaigns compare notes, asymmetrically
+
+Loops are isolated in code and state, and deliberately so. They are
+**not** isolated in what they have learned, because the languages differ
+in mechanism while their resolution problems rhyme — import resolution,
+re-export chains, ambiguity ranking, wildcard imports. A hypothesis
+tested in Rust is evidence about Python, and `resolution.md` §9's
+"why each resists sharing" is an argument about *code*, not about
+findings. Prose creates neither write contention nor silent
+cross-language regressions, which are the two things the no-shared-code
+rule exists to prevent.
+
+So each loop maintains `state/findings/<owner>.md`: **a digest of at
+most 512 words, rewritten at every campaign close**, holding what this
+loop has learned that might matter to a different language. Every loop
+reads every other loop's digest in its volatile tail.
+
+Rewritten rather than appended, and capped rather than budgeted. An
+append-only log grows until the tail cannot carry it and then gets
+truncated by recency, which discards on the wrong axis — the finding
+that matters may be from campaign three. A hard cap forces the opposite:
+to add something, the loop must decide what no longer earns its place,
+which is synthesis rather than accumulation. The cap is the mechanism,
+so 512 is a limit and not a target.
+
+The digest is not the archive. Full campaign records stay in
+`state/campaigns/`, and a loop that finds a digest line interesting can
+go read the campaign behind it. That is a legitimate pointer — it is
+subject matter, not a rule ([section 14](#rules-are-inlined-subject-matter-is-read)).
+
+**Falsified and confirmed hypotheses are not shared on equal terms**,
+and this asymmetry is the whole of the design:
+
+* **A falsified hypothesis is broadcast plainly.** It saves another loop
+  the entire cost of retrying, and it *removes* an option rather than
+  proposing one — so it cannot anchor anybody toward a particular
+  answer.
+* **A confirmed hypothesis is published as a candidate, never as a
+  result.** Another language may test it among its own hypotheses; it
+  may not adopt it on Rust's evidence.
+
+The reason for the asymmetry is that sharing correlates the loops, and
+correlation is expensive here. Seven languages tuning independently are
+seven independent samples, which is what makes a widening held-out gap
+mean something and what makes parallel loops worth more than one loop
+run seven times as long. A corpus-specific trick that propagates
+compounds the overfitting in every language at once, and a loop that
+reads "this worked elsewhere" tends to test that instead of exploring
+its own space — which spends the hypothesis diversity the parallel
+structure was bought for. Negative results carry none of that: they
+narrow the space without pointing anywhere in it.
+
+The risk is also **monitorable rather than merely feared.** Correlated
+overfitting has a signature — the held-out gap widening across languages
+at the same time, rather than in one — and
+[section 12](#12-held-out-integrity) already stops the loops when a gap
+widens. If findings are doing harm, that is where it shows.
+
+At phase 2a's scale — a dozen loops, 512 words each — every digest fits
+in every tail with room to spare. **Phase 6 is where that stops being
+true**: Zed's full language set is thirty-plus loops, and carrying all
+of them would cost more tail than the findings are worth. A selection
+rule is needed there and deliberately not before, since choosing one now
+would mean guessing at which axis matters before a single digest exists.
+
+### What a loop remembers about itself
+
+Distinct from the above, and solving a different problem: a fresh
+context does not know what this loop has already tried. Two artifacts in
+the tail, because "have I tried this?" and "what do I currently believe?"
+are not the same question.
+
+* **Every past campaign as one line** — target, hypothesis, outcome.
+  Complete rather than recent: the campaign that matters is as likely to
+  be the third as the fortieth, so a recency window discards on the
+  wrong axis here too. It grows linearly and slowly enough not to
+  matter — two hundred campaigns is a few thousand words.
+* **A self-summary, capped like the findings digest** — the current
+  theory of this language, what has been ruled out, where the coverage
+  is going. Rewritten at each close.
+
+The one-liners are the anti-repetition mechanism, where coverage beats
+depth. The summary is the thing a fresh context most lacks and would
+otherwise spend a whole campaign rebuilding. Full campaign records stay
+on disk and are read when a one-liner suggests it is worth it.
+
 **What the reset still buys**, and why campaigns are bounded rather than
 open-ended: context growth is capped at one campaign rather than one
 phase, and a wrong theory cannot survive past the campaign that produced
@@ -326,6 +412,20 @@ report, and its count is a health metric: rising steadily means the
 loop is running ahead of its decisions and the work is getting
 speculative.
 
+**Escalations are reviewed in batches, never as interrupts.** Answering
+each one as it arrives is unusable at campaign cadence and would make
+the operator the rate limiter for every loop at once. So they queue, and
+a batch is triggered by whichever comes first: the outstanding
+`DECISION-` count crossing a threshold, or a phase gate — which is
+already a synchronisation point where the loops are quiesced and a human
+is looking anyway.
+
+The cost of batching is that the loop runs further on provisional
+choices and reconciliation gets more expensive the longer it waits.
+That is the trade being taken deliberately, and the outstanding count is
+what makes it visible rather than silent. If reconciliation starts
+dominating, the threshold is too high.
+
 **Seed the queue from what already exists.** `open-questions.md` is a
 numbered list of exactly these, and `resolution.md` ends in a second
 one of its own; both are already Class B items in everything but
@@ -355,7 +455,13 @@ assess its own progress in prose.
 reverts is a result — a falsified variant is what a campaign is for — so
 the per-iteration rule that made sense under pure Ralph would fire
 constantly here. What counts is a *campaign* closing with none of the
-four forms of progress, and N of those in a row (start with 3).
+four forms of progress, and N of those in a row. **N is 3 for a
+conformance loop and 5 for a tuning loop.** The asymmetry is the point:
+a tuning campaign legitimately spends several rounds on a restructuring
+that only pays off at the end, so a tight threshold would kill the
+campaigns most worth running. A conformance loop making no progress on
+a ledger item three times running has hit something the ledger did not
+anticipate, and the sooner that reaches a human the better.
 
 **An experiment that produces no commit at all is still a tick**, and it
 is the one per-iteration signal worth keeping. Not a neutral event, not
@@ -389,6 +495,7 @@ the metrics can be satisfied without work being done:
 | Tune to the corpus | Held-out repos are in a corpus root the loop is never given ([section 12](#12-held-out-integrity)) |
 | `cargo insta accept` a metric regression | The gate checks metric *direction* itself; insta pins the table's shape, not its values |
 | Split one item into ten to show motion | Ledger additions by the loop are marked `origin = "loop"` and reported separately from the reviewed baseline |
+| Add a language to show progress | Forbidden outright. A new `crates/lang_*` is outside every loop's owned paths, so the gate rejects it |
 
 None of these is airtight against a determined optimiser. They are
 airtight enough against an *undirected* one, which is the actual risk:
@@ -552,10 +659,23 @@ that decides whether parallel tuning works at all: under wall-clock
 deadlines, five concurrent loops would each be measuring a number that
 depends on what the other four were doing.
 
-Core §11 now requires replay to enforce budgets deterministically —
-bytes read and files parsed, not elapsed time. Given that, quality-phase
-iterations need no coordination with each other whatsoever, which is
-what makes [section 13](#parallel-loops-and-what-they-share) cheap.
+Core §11 now requires replay to enforce **no deadline at all**, and
+`resolution.md` §1.3 makes a search exhaustive — it reads every candidate
+file and stops when it runs out of them. So there is no stopping rule
+left for machine load to perturb, and determinism is structural rather
+than calibrated. An earlier revision got there by substituting a
+reproducible byte budget for the clock, which worked but had to be
+calibrated against a wall-clock deadline to mean anything.
+
+Given that, quality-phase iterations need no coordination with each
+other whatsoever, which is what makes
+[section 13](#parallel-loops-and-what-they-share) cheap.
+
+The price is that replay reports an **upper bound**: the shim has a
+deadline and will sometimes abstain where replay answered. That gap is a
+latency fact, and this document already measures latency separately and
+for exactly this reason — work counters per iteration, wall clock at
+gates ([section 10](#what-cannot-be-measured-in-isolation)).
 
 The metrics that *cannot* be made deterministic or local are handled
 separately, in [section 10](#what-cannot-be-measured-in-isolation).
@@ -601,22 +721,22 @@ byte for byte, and the answer is yes or no.
 It is implementable precisely because of two earlier decisions.
 `resolution.md` §11 requires the handler to be deterministic, and
 [section 9](#determinism-is-a-precondition-not-a-description) requires
-replay to enforce budgets by work rather than wall clock. Without the
-second, "the outputs did not change" would be a statistical claim about
-a machine's load; with it, it is an equality check.
+replay to run without a clock. Without the second, "the outputs did not
+change" would be a statistical claim about a machine's load; with it, it
+is an equality check.
 
-**The one legitimate difference is truncation.** Reducing per-query work
-is the main latency optimisation, and a query that previously exhausted
-its budget and now completes will produce a different — better — answer.
-So the gate is:
+**The gate has no carve-out: any difference fails it.** An earlier
+revision exempted one class — a query that had exhausted its per-query
+byte budget and now completed, since making the search cheaper
+legitimately changed its answer — and administered the exemption with a
+`truncated` flag on the record. `resolution.md` §1.3 removes the budget,
+so that class no longer exists and neither does the flag. The
+constraint is now the strongest form it can take, and needs nothing
+recorded to enforce.
 
-* any difference on a **non-truncated** query fails the gate, full stop;
-* differences confined to **truncated** queries are surfaced in the gate
-  report for approval rather than blocking.
-
-The record already carries a `truncated` flag
-(`resolution.md` §11), so this is mechanical rather than a
-judgment call about which differences are the good kind.
+That also removes the one place a human had to adjudicate "is this the
+good kind of difference?" during a phase whose whole appeal was that it
+required no judgment.
 
 **What this does to the frontier.** It mostly retires it. If quality
 cannot move, phase 3 has one axis — size — and it is a plain
@@ -871,6 +991,23 @@ is most of the answer — *phase 3 exists to delete* — and it is a
 better answer than a standing ratchet, which would have applied the
 pressure during exactly the iterations that should be free to be
 wasteful.
+
+**Most, but not all.** Phase 2a also carries a standing ceiling, set an
+order of magnitude above where anything reasonable sits, on
+`measure_<lang>` size and on per-query work. It is a guardrail and
+emphatically not a ratchet: crossing it does not mean the last change
+was wrong, it means the loop has wandered somewhere no legitimate
+experiment goes, and it stops and escalates rather than failing the
+gate.
+
+The reason to have one despite the argument above is the
+incompressible-peak failure in [section 19](#19-how-this-goes-wrong) —
+coverage reachable only through a structure phase 3 cannot compress,
+discovered when phase 3 is already underway and the alternative is
+giving back the coverage. A limit that loose suppresses no real
+experiment; it only catches the pathological version, which is exactly
+what a guardrail should do. Being an order of magnitude out is also the
+kind of thing worth knowing within a campaign rather than at a gate.
 
 * **Binary size.** Two numbers. The stripped release size of
   `measure_<lang>` every iteration, as the proxy a loop can compute in
@@ -1213,6 +1350,249 @@ which already reads as one: hard constraints on async, locks,
 dependencies, `vendor/`, grammars, and error handling. That file is the
 constitution; the loop prompt should point at it rather than restate
 it.
+
+### The supervisor is a reconciler, not a scheduler
+
+One process above the loops, in `harness/`. Its entire job is to make
+**observed state match desired state**, and framing it that way rather
+than as a scheduler is what makes it survivable: it holds nothing in
+memory that matters, so killing it and starting it again is a no-op, and
+a machine reboot costs one tick rather than a recovery procedure.
+
+* **Desired state** is `state/phase.toml` — the current phase, and per
+  loop a status of `running`, `paused`, `blocked`, or `done` — plus the
+  ownership table. A human advances the phase after a gate; the
+  supervisor only reads it. It must be a file rather than supervisor
+  memory, or a restart loses which phase the project is in.
+* **Observed state** is which campaign processes are alive.
+* **Reconcile**: start campaigns for loops that should be running and
+  are not, up to the concurrency cap; do nothing about loops that are
+  where they should be; clean up after ones that died.
+
+Everything it does not do is as important. It does not decide what work
+to do — that is the campaign's job. It does not advance a phase, answer
+an escalation, or judge whether a loop is making progress; those are a
+human's and the gate's respectively. A supervisor that starts making
+judgements becomes a second, unaccountable planner, which is the same
+failure [section 5](#5-the-verifier) guards against for the verifier.
+
+**Starting a campaign** is mechanical: allocate a UUID, make it both the
+campaign id and the session id (`--session-id`, per
+[section 16](#sessions-assign-the-id-own-the-transcript)), ensure the
+loop's worktree and branch exist, write the campaign record, and exec
+`claude -p --output-format stream-json` with that loop's prompt, teeing
+the stream to the transcript path. The loop's identity — which paths it
+owns, which language and server, which phase — is passed in rather than
+inferred, so a prompt is a template and the supervisor is what fills it.
+
+**The concurrency cap** is a number in config, and the binding
+constraint is likely to be RAM rather than CPU: every worktree has its
+own `target/`, and parallel cargo builds are memory-hungry well before
+they are core-hungry. When more loops want to run than there are slots,
+least-recently-run wins — simple, fair enough, and a loop that keeps
+losing is visible on the dashboard rather than silently starved. Phase 6
+is where this stops being theoretical, since Zed's full language set
+will not fit.
+
+**Quiescing** is the one place it must coordinate rather than supervise.
+Latency measurement and gate-time evaluation need a quiet machine
+([section 10](#what-cannot-be-measured-in-isolation)), so there is a
+drain state: stop launching campaigns, let running ones finish their
+current experiment and close early, then report the machine idle.
+Interrupting between experiments is cheap precisely because every
+experiment commits or reverts — there is no half-finished work to
+protect.
+
+**Crash recovery** happens on every tick, not just at startup. For each
+campaign record still marked open whose process is gone: revert its
+worktree to `HEAD` (an uncommitted experiment is a failed one, which is
+green-or-revert applied by someone else), close the record with outcome
+`crashed`, and free the slot. It does **not** try to resume — the
+context is gone, and the hypothesis is written down, so a fresh campaign
+can pick the thread up. Resuming a crashed campaign from its session id
+stays available as a *human* action from the dashboard, which keeps the
+line clear: the supervisor keeps things moving, a person investigates.
+
+### Prompts, as starting points
+
+The prompt is the most load-bearing artifact in this design and the
+least validated part of it. What follows is a sketch to start from, not
+a specification — [the open question](#open-questions) below says what
+about it is still unsettled.
+
+Ordered stable-to-volatile so the cacheable prefix is as long as
+possible ([section 15](#levers-by-which-resource-they-move)). Everything
+above the line is identical across every campaign of that loop type;
+everything below changes.
+
+**Conformance loop** (phases 1a, 2b):
+
+```
+{{CLAUDE.md}}
+The constraints above are absolute and override anything below.
+
+You are the {loop} loop, in phase {phase}.
+You may write only: {owned paths}. Anything else fails the gate.
+
+One campaign per session:
+  1. Pick one ledger item, or a cluster from one document section:
+     highest priority, lowest phase, unblocked.
+     Write the target to state/campaigns/{owner}/{campaign_id}.md.
+  2. Read only the design sections the item names. Not whole documents.
+  3. Implement. Run `harness/gate {loop}` after each change.
+     Green: commit using {{trailer-format}}.
+     Red and unfixable in this experiment: revert to green, record why.
+  4. Close when the item is verified, or three experiments produce no
+     commit, or the budget is spent.
+  5. On close: write state/journal/{owner}.md — what you tried, what
+     failed, and why. Write it for a session that will not remember this one.
+
+Spec changes: fix contradictions and record them in spec/changelog.md.
+Anything that trades something off is a decision — write
+state/decisions/{owner}-NNN.md, pick the reversible option, tag the
+sites `// DECISION-NNN: provisional`, and keep going. Never wait.
+---
+Ledger: {open items for this phase}
+Recent: {last N campaign outcomes and journal tail}
+Decisions affecting you: {unresolved}
+```
+
+**Tuning loop** (phase 2a) differs in what it targets and how it knows
+it succeeded:
+
+```
+{{CLAUDE.md}}
+The constraints above are absolute and override anything below.
+
+You are the {language}/{server} tuning loop, in phase {phase}.
+You may write only: crates/lang_{language}/, state/…/{language}*.
+There is no shared resolution code. If you need a utility another
+language also needs, write it locally and note it in
+state/shared-proposals/{language}-NNN.md. Phase 3 harvests those.
+
+One campaign per session, and a campaign is one hypothesis:
+  1. Pick the stratum with the largest share × gap from the table below.
+     State a hypothesis about *why* it is losing coverage.
+     Write both to state/campaigns/{owner}/{campaign_id}.md.
+  2. Experiment. After each change run `harness/measure {language} {server}`,
+     which replays the frozen corpus and prints the per-stratum table.
+     Commit what improves top-1 agreement or coverage without regressing
+     the other; revert what does not.
+  3. Close when the hypothesis is confirmed and committed, or falsified,
+     or five experiments move nothing, or the budget is spent.
+  4. On close: write up what the hypothesis was and what actually
+     happened. A falsified hypothesis is a result — record it in enough
+     detail that nobody retries it. Then update two capped digests:
+     state/findings/{owner}.md, for other languages — falsified plainly,
+     confirmed marked untested elsewhere — and your own summary. Both are
+     rewritten to fit, not appended to.
+
+Optimise top-1 agreement, not containment. Returning more candidates
+raises containment for free and is not progress.
+---
+Per-stratum table: {coverage, top1, contained, count, n}
+Frontier: {non-dominated points so far}
+Your campaigns so far: {one line each — target, hypothesis, outcome}
+Your summary: {current theory, what is ruled out}
+Other languages: {their digests; candidates, not conclusions — test
+  before adopting}
+```
+
+**Optimisation loop** (phases 3, 7) has no hypothesis and no ledger
+item — its target is duplication, and its oracle is exact:
+
+```
+{{CLAUDE.md}}
+The constraints above are absolute and override anything below.
+
+You are the optimisation loop, in phase {phase}.
+You may write anywhere. Nothing else is running.
+
+Deterministic responses must not change. That is the gate, not a goal:
+`harness/equivalence` replays every language's frozen corpus before and
+after, and fails on any difference in a non-truncated query. Differences
+confined to truncated queries are reported for approval, not blocked.
+
+One campaign per session, and a campaign is one refactor target:
+  1. Pick a target: the duplication report below, or an unharvested
+     entry in state/shared-proposals/. Prefer whichever removes most
+     bytes. Write it to state/campaigns/{owner}/{campaign_id}.md.
+  2. Refactor. Run `harness/gate optimisation` after each change —
+     equivalence first, size ratchet second.
+  3. Commit what shrinks the binary with outputs unchanged. Revert the rest.
+  4. If an optimisation would change outputs, do not take it. Write
+     state/decisions/{owner}-NNN.md with the replay diff — which queries,
+     which stratum, from where to where — and move on to another target.
+  5. Close when the target is done, or three experiments produce no
+     commit, or the budget is spent.
+---
+Duplication: {same-shape implementations across crates/lang_*}
+Size: {per-language link delta, current against baseline}
+Proposals: {unharvested state/shared-proposals/}
+```
+
+### One prompt per variety of phase
+
+Not one template with a swapped middle. The varieties are the three
+above, plus phase 6 as its own — it is tuning, but under a rule 2a does
+not have (the shared library exists and is read-only), and a rule that
+applies to one phase and not another is exactly the thing a
+parameterised template hides in substitution logic where nobody reviews
+it.
+
+Sharing would halve the surface that drifts, which was the argument for
+it. That argument is much weaker now that rules are inlined by
+substitution: **the common material has already been factored out — into
+`CLAUDE.md`, not into a template.** What remains in each prompt is the
+part that genuinely differs, so unifying them would be unifying the
+differences.
+
+The deciding consideration is blast radius. Prompts are the artifact
+that will be revised most often and with the least evidence, and a
+revision aimed at the tuning loop should not be able to change how the
+conformance loop behaves. Separate files make that structural instead of
+careful.
+
+### Rules are inlined; subject matter is read
+
+The `{{...}}` above is substitution, and it is the rule: **anything the
+campaign must obey is in the prompt text, not behind a filename.** A
+pointer produces one tool result that is then buried, so a rule read at
+experiment one is a fuzzy memory by experiment six — and campaigns were
+deliberately made long.
+
+Two things keep that from collapsing into "maintain a second copy of
+every rule," which would be worse than pointers:
+
+* **Substitution happens at launch, from the source file.** The template
+  holds `{{CLAUDE.md}}`; the supervisor reads the real file and splices
+  it in. There is one copy of every rule and it is the original, so
+  drift is not merely discouraged, it is unrepresentable.
+* **The boundary is rules versus subject matter.** Constraints,
+  procedure, ownership, and stop conditions are inlined. The spec
+  sections, code, and corpus tables a campaign works *on* are not rules
+  and are not all knowable in advance — but the ones that are get
+  spliced too: a ledger item carries a document anchor, so the
+  supervisor can inline the named section and the campaign starts with
+  it already in context. Anything further it follows from there, it
+  reads.
+
+Both go in the volatile tail rather than the stable prefix, so the
+cacheable region is unaffected.
+
+One consequence for [section 16](#every-intervention-is-logged): the
+recorded prompt sha must be **the hash of the rendered prompt**, not of
+the template. Otherwise editing `CLAUDE.md` changes every campaign's
+behaviour while the template sha sits unchanged, which is exactly the
+unattributable behaviour change that field exists to prevent.
+
+Three things these deliberately do *not* do, because each is a lesson
+already in this document: they do not tell the loop how to resolve
+references, which is `resolution.md`'s job and would fossilise a guess
+into the prompt; they do not describe the gate's internals, since a loop
+that knows how it is scored is a loop that can optimise the scoring; and
+they do not restate a rule that `CLAUDE.md` already states, because the
+splice covers it.
 
 ## 15. Cost and timing
 
@@ -1687,81 +2067,92 @@ the countermeasures are the weakest part of this document.
 * **Phase 2 under-scoped.** Corpus collection is real infrastructure
   work. If it slips, every language loop is blocked and the temptation
   is to start them anyway against fixtures, which measures nothing.
+* **Phase 3 is bigger than one serial pass can hold.** Seven languages
+  tuned independently for hundreds of campaigns accumulate a lot of
+  parallel implementations, and phase 3 harvests all of it with one
+  writer under an equality constraint that must hold for every language
+  at once. Accepted deliberately (decided question 3); the remedy is
+  interleaved extraction, which costs back the independence phase 2a
+  depends on.
+* **Sampling noise is mistaken for improvement.** The corpus is assumed
+  large enough to separate the two (decided question 8). If a thin
+  stratum's confidence interval is wider than the movement being chased,
+  a campaign can confirm a hypothesis that is not there — and the
+  frontier will record the point as real.
 * **Selection leaks the held-out set.** Choosing a version at every
   gate is optimisation against it, slowly. The three-way split in
   [section 12](#12-held-out-integrity) is the remedy and it costs
   corpus size, which is the scarce thing.
 
+## Decided
+
+The questions this document opened with, and what they were settled to.
+The reasoning is kept because several of these are close calls that will
+look re-openable later.
+
+1. **The conformance loop is one loop**, not one per driver subsystem.
+   Splitting it would create exactly the shared-surface problem
+   [section 13](#13-shared-code-and-when-it-may-exist) solves for
+   languages by having the shared layer be derived — and inside a single
+   crate that trick is unavailable, so the split would have to be
+   managed rather than designed away.
+
+2. **Stall N is 3 for conformance, 5 for tuning**
+   ([section 7](#7-progress-stall-and-the-ways-it-is-faked)).
+
+3. **Phase 3 stays a single serial pass.** The risk that seven
+   languages' accumulated duplication is too much for one writer under
+   an equality constraint is real and is being taken deliberately; it is
+   recorded in [section 19](#19-how-this-goes-wrong) rather than
+   pre-solved. Interleaving extraction between tuning rounds is the
+   remedy if it fails, and it reintroduces coordination that the current
+   rule removes — so it should be a measured retreat, not a drift.
+
+4. **Moot.** `implementation-phases.md` answers it: phases 4 through 7
+   repeat 2a and 3 for Zed's full language set.
+
+5. **Phase 2a keeps a standing cost guardrail** — an order-of-magnitude
+   ceiling, not a ratchet
+   ([section 11](#11-size-and-loc-as-objectives)).
+
+6. **Extraction ties are handled case by case**, not by rule. Two
+   languages implementing the same idea with different signatures is a
+   judgement the phase 3 writer makes with both implementations in
+   front of it, and the equality constraint already bounds what a wrong
+   choice can cost. A rule written now would be written without a single
+   example of the thing it governs.
+
+7. **Escalations batch; they never interrupt**
+   ([section 6](#6-spec-changes-what-the-loop-may-decide-alone)).
+
+8. **The corpus is assumed large enough** to distinguish real
+   improvements from sampling noise. This is an assumption, not a
+   finding, and the exhaustive repositories in `data-collection.md` §3
+   are what would falsify it. Carried as a risk in
+   [section 19](#19-how-this-goes-wrong).
+
+9. **The binary-size ratchet is not expected to fight the rope newtype
+   work.** The baseline is taken after phase 1a, so whatever the
+   newtypes cost is inside it rather than charged to whoever iterates
+   next.
+
+10. **The loop may never add a language.** Enforced rather than
+    discouraged: a new `crates/lang_*` is outside every loop's owned
+    paths, so the gate rejects the commit
+    ([section 7](#7-progress-stall-and-the-ways-it-is-faked)).
+
 ## Open questions
+**Do the capped digests actually stay useful?**
+[Section 4](#campaigns-compare-notes-asymmetrically) bets that a 512-word
+digest, rewritten under a hard cap, is better than a log truncated by
+recency — because dropping something requires judging it superseded
+rather than merely old. That is an argument, not a finding, and it can
+fail in a specific way: a loop that rewrites badly loses a result nobody
+notices is missing, and the full campaign records are there but nothing
+prompts anyone to look. The first sign would be two campaigns
+independently retrying the same falsified hypothesis, which is
+detectable from the one-liners and worth checking for early.
 
-1. **Should the conformance loop be one loop or several?** The driver
-   splits cleanly along core design sections — routing, health,
-   documents, dispatch — and those touch mostly disjoint modules. But
-   they share `driver`'s own internal types, which is exactly the
-   coordination problem [section 13](#13-shared-code-and-when-it-may-exist)
-   solves for languages by having the shared layer be derived rather
-   than designed. Inside one crate that trick is unavailable.
-
-2. **What is N for stall detection, and is it the same for both loop
-   types?** A metric loop legitimately spends several iterations on a
-   restructuring that pays off at the end. A conformance loop probably
-   should not. Guessing 3 and 5 respectively; no basis.
-
-3. **Is phase 3 tractable as one serial pass?** This is the live risk
-   created by forbidding shared resolution code during phase 2. Seven
-   languages tuned independently for hundreds of iterations each will
-   have accumulated a lot of parallel implementations, and phase 3 has
-   to harvest all of it with one writer, under an equality constraint
-   that must hold for every language simultaneously. If it turns out
-   not to be tractable, the remedy is an interleaved extraction pass
-   between tuning rounds — which reintroduces exactly the coordination
-   the current rule removes, so it should be a measured decision rather
-   than a drift.
-
-4. **Does anything come after phase 3?** `implementation-phases.md` is a
-   single pass. But phase 3 refactoring changes the code the phase 2a
-   frontier was measured on, and extraction may reveal that one
-   language's approach is simply better than another's — which is new
-   tuning information, not an optimisation. A second 2a is plausible;
-   whether it is worth its cost is not knowable yet.
-
-5. **Does the quality phase need any cost guardrail at all?** The case
-   against is the whole argument for the split. The case for is the
-   incompressible-peak failure above — a cheap standing limit (an order
-   of magnitude, not a ratchet) might prevent the pathological version
-   without suppressing legitimate experiments. Unclear whether the
-   pathology is real or imagined; the first quality phase will say.
-
-6. **How are ties between languages broken during extraction?** Two
-   languages implement the same idea with different signatures.
-   Promoting one and migrating the other rewrites a working handler the
-   promoting writer did not author. The equality constraint in
-   [section 13](#extraction-is-phase-3-work) bounds the damage — outputs
-   must not move — but says nothing about which signature wins, and with
-   seven languages the number of such ties could be large enough that
-   the answer needs to be a rule rather than a case-by-case judgment.
-
-7. **Should decision escalations batch or interrupt?** Interrupting per
-   decision is unusable at loop cadence. Batching means the loop runs
-   further on provisional choices, and reconciliation gets more
-   expensive the longer it waits. A rising `DECISION-` count is the
-   signal; the threshold that should trigger a batch review is unknown.
-
-8. **Is the corpus large enough to distinguish a real improvement from
-   noise?** Not run-to-run noise — replay is deterministic — but
-   sampling noise: some strata will have few enough queries that a
-   frontier point is indistinguishable from the one it dominates.
-   Per-stratum Wilson intervals, and a rule that ignores movement
-   inside them, are needed before the first frontier is selected from.
-
-9. **Does the binary-size ratchet fight the vendored-rope work?**
-   `rope-modifications.md` adds newtypes throughout `rope`; that is
-   monomorphisation-neutral in principle and probably free, but "in
-   principle" and a hard gate are different things. The baseline is
-   taken after phase 1a, not before.
-
-10. **Should the loop be allowed to add languages on its own?** Adding
-    `lang_go` is "a table row" by design in three separate places now.
-    That makes it exactly the kind of thing an under-constrained loop
-    does to show progress, at a cost of a megabyte of grammar and a new
-    permanent maintenance surface. Probably explicitly forbidden.
+The related sizing question — how a digest is selected for the tail once
+phase 6 has thirty-plus loops — is deliberately unanswered, since
+choosing an axis now means guessing before a single digest exists.
