@@ -51,6 +51,21 @@ stall_n = 3        # campaigns without progress before the loop stops and asks
 rotation = 18
 splice_sections = 3
 
+# Concurrent campaigns of this loop, each in its own worktree on its own
+# branch (`design/loops.md` §13, "Workers"). The queue is deeper than one
+# worker can serve — tens of open gaps against one to four closed per
+# campaign — and unlike parallel *loops* there is no crate boundary making
+# the work disjoint, so targets are claimed at campaign open and the rebase
+# is the backstop.
+#
+# Spend is linear in this number and throughput is not. The figure to watch
+# is gaps closed per campaign: if it falls as workers are added, they are
+# picking worse targets because the good ones are claimed. Three is a
+# starting point rather than a derived number.
+workers = 3
+worktree = "../heuristic-jump-core"
+branch = "loop/core"
+
 # How many gaps carry full claim/found/where in the prompt. The rest are one
 # line each. Every turn re-reads the whole prompt, and the observed cache-read
 # to output ratio is about 141:1, so the tail's size — not the campaign count —
@@ -132,6 +147,7 @@ write = [
   "design/**",
   "state/campaigns/core/**",
   "state/journal/core.md",
+  "state/journal/core-*.md",
   # Both prefixes: new records are `core-NNN`, and the sixteen the loop
   # issued while it was called `conformance` keep their ids, so it must
   # still be able to reconcile one.

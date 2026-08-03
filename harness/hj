@@ -91,6 +91,11 @@ HARNESS_PATHS = ["harness/**"]
 # the harness's, because each is a way of ending that also stops the campaign
 # writing its closing line (`budget` exits non-zero with
 # `error_max_budget_usd`, and the other two are the runner's own verdicts).
+# How long after opening a campaign is presumed to be starting rather than
+# dead. Covers the gap between `campaign-open` returning and the runner
+# reaching the process table, which several workers reach routinely.
+REAP_GRACE_SECONDS = 120
+
 OUTCOMES = ("confirmed", "falsified", "no-movement", "partial", "budget", "crashed", "error")
 
 
@@ -1300,9 +1305,27 @@ def trailing_without_progress(owner: str) -> int:
     return trailing
 
 
-def prompt_values(phase: Phase, config: LoopConfig, campaign_id: str) -> dict[str, str]:
+def prompt_values(
+    phase: Phase,
+    config: LoopConfig,
+    campaign_id: str,
+    claimed: set[str] | None = None,
+) -> dict[str, str]:
     gaps = open_gaps(config.docs)
     counts = audit_counts(config.docs)
+
+    # Gaps a live worker is already on are removed rather than deprioritised.
+    # Showing them ranked-but-taken invites exactly the duplicate work the
+    # claim exists to prevent, and a worker cannot tell "someone has this" from
+    # "this is unattractive" (`design/loops.md` §13, "Workers").
+    taken = claimed or set()
+    if taken:
+        available = [pair for pair in gaps if gap_id(pair[0], pair[1].claim) not in taken]
+        # Never hand out an empty list: if every open gap is claimed, the
+        # unjudged sections are still work, and a campaign with nothing at all
+        # would close `no-movement` and count against the stall.
+        if available:
+            gaps = available
 
     # Full detail for the gaps a campaign is most likely to take, one line for
     # the rest. The whole list was being resent every turn, and at the observed
@@ -1424,6 +1447,10 @@ def prompt_values(phase: Phase, config: LoopConfig, campaign_id: str) -> dict[st
         "language": config.language or "n/a",
         "campaign_id": campaign_id,
         "campaign_record": f"state/campaigns/{config.owner}/{campaign_id}.md",
+        # Per worker, because append-only prose conflicts on every merge; the
+        # findings digest below is deliberately shared and contended instead
+        # (`design/loops.md` §13, "What is per worker and what is shared").
+        "journal": f"state/journal/{os.environ.get('HJ_WORKER') or config.owner}.md",
         "owned_paths": "\n".join(f"- `{p}`" for p in config.write),
         "denied_paths": "\n".join(f"- `{p}`" for p in denied_paths(phase, config.owner)),
         # A loop that may write `harness/` must not be able to run its own
@@ -1459,6 +1486,9 @@ def prompt_values(phase: Phase, config: LoopConfig, campaign_id: str) -> dict[st
             f"{counts['audit_minors']} minor items"
         ),
         "open_gaps": "\n".join(gap_lines),
+        # Not a template value: `campaign-open` reads it back to record
+        # what this campaign was handed.
+        "_claimed": [gap_id(key, gap.claim) for key, gap in detailed],
         "unjudged_sections": "\n".join(f"- {key}" for key in unjudged) or "- (none)",
         "spliced_sections": "\n\n".join(spliced) or "(no open gaps, so no section is spliced)",
         "campaigns_so_far": "\n".join(campaign_lines) or "- (none; this is the first campaign)",
@@ -1590,11 +1620,40 @@ CAMPAIGN_STUB = """# Campaign {campaign_id}
 """
 
 
+def claimed_gaps(owner: str, exclude: str = "") -> set[str]:
+    """Gap ids handed to a campaign that is still running.
+
+    `design/loops.md` §13, "Workers": with several workers on one gap list the
+    obvious failure is three of them opening the same highest-value gap within
+    a second of each other. So the harness records what it hands out and
+    removes it from the next worker's list.
+
+    A claim ends when the campaign closes or is reaped — it is scoped to
+    *live* campaigns, so a crashed worker does not sterilise its targets. It
+    is advisory and nothing enforces it after the prompt is rendered; the
+    backstop is the rebase.
+    """
+    open_rows: dict[str, dict] = {}
+    for row in read_jsonl(sessions_path()):
+        if row.get("loop") != owner:
+            continue
+        open_rows.setdefault(row["campaign"], {}).update(row)
+    claimed: set[str] = set()
+    for campaign_id, row in open_rows.items():
+        if row.get("outcome") or campaign_id == exclude:
+            continue
+        if not campaign_is_alive(campaign_id):
+            continue
+        claimed.update(row.get("claimed") or [])
+    return claimed
+
+
 def cmd_campaign_open(args: argparse.Namespace) -> int:
     phase, config = loop_config(args.loop)
     campaign_id = args.id or str(uuid.uuid4())
     template = (HARNESS / "prompts" / config.prompt).read_text()
-    rendered = render(template, prompt_values(phase, config, campaign_id))
+    values = prompt_values(phase, config, campaign_id, claimed_gaps(config.owner, campaign_id))
+    rendered = render(template, values)
     prompt_sha = hashlib.sha256(rendered.encode()).hexdigest()
 
     record = STATE / "campaigns" / config.owner / f"{campaign_id}.md"
@@ -1615,8 +1674,12 @@ def cmd_campaign_open(args: argparse.Namespace) -> int:
         {
             "campaign": campaign_id,
             "loop": config.owner,
+            "worker": args.worker or config.owner,
             "phase": phase.phase,
             "language": config.language,
+            # What this campaign was handed, so a worker starting a
+            # second later is offered something else.
+            "claimed": sorted(values.get("_claimed", [])),
             "prompt": config.prompt,
             "prompt_sha": prompt_sha,
             # The rendered sha changes every campaign, because the tail does —
@@ -1902,6 +1965,22 @@ def cmd_campaign_reap(args: argparse.Namespace) -> int:
             campaign_id = campaign.get("campaign", "")
             if campaign_is_alive(campaign_id):
                 print(f"reap: {campaign_id[:8]} is still running; left alone")
+                continue
+            # A campaign is not alive between `campaign-open` returning and the
+            # runner appearing in the process table. With one loop that window
+            # was unreachable, since nothing else ran a reap. With several
+            # workers it is reached routinely: each starts by reaping, and a
+            # sibling that opened a second ago has a record and no process yet.
+            # Killing it would close a campaign that then runs to completion
+            # unrecorded, so a campaign younger than the grace period is left
+            # alone whatever the process table says.
+            started = campaign.get("started") or ""
+            try:
+                age = (datetime.now(timezone.utc) - datetime.fromisoformat(started)).total_seconds()
+            except ValueError:
+                age = REAP_GRACE_SECONDS + 1
+            if age < REAP_GRACE_SECONDS:
+                print(f"reap: {campaign_id[:8]} opened {age:.0f}s ago; too young to judge")
                 continue
             append_jsonl(
                 sessions_path(),
@@ -2294,6 +2373,7 @@ def main() -> int:
     p.add_argument("loop")
     p.add_argument("--id", help="uuid; generated when omitted")
     p.add_argument("--prompt-out")
+    p.add_argument("--worker", help="worker identity, e.g. core-2; defaults to the loop")
     p.set_defaults(run=cmd_campaign_open)
 
     p = sub.add_parser("campaign-close", help="close a campaign and judge whether it made progress")

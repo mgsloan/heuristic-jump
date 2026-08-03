@@ -22,12 +22,13 @@ adapter="$here/adapter"
 
 loop="${1:-}"
 if [ -z "$loop" ]; then
-	echo "usage: harness/loop <loop> [--max <n>] [--once]" >&2
+	echo "usage: harness/loop <loop> [--max <n>] [--once] [--worker <n>]" >&2
 	exit 2
 fi
 shift
 
 max=0
+worker=""
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--max)
@@ -37,6 +38,10 @@ while [ $# -gt 0 ]; do
 	--once)
 		max=1
 		shift
+		;;
+	--worker)
+		worker="${2:-}"
+		shift 2
 		;;
 	*)
 		echo "loop: unknown argument: $1" >&2
@@ -79,6 +84,18 @@ branch_of() {
 cd "$integration" || exit 2
 worktree="$(worktree_of "$loop")"
 branch="$(branch_of "$loop")"
+
+# `design/loops.md` §13, "Workers": N campaigns of one loop at once, each in
+# its own worktree on its own branch, against the same documents and the same
+# gap list. The suffix is the whole of a worker's identity — it shares the
+# loop's prompt, baseline and number.
+identity="$loop"
+if [ -n "$worker" ]; then
+	identity="$loop-$worker"
+	worktree="${worktree:-../heuristic-jump-$loop}-$worker"
+	branch="$branch-$worker"
+fi
+export HJ_WORKER="$identity"
 
 if [ -n "$worktree" ]; then
 	case "$worktree" in
@@ -188,10 +205,10 @@ while :; do
 	fi
 
 	prompt="$(mktemp)"
-	campaign="$("$hj" campaign-open "$loop" --prompt-out "$prompt")" || exit 2
+	campaign="$("$hj" campaign-open "$loop" --prompt-out "$prompt" --worker "$identity")" || exit 2
 	transcript="$("$adapter" transcript-path "$loop" "$campaign")"
 	echo
-	echo "=== campaign $campaign  ($loop, $(date -u +%FT%TZ))"
+	echo "=== campaign $campaign  ($identity, $(date -u +%FT%TZ))"
 	echo "    record:     state/campaigns/$loop/$campaign.md"
 	echo "    transcript: $transcript"
 	echo "    resume:     $("$adapter" resume-command "$campaign")"

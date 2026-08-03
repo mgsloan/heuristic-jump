@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# Start every worker of a loop. `design/loops.md` section 13, "Workers".
+#
+# One `harness/loop --worker <n>` per worker, in the background, each in its
+# own worktree on its own branch. Deliberately not a supervisor: it starts
+# them, prints where their logs are, and waits. Restart policy, health checks
+# and reconciliation are the supervisor's job and the supervisor does not
+# exist yet (section 14).
+#
+# Run one worker in the foreground instead when you want to watch it:
+#
+#     harness/loop core --worker 1
+#
+#   harness/workers <loop> [--logs <dir>]
+
+set -uo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo="$(dirname "$here")"
+
+loop="${1:-}"
+if [ -z "$loop" ]; then
+	echo "usage: harness/workers <loop> [--logs <dir>]" >&2
+	exit 2
+fi
+shift
+
+logs="${repo}/../heuristic-jump-logs"
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--logs)
+		logs="${2:?directory}"
+		shift 2
+		;;
+	*)
+		echo "workers: unknown argument: $1" >&2
+		exit 2
+		;;
+	esac
+done
+
+cd "$repo" || exit 2
+
+count="$(
+	python3 - "$loop" <<-'PY'
+		import sys, tomllib, pathlib
+		phase = tomllib.loads(pathlib.Path("state/phase.toml").read_text())
+		print(int(phase.get("loop", {}).get(sys.argv[1], {}).get("workers", 1) or 1))
+	PY
+)"
+
+if [ "$count" -le 1 ]; then
+	echo "workers: $loop declares $count worker; run harness/loop $loop directly." >&2
+	exit 2
+fi
+
+mkdir -p "$logs"
+echo "workers: starting $count for $loop"
+pids=()
+for n in $(seq 1 "$count"); do
+	log="$logs/$loop-$n.log"
+	"$here/loop" "$loop" --worker "$n" >"$log" 2>&1 &
+	pids+=($!)
+	echo "  $loop-$n  pid $!  $log"
+	# Stagger the starts. Three workers opening a campaign in the same second
+	# would each read the gap list before any of them had written a claim to
+	# it, which is the one race the claim mechanism cannot absorb.
+	sleep 5
+done
+
+echo "workers: running. Set status = \"paused\" in state/phase.toml to stop them"
+echo "         after their current campaigns, or kill: ${pids[*]}"
+wait

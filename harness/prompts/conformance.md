@@ -127,7 +127,7 @@ worked through in sequence.
 
 5. **On close**, before you say anything else:
    - Fill in the outcome section of `{{campaign_record}}`.
-   - Append to `state/journal/{{loop}}.md`: what you tried, what failed, and
+   - Append to `{{journal}}`: what you tried, what failed, and
      why. Write it for a session that will not remember this one. This is the
      single most valuable thing you produce for preventing the same dead end
      being rediscovered three campaigns from now — approaches abandoned and
