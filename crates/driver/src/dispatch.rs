@@ -12,11 +12,10 @@ use std::fmt;
 use std::path::Path;
 use std::sync::Arc;
 
-use rustc_hash::FxHashMap;
 use shared::proto::{PositionEncoding, WireLocation, WirePosition, WireRange};
 use shared::{
     CommitPolicy, Deadline, DocumentSnapshot, DocumentUri, DocumentVersion, EncodingError, Error,
-    FileText, HandlerError, LanguageHandler, LanguageId, Offset, Outcome, ProjectError,
+    FileText, HandlerError, LanguageHandler, LanguageId, Map, Offset, Outcome, ProjectError,
     ProjectPath, ProjectView, Query, RelPath, Rope, ServerProfile, SnapshotSeed, Tree,
 };
 
@@ -25,8 +24,8 @@ use shared::{
 /// handlers rather than knowing any of them.
 pub struct Registry {
     handlers: Vec<Arc<dyn LanguageHandler>>,
-    by_language_id: FxHashMap<&'static str, usize>,
-    by_extension: FxHashMap<&'static str, usize>,
+    by_language_id: Map<&'static str, usize>,
+    by_extension: Map<&'static str, usize>,
 }
 
 // By hand, and from `handlers` rather than from either map: a `LanguageHandler`
@@ -55,8 +54,8 @@ impl Registry {
     /// rather than dropped silently: two handlers claiming `rust` is a wiring
     /// mistake in the binary, not a runtime condition to recover from.
     pub fn new(handlers: Vec<Arc<dyn LanguageHandler>>) -> Self {
-        let mut by_language_id = FxHashMap::default();
-        let mut by_extension = FxHashMap::default();
+        let mut by_language_id = Map::default();
+        let mut by_extension = Map::default();
 
         for (index, handler) in handlers.iter().enumerate() {
             for language_id in handler.language_ids() {

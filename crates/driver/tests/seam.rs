@@ -15,8 +15,8 @@
 //!
 //! This file is where the third one belongs rather than in `shared`'s own
 //! tests, because `shared` *does* depend on `rope`: the property is about a
-//! crate that may not, and `driver` is one (`rustc-hash`, `shared`, `tracing`,
-//! and no rope).
+//! crate that may not, and `driver` is one (`crossbeam-channel`, `serde_json`,
+//! `shared`, `tracing`, and no rope).
 
 use std::path::{Path, PathBuf};
 
@@ -1430,6 +1430,109 @@ fn sources_of(crate_name: &str) -> Vec<(String, String)> {
         }
     }
     sources
+}
+
+/// `deps.md`'s "`FxHashMap` and `FxHashSet` are the default", whose two rules
+/// are both about what a *use site* is allowed to name:
+///
+/// > **A type alias, not a naked import.** `shared` exports
+/// > `pub type Map<K, V> = FxHashMap<K, V>` and `pub type Set<T> = FxHashSet<T>`,
+/// > so switching hashers later is one line rather than a sweep, and so the
+/// > choice is visible at every use site.
+///
+/// > **Reach for `std::collections::HashMap` when a key is genuinely external
+/// > and unbounded** … When it happens, say so in a comment; an unexplained
+/// > `HashMap` should read as an oversight.
+///
+/// Neither is a claim the build can check on its own, and the failure is
+/// nothing: `use rustc_hash::FxHashMap` compiles, runs, hashes identically, and
+/// costs only that the alias's stated benefit — one line rather than a sweep —
+/// is false, which is invisible until the day someone tries the one line. Five
+/// files were in that state, and the alias did not exist to be preferred.
+///
+/// The first rule now has an enforcement stronger than this scan for `driver`,
+/// as a side effect of applying it: with every use site on `shared::Map`,
+/// `driver` no longer names `rustc_hash` at all, so its manifest stopped
+/// declaring it and a naked import there fails to resolve. That is `deps.md`
+/// §14's "each arrives with its first user" run backwards, and it is why §0's
+/// table still placing `rustc-hash` in `driver` is not a contradiction — the
+/// table is asserted as a subset by
+/// `the_core_crates_declare_only_what_section_0_places_there`, and a placed
+/// dependency with no user is the intended state.
+///
+/// **The second rule is vacuous today and is written down anyway.** No crate
+/// uses `std::collections::HashMap`, so the loop below has nothing to check;
+/// what it does is fix the shape of the exception in advance, so the first
+/// genuinely-external key arrives with the comment §8 asks for rather than
+/// with an argument about whether one is needed.
+#[test]
+fn the_default_map_and_set_are_the_aliases_shared_exports() {
+    // An alias to *std's* `HashMap` carrying rustc_hash's hasher, rather than a
+    // second map type of our own — which would compile, satisfy every use site,
+    // and quietly not be what `deps.md` argued for.
+    let map = std::any::type_name::<shared::Map<u8, u8>>();
+    let set = std::any::type_name::<shared::Set<u8>>();
+    assert!(
+        map.contains("HashMap") && map.contains("rustc_hash"),
+        "shared::Map is {map}: deps.md makes it an alias for rustc_hash's FxHashMap, whose \
+         argument is that nothing here is keyed by untrusted input and SipHash's fixed setup \
+         cost is pure overhead on the definition path"
+    );
+    assert!(
+        set.contains("HashSet") && set.contains("rustc_hash"),
+        "shared::Set is {set}: deps.md makes it an alias for rustc_hash's FxHashSet"
+    );
+
+    let members = crate_members();
+    assert!(
+        !members.is_empty(),
+        "no crates/* workspace member, so this test would pass vacuously"
+    );
+
+    for member in &members {
+        for (file, source) in sources_of(member) {
+            assert!(
+                !source.is_empty(),
+                "{file} is missing or empty, so the scan below would pass vacuously"
+            );
+
+            // `shared`'s root is where the alias is defined, so it is the one
+            // file that names the hasher crate. `similarity` is exempt from
+            // nothing here: its `FxHasher32` is a hand-rolled hasher rather
+            // than a map, and does not match.
+            let defines_the_alias = file == "crates/shared/src/shared.rs";
+            for named in ["rustc_hash", "FxHashMap", "FxHashSet"] {
+                assert!(
+                    defines_the_alias || !source.contains(named),
+                    "{file} names {named} directly: deps.md wants the map and set reached \
+                     through shared::Map and shared::Set, because a naked import makes \
+                     'switching hashers later is one line rather than a sweep' false without \
+                     anything saying so"
+                );
+            }
+
+            for (number, line) in source.lines().enumerate() {
+                if !line.contains("std::collections::HashMap")
+                    && !line.contains("std::collections::HashSet")
+                {
+                    continue;
+                }
+                let explained = source
+                    .lines()
+                    .take(number)
+                    .skip(number.saturating_sub(3))
+                    .any(|above| above.trim_start().starts_with("//"));
+                assert!(
+                    explained,
+                    "{file} reaches for std's hasher at line {}, with no comment above saying \
+                     why: deps.md keeps std::collections::HashMap for a key that is genuinely \
+                     external and unbounded, and wants an unexplained one to read as an \
+                     oversight rather than as a choice",
+                    number + 1
+                );
+            }
+        }
+    }
 }
 
 /// `core.md` §9 gives `shared`'s dependencies and says "this list is the

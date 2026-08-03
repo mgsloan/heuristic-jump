@@ -58,3 +58,24 @@ pub use vocabulary::{
     Confidence, DocumentUri, DocumentVersion, EditorRequestId, FileExtension, LanguageId, Location,
     ServerId,
 };
+
+/// The workspace's map and set. `deps.md#fxhashmap-and-fxhashset-are-the-default`
+/// makes these an alias rather than a naked `use rustc_hash::FxHashMap`, for two
+/// reasons that a naked import gives up: switching hashers later is this line
+/// rather than a sweep, and the choice is visible at every use site instead of
+/// being hidden in an import block.
+///
+/// Nothing here is keyed by untrusted input — every map is keyed by a
+/// `DocumentUri`, an `Offset`, a `LanguageId`, an `EditorRequestId`, a
+/// `ProjectPath`, or a small tuple of those, all of which the shim itself
+/// constructed from one editor and one language server — so std's SipHash buys
+/// no protection anything needs and costs a fixed setup per lookup on the
+/// definition path.
+///
+/// Reach for `std::collections::HashMap` when a key is genuinely external and
+/// unbounded, and say so in a comment when you do: `deps.md` wants an
+/// unexplained `HashMap` to read as an oversight, and
+/// `driver/tests/seam.rs`'s scan is what makes that readable rather than
+/// conventional.
+pub type Map<K, V> = rustc_hash::FxHashMap<K, V>;
+pub type Set<T> = rustc_hash::FxHashSet<T>;

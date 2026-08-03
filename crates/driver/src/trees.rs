@@ -13,8 +13,7 @@
 //! ownership is already right — nothing here is shared, nothing is locked, and
 //! `TreeCache` needs `&mut self` to change, which only its owner has.
 
-use rustc_hash::FxHashMap;
-use shared::{DocumentUri, DocumentVersion, InputEdit, Language, SnapshotSeed, Tree};
+use shared::{DocumentUri, DocumentVersion, InputEdit, Language, Map, SnapshotSeed, Tree};
 use std::sync::Arc;
 
 use crate::dispatch::Parsed;
@@ -23,7 +22,7 @@ use crate::documents::Trusted;
 /// One tree per open document, at the newest version anybody has parsed.
 #[derive(Debug, Default)]
 pub struct TreeCache {
-    trees: FxHashMap<DocumentUri, Cached>,
+    trees: Map<DocumentUri, Cached>,
 }
 
 #[derive(Debug)]

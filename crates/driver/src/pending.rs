@@ -31,10 +31,10 @@
 
 use std::time::Instant;
 
-use rustc_hash::FxHashMap;
 use shared::proto::{DefinitionResult, MessageType, ShowMessageParams};
 use shared::{
-    Agreement, DefinitionSite, DocumentUri, EditorRequestId, Location, Offset, Outcome, Severity,
+    Agreement, DefinitionSite, DocumentUri, EditorRequestId, Location, Map, Offset, Outcome,
+    Severity,
 };
 
 use crate::dispatch::Answer;
@@ -255,7 +255,7 @@ impl Divergence {
 /// twice and a cancelled query cannot be answered afterwards.
 #[derive(Debug, Default)]
 pub struct PendingQueries {
-    by_editor_id: FxHashMap<EditorRequestId, PendingQuery>,
+    by_editor_id: Map<EditorRequestId, PendingQuery>,
 }
 
 impl PendingQueries {

@@ -31,9 +31,9 @@ use std::sync::Arc;
 
 use ignore::WalkBuilder;
 use rope::{ByteLen, ByteRange, LineIndex, Offset, Rope};
-use rustc_hash::FxHashSet;
 use tree_sitter::{Language, Parser, Point, Tree};
 
+use crate::Set;
 use crate::deadline::Deadline;
 use crate::error::{Error, HandlerError, ProjectError};
 use crate::identifier::{identifier_continue, is_identifier_text};
@@ -140,7 +140,7 @@ impl Generation {
 #[derive(Debug)]
 pub struct FileList {
     roots: Vec<ProjectRoot>,
-    files: FxHashSet<ProjectPath>,
+    files: Set<ProjectPath>,
     generation: Generation,
 }
 
@@ -150,7 +150,7 @@ impl FileList {
     /// subprocess spawn plus pipe overhead is a meaningful fraction of a 50ms
     /// p50 target.
     pub fn enumerate(roots: &[PathBuf]) -> Result<Self, Error> {
-        let mut files = FxHashSet::default();
+        let mut files = Set::default();
         let mut enumerated = Vec::with_capacity(roots.len());
 
         for root_path in roots {
