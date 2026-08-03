@@ -31,7 +31,7 @@ audit_every = 2
 # a language loop cannot observe that the seam made its job harder, only that
 # it is slow (`design/loops.md` section 8).
 [loop.conformance]
-status = "running" # running | paused | blocked | done
+status = "paused" # running | paused | blocked | done
 prompt = "conformance.md"
 stall_n = 3        # campaigns without progress before the loop stops and asks
 # Sections per audit beyond the ones the last campaign touched. It is an
@@ -211,7 +211,7 @@ permission_mode = "bypassPermissions"
 # read from the tree being checked rather than from the harness — editing them
 # *would* change how this loop is scored.
 [loop.harness]
-status = "running" # running | paused | blocked | done
+status = "paused" # running | paused | blocked | done
 prompt = "conformance.md"
 writes_harness = true
 worktree = "../heuristic-jump-harness"
