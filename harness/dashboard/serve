@@ -798,6 +798,114 @@ def panel_campaign_table() -> str:
     )
 
 
+def panel_audit_table() -> str:
+    """One row per audit: what it looked at, what it moved, what it cost.
+
+    The audit is the instrument the whole loop is scored by, and it ran five
+    times before anything showed it on this page — so a rotation that kept
+    re-reading the same seven sections, or a run whose gap identities all
+    churned, was invisible.
+
+    Two columns exist to make specific silent failures loud:
+
+    `persisted` is gaps that were open before this audit and still are. It has
+    been 0 on every run so far, which is either the rotation reaching fresh
+    sections each time or gap identity being unstable — identity is
+    `sha256(section|claim)`, so an auditor rewording a claim retires the old
+    id and mints a new one, and the ledger reads that as a close plus a
+    discovery rather than as the same finding twice.
+
+    `since` is the commit the auditor was given a diffstat against. `hj
+    render-auditor` looks for the newest gap-log row carrying one; where this
+    reads "none" the auditor was told nothing had a baseline and re-read
+    everything.
+    """
+    audits = list(hj.read_jsonl(hj.GAP_LOG))
+    if not audits:
+        return panel("Audits", empty("No audit has run yet."))
+
+    cost = [
+        row
+        for owner in hj.load_phase().loops
+        for row in hj.read_jsonl(hj.cost_path(owner))
+        if row.get("kind") == "audit"
+    ]
+
+    def when(value: str) -> datetime.datetime | None:
+        try:
+            return datetime.datetime.fromisoformat(value)
+        except (TypeError, ValueError):
+            return None
+
+    def money_for(stamp: str) -> dict:
+        """Nearest in time rather than equal: the two rows are appended by
+        separate steps and have been observed a second apart."""
+        target = when(stamp)
+        if target is None:
+            return {}
+        best, best_gap = {}, None
+        for row in cost:
+            other = when(row.get("ts") or "")
+            if other is None:
+                continue
+            gap = abs((other - target).total_seconds())
+            if best_gap is None or gap < best_gap:
+                best, best_gap = row, gap
+        return best if best_gap is not None and best_gap <= 120 else {}
+
+    rows = []
+    for index, audit in enumerate(reversed(audits), start=1):
+        money = money_for(audit.get("ts") or "")
+        stamp = when(audit.get("ts") or "")
+        closed, opened = len(audit.get("closed") or []), len(audit.get("opened") or [])
+        persisted = audit.get("persisted")
+        since = audit.get("commit")
+        rows.append(
+            "<tr>"
+            f'<td class="num">{len(audits) - index + 1}</td>'
+            f'<td>{esc(stamp.strftime("%b %d %H:%M") if stamp else audit.get("ts"))}</td>'
+            f'<td class="num">{len(audit.get("sections_audited") or [])}</td>'
+            f'<td class="num up">{closed}</td>'
+            f'<td class="num down">{opened}</td>'
+            + (
+                f'<td class="num">{persisted}</td>'
+                if persisted
+                else f'<td class="num warn">{esc(persisted)}</td>'
+            )
+            + (
+                f'<td class="num"><code>{esc(since[:8])}</code></td>'
+                if since
+                else '<td class="num warn">none</td>'
+            )
+            + f'<td class="num">{esc(money.get("turns") or "—")}</td>'
+            f'<td class="num">{(money.get("output_tokens") or 0):,}</td>'
+            f'<td class="num">${(money.get("usd") or 0):.2f}</td>'
+            "</tr>"
+        )
+
+    spent = sum(row.get("usd") or 0 for row in cost)
+    blind = sum(1 for audit in audits if not audit.get("commit"))
+    note = (
+        f"{len(audits)} audits, ${spent:.2f} total. "
+        "`persisted` is gaps open before and still open — 0 every time is worth suspecting, "
+        "since a reworded claim gets a new identity and reads as a close plus a discovery"
+    )
+    if blind:
+        note += (
+            f". {blind} ran with no diffstat baseline: `hj render-auditor` keys on a `commit` "
+            "field these rows predate, so those audits were told everything was new"
+        )
+    return panel(
+        "Audits",
+        '<table class="campaigns"><thead><tr><th class="num">#</th><th>when</th>'
+        '<th class="num">sections</th><th class="num">closed</th><th class="num">opened</th>'
+        '<th class="num">persisted</th><th class="num">since</th><th class="num">turns</th>'
+        '<th class="num">output</th><th class="num">API-eq</th></tr></thead>'
+        f"<tbody>{''.join(rows)}</tbody></table>",
+        note=note,
+    )
+
+
 def audit_series() -> tuple[list[float], list[float]]:
     """Cumulative found and closed, one point per audit."""
     found: set[str] = set()
@@ -1186,6 +1294,7 @@ def fragment(view: str = "overview") -> str:
         + panel_metrics()
         + panel_cost()
         + panel_campaign_table()
+        + panel_audit_table()
     )
 
 
