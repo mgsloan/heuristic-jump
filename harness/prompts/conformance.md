@@ -15,7 +15,7 @@ result rather than trusting you:
 
 {{owned_paths}}
 
-Denied to every loop, in every phase:
+Denied to you. Most of these are denied to every loop; the list is yours:
 
 {{denied_paths}}
 

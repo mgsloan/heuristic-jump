@@ -48,7 +48,6 @@ DESIGN = REPO / "design"
 # out of configuration is what makes it unrepresentable rather than merely
 # forbidden.
 DENIED_ALWAYS = [
-    "harness/**",
     # The protocol a loop implements against must not be editable by that loop,
     # for the same reason `harness/` is not: it is a source of truth rather
     # than a thing being built. Regenerate it with `harness/reference-lsp`.
@@ -69,6 +68,24 @@ DENIED_ALWAYS = [
 # being granted by one row and denied by another.
 WHOLE_REPOSITORY_PHASES = ("3", "7")
 PHASE_DEPENDENT_DENIALS = ["crates/similarity/**"]
+
+# `harness/` is denied to every loop except one that declares
+# `writes_harness`, which today is the harness loop building the phase-2
+# machinery (`design/loops.md` §18).
+#
+# The prohibition exists for exactly one reason — *a loop must not weaken the
+# gate that judges it* — and giving a loop write access does not suspend that
+# reason, it moves where the property comes from. It is no longer path
+# ownership; it is that the loop is judged by the reviewed harness on the
+# integration branch rather than by the copy in its own worktree. §13 records
+# that a separate pinned checkout was the earlier draft's answer here and was
+# dropped only because path ownership had made it unnecessary. Removing path
+# ownership brings it back, and `HJ_REPO` is how it is run.
+#
+# So this list is not a relaxation of the invariant. If the pinned-gate run
+# ever stops happening, this constant is a hole and `harness/` belongs back in
+# DENIED_ALWAYS the same day.
+HARNESS_PATHS = ["harness/**"]
 
 # What a campaign may report about itself: the first four. The last three are
 # the harness's, because each is a way of ending that also stops the campaign
@@ -140,6 +157,7 @@ class LoopConfig:
     budget_usd: float | None
     model: str | None
     language: str | None
+    writes_harness: bool
 
 
 @dataclass
@@ -171,14 +189,21 @@ def load_phase() -> Phase:
             budget_usd=table.get("budget_usd"),
             model=table.get("model"),
             language=table.get("language"),
+            writes_harness=bool(table.get("writes_harness", False)),
         )
     return result
 
 
-def denied_paths(phase: Phase) -> list[str]:
-    if phase.phase in WHOLE_REPOSITORY_PHASES:
-        return list(DENIED_ALWAYS)
-    return DENIED_ALWAYS + PHASE_DEPENDENT_DENIALS
+def denied_paths(phase: Phase, owner: str | None = None) -> list[str]:
+    """What this loop may not write. `owner` omitted means every loop's denials
+    together, which is what a summary wants and never what a check wants."""
+    denied = list(DENIED_ALWAYS)
+    if phase.phase not in WHOLE_REPOSITORY_PHASES:
+        denied += PHASE_DEPENDENT_DENIALS
+    config = phase.loops.get(owner) if owner else None
+    if not (config and config.writes_harness):
+        denied += HARNESS_PATHS
+    return denied
 
 
 def loop_config(owner: str) -> tuple[Phase, LoopConfig]:
@@ -1058,7 +1083,7 @@ def cmd_check_links(args: argparse.Namespace) -> int:
 
 def cmd_check_scope(args: argparse.Namespace) -> int:
     phase, config = loop_config(args.loop)
-    denied = denied_paths(phase)
+    denied = denied_paths(phase, args.loop)
     if args.rev:
         # Forensics on an existing commit. A commit without this loop's
         # `loop:` trailer is a human's, and ownership does not apply to it —
@@ -1113,7 +1138,7 @@ def cmd_check_path(args: argparse.Namespace) -> int:
     gate's diff-scope check is what actually enforces
     (`design/loops.md` section 13)."""
     phase, config = loop_config(args.loop)
-    denied = denied_paths(phase)
+    denied = denied_paths(phase, args.loop)
     failed = False
     for raw in args.path:
         path = Path(raw)
@@ -1124,7 +1149,7 @@ def cmd_check_path(args: argparse.Namespace) -> int:
             failed = True
             continue
         if matches_any(relative, denied):
-            print(f"{relative} is denied to every loop in phase {phase.phase}.", file=sys.stderr)
+            print(f"{relative} is denied to {args.loop} in phase {phase.phase}.", file=sys.stderr)
             failed = True
         elif not matches_any(relative, config.write):
             print(
@@ -1356,7 +1381,7 @@ def prompt_values(phase: Phase, config: LoopConfig, campaign_id: str) -> dict[st
         "campaign_id": campaign_id,
         "campaign_record": f"state/campaigns/{config.owner}/{campaign_id}.md",
         "owned_paths": "\n".join(f"- `{p}`" for p in config.write),
-        "denied_paths": "\n".join(f"- `{p}`" for p in denied_paths(phase)),
+        "denied_paths": "\n".join(f"- `{p}`" for p in denied_paths(phase, config.owner)),
         "gate_command": f"harness/gate {config.owner}",
         "docs": ", ".join(f"`design/{d}`" for d in config.docs) or "(none)",
         "trailer_format": (HARNESS / "trailer-format.md").read_text().strip(),
