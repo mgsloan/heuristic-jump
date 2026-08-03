@@ -19,9 +19,11 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use proptest::prelude::{Strategy, prop_assert_eq};
+use proptest::proptest;
 use shared::{
-    Clock, Deadline, DocumentSnapshot, DocumentUri, DocumentVersion, Error, HandlerError,
-    LanguageId, Rope, SnapshotSeed, SystemClock,
+    ByteOffset, ByteRange, Clock, Deadline, DocumentSnapshot, DocumentUri, DocumentVersion, Error,
+    HandlerError, LanguageId, Rope, SnapshotSeed, SystemClock, input_edit,
 };
 use tree_sitter::{InputEdit, Language, Point};
 
@@ -187,6 +189,99 @@ fn a_parse_too_small_to_report_progress_is_not_abandoned() {
         "this test only says anything while the document is small enough that \
          tree-sitter never reports progress on it"
     );
+}
+
+proptest! {
+    /// `input_edit` against a reference implementation, for the same reason
+    /// §10 tests position encoding against one: the six fields are three byte
+    /// offsets and three row-and-column pairs describing the same replacement,
+    /// and a value that lands in the wrong one of them is still a plausible
+    /// number.
+    ///
+    /// It has to be a reference rather than a tree, and this is worth being
+    /// explicit about because the obvious test does not work. Driving an edit
+    /// through `SnapshotSeed::incremental` and comparing the tree against a
+    /// from-scratch parse — node kinds, byte ranges and point ranges, over
+    /// randomised edits — *passes with all three point fields wrong*, because
+    /// `realise`'s read callback is byte-based and tree-sitter recomputes
+    /// every position it re-lexes from the text itself. So the point fields
+    /// are inert as far as any tree can tell, and the only thing that can
+    /// observe them is a second implementation. `driver`'s
+    /// `the_tree_matches_the_text_at_every_staleness` covers the byte fields,
+    /// which are the ones the reparse does consume.
+    ///
+    /// The reference is deliberately the slow obvious one: `&str`, counting
+    /// newlines, and computing the new end from the text that *results* —
+    /// where `input_edit` computes it from the inserted text alone, without
+    /// building the result at all.
+    #[test]
+    fn an_input_edit_describes_the_replacement_it_was_built_from(
+        (before, start, end, inserted) in replacement(),
+    ) {
+        let edit = input_edit(
+            &Rope::from(before.as_str()),
+            ByteRange { start: ByteOffset(start), end: ByteOffset(end) },
+            &inserted,
+        );
+        let after = format!("{}{inserted}{}", &before[..start], &before[end..]);
+
+        prop_assert_eq!(edit.start_byte, start);
+        prop_assert_eq!(edit.old_end_byte, end);
+        prop_assert_eq!(edit.new_end_byte, start + inserted.len());
+        prop_assert_eq!(edit.start_position, at(&before, start));
+        prop_assert_eq!(edit.old_end_position, at(&before, end));
+        prop_assert_eq!(edit.new_end_position, at(&after, start + inserted.len()));
+    }
+}
+
+/// A text, a character-aligned range within it, and something to put there.
+fn replacement() -> impl Strategy<Value = (String, usize, usize, String)> {
+    let fragment = || proptest::sample::select(FRAGMENTS);
+    let text = || proptest::collection::vec(fragment(), 0..8).prop_map(|parts| parts.concat());
+    (
+        text(),
+        text(),
+        proptest::num::usize::ANY,
+        proptest::num::usize::ANY,
+    )
+        .prop_map(|(before, inserted, first, second)| {
+            let start = boundary(&before, first % (before.len() + 1));
+            let end = boundary(&before, start + second % 32);
+            (before, start, end, inserted)
+        })
+}
+
+/// Fragments whose widths differ in every way that matters: one-byte
+/// characters, a two-byte one, a four-byte one, and line endings both bare and
+/// as `\r\n`, since a column is bytes and `\r` is part of the line it ends.
+const FRAGMENTS: &[&str] = &[
+    "",
+    " ",
+    "\n",
+    "\r\n",
+    "fn f() {}\n",
+    "é",
+    "😀",
+    "let x = 1;\n",
+    "//\n\n",
+    "}",
+];
+
+fn boundary(text: &str, offset: usize) -> usize {
+    let mut offset = offset.min(text.len());
+    while offset < text.len() && !text.is_char_boundary(offset) {
+        offset += 1;
+    }
+    offset
+}
+
+/// Row and byte-column of `offset`, counted the slow way.
+fn at(text: &str, offset: usize) -> Point {
+    let head = &text[..offset];
+    Point {
+        row: head.matches('\n').count(),
+        column: head.len() - head.rfind('\n').map_or(0, |newline| newline + 1),
+    }
 }
 
 /// Big enough that tree-sitter reports progress while parsing it, which is

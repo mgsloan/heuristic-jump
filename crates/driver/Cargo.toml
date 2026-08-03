@@ -32,6 +32,13 @@ tracing.workspace = true
 # `measure_core` take a grammar the same way and for the same reason, and
 # `tests/seam.rs` asserts the `[dependencies]`/`[dev-dependencies]` distinction
 # rather than assuming it. A `lang_*` edge stays banned in every table.
+#
+# `proptest` arrives with `core.md` §10's snapshot version invariant, which is
+# stated over "a randomised sequence of edits and dispatches" and is not a
+# property any fixed sequence can hold: what it asserts is that the tree agrees
+# with the text *whatever version the cached base was at*, and the staleness is
+# the thing that has to vary.
 [dev-dependencies]
+proptest.workspace = true
 tree-sitter.workspace = true
 tree-sitter-rust.workspace = true

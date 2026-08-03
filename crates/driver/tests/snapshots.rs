@@ -24,23 +24,27 @@
 )]
 
 use std::fs;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use driver::{
     DebounceMs, Dispatched, Documents, FileListCache, OpenDocument, Queried, Registry, Request,
     Synced, TreeCache, dispatch,
 };
+use proptest::prelude::{Just, ProptestConfig, Strategy, prop_assert_eq};
+use proptest::prop_oneof;
+use proptest::test_runner::{FileFailurePersistence, TestCaseError, TestRunner};
 use serde_json::value::RawValue;
 use shared::proto::PositionEncoding;
 use shared::{
-    ByteOffset, Clock, CommitPolicy, Confidence, Deadline, DocumentUri, DocumentVersion, Error,
-    FileExtension, InputEdit, LanguageHandler, LanguageId, Outcome, ParseKind, ProjectView, Query,
-    Rope, ServerProfile, SnapshotSeed, Strata, Stratum, SystemClock, Trace,
+    ByteOffset, ByteRange, Clock, CommitPolicy, Confidence, Deadline, DocumentUri, DocumentVersion,
+    Error, FileExtension, InputEdit, LanguageHandler, LanguageId, Outcome, ParseKind, ProjectView,
+    Query, Rope, ServerProfile, SnapshotSeed, Strata, Stratum, SystemClock, Trace, input_edit,
 };
-use tree_sitter::{Language, Point};
+use tree_sitter::{Language, Parser, Point, Tree};
 
 const LANGUAGE_IDS: &[LanguageId] = &[LanguageId::new("rust")];
 const FILE_EXTENSIONS: &[FileExtension] = &[FileExtension::new("rs")];
@@ -336,6 +340,272 @@ fn a_forgotten_document_goes_back_to_a_full_parse() {
     );
 }
 
+/// `core.md` §10's first bullet: "for a randomised sequence of edits and
+/// dispatches, assert that `snapshot.tree()` always parses to a tree whose
+/// extent matches `snapshot.text`, whatever version the cached base was at".
+///
+/// The randomisation is not decoration, and the reason is the sentence after
+/// it: violating this "produces confidently wrong answers rather than errors".
+/// Every fixed sequence above dispatches at a staleness somebody chose. What
+/// breaks an incremental reparse is a base at a staleness nobody chose — two
+/// edits since the cached tree, or none, or a tree the cache refused because a
+/// newer one had already landed — and those are states a script written by
+/// hand does not think to visit.
+///
+/// Two assertions per dispatch, and the second is the one with teeth:
+///
+/// * The tree's extent is the text's length, which is §10's own wording.
+/// * The tree is *structurally identical* to a from-scratch parse of the same
+///   text. Extent is a scalar and a wrong edit log can preserve it by
+///   accident; the shape cannot be preserved by accident. This is what makes
+///   the whole `base`-plus-edits design assertable, since §2's point is that
+///   the two paths are deliberately indistinguishable in their result — so
+///   "indistinguishable" is the property, and it is checked rather than
+///   assumed.
+///
+/// It runs its own `TestRunner` rather than sitting in a `proptest!` block
+/// because the fixture and the `ProjectView` cost a directory and a scanner
+/// thread apiece, and a macro body would build both once per generated case.
+#[test]
+fn the_tree_matches_the_text_at_every_staleness() {
+    let root = fixture("staleness");
+    let deadline = Deadline::none();
+    let view = view(&root, &deadline);
+    let uri = uri_of(&root.join("src").join("lib.rs"));
+    let registry = registry();
+
+    let mut runner = TestRunner::new(ProptestConfig {
+        cases: 64,
+        failure_persistence: Some(Box::new(FileFailurePersistence::Direct(
+            "tests/snapshots.proptest-regressions",
+        ))),
+        ..ProptestConfig::default()
+    });
+    runner
+        .run(&script(), |script| {
+            edit_and_dispatch(&script, &uri, &view, &deadline, &registry)
+        })
+        .expect("the tree and the text agree at every staleness");
+}
+
+/// One generated script, run against one document.
+fn edit_and_dispatch(
+    script: &[Step],
+    uri: &DocumentUri,
+    view: &ProjectView,
+    deadline: &Deadline,
+    registry: &Registry,
+) -> Result<(), TestCaseError> {
+    let handler = Recording::default();
+    let mut cache = TreeCache::default();
+    let mut documents = Documents::new();
+    let mut text = Rope::from(EDITABLE);
+    let mut version = 1_i32;
+    // Each edit tagged with the version it produced, so a dispatch can hand
+    // over exactly the ones the cached tree has not seen. This is the
+    // bookkeeping `core` will own once it exists — `TreeCache::version` is
+    // there for it — and doing it here is what makes the staleness vary.
+    let mut log: Vec<(DocumentVersion, InputEdit)> = Vec::new();
+
+    for step in script {
+        match step {
+            Step::Replace { at, span, insert } => {
+                let whole: String = text.chunks().collect();
+                let start = boundary(&whole, at % (whole.len() + 1));
+                let end = boundary(&whole, start + span % 64);
+                let replaced = ByteRange {
+                    start: ByteOffset(start),
+                    end: ByteOffset(end),
+                };
+                log.push((
+                    DocumentVersion(version + 1),
+                    input_edit(&text, replaced, insert),
+                ));
+                text.replace(start..end, insert);
+                version += 1;
+            }
+            Step::Dispatch => {
+                let cached = cache.version(uri);
+                let outstanding = Arc::new(
+                    log.iter()
+                        .filter(|(at, _)| cached.is_none_or(|cached| *at > cached))
+                        .map(|(_, edit)| *edit)
+                        .collect::<Vec<InputEdit>>(),
+                );
+                let seed = cache.seed(&open(
+                    &mut documents,
+                    registry,
+                    uri,
+                    &text,
+                    version,
+                    &outstanding,
+                ));
+                let completed = dispatch(
+                    &handler,
+                    request(
+                        seed,
+                        view,
+                        deadline,
+                        &ServerProfile::standalone(),
+                        &CommitPolicy::permissive(),
+                    ),
+                    PositionEncoding::Utf16,
+                );
+                let parsed = completed
+                    .parsed
+                    .expect("a query whose parse succeeded hands the tree back");
+                prop_assert_eq!(
+                    handler.spanned.load(Ordering::Relaxed),
+                    text.len(),
+                    "the handler was given a tree that stops somewhere other than the end \
+                     of its text, at version {} with {} outstanding edit(s)",
+                    version,
+                    outstanding.len()
+                );
+                prop_assert_eq!(
+                    handler.shape.load(Ordering::Relaxed),
+                    fingerprint_of(&text),
+                    "the reparse from a stale base produced a different tree than parsing \
+                     the same text from scratch, at version {} with {} outstanding edit(s)",
+                    version,
+                    outstanding.len()
+                );
+                cache.insert(parsed);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A step in a generated script. `at` and `span` are resolved against the
+/// document as it is when the step runs, because a strategy cannot know how
+/// long it will be by then — a script is generated once and the eighth edit
+/// lands in a document seven edits have already moved.
+#[derive(Clone, Debug)]
+enum Step {
+    Replace {
+        at: usize,
+        span: usize,
+        insert: String,
+    },
+    Dispatch,
+}
+
+/// Fragments to splice in. Deliberately a mix: some keep the document valid
+/// Rust and some do not, because a tree with `ERROR` nodes in it is exactly
+/// the state an editor is in while somebody types, and it is the state where
+/// an incremental reparse has the most to get wrong. The astral character is
+/// there because a column is bytes and a wrong conversion shows up as a
+/// mismatch only when a character is wider than one.
+const FRAGMENTS: &[&str] = &[
+    "",
+    " ",
+    "\n",
+    "fn spliced() {}\n",
+    "// 😀 a comment\n",
+    "{",
+    "}",
+    "let value = \"é\";\n",
+    "(argument: u32)",
+    "\n\n",
+];
+
+fn script() -> impl Strategy<Value = Vec<Step>> {
+    let insert = proptest::collection::vec(proptest::sample::select(FRAGMENTS), 0..3)
+        .prop_map(|parts| parts.concat());
+    let step = prop_oneof![
+        3 => (0_usize..100_000, 0_usize..100_000, insert)
+            .prop_map(|(at, span, insert)| Step::Replace { at, span, insert }),
+        2 => Just(Step::Dispatch),
+    ];
+    proptest::collection::vec(step, 1..12)
+}
+
+/// The next character boundary at or after `offset`, clamped to the end. An
+/// offset inside a scalar value is not a place a replacement can start, and
+/// `rope::Rope::replace` would be entitled to anything if handed one.
+fn boundary(text: &str, offset: usize) -> usize {
+    let mut offset = offset.min(text.len());
+    while offset < text.len() && !text.is_char_boundary(offset) {
+        offset += 1;
+    }
+    offset
+}
+
+/// The shape of a from-scratch parse of `text`, as a number two trees can be
+/// compared by. A hash rather than the s-expression itself because the handler
+/// records it from another thread through a `Sync` seam, where an `AtomicU64`
+/// is available and a `String` would need the lock this design does not have.
+fn fingerprint_of(text: &Rope) -> u64 {
+    let whole: String = text.chunks().collect();
+    let mut parser = Parser::new();
+    parser
+        .set_language(&grammar())
+        .expect("the grammar the fixture is written in");
+    let tree = parser
+        .parse(&whole, None)
+        .expect("a parse with no deadline and no cancellation produces a tree");
+    fingerprint(&tree)
+}
+
+/// Every node's kind, byte range and point range, in walk order.
+///
+/// An s-expression was the obvious fingerprint and is the wrong one: `to_sexp`
+/// prints kinds and nesting and no offsets at all, so a reparse that produced
+/// the right shape at the wrong place would compare equal, which is most of
+/// what this test exists to catch.
+///
+/// What it does **not** catch, established by mutating each field of
+/// `input_edit` in turn and watching this pass: the edit's three *point*
+/// fields. `realise`'s read callback is byte-based, and tree-sitter recomputes
+/// the position of everything it re-lexes from the text, so all three can be
+/// wrong together and every tree in this file still agrees with a from-scratch
+/// parse. They are pinned against a reference implementation instead, in
+/// `shared`'s `an_input_edit_describes_the_replacement_it_was_built_from`.
+/// Point ranges stay in the hash anyway, because they cost nothing and the
+/// callback is not guaranteed to stay byte-based forever.
+fn fingerprint(tree: &Tree) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    let mut cursor = tree.walk();
+    loop {
+        let node = cursor.node();
+        node.kind_id().hash(&mut hasher);
+        (node.start_byte(), node.end_byte()).hash(&mut hasher);
+        let (start, end) = (node.start_position(), node.end_position());
+        (start.row, start.column, end.row, end.column).hash(&mut hasher);
+
+        if cursor.goto_first_child() {
+            continue;
+        }
+        loop {
+            if cursor.goto_next_sibling() {
+                break;
+            }
+            if !cursor.goto_parent() {
+                return hasher.finish();
+            }
+        }
+    }
+}
+
+/// Small, so a generated script's edits reach all of it, and multi-line, so a
+/// row is something an edit can get wrong. `document()` above is 800 lines
+/// because a deadline has to be observable while parsing it; nothing here
+/// wants that, and paying it sixty-four times over would.
+const EDITABLE: &str = "\
+fn first(argument: u32) -> u32 {
+    argument + 1
+}
+
+fn second(argument: u32) -> u32 {
+    first(argument) + 2
+}
+
+struct Held {
+    field: u32,
+}
+";
+
 /// A document in the map at a version, and the seed input built from it.
 ///
 /// It goes through `Documents` rather than assembling an `OpenDocument`
@@ -402,6 +672,11 @@ struct Recording {
     /// and the text agree, which is the property an incremental reparse from
     /// a stale base would break.
     spanned: AtomicUsize,
+    /// The shape of that tree, as a hash of its s-expression. Extent is a
+    /// scalar and a wrong edit log can preserve it by accident; this cannot be
+    /// preserved by accident, and it is what `the_tree_matches_the_text_at_
+    /// every_staleness` compares against a from-scratch parse.
+    shape: AtomicU64,
 }
 
 impl LanguageHandler for Recording {
@@ -421,6 +696,8 @@ impl LanguageHandler for Recording {
         self.called.store(true, Ordering::Relaxed);
         self.spanned
             .store(query.doc.tree().root_node().end_byte(), Ordering::Relaxed);
+        self.shape
+            .store(fingerprint(query.doc.tree()), Ordering::Relaxed);
         Ok(query.policy.decide(
             Strata::from_reference(Stratum::LocalBinding),
             Confidence::ONE,

@@ -264,6 +264,7 @@ name = "driver"
 version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
+ "proptest",
  "rustc-hash",
  "serde_json",
  "shared",

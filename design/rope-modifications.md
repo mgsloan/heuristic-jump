@@ -30,6 +30,7 @@ This is not an alien discipline being imposed on the crate. rope's dimension
 types are already newtypes:
 
 ```rust
+pub struct Offset(pub usize);                     // offset.rs
 pub struct OffsetUtf16(pub usize);                // offset_utf16.rs
 pub struct Point { row: u32, column: u32 }        // point.rs
 pub struct PointUtf16 { row: u32, column: u32 }   // point_utf16.rs

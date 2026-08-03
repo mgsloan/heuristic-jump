@@ -26,7 +26,7 @@ pub mod proto;
 
 pub use agreement::{Agreement, DefinitionSite, Severity};
 pub use deadline::{Clock, Deadline, SystemClock};
-pub use document::{DocumentSnapshot, ParseKind, SnapshotSeed};
+pub use document::{DocumentSnapshot, ParseKind, SnapshotSeed, input_edit};
 pub use error::{
     ChildError, CodecError, ConfigError, DocumentError, DocumentNotification, EncodingError, Error,
     HandlerError, ParseError, ProjectError, ProtocolError,

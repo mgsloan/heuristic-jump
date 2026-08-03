@@ -12,7 +12,7 @@
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
-use rope::Rope;
+use rope::{ByteRange, Point as RopePoint, Rope};
 use tree_sitter::{InputEdit, Language, ParseOptions, ParseState, Parser, Point, Tree};
 
 use crate::deadline::Deadline;
@@ -212,4 +212,68 @@ impl DocumentSnapshot {
     pub fn tree(&self) -> &Tree {
         &self.tree
     }
+}
+
+/// The [`InputEdit`] describing one replacement, computed from the text *as it
+/// was before* the replacement.
+///
+/// This is the other half of [`SnapshotSeed::incremental`], and it is here
+/// rather than at each call site because it is the conversion with no second
+/// chance. tree-sitter's incremental reparse is only correct when the edits it
+/// is handed are, and an edit that is wrong does not fail: it produces a tree
+/// that is confidently wrong about a document that parses, which `core.md` §10
+/// names as the failure the snapshot invariant exists to catch. Every field
+/// below is a place to put a row where a column goes, and there are six of
+/// them.
+///
+/// `before` is required rather than convenient: `start_position` and
+/// `old_end_position` are row-and-column in the *old* text, so a caller that
+/// replaced first and converted afterwards would be converting against a
+/// document where those offsets mean something else.
+///
+/// The new end is computed from `inserted` alone, without the text that
+/// results. That is exact — a replacement moves nothing before it, and what
+/// follows is what `inserted` itself contains — and it is what lets an edit be
+/// recorded at the moment the change is applied rather than after.
+pub fn input_edit(before: &Rope, replaced: ByteRange, inserted: &str) -> InputEdit {
+    let start = before.offset_to_point(replaced.start.0);
+    let old_end = before.offset_to_point(replaced.end.0);
+    InputEdit {
+        start_byte: replaced.start.0,
+        old_end_byte: replaced.end.0,
+        new_end_byte: replaced.start.0 + inserted.len(),
+        start_position: point(start),
+        old_end_position: point(old_end),
+        new_end_position: advanced(start, inserted),
+    }
+}
+
+fn point(point: RopePoint) -> Point {
+    Point {
+        row: widen(point.row),
+        column: widen(point.column),
+    }
+}
+
+/// Where `inserted` ends, starting from `start`. A column is a byte offset
+/// within its row in both `rope`'s point and tree-sitter's, so the last line's
+/// length in bytes is the column and no encoding enters into it.
+fn advanced(start: RopePoint, inserted: &str) -> Point {
+    match inserted.rfind('\n') {
+        None => Point {
+            row: widen(start.row),
+            column: widen(start.column) + inserted.len(),
+        },
+        Some(last) => Point {
+            row: widen(start.row) + inserted.matches('\n').count(),
+            column: inserted.len() - last - 1,
+        },
+    }
+}
+
+/// `u32` to `usize` without an `as`, which the workspace denies for the reason
+/// `core.md` §3 gives. `usize: From<u32>` does not exist — 16-bit targets —
+/// and saturating is unreachable on any target this builds for.
+fn widen(value: u32) -> usize {
+    usize::try_from(value).unwrap_or(usize::MAX)
 }
