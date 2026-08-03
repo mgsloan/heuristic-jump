@@ -197,9 +197,12 @@ summary)
 		        target = line.split(":", 1)[1].strip()
 		print(outcome)
 		print(target)
-		# Third line: how the session ended, which the campaign cannot report
-		# because the conditions that end it that way also stop it writing.
-		print("max_budget" if terminal == "error_max_budget_usd" else "")
+		# Third line: how the session ended, verbatim. The campaign cannot
+		# report this — the conditions that end a session abnormally are the
+		# same ones that stop it writing its closing line — and the exit code
+		# is not a substitute: sessions that finish cleanly have been observed
+		# exiting non-zero.
+		print(terminal)
 	PY
 	;;
 

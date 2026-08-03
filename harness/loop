@@ -129,14 +129,32 @@ while :; do
 	target="$(printf '%s\n' "$summary" | sed -n 2p)"
 	terminal="$(printf '%s\n' "$summary" | sed -n 3p)"
 
-	# A ceiling stop exits non-zero and cuts the session before the campaign
-	# can write its closing line, so `budget` is the harness's to assign and
-	# never the campaign's to report. Recording it as `crashed` would be worse
-	# than cosmetic: crashed campaigns are excluded from the stall count, so a
-	# loop that kept hitting its ceiling would look like it was not trying.
-	if [ "$terminal" = "max_budget" ]; then
+	# The stream's terminal event decides, not the exit code. Two campaigns
+	# that finished cleanly — result subtype `success`, both reporting
+	# `confirmed` with a target — were recorded as crashes because `claude -p`
+	# exited non-zero anyway. That is not cosmetic: crashed campaigns are
+	# excluded from the stall count and from the judged count, so a run of
+	# successful campaigns was being scored as if it had not happened.
+	#
+	# The exit code is still the fallback for the case the stream cannot
+	# describe: no result event at all, meaning the session was cut before it
+	# could say anything.
+	case "$terminal" in
+	error_max_budget_usd)
+		# A ceiling stop also stops the campaign writing its closing line, so
+		# `budget` is the harness's to assign and never the campaign's.
 		outcome="budget"
-	elif [ "$exit_status" -ne 0 ]; then
+		;;
+	success) ;;
+	"")
+		outcome="crashed"
+		;;
+	*)
+		echo "loop: session ended as '$terminal'; recording crashed." >&2
+		outcome="crashed"
+		;;
+	esac
+	if [ "$outcome" = "" ] && [ "$exit_status" -ne 0 ]; then
 		outcome="crashed"
 	fi
 	case "$outcome" in
