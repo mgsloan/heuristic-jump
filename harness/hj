@@ -591,6 +591,25 @@ def workspace_members() -> set[str]:
     return {package["name"] for package in json.loads(result.stdout)["packages"]}
 
 
+def vendored_members() -> set[str]:
+    if not (REPO / "Cargo.toml").exists():
+        return set()
+    result = subprocess.run(
+        ["cargo", "metadata", "--no-deps", "--format-version", "1"],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return set()
+    return {
+        package["name"]
+        for package in json.loads(result.stdout)["packages"]
+        if f"{os.sep}vendor{os.sep}" in package["manifest_path"]
+    }
+
+
 def owned_members(config: LoopConfig) -> list[str]:
     """The ownership table names crates that may not exist yet; the gate
     builds the intersection with what the workspace actually has."""
@@ -1145,9 +1164,21 @@ def cmd_render_auditor(args: argparse.Namespace) -> int:
 def cmd_crates(args: argparse.Namespace) -> int:
     """The crates the gate builds: the ownership table intersected with what
     the workspace actually contains, so a table row for a crate that does not
-    exist yet costs nothing."""
+    exist yet costs nothing.
+
+    `--lintable` drops the vendored ones. They are built and tested — those 29
+    upstream tests are the only independent check that the newtype sweep did
+    not change rope's behaviour — but not linted and not format-checked:
+    `deps.md` section 14 deliberately withholds the workspace lints from
+    `vendor/*`, and both `clippy -D warnings` and `fmt --check` fail on
+    unedited upstream text. Keyed on the manifest path rather than on crate
+    names, because that is where the rule actually lives — section 14 is about
+    `vendor/` as a directory.
+    """
     _, config = loop_config(args.loop)
     for member in owned_members(config):
+        if args.lintable and member in vendored_members():
+            continue
         print(member)
     return 0
 
@@ -1307,6 +1338,71 @@ def cmd_campaign_close(args: argparse.Namespace) -> int:
             + (", in the document its own target names" if drift["touches_target_document"] else "")
             + ". Not a failure; it goes to the dashboard for a human to read."
         )
+    return 0
+
+
+def campaign_is_alive(campaign_id: str) -> bool:
+    result = subprocess.run(
+        ["pgrep", "-f", f"adapter campaign {campaign_id}"], capture_output=True, text=True, check=False
+    )
+    return bool(result.stdout.strip())
+
+
+def cmd_campaign_reap(args: argparse.Namespace) -> int:
+    """Crash recovery. `design/loops.md` section 14.
+
+    A campaign whose process is gone but whose record is still open is not a
+    neutral leftover. It is invisible to stall detection — `cmd_stall` only
+    counts campaigns that closed — so a loop that crashes repeatedly looks
+    idle rather than broken, which is the opposite of what the stall rule
+    exists to catch.
+
+    The design puts this on the supervisor's tick. There is no supervisor at
+    phase 1a, so it runs at `harness/loop` startup and on demand. It does not
+    resume anything: the context is gone, the hypothesis is written down, and
+    a fresh campaign can pick the thread up. Resuming from the session id
+    stays a human action, which keeps the line clear — the harness keeps
+    things moving, a person investigates.
+
+    It does not revert the worktree either, which section 14 also asks of the
+    supervisor. Here that would be actively wrong: with a single tree and no
+    worktrees per loop, the uncommitted work at this moment belongs to
+    whichever campaign is *live*, not to the dead one, and green-or-revert
+    already handles the live one at its own close.
+    """
+    phase = load_phase()
+    owners = [args.loop] if args.loop else sorted(phase.loops)
+    reaped = 0
+    for owner in owners:
+        for campaign in campaigns_of(owner):
+            if campaign.get("outcome"):
+                continue
+            campaign_id = campaign.get("campaign", "")
+            if campaign_is_alive(campaign_id):
+                print(f"reap: {campaign_id[:8]} is still running; left alone")
+                continue
+            append_jsonl(
+                sessions_path(),
+                {
+                    "campaign": campaign_id,
+                    "loop": owner,
+                    "phase": campaign.get("phase", phase.phase),
+                    "target": campaign.get("target"),
+                    "ended": now(),
+                    "end_commit": head_sha(),
+                    "commits": len(commits_for_campaign(campaign_id)),
+                    "outcome": "crashed",
+                    "progress": False,
+                    "reaped": True,
+                    **audit_counts(phase.loops[owner].docs),
+                },
+            )
+            print(f"reap: {campaign_id[:8]} had no process and no outcome; closed as crashed")
+            reaped += 1
+    if reaped:
+        commit_harness_state([sessions_path()], f"reap {reaped} abandoned campaign(s)")
+    else:
+        print("reap: nothing to close")
     return 0
 
 
@@ -1507,6 +1603,7 @@ def main() -> int:
 
     p = sub.add_parser("crates", help="the workspace members this loop owns and the gate builds")
     p.add_argument("loop")
+    p.add_argument("--lintable", action="store_true", help="exclude vendored crates, which are tested but not linted")
     p.set_defaults(run=cmd_crates)
 
     p = sub.add_parser("campaign-open", help="allocate a campaign, write its record, render its prompt")
@@ -1521,6 +1618,10 @@ def main() -> int:
     p.add_argument("--outcome", required=True, choices=OUTCOMES)
     p.add_argument("--target", default=None)
     p.set_defaults(run=cmd_campaign_close)
+
+    p = sub.add_parser("campaign-reap", help="close campaigns whose process is gone (crash recovery)")
+    p.add_argument("loop", nargs="?")
+    p.set_defaults(run=cmd_campaign_reap)
 
     p = sub.add_parser("stall", help="exit 1 when the loop has stalled")
     p.add_argument("loop")

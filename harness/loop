@@ -84,6 +84,12 @@ permission_mode_of() {
 # session in this repository is unaffected by the ownership rules.
 export HJ_LOOP="$loop"
 
+# Crash recovery, which the design puts on the supervisor's tick and which
+# there is no supervisor to run (design/loops.md section 14). An abandoned
+# open record is invisible to stall detection, so a loop that keeps dying
+# looks idle rather than broken.
+"$hj" campaign-reap "$loop"
+
 count=0
 while :; do
 	desired="$(status_of "$loop")"

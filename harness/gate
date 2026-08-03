@@ -61,6 +61,20 @@ while IFS= read -r crate; do
 	package_args+=(-p "$crate")
 done <<<"$crates_listing"
 
+# Vendored crates are built and tested but neither linted nor format-checked:
+# `deps.md` §14 withholds the workspace lints from `vendor/*` deliberately, and
+# both `clippy -D warnings` and `fmt --check` fail on unedited upstream text.
+# Their tests are the point — they are the only independent check that the
+# newtype sweep did not change rope's behaviour (conformance-003).
+lint_listing="$("$hj" crates "$loop" --lintable)" || exit 2
+lint_crates=()
+lint_args=()
+while IFS= read -r crate; do
+	[ -n "$crate" ] || continue
+	lint_crates+=("$crate")
+	lint_args+=(-p "$crate")
+done <<<"$lint_listing"
+
 phase="$(sed -n 's/^phase[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' state/phase.toml | head -1)"
 
 echo "gate: loop=$loop phase=$phase crates=${crates[*]:-none}"
@@ -71,19 +85,19 @@ echo "gate: loop=$loop phase=$phase crates=${crates[*]:-none}"
 # upstream re-sync property (CLAUDE.md, design/rope-modifications.md).
 step=$((step + 1))
 printf '\n--- %d. cargo fmt --check\n' "$step"
-if [ ${#crates[@]} -eq 0 ]; then
-	echo "skipped: no owned crate exists yet"
+if [ ${#lint_crates[@]} -eq 0 ]; then
+	echo "skipped: nothing to format-check (vendored crates are excluded)"
 else
-	cargo fmt "${package_args[@]}" --check || fail "cargo fmt --check"
+	cargo fmt "${lint_args[@]}" --check || fail "cargo fmt --check"
 fi
 
 # --- 2. lints.
 step=$((step + 1))
 printf '\n--- %d. cargo clippy\n' "$step"
-if [ ${#crates[@]} -eq 0 ]; then
-	echo "skipped: no owned crate exists yet"
+if [ ${#lint_crates[@]} -eq 0 ]; then
+	echo "skipped: nothing to lint (vendored crates are excluded)"
 else
-	cargo clippy "${package_args[@]}" --all-targets -- -D warnings || fail "cargo clippy"
+	cargo clippy "${lint_args[@]}" --all-targets -- -D warnings || fail "cargo clippy"
 fi
 
 # --- 3. tests.
