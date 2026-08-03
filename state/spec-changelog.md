@@ -455,3 +455,52 @@ return type that could not have been implemented as printed, and the campaign
 that found it implemented `scan` for the first time.
 
 **Campaign:** 0faab934-4ecd-4a55-b992-c112e0bfcb4d
+
+## CHANGE-conformance-012 — core.md#84-location-is-byte-based-and-this-fixes-a-real-inconsistency — `measure_core` does put a position on a wire; what it never puts there is an answer
+
+**Contradiction:** §8.4 closes its second consequence with
+
+> `measure_core` puts nothing on a wire and does none of this, which is why
+> the conversion lives in `driver` rather than in `shared`.
+
+`measure_core` is an LSP client. It settles a `PositionEncoding` from the
+oracle's `InitializeResult` (`collect.rs:141`) and builds the wire position it
+sends with the very constructor this section is about:
+
+> ```rust
+> let wire = WirePosition::encode(
+>     ByteOffset(position.offset),
+>     encoding,
+>     &Rope::from(text.as_str()),
+> )?;
+> ```
+> — `crates/measure_core/src/collect.rs:271`
+
+§8.2's own Construct list already records the same thing from the other side
+(CHANGE-conformance-008, "the outgoing half"), so the document contradicts
+itself rather than merely the code.
+
+**Resolution:** the premise is narrowed to the conversion the section is
+actually about, and the conclusion is left where it was. `measure_core`
+encodes the position it *asks about*; what it never does is put an *answer* on
+a wire, because it asks and reads the reply rather than serving one. The
+handler's `Location`s stay in byte space all the way into the record —
+`replay.rs:180` maps them straight to `DefinitionSite`, §7's position field is
+a byte offset, and §6's predicate compares `(uri, line)` — so
+`Location -> WireLocation` has exactly one caller in the system, and that is
+the reason it lives with its caller instead of in `shared`.
+
+This trades nothing off: the sentence was load-bearing only for the
+conclusion, and the conclusion survives on a stronger premise than the one it
+had. Nothing about where the conversion lives changes.
+
+**Same-campaign disclosure.** This campaign also wrote the conversion
+(`847624c`), so it edited a design document and the code that document
+describes in one sitting. What moved in the document is the *justification*
+for a placement the code already had and still has: `Location -> WireLocation`
+was in `driver` before this campaign and is in `driver` after it, and the code
+side of the campaign adds a caller rather than moving one. The gap the
+auditor recorded against this sentence was that the sentence is false about
+`measure_core`, not that the code disagreed with it.
+
+**Campaign:** b62bf25e-f5da-47f8-8c6e-00f19d0ab13c

@@ -1554,9 +1554,21 @@ Two consequences:
   `Copy` value settled once from `InitializeResult` and handed to the wrapper
   alongside the query; it does not reach the handler, so
   [section 3](#3-position-encoding)'s rule that no encoding ever crosses the
-  handler seam is unaffected. `measure_core` puts nothing on a wire and does
-  none of this, which is why the conversion lives in `driver` rather than in
-  `shared`.
+  handler seam is unaffected.
+
+**The conversion lives in `driver` rather than in `shared` because it has
+exactly one consumer.** Not because `measure_core` is innocent of wires — it
+is a JSON-RPC client, it negotiates a `PositionEncoding` from the oracle's
+`InitializeResult`, and it encodes the position it *asks about* through the
+same `WirePosition::encode` this section is built on
+([section 8.3](#83-the-wire-position-type-is-inert)). What it never does is put an *answer* on a
+wire. It asks and reads the reply; the handler's own `Location`s stay in byte
+space all the way into the record, where the position field is a byte offset
+([section 7](#7-observability-and-the-corpus-scan)) and the agreement
+predicate compares `(uri, line)`
+([section 6](#6-the-agreement-predicate)). So `Location -> WireLocation` has
+one caller in the whole system, and `shared` would be a home for it shared
+with nobody.
 
 **Why `Location` carries a line.** It looks redundant with `range`, and
 strictly it is. It is there because the alternative is worse in two places:
