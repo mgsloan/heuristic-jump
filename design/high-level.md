@@ -156,9 +156,12 @@ which is exactly what v1's measure-everything posture produces.
 
 The plan is to have ~10 opensource repos per language, and
 incrementally collect authoritative go-to-definition information from
-the LSP. There will be a complete scan of all identifiers, and it will
-write all of it to a file. For each identifier the scan records both
-the LSP's resolved location and how long the LSP took to answer.
+the LSP. Identifier positions are enumerated with tree-sitter and then
+*sampled* - uniformly, capped per repository - because an exhaustive
+scan is thousands of machine-hours across the full matrix. For each
+sampled position the scan records both the LSP's resolved location and
+how long the LSP took to answer. `data-collection.md` has the
+arithmetic and the sampling rules.
 
 That file - `truth.jsonl` - is collected once per (repo commit, server
 version) and then frozen. The LSP's answer is a fact about the corpus,
@@ -178,11 +181,17 @@ defensible rather than one being wrong. So the tool's behaviour varies
 with the server behind it, metrics are reported per (language, server),
 and they are never averaged across servers.
 
-Of the ~10 repos per language, 2-3 are held out and never seen by
+Of the ~10 repos per language, 3-4 are held out and never seen by
 tuning sessions. Since the plan is Claude code sessions iterating
 against the corpus, learning a particular repo's local conventions is
 the default outcome rather than a risk. Both numbers get reported, and
 a gap between tuned and held-out repos is the overfitting signal.
+
+The held-out share is split again, into *select* and *final*: choosing
+a version at a phase gate is itself optimisation against whatever it is
+chosen on, so the set used for that is not the set the last number is
+reported from. Roughly 6-7 / 2 / 1-2 - `data-collection.md` §1 and
+`implementation-loop.md` §12.
 
 The held-out repos and their truth files live in a **separate corpus
 root**, outside the workspace, alongside but distinct from the tuning
@@ -281,8 +290,8 @@ reason to decline. It also improves the case the tool is worst at -
 **A list has to be short to be an answer.** Past some size a picker is
 worse than nothing, so the ranked list is capped and the cap is reported.
 What should happen at the cap - truncate to the best N, or treat "too
-many to be useful" as an abstention - is not settled; see future question
-13.
+many to be useful" as an abstention - is not settled; see
+`open-questions.md` question 13.
 
 #### What this does to the metrics
 

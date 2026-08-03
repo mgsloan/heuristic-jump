@@ -13,10 +13,10 @@ does.*
 * **Never run bare `cargo fmt` or `cargo fmt --all`** — it formats every
   workspace member including `vendor/`, and rustfmt's `ignore` option is
   nightly-only so `rustfmt.toml` cannot protect them. Reformatting the vendored
-  Zed crates destroys the upstream re-sync property `vendored-rope-design.md`
-  depends on. Formatting is handled per-file by a PostToolUse hook
-  (`.claude/settings.json`); for a manual sweep use `cargo fmt -p <crate>` on
-  our crates only.
+  Zed crates destroys the upstream re-sync property that
+  `design/rope-modifications.md` depends on. Formatting is handled per-file by
+  a PostToolUse hook (`.claude/settings.json`); for a manual sweep use
+  `cargo fmt -p <crate>` on our crates only.
 
 * Invoking `rustfmt` directly needs `--edition 2024`. Standalone rustfmt
   defaults to edition 2015 and hard-fails on modern syntax.
@@ -30,7 +30,7 @@ These are the ones that cost the most to get wrong.
 
 * **No async runtime.** `tokio` is rejected. Concurrency is OS threads +
   `crossbeam-channel` + `rayon`. Do not add `async fn`, `.await`, or any
-  executor. See `dependency-plan.md` §1.
+  executor. See `design/deps.md` §1.
 
 * **No locks.** There is no `Mutex`, `RwLock`, `parking_lot`, or `dashmap`
   anywhere in the design; state is owned by one thread and moves over channels.
@@ -43,13 +43,13 @@ These are the ones that cost the most to get wrong.
   `once_cell` (use `std::sync::OnceLock`/`LazyLock`), `parking_lot`, `dashmap`.
   `lsp-types` is dev-only, as a differential oracle for our own protocol types —
   a runtime `use lsp_types::` defeats the point. If a new crate seems necessary,
-  ask. `dependency-plan.md` records every choice and every rejection.
+  ask. `design/deps.md` records every choice and every rejection.
 
 * **Vendored crates are not ordinary code.** `vendor/` holds copies of Zed
   crates. Never reformat, refactor, or "improve" them, and never fix a lint in
   them. They *are* modified, but only in the specific ways
-  `vendored-rope-design.md` sets out — read it before touching `vendor/`. Every
-  edit has to survive a re-sync against upstream.
+  `design/rope-modifications.md` sets out — read it before touching `vendor/`.
+  Every edit has to survive a re-sync against upstream.
 
 * **Tree-sitter grammars are pinned to the revisions Zed uses.** Do not bump a
   grammar crate. (The `tree-sitter` runtime version is ours to choose; the
@@ -62,8 +62,8 @@ These are the ones that cost the most to get wrong.
   a required field the others lack.** Never by an optional field, and never by
   declaration order — serde tries variants in order and takes the first that
   succeeds, so a lenient variant silently swallows values meant for another.
-  `core-implementation-design.md` §18.5 has the worked example, where getting
-  this wrong destroys documents.
+  `design/core.md` §18.5 has the worked example, where getting this wrong
+  destroys documents.
 
 * **One system-wide error enum**, not `anyhow`. Sub-enums are
   `#[non_exhaustive]`. **Do not use wildcard `match` arms on them** — a new

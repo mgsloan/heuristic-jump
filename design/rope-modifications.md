@@ -481,8 +481,8 @@ section 16.
 deleting rope's `#[cfg(test)]` modules because they reach for `gpui`, `zlog`,
 and `ctor`. **That is reversed: every test is preserved.** Once we are editing
 the crate, deleting its tests is exactly backwards — they are the only
-independent check that a 51-function signature sweep and six hand-edited lines
-did not change behaviour, and several of them are randomised differential
+independent check that a 51-function signature sweep and the body edits that
+follow from it did not change behaviour, and several are randomised differential
 tests against a `String` oracle, which is precisely the kind of test nobody
 would write from scratch.
 
@@ -533,20 +533,23 @@ entirely.
 
 ### Beyond upstream's tests
 
-* **The CI diff check** from
-  [section 3](#3-what-keeps-this-safe) remains the primary
-  defence. The tests tell you the crate still works; the diff check tells you
-  *why*, which is what makes the change reviewable rather than merely passing.
+* **The signature check in CI** from
+  [section 6](#6-consequences-for-re-syncing) is the complement, not the
+  primary defence — [section 3](#3-what-keeps-this-safe) is explicit that a
+  mechanical diff check can no longer prove this change correct, so the tests
+  are the verification. What the signature check catches is the one thing they
+  cannot: a new upstream `pub fn` arriving with a bare `usize` in its
+  signature.
 * **Round-trip property tests** over `ByteOffset` ↔ `Point` ↔ `PointUtf16` ↔
   `OffsetUtf16` on random text with astral-plane characters. Already required
   by [section 15](core.md#15-testing) for the encoding
   layer; running them against the rope directly puts them one level lower,
   where a conversion bug originates.
-* **Keep `benches/rope_benchmark.rs` too.** It is not a test, but it is the
-  direct answer to open question 2 below — whether the wrapper indirection
-  costs anything — and it is already written. This means taking `criterion` as
-  a dev-dependency, which `deps.md` §12 previously declined; the
-  justification now exists.
+* **Keep `benches/rope_benchmark.rs` too.** It is not a test, but it answers
+  directly whether the wrapper indirection costs anything —
+  [section 8](#8-decided-and-what-remains) argues it does not — and it is
+  already written. This means taking `criterion` as a dev-dependency, which
+  `deps.md` §12 previously declined; the justification now exists.
 
 ## 8. Decided, and what remains
 

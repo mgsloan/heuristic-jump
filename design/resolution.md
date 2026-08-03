@@ -114,116 +114,6 @@ And what a handler may **not** assume:
   driver abstains on its behalf. Handlers therefore do not validate document
   state, and should not try.
 
-### 1.4 The answer is a function of the budget, not the clock
-
-Numbered out of order because it is new in this revision and the sections
-below are written against it.
-
-Core doc [section 11] now specifies `measure replay`: tuning re-runs the
-handler against a frozen `truth.jsonl` with no language server, and it
-**disables the wall clock**, substituting the per-query byte budget plus the
-file and parse counts as a deterministic surrogate. The stated requirement is
-"same abstention behaviour, same truncation points, same answer, every time,
-on any machine."
-
-That is a requirement on resolution, not on the measurement harness, and it is
-easy to satisfy accidentally and then break. It has one statement:
-
-> **The committed answer must be a function of `(snapshot, position, project
-> state, budget)` alone.** No branch that affects the result may read a clock.
-
-The consequences run through the whole document:
-
-* **The byte budget is the primary control; the deadline is a backstop.** The
-  ordering matters and is the opposite of what the earlier revision assumed.
-  A search stops because it has read its allotted bytes, parsed its allotted
-  files, or exhausted its candidates — all countable, all reproducible. It
-  should reach that limit *before* the wall clock, and the calibration that
-  keeps that true is [open question 13](#open-questions), which core doc
-  [section 11] now cites by name.
-* **A wall-clock expiry is an anomaly, not a mode of operation.** If
-  `deadline.expired()` fires, the machine was slower than the budget assumed,
-  and that query's record is not reproducible by replay. It must therefore be
-  *marked* rather than silently included: `Truncation::Deadline` on the trace
-  is the signal to exclude that row when comparing against a replay. A live
-  run where deadline truncation is common is a miscalibrated budget, and the
-  rate of it is worth watching for that reason alone.
-* **Iteration order must be stable.** Fan-out over candidate files is
-  parallel, but the *reduction* may not depend on completion order — results
-  are collected and then sorted by the total order in
-  [section 6.4](#64-the-output-is-a-ranked-list), never
-  reduced as they arrive. This is the single most likely way to break replay
-  determinism without noticing, because it passes every test on an idle
-  machine.
-* **Nothing may vary with pool occupancy.** A handler must not sample how much
-  budget is left and search harder when the machine is quiet.
-
-The payoff is what `implementation-loop.md` is built on: because replay
-is deterministic, a metric that moves has a cause in the diff, so per-stratum
-numbers can be ratcheted in a baseline file rather than treated as noisy
-observations. [Section 11](#11-testing) makes the property a test, and that
-document's §14 depends on it.
-
-### 1.5 The correct answer depends on which server
-
-Also new in this revision, and it changes what "correct" means in every other
-section of this document.
-
-Core doc [section 11] establishes that two language servers for the same
-language genuinely disagree, and not because one is wrong: go-to-definition on
-a re-exported name has two defensible answers, and so do declaration versus
-definition, trait method versus impl method, and whether a `use` resolves to
-the import or through it. The shim stands in for **one specific server** and
-reports divergence against that server, so:
-
-> The answer that counts as correct is that server's answer. A handler that
-> split the difference would be wrong in both deployments rather than right in
-> either.
-
-`Query` therefore gains `server: &ServerProfile`, and `truth.jsonl` is
-collected per `(language, server)` — `truth/rust-analyzer/<repo>.jsonl`,
-`truth/pyright/<repo>.jsonl`, `truth/pylsp/<repo>.jsonl`. Nothing is averaged
-across servers.
-
-Four consequences here:
-
-* **`Confidence` is per-oracle.** [Section 7.1](#71-confidence-is-a-calibrated-estimate-not-a-vibe)
-  defines it as the estimated probability of matching the proper LSP, and that
-  sentence now has a free variable. The same answer to the same query has two
-  different correct confidences under pyright and pylsp. A future calibration
-  table is therefore indexed by `(language, server, stratum, bucket)`, which
-  divides the data per cell — a real cost, and an argument for fewer buckets
-  ([open question 10](#open-questions)).
-* **The profile is not a config format, and the pressure to make it one is
-  strong.** Core doc [section 12] says so, citing
-  [section 1.2](#12-the-pipeline-is-a-shape-not-a-type) and
-  [section 9](#9-what-is-shared-and-what-is-not) of this document by name. The
-  same rule applies: `ServerProfile` starts empty (just a `ServerId`), and a
-  field appears only when the corpus shows a systematic divergence a field
-  would fix. Nothing is predicted. A handler reads a *behaviour* field; it
-  never branches on identity, because `if server.id == PYRIGHT` scattered
-  through resolution logic is the rejected config format wearing another hat.
-* **The corpus splits into two surfaces, and that is a gift.** Positions where
-  every server agrees are the shared logic's responsibility and are the bulk of
-  the corpus. Positions where servers differ are the profile's. They are
-  separately optimisable: a profile change cannot move another server's
-  numbers, and shared logic is evaluated where the servers do not disagree
-  about the answer. This is a cleaner decomposition than anything this document
-  had before, and it costs nothing to adopt.
-* **It hands [open question 9](#open-questions) its data for free.** That
-  question asks whether re-export chains should be followed, and says it needs
-  corpus evidence first. The set of positions where servers disagree *is*
-  largely a map of where re-export and alias chains matter — core doc
-  [section 11] makes exactly this observation. So the evidence arrives as a
-  by-product of measurement rather than needing its own experiment.
-
-The open end is standalone, which has no server to stand in for and therefore
-no oracle at all. `ServerId` is `None` there, and `open-questions.md` question
-15 asks whether it should imitate a neutral profile or the most widely deployed
-one. That is not a resolution decision, but resolution is where it lands: a
-handler must behave *somehow* with an empty profile, and "whatever the shared
-logic does" is the current answer by default rather than by choice.
-
 ### 1.2 The pipeline is a shape, not a type
 
 `high-level.md` is explicit: "Each language implements its own resolution logic.
@@ -318,6 +208,115 @@ there as what `resolve` counts a query's byte budget in, and
 it directly. And `Location` has gained `line: LineIndex`, constructed only via
 `Location::at_node`, which changes how [section 6](#6-candidate-verification)
 builds its result.
+
+### 1.4 The answer is a function of the budget, not the clock
+
+New in this revision, and everything below is written against it.
+
+Core doc [section 11] now specifies `measure replay`: tuning re-runs the
+handler against a frozen `truth.jsonl` with no language server, and it
+**disables the wall clock**, substituting the per-query byte budget plus the
+file and parse counts as a deterministic surrogate. The stated requirement is
+"same abstention behaviour, same truncation points, same answer, every time,
+on any machine."
+
+That is a requirement on resolution, not on the measurement harness, and it is
+easy to satisfy accidentally and then break. It has one statement:
+
+> **The committed answer must be a function of `(snapshot, position, project
+> state, budget)` alone.** No branch that affects the result may read a clock.
+
+The consequences run through the whole document:
+
+* **The byte budget is the primary control; the deadline is a backstop.** The
+  ordering matters and is the opposite of what the earlier revision assumed.
+  A search stops because it has read its allotted bytes, parsed its allotted
+  files, or exhausted its candidates — all countable, all reproducible. It
+  should reach that limit *before* the wall clock, and the calibration that
+  keeps that true is [open question 13](#open-questions), which core doc
+  [section 11] now cites by name.
+* **A wall-clock expiry is an anomaly, not a mode of operation.** If
+  `deadline.expired()` fires, the machine was slower than the budget assumed,
+  and that query's record is not reproducible by replay. It must therefore be
+  *marked* rather than silently included: `Truncation::Deadline` on the trace
+  is the signal to exclude that row when comparing against a replay. A live
+  run where deadline truncation is common is a miscalibrated budget, and the
+  rate of it is worth watching for that reason alone.
+* **Iteration order must be stable.** Fan-out over candidate files is
+  parallel, but the *reduction* may not depend on completion order — results
+  are collected and then sorted by the total order in
+  [section 6.4](#64-the-output-is-a-ranked-list), never
+  reduced as they arrive. This is the single most likely way to break replay
+  determinism without noticing, because it passes every test on an idle
+  machine.
+* **Nothing may vary with pool occupancy.** A handler must not sample how much
+  budget is left and search harder when the machine is quiet.
+
+The payoff is what `implementation-loop.md` is built on: because replay
+is deterministic, a metric that moves has a cause in the diff, so per-stratum
+numbers can be ratcheted in a baseline file rather than treated as noisy
+observations. [Section 11](#11-testing) makes the property a test, and that
+document's §14 depends on it.
+
+### 1.5 The correct answer depends on which server
+
+Also new, and it changes what "correct" means in every other section of this
+document.
+
+Core doc [section 11] establishes that two language servers for the same
+language genuinely disagree, and not because one is wrong: go-to-definition on
+a re-exported name has two defensible answers, and so do declaration versus
+definition, trait method versus impl method, and whether a `use` resolves to
+the import or through it. The shim stands in for **one specific server** and
+reports divergence against that server, so:
+
+> The answer that counts as correct is that server's answer. A handler that
+> split the difference would be wrong in both deployments rather than right in
+> either.
+
+`Query` therefore gains `server: &ServerProfile`, and `truth.jsonl` is
+collected per `(language, server)` — `truth/rust-analyzer/<repo>.jsonl`,
+`truth/pyright/<repo>.jsonl`, `truth/pylsp/<repo>.jsonl`. Nothing is averaged
+across servers.
+
+Four consequences here:
+
+* **`Confidence` is per-oracle.** [Section 7.1](#71-confidence-is-a-calibrated-estimate-not-a-vibe)
+  defines it as the estimated probability of matching the proper LSP, and that
+  sentence now has a free variable. The same answer to the same query has two
+  different correct confidences under pyright and pylsp. A future calibration
+  table is therefore indexed by `(language, server, stratum, bucket)`, which
+  divides the data per cell — a real cost, and an argument for fewer buckets
+  ([open question 10](#open-questions)).
+* **The profile is not a config format, and the pressure to make it one is
+  strong.** Core doc [section 12] says so, citing
+  [section 1.2](#12-the-pipeline-is-a-shape-not-a-type) and
+  [section 9](#9-what-is-shared-and-what-is-not) of this document by name. The
+  same rule applies: `ServerProfile` starts empty (just a `ServerId`), and a
+  field appears only when the corpus shows a systematic divergence a field
+  would fix. Nothing is predicted. A handler reads a *behaviour* field; it
+  never branches on identity, because `if server.id == PYRIGHT` scattered
+  through resolution logic is the rejected config format wearing another hat.
+* **The corpus splits into two surfaces, and that is a gift.** Positions where
+  every server agrees are the shared logic's responsibility and are the bulk of
+  the corpus. Positions where servers differ are the profile's. They are
+  separately optimisable: a profile change cannot move another server's
+  numbers, and shared logic is evaluated where the servers do not disagree
+  about the answer. This is a cleaner decomposition than anything this document
+  had before, and it costs nothing to adopt.
+* **It hands [open question 9](#open-questions) its data for free.** That
+  question asks whether re-export chains should be followed, and says it needs
+  corpus evidence first. The set of positions where servers disagree *is*
+  largely a map of where re-export and alias chains matter — core doc
+  [section 11] makes exactly this observation. So the evidence arrives as a
+  by-product of measurement rather than needing its own experiment.
+
+The open end is standalone, which has no server to stand in for and therefore
+no oracle at all. `ServerId` is `None` there, and `open-questions.md` question
+15 asks whether it should imitate a neutral profile or the most widely deployed
+one. That is not a resolution decision, but resolution is where it lands: a
+handler must behave *somehow* with an empty profile, and "whatever the shared
+logic does" is the current answer by default rather than by choice.
 
 ## 2. The resolution pipeline
 
@@ -699,8 +698,9 @@ since the obvious reading is that a permissive posture should permit this too.
 The difference is that a regex allowed to accept does not produce a *guess* —
 it produces a category of answer that is not wrong-but-plausible but simply
 wrong: a jump into a block comment, or into a `use` line, or into a string
-literal that happens to contain the word `fn`. The `high-level.md`'s permissive rule is
-"if the heuristic has a guess, return the guess", and a hit inside a comment is
+literal that happens to contain the word `fn`. `high-level.md`'s permissive
+rule is "if the heuristic has a guess, return the guess", and a hit inside a
+comment is
 not a guess about where the definition is. It is also the cheapest possible
 thing to exclude, since the parse that excludes it is already on the critical
 path for the surviving candidates.
@@ -717,8 +717,9 @@ excludes, which is recoverable and shows up in the per-stratum table.
 3. Other files under the same root, ordered by path proximity.
 4. Other workspace roots, requesting root's first.
 
-Tier 4 is `high-level.md`'s open question on multi-root ordering. The default above
-is "requesting folder first," and nothing here forecloses the pagerank-style
+Tier 4 is `open-questions.md` question 8, on multi-root ordering. The
+default above is "requesting folder first," and nothing here forecloses the
+pagerank-style
 ranking it suggests; see [section 6.3](#63-what-ranking-deliberately-does-not-use).
 
 ### Truncation no longer blocks a commit
@@ -744,7 +745,7 @@ are least likely to catch it.
 
 The earlier version of this document turned that into a hard rule: a truncated
 search could commit only if its confidence did not depend on global uniqueness.
-**That rule is withdrawn**, because it is a confidence-based abstention and the
+**That rule is withdrawn**, because it is a confidence-based abstention and
 `high-level.md` now allows only two — emptiness and the latency budget. Truncation is
 adjacent to the second but is not the same thing: the budget ran out, and the
 handler nonetheless has a candidate in hand.
@@ -953,12 +954,12 @@ signals with held-out validation is defensible; thirty is not.
 ### 6.3 What ranking deliberately does not use
 
 * **Body text similarity**, per [section 5](#5-reuse-from-the-prior-implementation).
-* **Module importance / pagerank.** The `high-level.md`'s future question 1. This got
+* **Module importance / pagerank.** `open-questions.md` question 1. This got
   substantially more urgent when the floor dropped: under the floor, ambiguous
   cases abstained, so a missing tiebreak signal cost coverage on a stratum
   that was going to be low-coverage anyway. Now ambiguous cases *commit*, so a
   missing tiebreak signal costs precision on every one of them. It is still
-  not v1 — `high-level.md` lists it as future work and the corpus has not yet said
+  not v1 — it is `open-questions.md` question 1 and the corpus has not yet said
   how much of the answer space is decided by ties — but it is now the ranking
   change with the largest expected effect, rather than a nicety. When it is
   added, the natural implementation reuses the literal scan — inbound

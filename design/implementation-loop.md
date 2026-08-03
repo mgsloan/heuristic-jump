@@ -45,8 +45,8 @@ Three things make this project unusually suited to it:
   quality is a number produced by the corpus scan, per stratum. A loop
   tuning a language handler is not grading its own homework; it is
   reading a scoreboard it cannot see the answers to.
-* **The spec is already written and it is enormous.** ~6000 lines
-  across four documents, largely decided, with the undecided parts
+* **The spec is already written and it is enormous.** ~9000 lines
+  across nine documents, largely decided, with the undecided parts
   already enumerated as numbered open questions. That is a work queue
   that has mostly been built already.
 * **The seam is narrow and stated.** `LanguageHandler` plus the
@@ -93,7 +93,7 @@ on the thing that moves the number.
 
 ## 3. The spec ledger
 
-6000 lines of prose is not a work queue. The first loop task — and the
+Nine thousand lines of prose is not a work queue. The first loop task — and
 one artifact worth reviewing by hand before anything else runs — is
 extracting the design documents into a machine-readable ledger.
 
@@ -136,7 +136,7 @@ framework to adopt.
 
 The ledger is also how the loop bounds its own context. Each item
 carries a document anchor, so an iteration reads the one section it
-needs rather than 138KB of core design.
+needs rather than 160KB of core design.
 
 ## 4. The iteration contract
 
@@ -154,7 +154,9 @@ One iteration is:
 
 **The gate**, run in this order, all mandatory:
 
-* `cargo fmt --check`
+* `cargo fmt -p <owned crates> --check` — **never bare `cargo fmt`**,
+  which would reformat `vendor/` and destroy the re-sync property
+  (`CLAUDE.md`)
 * `cargo clippy -p <owned crates> --all-targets -- -D warnings`
 * `cargo nextest run -p <owned crates>`
 * **diff scope**: the commit touches only paths this loop owns
@@ -167,11 +169,11 @@ One iteration is:
 **The gate is scoped to the crates the loop owns**, per `CLAUDE.md`'s rule
 against routinely building the workspace. A Rust tuning iteration builds
 `lang_rust` and `measure_rust` and nothing else — no other grammar, no
-driver. Core §11's split of `scan` into `measure_core` plus a four-line
-`measure_<lang>` exists to make that possible: without it, measuring one
-language means compiling all of them, and the confinement is
-decorative. The full-workspace gate runs once per phase gate, not once
-per iteration.
+driver. Core §11's split of the measurement program into `measure_core`
+plus a four-line `measure_<lang>` exists to make that possible: without
+it, measuring one language means compiling all of them, and the
+confinement is decorative. The full-workspace gate runs once per phase
+gate, not once per iteration.
 
 **Green-or-revert is not negotiable.** A broken tree costs the *next*
 iteration its whole context budget on diagnosis, and the next iteration
@@ -286,7 +288,7 @@ a high-value ledger item, and the loop should be told so.
 
 ## 6. Spec changes: what the loop may decide alone
 
-The loop will find the spec wrong. It is 6000 lines written before a
+The loop will find the spec wrong. It is 9000 lines written before a
 line of code, so this is certain, and a loop that must escalate every
 inconsistency will escalate constantly and stall.
 
@@ -324,9 +326,10 @@ report, and its count is a health metric: rising steadily means the
 loop is running ahead of its decisions and the work is getting
 speculative.
 
-**Seed the queue from what already exists.** `high-level.md`, the resolution
-design, and the vendored-rope design each end in numbered open
-questions, and those are already Class B items in everything but format.
+**Seed the queue from what already exists.** `open-questions.md` is a
+numbered list of exactly these, and `resolution.md` ends in a second
+one of its own; both are already Class B items in everything but
+format.
 Converting them to decision files before the first loop runs means the
 loop starts with its uncertainties enumerated rather than discovering
 them one stall at a time — and several have recommendations attached
@@ -741,9 +744,10 @@ every point is on the frontier and the concept stops selecting anything.
 
 Which of the three quality numbers goes on the axis is decided by the
 same criterion that rejected plain match rate: **it must not be
-improvable by answering more.** `high-level.md` now returns every
-plausible candidate as a ranked list, which gives three numbers instead
-of one, and only one of them survives that test.
+improvable by answering more.** The tool now returns every plausible
+candidate as a ranked list (`high-level.md`, "Several candidates"),
+which gives three numbers instead of one, and only one of them survives
+that test.
 
 * **Top-1 agreement** — the first location matches. Returning more
   candidates cannot improve it. This is the axis.
@@ -891,7 +895,7 @@ ignored.
 
 ## 12. Held-out integrity
 
-The `high-level.md`'s development plan holds out 2-3 repositories per language
+`high-level.md`'s development plan holds out 3-4 repositories per language
 and calls the tuned/held-out gap the overfitting signal. Under
 autonomous loops this needs teeth, because "learning a particular
 repo's conventions is the default outcome rather than a risk" is
@@ -1059,7 +1063,7 @@ result rather than trusting the actor:
   | lang-python | `crates/lang_python/` *except* `profile/`, `state/…/python*` |
   | python-pyright | `crates/lang_python/src/profile/pyright.rs`, `state/…/python-pyright*` |
   | phase 3 | everything, one writer, nothing running alongside |
-  | *nobody* | `harness/` |
+  | *nobody* | `harness/`, `crates/similarity/` |
 
 Ownership is by path, not by crate, which is what lets a per-server
 profile loop coexist with the language loop that owns the rest of the
@@ -1081,7 +1085,10 @@ binary is written once when the language is added and never again.
 **`harness/` is owned by nobody** — the gate script, the ratchet
 baselines, the frontier tool, and the held-out runner live there, and
 every loop is denied writes to it. Changes are Class B, made by a
-human.
+human. `crates/similarity/` is on that row for a different reason: it
+is ported and frozen ([above](#three-tiers)), so "nothing is added to
+it" is enforced by the same path check as everything else rather than
+by remembering.
 
 That last row is what replaces the separate pinned checkout an earlier
 draft called for. The property actually needed is *the loop cannot
@@ -1228,7 +1235,7 @@ means optimising the wrong one.
 
 The distinction matters immediately. Truth collection is ~100 machine
 hours and approximately zero tokens; a slow replay inflates model
-wall-clock without costing a token; a loop that re-reads 138KB of design
+wall-clock without costing a token; a loop that re-reads 160KB of design
 doc per iteration costs tokens without costing wall clock. The
 under-a-minute replay target in [section 9](#9-the-inner-loop-must-be-fast)
 is a wall-clock lever and not a cost lever, and the ledger's document
@@ -1592,7 +1599,7 @@ inferred from history.
 
 **`beads`.** A git-backed issue graph designed for coding agents, with
 dependency-aware "what is ready" queries. The ledger's value is that it
-is reviewed by hand, once, in a single sitting — 6000 lines of prose
+is reviewed by hand, once, in a single sitting — 9000 lines of prose
 compressed into something a person can audit for omissions. A greppable
 TOML file serves that; a Dolt-backed graph database does not, and
 `bd ready` is a `phase` field and fifteen lines.
@@ -1608,10 +1615,10 @@ idea, and the constitution already exists as `CLAUDE.md`.
 
 Minimum viable version, in order:
 
-1. Ledger extraction for **phase 0 and 1 only**, reviewed by hand.
+1. Ledger extraction for **phase 1 only**, reviewed by hand.
 2. The gate script, in `harness/`, denied to every loop.
 3. The commit-trailer convention and stall detection.
-4. One loop, conformance, on phase 0. Watch it for ten iterations.
+4. One loop, conformance, on phase 1a. Watch it for ten iterations.
 
 Everything else — verifier sessions, held-out isolation, the frontier,
 the proposal protocol, per-language billing — is phase 3+ machinery.
@@ -1732,7 +1739,7 @@ the countermeasures are the weakest part of this document.
    `rope-modifications.md` adds newtypes throughout `rope`; that is
    monomorphisation-neutral in principle and probably free, but "in
    principle" and a hard gate are different things. The baseline is
-   taken after phase 0, not before.
+   taken after phase 1a, not before.
 
 10. **Should the loop be allowed to add languages on its own?** Adding
     `lang_go` is "a table row" by design in three separate places now.

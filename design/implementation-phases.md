@@ -1,6 +1,8 @@
-Headers prefixed with the same number are run in parallel.
+Headers prefixed with the same number are run in parallel. The letter suffixes
+are stable names the other documents refer to — `implementation-loop.md` §8
+and `data-collection.md` use them throughout.
 
-# 1: Core needed for measurement
+# 1a: Core needed for measurement
 
 Build out only the parts of core needed for implementing `measure_core` and
 `measure_LANG`
@@ -9,13 +11,13 @@ This should also define an instantiable template for the language crates. The de
 
 This phase also does rope-modifications.md
 
-# 1: Repo collection
+# 1b: Repo collection
 
 Collect repos for the following languages: C, CPP, Go, Javascript, Typescript/TSX, Rust, Python
 
 These should be medium sized, popular, and trustworthy. Ideally they should also be across a variety of domains and code styles in order to increase coverage.
 
-# 1: LSP installation
+# 1c: LSP installation
 
 Install LSPs, potentially with human intervention. Let's also document all of
 these in a "external-dependencies.md"
@@ -26,7 +28,7 @@ Install all trustworthy / popular LSPs for this set of languages that Zed suppor
 
 Collect the ground truth for every language server on every repo.
 
-# 2: Per-language loop refining precision and recall
+# 2a: Per-language loop refining precision and recall
 
 First, instantiate the template for the language.
 
@@ -34,9 +36,11 @@ Once this is no longer making material progress, it will be my decision of which
 
 At this point there is no shared resolution code.
 
-# 2: Build the LSP shim / main program
+# 2b: Build the LSP shim / main program
 
-This can happen on master in parallel with the per-language loops
+This can happen in parallel with the per-language loops. It touches disjoint
+crates, so it lands on master through the same merge-after-every-green-iteration
+rule as everything else (`implementation-loop.md` §13).
 
 # 3: Whole repository loop refining latency, binary size, line count
 

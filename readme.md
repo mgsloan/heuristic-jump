@@ -19,9 +19,9 @@ $ heuristic-jump
 
 ## Status
 
-Design only. No code has been written yet - the repository is the four
-directories below minus the ones that hold source, and everything in
-`design/` is a plan rather than a description.
+Design only. No code has been written yet - of the layout below, only
+`design/` exists, and everything in it is a plan rather than a
+description.
 
 ## Planned layout
 

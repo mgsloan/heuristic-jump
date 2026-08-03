@@ -61,12 +61,12 @@ worker pool, communicating only over channels. Nothing in it is async-shaped:
   is what `rayon` is for and what an async executor is explicitly not for.
 * `ignore`'s parallel walker is thread-based.
 * `notify` is sync-native.
-* Deadlines are `Instant` + `AtomicBool` polled cooperatively — the design
+* Deadlines are `Instant` + `AtomicBool` polled cooperatively — `core.md`
   rules out a timer-driven deadline in §9, on the grounds that a timeout does
   not actually stop CPU-bound work. So even the timer story does not want
   tokio.
-* The remaining timers (divergence-report batching window, file-list rescan
-  debounce) are `crossbeam::select!` with `after(dur)` inside the `core` loop.
+* The one remaining timer (the file-list rescan debounce) is
+  `crossbeam::select!` with `after(dur)` inside the `core` loop.
 
 Against that, tokio costs ~25 transitive crates, a scheduler between our bytes
 and the pipe, and a class of "why is this 3ms late" question that a blocking
@@ -78,7 +78,7 @@ at startup, all long-lived.
 
 Alternatives considered:
 
-* **`tokio` 1.53.1** — the design's choice. Genuinely better if we later
+* **`tokio` 1.53.1** — the obvious default. Genuinely better if we later
   supervise and restart the child (`open-questions.md` 7), because process
   supervision, backoff timers, and racing a restart against in-flight requests
   are all things `tokio::select!` expresses well. Not v1. Reversible: the
@@ -95,9 +95,9 @@ Alternatives considered:
 
 ## 2. Channels
 
-`crossbeam-channel` 0.5.16, `unbounded()` everywhere, per design §2.
+`crossbeam-channel` 0.5.16, `unbounded()` everywhere, per `core.md` §2.
 
-One thing to get right: the design says unbounded because a bounded channel
+One thing to get right: `core.md` says unbounded because a bounded channel
 could stall a reader. That is correct but it means memory is bounded only by
 the shed-load rule in §13, so the `core` inbox length is a number we should
 log and watch, not just assert about.
@@ -110,7 +110,7 @@ stays as a dev-dependency oracle only.**
 The grounds are not dependency count. Design section 18 has the full
 argument; the dependency-relevant part:
 
-* **The motive is the newtypes.** `claude.md` asks for newtypes on primitive
+* **The motive is the newtypes.** `CLAUDE.md` asks for newtypes on primitive
   fields, and the driver's correctness rests on several of them —
   `ByteOffset`, `DocumentUri`, `DocumentVersion`, `EditorRequestId`,
   `LanguageId`. With a foreign types crate those can only be produced by a
@@ -125,7 +125,7 @@ argument; the dependency-relevant part:
   has private fields and converts only when handed the encoding and the text,
   which makes the bug unrepresentable rather than merely tested for.
 * **The surface is smaller than a general LSP crate.** We never round-trip a
-  message (design section 1 forbids it), so incoming types are read-only
+  message (`core.md` section 1 forbids it), so incoming types are read-only
   partial projections and serde ignores what we did not model. Roughly thirty
   small structs.
 * **The spec knowledge is kept without the dependency.** `lsp-types` becomes a
@@ -187,9 +187,9 @@ struct FramePeek<'a> {
 
 which borrows from the frame buffer and allocates nothing. Deserializing to
 `serde_json::Value` instead would allocate a whole tree per frame, which
-design §1 budgets at "one message-copy."
+`core.md` §1 budgets at "one message-copy."
 
-Two qualifications, both from design §3.1:
+Two qualifications, both from `core.md` §3.1:
 
 * **This peek is not on the forwarding path.** A forwarded frame is not
   inspected at all in the steady state; `FramePeek` runs inside `core`, after
@@ -198,7 +198,7 @@ Two qualifications, both from design §3.1:
 * **Allocation-free is not the same as cheap.** `serde_json` finds those two
   fields by lexing and validating every member it passes on the way, `params`
   included, so a 2 MB completion response costs a 2 MB walk to extract an
-  integer. Design §3.1 adds a bounded structural prefix scan in front of it
+  integer. `core.md` §3.1 adds a bounded structural prefix scan in front of it
   as a fast path with `FramePeek` as the fallback. `serde_json` stays as the
   correctness oracle for the scanner's differential fuzz target, so this
   dependency does not go away — the scanner is measured against it forever.
@@ -217,12 +217,12 @@ touch a handful of bytes per frame.
 
 ## 5. Text: vendored Zed `rope`
 
-**Chosen: vendor `rope` + `sum_tree`, per design §16.** No third crate: the
+**Chosen: vendor `rope` + `sum_tree`, per `core.md` §16.** No third crate: the
 few items rope uses from Zed's `util` are folded into rope itself —
 `rope-modifications.md` [§4](rope-modifications.md#folding-vendorutil-in) has
 the reasoning and the placement.
 
-The argument in design §4 is the real one: `OffsetUtf16` and `PointUtf16` are
+The argument in `core.md` §4 is the real one: `OffsetUtf16` and `PointUtf16` are
 first-class dimensions of `TextSummary`, so a UTF-16↔byte conversion is one
 sum-tree cursor seek, and `chunk.rs` resolves the in-chunk part with a `u128`
 boundary bitmap and a popcount. Position encoding is named as the
@@ -269,11 +269,11 @@ Four patches, each recorded in `vendor/README.md`:
    deleted outright, taking the `zlog` and `ctor` dev-dependencies with them.
 
    Keeping them is not sentimentality about someone else's tests.
-   `rope-modifications.md` puts a 51-function signature sweep and six
-   hand-edited lines through this crate, and upstream's tests are the only
-   independent check that the edit changed nothing. Several are randomised
-   differential tests against a `String` oracle, which is exactly what nobody
-   writes from scratch.
+   `rope-modifications.md` puts a 51-function signature sweep and the
+   body edits that follow from it through this crate, and upstream's tests
+   are the only independent check that the edit changed nothing. Several are
+   randomised differential tests against a `String` oracle, which is exactly
+   what nobody writes from scratch.
 4. **Keep `benches/rope_benchmark.rs`.** It answers directly whether the
    newtype wrappers and the `*_raw` indirection cost anything, which is an
    open question in `rope-modifications.md`. This is the justification for
@@ -285,7 +285,7 @@ Alternatives considered:
   (`char_to_utf16_cu` / `utf16_cu_to_char`), so the conversions are possible —
   but they route through char indices, so a byte↔UTF-16 conversion is two
   O(log n) seeks rather than one, and UTF-16 is not a summary dimension the
-  cursor can seek on directly. Given that design §4 calls encoding the
+  cursor can seek on directly. Given that `core.md` §4 calls encoding the
   highest-risk detail in the driver, that decides it. **Settled: vendored
   `rope`.** The licensing consequence is handled below rather than by
   reopening the choice.
@@ -359,7 +359,7 @@ that must stay as git revs: `tree-sitter-typescript` (zed-industries fork) and
 `tree-sitter-cpp`.
 
 `driver` depends on `tree-sitter` but on **no** grammar crate — that is the
-rule design §16 exists to enforce, and `LanguageHandler::grammar()` returning
+rule `core.md` §16 exists to enforce, and `LanguageHandler::grammar()` returning
 a runtime `tree_sitter::Language` is what makes it possible.
 
 `[profile.dev.package.tree-sitter] opt-level = 3`, per the profile conventions
@@ -374,7 +374,7 @@ so `.gitignore` semantics are correct for free, which is directly what the
 hand-rolled ignore implementation would be reimplementing the hard part.
 
 **It is a dependency of `shared`, not `driver`.** `ProjectView` is a concrete
-struct in `shared` (design §12), because `measure_core` needs the same scope
+struct in `shared` (`core.md` §12), because `measure_core` needs the same scope
 rules the shim uses and gets them a whole phase earlier. So `ignore` is
 compiled by every language crate. That is the cost of having exactly one
 implementation of the rules that decide what a search can find, and it is
@@ -383,8 +383,8 @@ not the one that ships.
 
 **`notify = "8.2.0"`** — **deferred behind a non-default `watch` feature.**
 
-Design §6 already describes the watcher as best-effort and enabled "only where
-watching is cheap." Given that, and given the design provides a second
+`core.md` §6 already describes the watcher as best-effort and enabled "only
+where watching is cheap." Given that, and given `core.md` provides a second
 invalidation path that does not need it (`AbstainReason::NoCandidates`
 triggers a debounced background rescan, which pairs with the retry protocol),
 v1 should ship the rescan path and leave the watcher unbuilt. Reasons:
@@ -392,7 +392,7 @@ v1 should ship the rescan path and leave the watcher unbuilt. Reasons:
 * It is the invalidation path that must work anyway, so building it first
   means the watcher is a pure optimization rather than load-bearing.
 * `notify` on Linux is inotify, which needs a watch descriptor per directory
-  and hits `max_user_watches` on large repos — exactly the failure the design
+  and hits `max_user_watches` on large repos — exactly the failure `core.md`
   wants to avoid, and one that manifests as a silent partial watch.
 * Zed uses a fork (`zed-industries/notify` at `0890bbb8`), which is a signal
   that upstream needed patching for their use.
@@ -400,15 +400,15 @@ v1 should ship the rescan path and leave the watcher unbuilt. Reasons:
 The dependency is written into `Cargo.toml` as optional so the decision is
 visible, not lost.
 
-One thing that weakens this: in **standalone mode** (design §17) a stale file
+One thing that weakens this: in **standalone mode** (`core.md` §17) a stale file
 list costs a *permanent* miss, not one the proper LSP quietly covers. The
 `NoCandidates` rescan still repairs it on the next query, so the deferral
 holds, but standalone is the likeliest reason the watcher eventually gets
-built — recorded as design §17.10 question 4.
+built — recorded as `open-questions.md` question 10.
 
 ## 8. Parse cache
 
-**`lru = "0.18.1"`**, with a caveat: design §5 wants the cache bounded by
+**`lru = "0.18.1"`**, with a caveat: `core.md` §5 wants the cache bounded by
 *both* entry count and total bytes, and `lru` bounds only entries. So
 `driver` wraps it — track a running byte total, and after each `put`, `pop_lru`
 until under the byte ceiling. That is about fifteen lines and is fine.
@@ -469,14 +469,14 @@ to **stderr**.
 is in the graph regardless, and having two logging facades would be silly.
 
 The thing to be careful about: the child's stderr is forwarded verbatim to our
-stderr (design §2), so our own log lines interleave with rust-analyzer's in
+stderr (`core.md` §2), so our own log lines interleave with rust-analyzer's in
 the editor's log panel. Every line we emit gets a distinguishing prefix, and
 the default filter is `warn` so we are quiet unless asked.
 
-The JSONL metric records of design §11 are **not** tracing output. They go to
+The JSONL metric records of `core.md` §11 are **not** tracing output. They go to
 their own file via `serde_json`, because they are structured data with a fixed
-schema that `scan` also writes, and routing them through a log subscriber
-would make the schema a formatting concern.
+schema that `measure_core` also writes, and routing them through a log
+subscriber would make the schema a formatting concern.
 
 Alternative: `log` + `env_logger`. Simpler, but `tracing` is already in the
 graph and its spans are the natural way to attribute the per-stratum latency
@@ -488,7 +488,7 @@ graph and its spans are the natural way to attribute the per-stratum latency
 one level by subsystem.**
 
 The granularity is settled rather than left open: a flat enum of ~60 variants
-would make "all possible errors" more literal, but design §14's failure
+would make "all possible errors" more literal, but `core.md` §14's failure
 handling is a table keyed by *class* of failure, and nesting is what lets that
 table be an exhaustive match on nine arms instead of a sixty-arm match that
 has to be re-checked every time a variant is added. Nesting still enumerates
@@ -498,7 +498,7 @@ them.
 `anyhow::Error` is a boxed `dyn Error` — the set of things that can go wrong
 is not written down anywhere, cannot be matched on, and grows silently every
 time someone adds a `?`. For this system that is the wrong default twice over:
-the driver's failure handling (design §14) is a *table* mapping each failure
+the driver's failure handling (`core.md` §14) is a *table* mapping each failure
 class to a specific response, and that table is only enforceable if the
 failure classes are a closed set the compiler knows about.
 
@@ -527,7 +527,7 @@ Rules, so this stays a real closed set rather than `anyhow` with extra steps:
   (which path, which frame), so the *classification* is ours even though the
   detail is theirs.
 * **`Result` is not the abstention path.** `Outcome::Abstain` /
-  `AbstainReason` stay entirely separate, per design §12 — abstention is a
+  `AbstainReason` stay entirely separate, per `core.md` §12 — abstention is a
   correct outcome and must not share a type with failure. Some `driver` code
   will convert an `Error` into an abstention; that conversion is explicit and
   logged.
@@ -556,7 +556,7 @@ heuristic-jump [OPTIONS]                                 # standalone
 ```
 
 with the `--` **required** before the child command, and **no
-`--standalone` flag** — the mode is whether a server was given. Design §17.8
+`--standalone` flag** — the mode is whether a server was given. `core.md` §17.8
 has the argument for dropping the flag.
 
 The objection to any argument parser here is that the child's arguments must
@@ -610,9 +610,9 @@ What clap buys that hand-rolling would not:
   usage string that documents the flags and the `--` convention is worth more
   here than for a tool run interactively.
 * **Typo suggestions.** `--standalon` producing "a similar argument exists"
-  matters because of design §17.8: the failure being guarded against is a user
-  who meant to proxy and silently ends up somewhere else. clap turns that into
-  a named error for free.
+  matters because of `core.md` §17.8: the failure being guarded against is a
+  user who meant to proxy and silently ends up somewhere else. clap turns that
+  into a named error for free.
 * **Dependencies as declarations.** `--proxy-only` needing a server is
   `requires = "server"`, not hand-written validation.
 
@@ -622,9 +622,9 @@ share one, so `--proxy-only` beats `--hj-proxy-only` and nothing is ambiguous.
 
 | Flag | Meaning |
 |---|---|
-| `--proxy-only` | Design §14's permanent pure-proxy degraded mode, which the design asks to be a real, tested path. `requires` a server |
-| `--deadline-ms=<n>` | Overrides the hard cap. Defaults to 750 proxying, 2000 standalone, per design §17.6 |
-| `--trace=<path>` | JSONL metric records, design §11 |
+| `--proxy-only` | `core.md` §14's permanent pure-proxy degraded mode, which it asks to be a real, tested path. `requires` a server |
+| `--deadline-ms=<n>` | Overrides the hard cap. Defaults to 750 proxying, 2000 standalone, per `core.md` §17.6 |
+| `--trace=<path>` | JSONL metric records, `core.md` §11 |
 | `--log=<filter>` | `tracing-subscriber` env-filter string |
 
 **One check clap will not do for us**, and it is worth writing down because it
@@ -668,23 +668,24 @@ Alternatives considered:
 
 | Crate | Version | Use |
 |---|---|---|
-| `insta` | 1.48.0 | Frame-trace golden tests (design §15). Snapshot review is the right workflow for "assert every forwarded frame is byte-identical" |
+| `insta` | 1.48.0 | Frame-trace golden tests (`core.md` §15). Snapshot review is the right workflow for "assert every forwarded frame is byte-identical" |
 | `proptest` | 1.11.0 | Position-encoding property tests; edit-log prefix consumption; spot anchoring |
 | `tempfile` | 3.x | Fixture repositories for `ProjectView` scope tests |
 | `rand` | **0.9** | Upstream rope/sum_tree tests, kept per §5, plus `util::RandomCharIter`. Pinned to Zed's 0.9 rather than crates.io's 0.10: the tests are kept verbatim and are written against `rng.random_range(..)`. Taking 0.10 would mean editing test bodies, which defeats keeping them |
 | `criterion` | 0.5 | `vendor/rope`'s benchmark only, per §5 |
-| `lsp-types` | 0.95.1 | Differential oracle for `shared::proto`, per §3 and design §18.5. Dev only — it must never appear in a non-dev dependency table, and that is worth a CI check, since the whole point of §3 is defeated the moment a runtime `use lsp_types::` appears |
+| `lsp-types` | 0.95.1 | Differential oracle for `shared::proto`, per §3 and `core.md` §18.5. Dev only — it must never appear in a non-dev dependency table, and that is worth a CI check, since the whole point of §3 is defeated the moment a runtime `use lsp_types::` appears |
 
 Deliberately not adding:
 
 * **`criterion` 0.5** — *was* declined on the grounds that the latency numbers
-  that matter are end-to-end against a real repo, which is `scan`'s job. It is
-  now a dev-dependency of `vendor/rope` only, because upstream's
+  that matter are end-to-end against a real repo, which is `measure_core`'s
+  job. It is now a dev-dependency of `vendor/rope` only, because upstream's
   `rope_benchmark.rs` is kept (§5) and answers whether the newtype wrappers
   inline away. Pinned to Zed's 0.5, since the benchmark is kept verbatim. No
   benchmark of our own code is planned.
-* **`arbitrary` / `cargo-fuzz`** — design §15 asks for codec fuzzing. `proptest`
-  covers the split-read / bogus-`Content-Length` cases well enough to start;
+* **`arbitrary` / `cargo-fuzz`** — `core.md` §15 asks for codec fuzzing.
+  `proptest` covers the split-read / bogus-`Content-Length` cases well enough
+  to start;
   add `cargo-fuzz` as a separate non-workspace target if the codec ever gets
   complicated enough to warrant it.
 * **`mockall`** and friends — the fake child is a scripted frame list, which is
@@ -692,28 +693,27 @@ Deliberately not adding:
 * **`pretty_assertions`** — nice, but `insta` covers the cases where diff
   quality actually matters.
 
-The injected clock for design §15's protocol race tests is a `trait Clock`
+The injected clock for `core.md` §15's protocol race tests is a `trait Clock`
 with a `TestClock` impl in `shared`, not a dependency.
 
 ## 13. Explicitly not depended on
 
 * **`tokio`** — §1.
 * **`anyhow`** — §10.
-* **`clap`** — §11.
 * **`num_cpus`** — `std::thread::available_parallelism()` has been stable
-  since 1.59 and is what the pool sizing in design §13 needs.
+  since 1.59 and is what the pool sizing in `core.md` §13 needs.
 * **`once_cell`** — `std::sync::OnceLock` / `LazyLock` are stable, and design
   §2 specifically requires the `std` `OnceLock` for `DocumentSnapshot: Sync`.
-* **`parking_lot`** — design §2 states there is no lock anywhere. If a
+* **`parking_lot`** — `core.md` §2 states there is no lock anywhere. If a
   `parking_lot` import ever appears, something has gone wrong architecturally
   and the fix is not a faster mutex.
 * **`dashmap`** — same, more so.
-* **`regex`** — `DefinitionHints` in the resolution design wants it, so it
+* **`regex`** — `DefinitionHints` in `resolution.md` wants it, so it
   will land in a `lang_*` crate. Nothing in the driver needs it.
 * **`memchr` / `aho-corasick` / `grep-searcher`** — the literal scan primitive
-  is a handler's. `driver` executes the scan on its pool (resolution
-  design §3) but the matching itself lives behind that seam. `memchr` is the
-  likely pick when we get there.
+  is a handler's. `driver` executes the scan on its pool (`resolution.md`
+  §3) but the matching itself lives behind that seam. `memchr` is the likely
+  pick when we get there.
 * **`jiff` / `chrono` / `time`** — trace timestamps are
   `SystemTime::UNIX_EPOCH.elapsed()` as micros. A date-time library for one
   integer is not worth it.
@@ -825,7 +825,7 @@ Crate names carry no project prefix — these are `publish = false` crates in a
 private workspace, exactly like the vendored `rope` and `sum_tree` beside
 them, and like every crate in Zed. Two names are deliberate rather than
 mechanical: **`driver` rather than `core`**, since a crate named `core`
-shadows Rust's own and the design already uses "core" for the actor; and
+shadows Rust's own and `core.md` already uses "core" for the actor; and
 **`heuristic_jump`** for the binary crate, so the artifact is `heuristic-jump`
 with no `[[bin]]` rename.
 
@@ -834,8 +834,8 @@ A `cargo-deny` config asserting that `GPL` appears in the graph only via
 a second GPL input ever sneaks in, which is the thing that would quietly
 foreclose the exit §5 is preserving.
 
-`similarity`, `lang_*`, `measure_core`, and `measure_<lang>` are in design §16's layout
-but are not created by this piece of work.
+`similarity`, `lang_*`, `measure_core`, and `measure_<lang>` are in `core.md`
+§16's layout but are not created by this piece of work.
 
 ## 15. Clippy in workspace toml
 

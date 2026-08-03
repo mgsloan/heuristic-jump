@@ -639,7 +639,7 @@ every message shape has to be understood, and the ones you cannot track get
 discarded.
 
 Two future changes would forfeit this. Supervising and restarting the child
-(future question 3 in `high-level.md`) means the editor's ids outlive the child's
+(`open-questions.md` question 7) means the editor's ids outlive the child's
 id space, so post-restart ids need remapping. Multiplexing would mean it too.
 Neither is planned; both should be understood as giving up a property, not
 just adding a feature.
@@ -1010,8 +1010,8 @@ There is no `Dead` state: child exit means the shim exits too (see below), so
 there is no interval worth modelling in which the child is gone and the shim
 is still answering. There is likewise no `Slow` state — a state that selects
 the same policy as `Ready` is weight without effect. Whether a slow-but-alive
-server should be pre-empted is a future question in `high-level.md`; the state
-can come back if that answer is yes.
+server should be pre-empted is `open-questions.md` question 4; the state can
+come back if that answer is yes.
 
 ### Child death
 
@@ -1026,7 +1026,7 @@ configured and understands.
 
 Supervising the child instead — restarting it, replaying state, and serving
 heuristics through the gap — is deliberately not done here; it is tracked as
-a future question in `high-level.md`. The part that matters for this document is
+`open-questions.md` question 7. The part that matters for this document is
 that nothing in the architecture forecloses it. The shim already holds full
 authoritative text for every open document, which is exactly the state a
 restarted child would need replayed into it, so the decision can be revisited
@@ -1257,21 +1257,24 @@ line, like everything else inside the shim
 ([section 18](#18-protocol-types)); the child's columns are converted at the
 edge, using the one line rather than the file.
 
-Then, comparing the shim's answer against the child's. The `agreement` and
-`severity` values below are the exact strings written to those fields in
+Then, comparing one of the shim's locations against one of the child's. This
+pairwise relation is not itself the `agreement` field: neither side is a
+single location, so [Both sides are sets](#both-sides-are-sets) lifts it to
+the three values that actually get written. `severity` below *is* the exact
+string written to that field in
 [section 11](#11-observability-and-the-corpus-scan) — the classifier and the
 metric must not have separate vocabularies, or the number that ships and the
 number that gets measured stop being the same number.
 
-| Relation | `agreement` | `severity` |
+| Relation | Pairwise | `severity` |
 |---|---|---|
-| Same file, ranges overlap | `match` | — |
-| Same file, within 3 lines | `match` | — |
-| Same file, more than 3 lines apart | `mismatch` | `same_file` |
-| Different file, same module tree | `mismatch` | `near_module` |
-| Different file, unrelated | `mismatch` | `unrelated` |
-| Child answered null or empty, shim committed | `mismatch` | `unrelated` |
-| Both empty | `match` | — |
+| Same file, ranges overlap | matches | — |
+| Same file, within 3 lines | matches | — |
+| Same file, more than 3 lines apart | differs | `same_file` |
+| Different file, same module tree | differs | `near_module` |
+| Different file, unrelated | differs | `unrelated` |
+| Child answered null or empty, shim committed | differs | `unrelated` |
+| Both empty | matches | — |
 
 The 3-line tolerance is deliberate: at that distance the correct definition is
 on screen and the user is already reading it, so scoring it as wrong would
@@ -1300,6 +1303,10 @@ So the pairwise table is applied twice, against the child's whole set:
 * **`contained`** — any of the shim's locations matches. This is what the user
   could actually reach through the picker, and it is reported only alongside
   the result count, since alone it is gameable.
+
+These three, and only these three, are what `agreement` ever holds. A bare
+`match` is not one of them, and the pairwise column above is an input to the
+lift rather than a value anything records.
 
 `agreement` therefore takes one of `match_top1`, `match_contained`, or
 `mismatch`, and these are ordered: `match_top1` implies `match_contained`.
@@ -1430,7 +1437,7 @@ resolved as abstained):
   "truncated_list": false,
   "lsp_latency_us": 4210000,
   "lsp_locations": ["..."],
-  "agreement": "match",
+  "agreement": "match_top1",
   "severity": null
 }
 ```
@@ -1459,14 +1466,14 @@ could never have had an `agreement`.
 
 ### The corpus scan is a separate program
 
-The scan in `high-level.md`'s development plan is **not** a mode of the shim. It is
-its own crate — `measure_core`, plus a four-line `measure_<lang>` binary per
-language, below. `driver` has no batch path, no transport abstraction, and no
-awareness that any of it exists.
+The corpus scan in `high-level.md`'s development plan is **not** a mode of the
+shim. It is its own crate — `measure_core`, plus a four-line `measure_<lang>`
+binary per language, below. `driver` has no batch path, no transport
+abstraction, and no awareness that any of it exists.
 
 The requirements are opposed at nearly every point:
 
-| | `driver` | `scan` |
+| | `driver` | `measure` |
 |---|---|---|
 | The proper LSP | raced against | waited for — it *is* ground truth |
 | Optimises for | latency | throughput |
@@ -1480,22 +1487,25 @@ part of the system with the strictest correctness requirements.
 
 The reason to hesitate is that a separate harness could drift into measuring a
 reimplementation rather than the real thing. That concern turns out to be
-weaker than it looks: **what the scan measures is the handler, not the
+weaker than it looks: **what `measure` measures is the handler, not the
 driver.** The proxy, the health model, and the retry protocol are not under
-test — resolution accuracy is. So as long as `scan` builds its `Query` and
-`DocumentSnapshot` the same way, the code under test is genuinely identical.
+test — resolution accuracy is. So as long as `measure_core` builds its
+`Query` and `DocumentSnapshot` the same way, the code under test is genuinely
+identical.
 Snapshot construction therefore lives in `shared`, which makes that
 structural rather than a matter of discipline.
 
-`scan` spawns a fresh language server per repository, opens documents,
-enumerates identifiers with the handler's own grammar, asks both sides, and
+`measure collect` spawns a fresh language server per repository, opens
+documents, enumerates identifiers with the handler's own grammar, asks both
+sides, and
 writes the records above. The one thing it shares with the shim beyond the
 vocabulary is the agreement predicate from
 [section 10](#10-divergence-reporting) — the definition of "match" must not
 fork, or the shipped metric and the measured metric stop being the same
 number. **That predicate therefore lives in `shared`**, not in `driver`:
-`scan` does not depend on `driver` ([section 16](#the-dependency-graph)), so
-there is no other place both can reach it from.
+`measure_core` does not depend on `driver`
+([section 16](#the-dependency-graph)), so there is no other place both can
+reach it from.
 
 ### One measurement library, one tiny binary per language
 
@@ -1516,7 +1526,7 @@ binary per language:
   }
   ```
 
-The alternative — one `scan` binary depending on every `lang_*`, which is
+The alternative — one `measure` binary depending on every `lang_*`, which is
 what an earlier draft of [section 16](#16-workspace-layout) specified — makes
 every language's measurement depend on every other language *building*. Three
 things go wrong with that, and the third is the one that matters:
@@ -1534,8 +1544,9 @@ things go wrong with that, and the third is the one that matters:
   is harder to see. A language must be measurable entirely on its own.
 
 The cost is one extra crate per language, whose contents are the four lines
-above. That is the right price: it keeps `lang_*` unaware that `scan` exists,
-so the shipped `heuristic-jump` binary never links an LSP client, and it keeps
+above. That is the right price: it keeps `lang_*` unaware that `measure_core`
+exists, so the shipped `heuristic-jump` binary never links an LSP client, and
+it keeps
 the dependency direction one-way.
 
 Aggregating across languages — the combined table, the frontier — is done over
@@ -1549,11 +1560,11 @@ and it produces an answer that does not change when the handler changes. The
 proper LSP's answer for a given position at a given commit is a *fact about
 the corpus*, not about our code, so it is collected once and frozen.
 
-`scan` therefore has two subcommands, and only the first needs a server:
+`measure` therefore has two subcommands, and only the first needs a server:
 
 * **`collect`** — spawn the server, drive `didOpen` across the repository,
   enumerate identifiers, ask the LSP, write `truth.jsonl`. Slow, run rarely,
-  output is a checked-in artifact.
+  output is a frozen artifact in the corpus root, never in the repository.
 * **`replay`** — read `truth.jsonl`, reconstruct the `DocumentSnapshot` and
   `Query` for each recorded position, run the handler, classify agreement,
   emit the metric table. No server, no network, no `didOpen` round trips.
@@ -1570,7 +1581,7 @@ costing minutes and costing an afternoon, and it is on the critical path for
 every language: the target is a full replay over one language's tuning corpus
 in under a minute, so that iteration is bounded by thinking rather than by
 I/O. It is stated here rather than left implicit because nothing else in this
-document requires `scan` to be able to run without a server, and discovering
+document requires `measure` to be able to run without a server, and discovering
 the requirement later means discovering it after the corpus has been
 collected in a shape that cannot be replayed.
 
@@ -1578,7 +1589,7 @@ Constraints that make a replay trustworthy:
 
 * **`truth.jsonl` carries its provenance in a header record**: repository
   path and commit, language server name and version, grammar revision, and
-  the `scan` version that wrote it. Replay refuses to run against a truth
+  the `measure` version that wrote it. Replay refuses to run against a truth
   file whose repository commit does not match the checkout, rather than
   silently reporting metrics for positions that have since moved.
 * **Replay does not enforce deadlines by wall clock.** This is the constraint
@@ -1672,14 +1683,22 @@ Not inside the repository. Two roots, outside the workspace, passed by path:
 ../heuristic-jump-corpus/       tuning corpus
   rust/
     repos/<name>/               checkout, pinned commit
+    positions/<name>.jsonl      enumerated once, shared by every server
     truth/rust-analyzer/<name>.jsonl
+    manifest.toml               what was chosen and why
   python/
     repos/<name>/
+    positions/<name>.jsonl
     truth/pyright/<name>.jsonl
     truth/pylsp/<name>.jsonl
+    manifest.toml
   ...
 ../heuristic-jump-heldout/      held-out corpus, same shape
 ```
+
+`data-collection.md` owns this layout and the rules that go with it — how
+repositories are chosen, why positions are enumerated once rather than per
+server, and what the manifest records.
 
 **Truth is per server, not per language.** Repositories are shared across
 servers — the checkout is the expensive artifact and the source text is the
@@ -1731,29 +1750,35 @@ strings across the seam. Almost every value here is an offset, an index, or an
 identifier, and those are exactly the things that silently substitute for each
 other.
 
+**The text-shaped ones are `rope`'s, not `shared`'s.** `ByteOffset`,
+`ByteLen`, `ByteRange`, and `LineIndex` are *defined in* the vendored rope and
+re-exported here, because `shared` depends on `rope` and the dependency cannot
+run the other way — `rope-modifications.md` §2 has the argument, and the same
+goes for `ByteColumn`, `Utf16Column`, and `CharCount`, which handlers do not
+use. Every other crate says `shared::ByteOffset` and never has to know. They
+appear here because this is the seam they are part of:
+
 ```rust
-/// Byte offset into a document. Never a UTF-16 offset — those are
-/// converted at the edge and this type is the proof.
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ByteOffset(pub usize);
-
-/// A quantity of bytes, distinct from a position. `offset + len` advances,
-/// `offset - offset` measures, `offset + offset` does not typecheck.
-/// Also what a handler counts a query's byte budget in.
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ByteLen(pub usize);
-
-#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+// vendor/rope, re-exported by shared
+pub struct ByteOffset(pub usize);   // a position; never a UTF-16 offset
+pub struct ByteLen(pub usize);      // a quantity, distinct from a position
 pub struct ByteRange { pub start: ByteOffset, pub end: ByteOffset }
+pub struct LineIndex(pub u32);      // zero-based line
 
 impl ByteRange {
     pub fn contains(self, at: ByteOffset) -> bool;
     pub fn overlaps(self, other: ByteRange) -> bool;
-    /// Shift by an edit's length delta; None if the edit fell inside,
-    /// which invalidates the range. Used for spot anchoring, section 8.
-    pub fn shifted_by(self, edit: &InputEdit) -> Option<ByteRange>;
 }
 
+// shared, as an extension trait: `shifted_by` needs tree-sitter's InputEdit,
+// and rope must not grow a tree-sitter dependency for one method.
+pub trait ByteRangeExt {
+    /// Shift by an edit's length delta; None if the edit fell inside,
+    /// which invalidates the range. Used for spot anchoring, section 8.
+    fn shifted_by(self, edit: &InputEdit) -> Option<ByteRange>;
+}
+
+// shared's own
 /// LSP document version, from didOpen/didChange.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DocumentVersion(pub i32);
@@ -1778,10 +1803,6 @@ pub struct DocumentUri(Url);
 /// outgoing ids, which cannot be confused with it.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct EditorRequestId(Box<str>);
-
-/// Zero-based line, as it appears on the wire in both encodings.
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct LineIndex(pub u32);
 
 /// A definition site, as handlers speak of it: byte offsets, always.
 /// The wire form is `proto::WireLocation` and only the driver builds it.
@@ -2044,9 +2065,10 @@ shim is responsible for something.
   scanner later as an optimization rather than up front.
 * **Zero-inspection assertion.** Instrument the readers with a counter of
   frames inspected before forwarding, and assert that across a recorded
-  session it is 1 in the editor direction (the `initialize`) and 0 in the
-  child direction except while the shim has an outstanding answer. This is the
-  executable form of
+  session it is 0 in the editor direction — `initialize` included, since the
+  shim modifies nothing it forwards ([section 4](#position-encoding)) — and 0
+  in the child direction except while the shim has an outstanding answer of
+  its own. This is the executable form of
   [section 3.1](#31-how-little-inspection-the-forwarding-path-needs), and
   without it that property will quietly decay the first time someone needs
   "just one more field" on the forwarding path.
@@ -2099,7 +2121,7 @@ crates/
   driver/           the LSP driver
   heuristic_jump/   the shim binary -- `heuristic-jump`
   measure_core/        corpus scan library -- LSP client, replay, metrics
-  measure_rust/        `heuristic-jump-measure-rust` -- four lines, section 11
+  measure_rust/        `measure-rust` -- four lines, section 11
   measure_python/
   measure_typescript/
 ```
@@ -2123,8 +2145,8 @@ The shape is dictated by one rule from the outset: **`driver` must not depend
 on any language crate.** Wiring happens in `heuristic_jump`.
 
 ```
-              shared  <-- rope, tree-sitter, serde, serde_json, url, ignore
-             /  /  |  \
+              shared  <-- rope, tree-sitter, serde, serde_json, url,
+             /  /  |  \      ignore, rayon, thiserror, rustc-hash
             /  /   |   \
 measure_core  /  similarity  driver  <-- crossbeam, rayon, clap
        |     /     |          |
@@ -2147,7 +2169,11 @@ Every edge, and why:
   `lsp-types` dependency, so that the vocabulary newtypes are what
   deserialization *produces* rather than what a conversion layer produces
   afterwards. Its own dependencies are `serde`, `serde_json`, `url`, `rope`,
-  `tree-sitter`, and `ignore` (for `ProjectView`'s walk).
+  `tree-sitter`, `ignore` (for `ProjectView`'s walk), `rayon` (for
+  `ProjectView::scan`, which executes on the pool it is handed at
+  construction — `resolution.md` §3), `thiserror` (for `Error`'s derives),
+  and `rustc-hash`. This list is the authoritative one; §18.7 refers back to
+  it rather than restating it.
 
   **`Error` is one enumerated type covering every failure in the system**, not
   an `anyhow`-style boxed `dyn Error`. It lives here rather than in `driver`
@@ -2599,12 +2625,12 @@ carried over.
   bounded, and an editor that has been spinning for five seconds is its own
   kind of broken.
 * **The pool size.** [Section 13](#13-parallel-dispatch-and-resource-limits)
-  sizes the pool at `max(1, num_cpus - 2)` specifically to avoid competing
-  with the proper LSP for CPU during its startup. With no proper LSP there is
-  nothing to leave headroom for, so standalone sizes at `num_cpus`. The
-  reasoning behind the original number is the whole reason this one differs;
-  keeping `num_cpus - 2` here would be cargo-culting a constraint that no
-  longer applies.
+  sizes the pool at `max(1, available_parallelism() - 2)` specifically to
+  avoid competing with the proper LSP for CPU during its startup. With no
+  proper LSP there is nothing to leave headroom for, so standalone sizes at
+  plain `available_parallelism()`. The reasoning behind the original number is
+  the whole reason this one differs; keeping the `- 2` here would be
+  cargo-culting a constraint that no longer applies.
 
 **Precision does not differ by mode, because in v1 it is not enforced in
 either.** Both modes answer whenever the handler has a candidate.
@@ -2640,7 +2666,7 @@ both answers, and here there is one. So:
 * Coverage, latency, and per-stratum breakdown are all still measurable, since
   none of them need the child. Precision and error severity are not.
 
-The corpus scan is unaffected: `scan` is an LSP *client* that drives a real
+The corpus scan is unaffected: `measure` is an LSP *client* that drives a real
 server for ground truth ([section 11](#the-corpus-scan-is-a-separate-program)),
 and it has no proxy in it at all. Calibration therefore continues to come from
 proxy-mode-equivalent measurement even for users who only ever run standalone,
@@ -3063,7 +3089,7 @@ permanent one, and all three are `core`-side O(1):
   is known. It costs a read, so it belongs in a worker, off the critical path,
   and a mismatch marks the document untrusted rather than raising an error.
 
-`high-level.md`'s future question 6 asks what the shim should do when the editor
+`open-questions.md` question 6 asks what the shim should do when the editor
 misbehaves — `didOpen` for an already-open document, `didChange` for one never
 opened. This is the answer to the half of that question that matters: not
 "ignore," but "stop trusting the document, keep proxying perfectly, and say so
@@ -3078,7 +3104,7 @@ regardless, since they are in the handler seam. Splitting the wire types into
 their own crate would separate them from newtypes they are defined in terms
 of, for no gain.
 
-`shared`'s dependencies become `serde`, `serde_json`, `url` (for
-`DocumentUri` normalization and `file:` path extraction, which is where the
-percent-encoding and Windows drive-letter bugs live and is not worth
-hand-rolling), `rope`, and `tree-sitter`.
+The wire types add one dependency of their own: `url`, for `DocumentUri`
+normalization and `file:` path extraction, which is where the percent-encoding
+and Windows drive-letter bugs live and is not worth hand-rolling.
+[Section 16](#the-dependency-graph) has `shared`'s full dependency list.
