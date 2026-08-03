@@ -222,7 +222,11 @@ One iteration is:
   which would reformat `vendor/` and destroy the re-sync property
   (`CLAUDE.md`)
 * `cargo clippy -p <owned crates> --all-targets -- -D warnings`
-* `cargo nextest run -p <owned crates>`
+* `cargo nextest run -p <owned crates>`, and `hj selftest` — the harness's
+  own parsing and arithmetic — on every run rather than only on the loops
+  that own crates. A loop whose deliverable is not a crate otherwise reaches
+  step 4 having executed nothing it wrote, and `hj` is what computes every
+  loop's number, so it breaking stops all of them at once
 * **diff scope**: the commit touches only paths this loop owns
   ([section 13](#mechanics-isolation-in-four-layers)). This is the enforcement,
   not the hook.

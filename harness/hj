@@ -24,6 +24,8 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
+import textwrap
 import tomllib
 import uuid
 from dataclasses import dataclass, field
@@ -2244,8 +2246,8 @@ def cost_path(owner: str) -> Path:
 COST_FIELDS = ("usd", "output_tokens", "model_seconds", "gate_seconds", "experiments")
 
 
-def cost_rows(owner: str) -> list[dict]:
-    """Every cost row, campaign rows merged by campaign id, in file order.
+def merge_cost_rows(rows: list[dict]) -> list[dict]:
+    """Campaign rows merged by campaign id, in file order.
 
     Merged rather than read straight, for the same reason `campaigns_of` merges
     `state/sessions.jsonl`: the file is append-only, so re-measuring a campaign
@@ -2259,7 +2261,7 @@ def cost_rows(owner: str) -> list[dict]:
     """
     merged: dict[str, dict] = {}
     ordered: list[dict] = []
-    for row in read_jsonl(cost_path(owner)):
+    for row in rows:
         if row.get("kind") == "audit":
             ordered.append(row)
             continue
@@ -2270,6 +2272,10 @@ def cost_rows(owner: str) -> list[dict]:
         merged[key] = dict(row)
         ordered.append(merged[key])
     return ordered
+
+
+def cost_rows(owner: str) -> list[dict]:
+    return merge_cost_rows(read_jsonl(cost_path(owner)))
 
 
 def experiment_mix(campaign: dict, numbers: dict) -> dict:
@@ -2389,6 +2395,32 @@ def cmd_cost(args: argparse.Namespace) -> int:
 CONFORMANCE_PHASES = ("1a", "2b")
 
 
+def cost_intervals(dated: list[tuple[str, int]], audits: list[dict]) -> list[dict]:
+    """Tokens spent between consecutive audits, against gaps closed at each.
+
+    Half-open on the left, closed on the right — a session that ended exactly
+    at an audit's timestamp belongs to the interval that audit closes, not to
+    the next one. Sessions after the last audit are in no interval yet, which
+    is correct: nothing has observed what they closed.
+    """
+    series = []
+    previous = ""
+    for audit in audits:
+        when = audit.get("ts") or ""
+        tokens = sum(count for stamp, count in dated if previous < stamp <= when)
+        closed = len(audit.get("closed", []))
+        series.append(
+            {
+                "ts": when,
+                "tokens": tokens,
+                "closed": closed,
+                "per_gap": (tokens / closed) if closed else None,
+            }
+        )
+        previous = when
+    return series
+
+
 def cost_per_gap(owner: str, docs: list[str]) -> dict:
     """`design/loops.md` section 15's derived number for a conformance phase:
     tokens per gap closed, which "should *rise* over a run as the easy wins are
@@ -2415,22 +2447,7 @@ def cost_per_gap(owner: str, docs: list[str]) -> dict:
         if when:
             dated.append((when, tokens))
 
-    series = []
-    previous = ""
-    for audit in audits_for(docs):
-        when = audit.get("ts") or ""
-        tokens = sum(count for stamp, count in dated if previous < stamp <= when)
-        closed = len(audit.get("closed", []))
-        series.append(
-            {
-                "ts": when,
-                "tokens": tokens,
-                "closed": closed,
-                "per_gap": (tokens / closed) if closed else None,
-            }
-        )
-        previous = when
-
+    series = cost_intervals(dated, audits_for(docs))
     ledger = gap_ledger(docs)
     total = sum(tokens for _, tokens in dated)
     return {
@@ -2464,11 +2481,15 @@ def spend(phase: Phase) -> tuple[float, dict[str, float]]:
     a recorded phase, to the current one — audits are appended as they run, so
     the only rows this misplaces are ones written before a phase change.
     """
+    return attribute_spend(phase, {owner: cost_rows(owner) for owner in cost_owners()})
+
+
+def attribute_spend(phase: Phase, by_owner: dict[str, list[dict]]) -> tuple[float, dict[str, float]]:
     total = 0.0
     by_language: dict[str, float] = {}
-    for owner in cost_owners():
+    for owner, rows in by_owner.items():
         config = phase.loops.get(owner)
-        for row in cost_rows(owner):
+        for row in rows:
             usd = row.get("usd") or 0
             total += usd
             if row.get("kind") == "audit":
@@ -2761,6 +2782,211 @@ def cmd_spec_changes(args: argparse.Namespace) -> int:
     return 0
 
 
+# --------------------------------------------------------------------------
+# The self-test
+#
+# The gate's first three steps are `cargo fmt`, `clippy` and `nextest` over
+# the crates a loop owns. A loop that owns no crate — the one building this
+# harness — therefore ran a gate that executed not one line of the code it was
+# changing, while that code is what computes every loop's number. This is the
+# missing step, and it is deliberately hermetic: fixtures in memory, no repo
+# state read, nothing that can fail because a campaign is mid-flight. It runs
+# for every loop, because `hj` breaking stops all of them.
+
+
+def selftest_cases() -> list[tuple[str, object]]:
+    def merge_deduplicates():
+        rows = [
+            {"kind": "campaign", "campaign": "a", "usd": 1.0},
+            {"kind": "audit", "usd": 0.5, "ts": "t1"},
+            {"kind": "campaign", "campaign": "b", "usd": 2.0},
+            {"kind": "campaign", "campaign": "a", "usd": 1.0, "gate_seconds": 9.0},
+        ]
+        merged = merge_cost_rows(rows)
+        assert len(merged) == 3, merged
+        assert sum(row.get("usd") or 0 for row in merged) == 3.5
+        assert merged[0]["gate_seconds"] == 9.0, "a re-measured row updates in place"
+        assert [row.get("campaign") for row in merged] == ["a", None, "b"], "file order is kept"
+
+    def merge_keeps_audits_distinct():
+        rows = [{"kind": "audit", "usd": 1.0, "ts": "t1"}, {"kind": "audit", "usd": 1.0, "ts": "t2"}]
+        assert len(merge_cost_rows(rows)) == 2, "audit rows have no id and never merge"
+
+    def mix_is_the_residual():
+        numbers = {"gate_runs": 9, "reverts": 2, "gate_failed": 4, "usd": 1.0}
+        mix = experiment_mix({"commits": 3}, numbers)
+        assert mix == {"committed": 3, "reverted": 2, "empty": 4, "gate_runs": 9, "gate_failed": 4}, mix
+        assert numbers == {"usd": 1.0}, "the raw counters are consumed, not left to land in the row"
+
+    def mix_floors_at_zero():
+        mix = experiment_mix({"commits": 5}, {"gate_runs": 2, "reverts": 0})
+        assert mix["empty"] == 0, "more commits than gate runs is not negative empties"
+
+    def mix_survives_a_campaign_with_nothing():
+        mix = experiment_mix({}, {})
+        assert mix == {"committed": 0, "reverted": 0, "empty": 0, "gate_runs": 0, "gate_failed": 0}
+
+    def intervals_are_half_open():
+        dated = [("t1", 100), ("t2", 200), ("t3", 400)]
+        audits = [{"ts": "t2", "closed": ["x", "y"]}, {"ts": "t3", "closed": ["z"]}]
+        series = cost_intervals(dated, audits)
+        assert series[0]["tokens"] == 300, "a session ending at the audit belongs to it"
+        assert series[0]["per_gap"] == 150
+        assert series[1]["tokens"] == 400 and series[1]["per_gap"] == 400
+
+    def intervals_without_a_closure_have_no_ratio():
+        series = cost_intervals([("t1", 500)], [{"ts": "t9", "closed": []}])
+        assert series[0]["per_gap"] is None, "dividing by no gaps is not a cheap interval"
+
+    def intervals_exclude_the_unobserved_tail():
+        series = cost_intervals([("t1", 10), ("t9", 999)], [{"ts": "t2", "closed": ["a"]}])
+        assert series[0]["tokens"] == 10, "spend after the last audit is in no interval yet"
+
+    def spend_is_global_across_phases():
+        phase = Phase(phase="2a")
+        total, _ = attribute_spend(
+            phase,
+            {"core": [{"kind": "campaign", "campaign": "a", "phase": "1a", "usd": 5.0}]},
+        )
+        assert total == 5.0, "the backstop does not forget last phase"
+
+    def language_scope_is_this_phase_only():
+        phase = Phase(phase="2a")
+        rows = [
+            {"kind": "campaign", "campaign": "a", "phase": "2a", "language": "rust", "usd": 3.0},
+            {"kind": "campaign", "campaign": "b", "phase": "1a", "language": "rust", "usd": 90.0},
+            {"kind": "campaign", "campaign": "c", "phase": "2a", "language": "python", "usd": 1.0},
+        ]
+        _, by_language = attribute_spend(phase, {"lang-rust": rows})
+        assert by_language == {"rust": 3.0, "python": 1.0}, by_language
+
+    def audits_are_attributed_through_their_loop():
+        phase = Phase(phase="2a", loops={"lang-rust": _selftest_loop("lang-rust", "rust")})
+        _, by_language = attribute_spend(
+            phase, {"lang-rust": [{"kind": "audit", "usd": 2.0, "ts": "t1"}]}
+        )
+        assert by_language == {"rust": 2.0}, "an audit row carries no language of its own"
+
+    def undated_audits_fall_to_the_current_phase():
+        phase = Phase(phase="2a", loops={"lang-rust": _selftest_loop("lang-rust", "rust")})
+        _, by_language = attribute_spend(
+            phase, {"lang-rust": [{"kind": "audit", "usd": 2.0, "phase": "1a"}]}
+        )
+        assert by_language == {}, "an audit that records its phase is held to it"
+
+    def scopes_report_absent_ceilings():
+        phase = Phase(phase="1a", loops={"core": _selftest_loop("core", None)})
+        scopes = {entry["scope"]: entry for entry in budget_scopes(phase, "core")}
+        assert scopes["campaign"]["ceiling"] is None
+        assert scopes["global"]["ceiling"] is None, "an unset budget is not a zero budget"
+        assert scopes["global"]["spent"] is not None, "spend is reported even with no ceiling"
+
+    def a_loop_without_a_language_has_no_language_scope():
+        phase = Phase(phase="1a", loops={"core": _selftest_loop("core", None)})
+        assert [entry["scope"] for entry in budget_scopes(phase, "core")] == ["campaign", "global"]
+
+    def exhaustion_is_inclusive():
+        assert 5.0 >= 5.0, "spending exactly the ceiling is exhausted, not one more campaign"
+
+    def phase_parsing_reads_the_budget_table():
+        raw = """
+        phase = "2a"
+        [budget]
+        global_usd = 900.0
+        [budget.language]
+        rust = 120.0
+        """
+        table = tomllib.loads(textwrap.dedent(raw))
+        budget = Budget(
+            global_usd=table["budget"].get("global_usd"),
+            language_usd={k: float(v) for k, v in (table["budget"].get("language") or {}).items()},
+        )
+        assert budget.global_usd == 900.0 and budget.language_usd == {"rust": 120.0}
+
+    def adapter_measures_the_gate():
+        events = [
+            {"type": "assistant", "timestamp": "2026-01-01T00:00:00.000Z", "message": {"content": [
+                {"type": "tool_use", "id": "u1", "input": {"command": "harness/gate core"}}]}},
+            {"type": "user", "timestamp": "2026-01-01T00:00:12.000Z", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "u1", "content": "GATE FAILED at step 2"}]}},
+            {"type": "assistant", "timestamp": "2026-01-01T00:01:00.000Z", "message": {"content": [
+                {"type": "tool_use", "id": "u2", "input": {"command": "git reset --hard HEAD"}}]}},
+            {"type": "assistant", "timestamp": "2026-01-01T00:02:00.000Z", "message": {"content": [
+                {"type": "tool_use", "id": "u3", "input": {"command": "harness/gate core"}}]}},
+            {"type": "user", "timestamp": "2026-01-01T00:02:04.500Z", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "u3", "content": [{"text": "GATE PASSED"}]}]}},
+            {"type": "result", "subtype": "success", "total_cost_usd": 1.5, "duration_ms": 60000,
+             "num_turns": 4, "usage": {"output_tokens": 10}},
+        ]
+        numbers = _selftest_adapter_cost(events)
+        assert numbers["gate_runs"] == 2, numbers
+        assert numbers["gate_failed"] == 1, "the verdict is read out of the result text"
+        assert numbers["reverts"] == 1, numbers
+        assert numbers["gate_seconds"] == 16.5, numbers
+        assert numbers["usd"] == 1.5 and numbers["turns"] == 4
+
+    def adapter_reports_nothing_without_a_result():
+        assert _selftest_adapter_cost([{"type": "assistant", "message": {"content": []}}]) == {}
+
+    def adapter_ignores_an_unfinished_gate_run():
+        events = [
+            {"type": "assistant", "timestamp": "2026-01-01T00:00:00.000Z", "message": {"content": [
+                {"type": "tool_use", "id": "u1", "input": {"command": "harness/gate core"}}]}},
+            {"type": "result", "subtype": "error_max_budget_usd", "usage": {}},
+        ]
+        numbers = _selftest_adapter_cost(events)
+        assert numbers["gate_runs"] == 1 and numbers["gate_seconds"] == 0.0, numbers
+
+    return [(name, case) for name, case in locals().items() if callable(case)]
+
+
+def _selftest_loop(owner: str, language: str | None) -> LoopConfig:
+    return LoopConfig(
+        owner=owner, status="running", prompt="conformance.md", docs=[], crates=[], write=[],
+        stall_n=3, rotation=6, splice_sections=3, detail_gaps=8, turn_target="about 150",
+        budget_usd=None, model=None, language=language, writes_harness=False,
+    )
+
+
+def _selftest_adapter_cost(events: list[dict]) -> dict:
+    """Run the real `adapter cost` over a synthetic stream.
+
+    Through the adapter rather than around it: the point of the check is that
+    the file which owns the vendor's shapes still reads them the way the row
+    spec needs, and a reimplementation here would agree with itself forever.
+    """
+    with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as handle:
+        for event in events:
+            handle.write(json.dumps(event) + "\n")
+        path = handle.name
+    try:
+        result = subprocess.run(
+            [str(HARNESS / "adapter"), "cost", path], capture_output=True, text=True, check=False
+        )
+        return json.loads(result.stdout.strip() or "{}")
+    finally:
+        os.unlink(path)
+
+
+def cmd_selftest(args: argparse.Namespace) -> int:
+    cases = selftest_cases()
+    failed = []
+    for name, case in cases:
+        try:
+            case()
+        except AssertionError as error:
+            failed.append((name, str(error) or "assertion failed"))
+        except Exception as error:  # noqa: BLE001 - a check that errors is a check that failed
+            failed.append((name, f"{type(error).__name__}: {error}"))
+    for name, reason in failed:
+        print(f"selftest: FAILED  {name.replace('_', ' ')}\n          {reason}", file=sys.stderr)
+    if failed:
+        print(f"selftest: {len(failed)} of {len(cases)} checks failed", file=sys.stderr)
+        return 1
+    print(f"selftest: {len(cases)} checks passed")
+    return 0
+
+
 def cmd_intervene(args: argparse.Namespace) -> int:
     """`design/loops.md` section 16: the log is the mechanism, not a record of
     it. Answering a decision means appending here."""
@@ -2897,6 +3123,9 @@ def main() -> int:
         help="re-measure closed campaigns whose row predates a field the row spec now carries",
     )
     p.set_defaults(run=cmd_cost)
+
+    p = sub.add_parser("selftest", help="gate step: hj's own parsing and arithmetic still hold")
+    p.set_defaults(run=cmd_selftest)
 
     p = sub.add_parser("budget", help="spend against each ceiling; exit 1 when one is reached")
     p.add_argument("loop", nargs="?")

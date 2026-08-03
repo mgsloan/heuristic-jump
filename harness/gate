@@ -101,8 +101,17 @@ else
 fi
 
 # --- 3. tests.
+#
+# `hj selftest` runs unconditionally and the crate tests run when there are
+# crates. The two halves are one step because they answer the same question,
+# and the second half exists because the first is empty for one loop: the
+# harness loop owns no crate, so steps 1 to 3 executed nothing at all while it
+# rewrote the code that computes every loop's number. `hj` breaking stops both
+# loops silently — the conformance loop cannot fix it and is denied the files
+# — so it is checked on every gate run rather than only on that loop's.
 step=$((step + 1))
-printf '\n--- %d. cargo nextest run\n' "$step"
+printf '\n--- %d. tests\n' "$step"
+"$hj" selftest || fail "hj selftest"
 if [ ${#crates[@]} -eq 0 ]; then
 	echo "skipped: no owned crate exists yet"
 elif ! command -v cargo-nextest >/dev/null 2>&1; then
