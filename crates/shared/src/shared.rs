@@ -79,3 +79,10 @@ pub use vocabulary::{
 /// conventional.
 pub type Map<K, V> = rustc_hash::FxHashMap<K, V>;
 pub type Set<T> = rustc_hash::FxHashSet<T>;
+
+/// The same choice, for the maps whose type we do not own. `lru::LruCache` is
+/// a `HashMap` inside and takes its hasher as a parameter, so a cache built
+/// with `LruCache::new` would be the SipHash exception without anybody
+/// choosing it — and `deps.md` §8's parse cache is keyed by a `DocumentUri` and
+/// a `DocumentVersion`, which is the case the section argues about by name.
+pub type Hasher = rustc_hash::FxBuildHasher;

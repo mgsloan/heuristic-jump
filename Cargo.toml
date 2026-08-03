@@ -65,6 +65,13 @@ clap = { version = "4.5", default-features = false, features = [
   "suggestions",
 ] }
 ignore = "0.4.31"
+# `deps.md` §8's parse cache, with the caveat the section states: `shim.md` §5
+# wants the cache bounded by *both* entry count and total bytes, and `lru`
+# bounds only entries — so `driver` wraps it, tracking a running byte total and
+# calling `pop_lru` until under the ceiling. `schnellru` supports custom
+# limiters and would need no wrapper; §8 declines it on maturity grounds and
+# says the choice is worth revisiting if the wrapper gets awkward.
+lru = "0.16"
 # `deps.md` §0's table and §1: chosen over tokio, and over `std::sync::mpsc`
 # because `core`'s loop needs `select!` over several receivers and std has
 # none. Arrives with its first user, which is `core.md` §4's background rescan.

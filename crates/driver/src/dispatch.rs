@@ -14,8 +14,8 @@ use std::sync::Arc;
 
 use shared::proto::{PositionEncoding, WireLocation, WirePosition, WireRange};
 use shared::{
-    CommitPolicy, Deadline, DocumentSnapshot, DocumentUri, DocumentVersion, EncodingError, Error,
-    FileText, HandlerError, LanguageHandler, LanguageId, Map, Offset, Outcome, ProjectError,
+    ByteLen, CommitPolicy, Deadline, DocumentSnapshot, DocumentUri, DocumentVersion, EncodingError,
+    Error, FileText, HandlerError, LanguageHandler, LanguageId, Map, Offset, Outcome, ProjectError,
     ProjectPath, ProjectView, Query, RelPath, Rope, ServerProfile, SnapshotSeed, Tree,
 };
 
@@ -318,6 +318,11 @@ pub struct Completed {
 pub struct Parsed {
     uri: DocumentUri,
     version: DocumentVersion,
+    /// The length of the text it was parsed from, which is what the parse
+    /// cache's byte ceiling counts (`deps.md` §8). Taken here rather than in
+    /// the cache because this is where the document still exists — `Rope::len`
+    /// is a summary read and the tree carries no size of its own.
+    bytes: ByteLen,
     tree: Tree,
 }
 
@@ -328,6 +333,7 @@ impl Parsed {
         Self {
             uri: document.uri.clone(),
             version: document.version,
+            bytes: document.text.len(),
             tree: document.tree().clone(),
         }
     }
@@ -343,8 +349,8 @@ impl Parsed {
     /// `pub(crate)` and consuming, so `TreeCache` can take the tree out and
     /// nothing outside `driver` can put a `Parsed` back together from pieces
     /// it obtained some other way.
-    pub(crate) fn into_parts(self) -> (DocumentUri, DocumentVersion, Tree) {
-        (self.uri, self.version, self.tree)
+    pub(crate) fn into_parts(self) -> (DocumentUri, DocumentVersion, ByteLen, Tree) {
+        (self.uri, self.version, self.bytes, self.tree)
     }
 }
 

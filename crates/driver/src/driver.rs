@@ -21,7 +21,7 @@ pub use dispatch::{Answer, Completed, Dispatched, Parsed, Registry, Request, dis
 pub use documents::{Documents, Queried, SaveCheck, Saved, Synced, Trusted};
 pub use files::{DID_CHANGE_WATCHED_FILES, FileListCache, Rescan};
 pub use pending::{Divergence, PendingQueries, PendingQuery, Resolution};
-pub use trees::{OpenDocument, TreeCache};
+pub use trees::{CacheBytes, CacheEntries, OpenDocument, TreeCache};
 
 /// The whole of `heuristic_jump`'s `main` after argument parsing, and the
 /// reason `driver` needs no opinion about how it was invoked: the binary hands
