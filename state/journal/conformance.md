@@ -961,3 +961,85 @@ the first commit's spec did not yet have. Lifting the second test out to a
 temp file, committing, then splicing it back is three minutes and leaves each
 commit's tests matching its own spec state. Worth doing rather than collapsing
 to one commit, because the audit reads commits.
+
+## 0faab934 — `ProjectView` grows `candidates`, `scan` and `parse`
+
+Target: `#the-trait[93f2f340e6]`, the section's only gap. Three methods, one
+object, one campaign.
+
+**The gap's stated blocker was not one, and this is the transferable part.**
+It read "their implementations need the parse LRU and the bounded pool that
+`shim.md` owns" — which is what the *module doc* said, which is what the
+previous campaign wrote. It was wrong in the same way twice: `conformance-005`
+had already been answered "no cache, and `CLAUDE.md` line 112 decides it —
+no new caching or indexing until the corpus harness shows the change is worth
+it", and that ruling covers the parse LRU and the pool as squarely as it
+covers the read cache. Once both are dropped there is nothing left to be
+blocked on. **Before believing an audit gap that names an absent subsystem as
+its blocker, check whether a decision record has already deleted the
+subsystem.** A gap can be a fossil of a doc comment.
+
+**What `scan` cannot be.** §3 prints `-> ScanOutcome`. It cannot: `read` fails
+on an expired deadline, and §4 spent most of a section removing every way to
+report a partial scan (no `TruncatedEmpty`, no marked row, no flag), so there
+is nowhere for the expiry to land except the `Err`. CHANGE-conformance-011.
+Worth noticing that the contradiction is between §3 and §4 of the *same*
+document and survived nine thousand lines of review — the printed signature
+block is the least-reread part of a design doc.
+
+**`parse` has no route to a grammar and this is a real hole in the seam.**
+`resolution.md` §3's signature was written when `ProjectView` was a trait
+implemented in `driver`, which holds the registry and therefore every
+`handler.grammar()`. §3 then moved the struct to `shared` — correctly, and for
+a stated reason — and nobody re-derived where the grammar comes from.
+`conformance-012`, provisionally a constructor parameter. Do not "fix" this by
+adding a parameter to `parse` without reading the record: the reversal cost is
+one `ProjectView::new` call site today versus one per resolution stage per
+language crate forever, and that asymmetry is the whole argument.
+
+**Approach abandoned: chunk-wise matching with a carry buffer.** `FileText` is
+`Disk(Arc<str>)` or `Open(Rope)`, and a rope is chunks. Matching per chunk
+needs a carry of the previous chunk's tail so a token spanning the boundary is
+not dropped, plus UTF-8 boundary care in the carry, plus a line counter that
+survives the join. All of it is invisible when wrong — it drops definitions
+only in files large enough to have several chunks, which is exactly the corpus
+half nobody eyeballs. Replaced by: take the first chunk; if there is no second
+one, match against it directly (every disk read is one chunk, so this is the
+whole cost today); otherwise join and match once. Eight lines, no boundary
+cases. If open documents ever make the join hot, that is a benchmark, not a
+guess.
+
+**Word-boundary matching reuses `identifier.rs`'s per-character predicates.**
+Not for tidiness: that module's own doc says two implementations of "what is
+an identifier" that agree today become a *definitional* disagreement that gets
+measured as a resolution failure. `measure_core` enumerates positions with one
+rule and a scan finds tokens with the other; if they diverge, the corpus holds
+positions the scan cannot hit and the miss is attributed to the handler.
+
+**`ScanRequest::new` is fallible on purpose.** A request for `foo(` scans every
+candidate at full cost, matches nothing, and abstains `NoCandidates` — which
+is a claim about the *project*, not about the query. Rejecting a non-identifier
+literal at construction is the cheapest place to keep that reason honest.
+
+**The seam test had to be widened, and the shape of the widening matters.**
+`neither_driver_nor_shared_depends_on_a_language` scanned every line of the
+manifest for `tree-sitter-`, so `shared` could not dev-depend on a grammar —
+and without one, `ProjectView::parse` cannot be tested at all, since
+`tree_sitter::Language` has no constructor outside a grammar crate. It now
+checks `[dependencies]` for grammars (the reading `measure_core`'s own
+manifest already wrote down) and keeps `lang_*` banned in *every* table. Do
+not relax the `lang_*` half: a language crate in a test lets `driver` or
+`shared` be written against one language's behaviour and still pass.
+
+**Gate red once**, on `redundant_clone` firing at
+`FileList::enumerate(std::slice::from_ref(&root.to_path_buf()))`. It is a
+`warn` lint in the workspace table but the gate compiles with `-D warnings`,
+so a nursery lint is a hard failure there. Bind the `[PathBuf; 1]` to a local
+instead.
+
+**Not attempted, and each is its own campaign:** `DefinitionHints` (wants
+`regex`, which is not a dependency, and §9 makes it a phase-3 extraction),
+`rayon` on the scan, the driver's open-document map that would make
+`FileText::Open` reachable, and `resolution.md` §3's "each file is read at
+most once", which `conformance-005`'s ruling says is wrong as written and
+which the answer explicitly hands to a later campaign as a Class A edit.

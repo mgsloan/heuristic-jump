@@ -8,19 +8,20 @@
 //! one that ships. `measure_core` also exists a whole phase before `driver`
 //! does.
 //!
-//! There is also no per-query read cache, which `resolution.md` §3 asks for.
-//! The view is reached through `&Query` from several fan-out threads at once,
-//! so a cache on it is shared mutable state behind `&self` — a lock, in a
-//! design that has none. `conformance-005` has the three shapes that avoid
-//! one; until it is answered a repeat read is a repeat syscall, which is why
-//! `bytes_scanned` is not counted here yet either.
+//! **Nothing here caches.** `resolution.md` §3 asks for a per-query read cache
+//! and routes `parse` through a parse LRU, and both are the same mistake: the
+//! view is reached through `&Query` from several fan-out threads at once, so a
+//! cache on it is shared mutable state behind `&self` — a lock, in a design
+//! that has none. `conformance-005` ruled it, and ruled it for the reason that
+//! also covers the LRU and the bounded pool: `CLAUDE.md` withholds caching,
+//! indexing and optimisation until the corpus harness shows the change is
+//! worth it and there is a benchmark, and there is no corpus. So a repeat read
+//! is a repeat syscall, a parse is a fresh parse, and `scan` is sequential.
 //!
-//! Neither the parse LRU nor the bounded worker pool that `resolution.md` §3
-//! routes `parse` and `scan` through exists, and neither turned out to be
-//! load-bearing: `conformance-005` already ruled that this type gets no cache
-//! until a corpus justifies one, `CLAUDE.md`'s performance posture says the
-//! same about the pool, and what is left after dropping both is a fresh parse
-//! and a sequential scan. Both are the slow simple version on purpose.
+//! `bytes_scanned` counts bytes *actually read*, which is that ruling's other
+//! half: the counter's job is to be a deterministic machine-independent proxy
+//! for latency between gates, a re-read costs latency, and a deduplicated
+//! count would systematically under-predict.
 
 use std::cmp::{Ordering, Reverse};
 use std::fmt;
