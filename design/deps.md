@@ -95,7 +95,7 @@ Alternatives considered:
 
 ## 2. Channels
 
-`crossbeam-channel` 0.5.16, `unbounded()` everywhere, per `core.md` §2.
+`crossbeam-channel` 0.5.16, `unbounded()` everywhere, per `shim.md` §2.
 
 One thing to get right: `core.md` says unbounded because a bounded channel
 could stall a reader. That is correct but it means memory is bounded only by
@@ -187,9 +187,9 @@ struct FramePeek<'a> {
 
 which borrows from the frame buffer and allocates nothing. Deserializing to
 `serde_json::Value` instead would allocate a whole tree per frame, which
-`core.md` §1 budgets at "one message-copy."
+`shim.md` §1 budgets at "one message-copy."
 
-Two qualifications, both from `core.md` §3.1:
+Two qualifications, both from `shim.md` §3.1:
 
 * **This peek is not on the forwarding path.** A forwarded frame is not
   inspected at all in the steady state; `FramePeek` runs inside `core`, after
@@ -198,7 +198,7 @@ Two qualifications, both from `core.md` §3.1:
 * **Allocation-free is not the same as cheap.** `serde_json` finds those two
   fields by lexing and validating every member it passes on the way, `params`
   included, so a 2 MB completion response costs a 2 MB walk to extract an
-  integer. `core.md` §3.1 adds a bounded structural prefix scan in front of it
+  integer. `shim.md` §3.1 adds a bounded structural prefix scan in front of it
   as a fast path with `FramePeek` as the fallback. `serde_json` stays as the
   correctness oracle for the scanner's differential fuzz target, so this
   dependency does not go away — the scanner is measured against it forever.
@@ -217,12 +217,12 @@ touch a handful of bytes per frame.
 
 ## 5. Text: vendored Zed `rope`
 
-**Chosen: vendor `rope` + `sum_tree`, per `core.md` §16.** No third crate: the
+**Chosen: vendor `rope` + `sum_tree`, per `core.md` §9.** No third crate: the
 few items rope uses from Zed's `util` are folded into rope itself —
 `rope-modifications.md` [§4](rope-modifications.md#folding-vendorutil-in) has
 the reasoning and the placement.
 
-The argument in `core.md` §4 is the real one: `OffsetUtf16` and `PointUtf16` are
+The argument in `core.md` §3 is the real one: `OffsetUtf16` and `PointUtf16` are
 first-class dimensions of `TextSummary`, so a UTF-16↔byte conversion is one
 sum-tree cursor seek, and `chunk.rs` resolves the in-chunk part with a `u128`
 boundary bitmap and a popcount. Position encoding is named as the
@@ -285,7 +285,7 @@ Alternatives considered:
   (`char_to_utf16_cu` / `utf16_cu_to_char`), so the conversions are possible —
   but they route through char indices, so a byte↔UTF-16 conversion is two
   O(log n) seeks rather than one, and UTF-16 is not a summary dimension the
-  cursor can seek on directly. Given that `core.md` §4 calls encoding the
+  cursor can seek on directly. Given that `core.md` §3 calls encoding the
   highest-risk detail in the driver, that decides it. **Settled: vendored
   `rope`.** The licensing consequence is handled below rather than by
   reopening the choice.
@@ -359,7 +359,7 @@ that must stay as git revs: `tree-sitter-typescript` (zed-industries fork) and
 `tree-sitter-cpp`.
 
 `driver` depends on `tree-sitter` but on **no** grammar crate — that is the
-rule `core.md` §16 exists to enforce, and `LanguageHandler::grammar()` returning
+rule `core.md` §9 exists to enforce, and `LanguageHandler::grammar()` returning
 a runtime `tree_sitter::Language` is what makes it possible.
 
 `[profile.dev.package.tree-sitter] opt-level = 3`, per the profile conventions
@@ -374,7 +374,7 @@ so `.gitignore` semantics are correct for free, which is directly what the
 hand-rolled ignore implementation would be reimplementing the hard part.
 
 **It is a dependency of `shared`, not `driver`.** `ProjectView` is a concrete
-struct in `shared` (`core.md` §12), because `measure_core` needs the same scope
+struct in `shared` (`core.md` §1), because `measure_core` needs the same scope
 rules the shim uses and gets them a whole phase earlier. So `ignore` is
 compiled by every language crate. That is the cost of having exactly one
 implementation of the rules that decide what a search can find, and it is
@@ -383,7 +383,7 @@ not the one that ships.
 
 **`notify = "8.2.0"`** — **deferred behind a non-default `watch` feature.**
 
-`core.md` §6 already describes the watcher as best-effort and enabled "only
+`core.md` §4 already describes the watcher as best-effort and enabled "only
 where watching is cheap." Given that, and given `core.md` provides a second
 invalidation path that does not need it (`AbstainReason::NoCandidates`
 triggers a debounced background rescan, which pairs with the retry protocol),
@@ -400,7 +400,7 @@ v1 should ship the rescan path and leave the watcher unbuilt. Reasons:
 The dependency is written into `Cargo.toml` as optional so the decision is
 visible, not lost.
 
-One thing that weakens this: in **standalone mode** (`core.md` §17) a stale file
+One thing that weakens this: in **standalone mode** (`shim.md` §14) a stale file
 list costs a *permanent* miss, not one the proper LSP quietly covers. The
 `NoCandidates` rescan still repairs it on the next query, so the deferral
 holds, but standalone is the likeliest reason the watcher eventually gets
@@ -408,7 +408,7 @@ built — recorded as `open-questions.md` question 10.
 
 ## 8. Parse cache
 
-**`lru = "0.18.1"`**, with a caveat: `core.md` §5 wants the cache bounded by
+**`lru = "0.18.1"`**, with a caveat: `shim.md` §5 wants the cache bounded by
 *both* entry count and total bytes, and `lru` bounds only entries. So
 `driver` wraps it — track a running byte total, and after each `put`, `pop_lru`
 until under the byte ceiling. That is about fifteen lines and is fine.
@@ -469,11 +469,11 @@ to **stderr**.
 is in the graph regardless, and having two logging facades would be silly.
 
 The thing to be careful about: the child's stderr is forwarded verbatim to our
-stderr (`core.md` §2), so our own log lines interleave with rust-analyzer's in
+stderr (`shim.md` §2), so our own log lines interleave with rust-analyzer's in
 the editor's log panel. Every line we emit gets a distinguishing prefix, and
 the default filter is `warn` so we are quiet unless asked.
 
-The JSONL metric records of `core.md` §11 are **not** tracing output. They go to
+The JSONL metric records of `core.md` §7 are **not** tracing output. They go to
 their own file via `serde_json`, because they are structured data with a fixed
 schema that `measure_core` also writes, and routing them through a log
 subscriber would make the schema a formatting concern.
@@ -488,7 +488,7 @@ graph and its spans are the natural way to attribute the per-stratum latency
 one level by subsystem.**
 
 The granularity is settled rather than left open: a flat enum of ~60 variants
-would make "all possible errors" more literal, but `core.md` §14's failure
+would make "all possible errors" more literal, but `shim.md` §11's failure
 handling is a table keyed by *class* of failure, and nesting is what lets that
 table be an exhaustive match on nine arms instead of a sixty-arm match that
 has to be re-checked every time a variant is added. Nesting still enumerates
@@ -498,7 +498,7 @@ them.
 `anyhow::Error` is a boxed `dyn Error` — the set of things that can go wrong
 is not written down anywhere, cannot be matched on, and grows silently every
 time someone adds a `?`. For this system that is the wrong default twice over:
-the driver's failure handling (`core.md` §14) is a *table* mapping each failure
+the driver's failure handling (`shim.md` §11) is a *table* mapping each failure
 class to a specific response, and that table is only enforceable if the
 failure classes are a closed set the compiler knows about.
 
@@ -527,7 +527,7 @@ Rules, so this stays a real closed set rather than `anyhow` with extra steps:
   (which path, which frame), so the *classification* is ours even though the
   detail is theirs.
 * **`Result` is not the abstention path.** `Outcome::Abstain` /
-  `AbstainReason` stay entirely separate, per `core.md` §12 — abstention is a
+  `AbstainReason` stay entirely separate, per `core.md` §1 — abstention is a
   correct outcome and must not share a type with failure. Some `driver` code
   will convert an `Error` into an abstention; that conversion is explicit and
   logged.
@@ -556,7 +556,7 @@ heuristic-jump [OPTIONS]                                 # standalone
 ```
 
 with the `--` **required** before the child command, and **no
-`--standalone` flag** — the mode is whether a server was given. `core.md` §17.8
+`--standalone` flag** — the mode is whether a server was given. `shim.md` §14.8
 has the argument for dropping the flag.
 
 The objection to any argument parser here is that the child's arguments must
@@ -610,7 +610,7 @@ What clap buys that hand-rolling would not:
   usage string that documents the flags and the `--` convention is worth more
   here than for a tool run interactively.
 * **Typo suggestions.** `--standalon` producing "a similar argument exists"
-  matters because of `core.md` §17.8: the failure being guarded against is a
+  matters because of `shim.md` §14.8: the failure being guarded against is a
   user who meant to proxy and silently ends up somewhere else. clap turns that
   into a named error for free.
 * **Dependencies as declarations.** `--proxy-only` needing a server is
@@ -622,9 +622,9 @@ share one, so `--proxy-only` beats `--hj-proxy-only` and nothing is ambiguous.
 
 | Flag | Meaning |
 |---|---|
-| `--proxy-only` | `core.md` §14's permanent pure-proxy degraded mode, which it asks to be a real, tested path. `requires` a server |
-| `--deadline-ms=<n>` | Overrides the hard cap. Defaults to 750 proxying, 2000 standalone, per `core.md` §17.6 |
-| `--trace=<path>` | JSONL metric records, `core.md` §11 |
+| `--proxy-only` | `shim.md` §11's permanent pure-proxy degraded mode, which it asks to be a real, tested path. `requires` a server |
+| `--deadline-ms=<n>` | Overrides the hard cap. Defaults to 750 proxying, 2000 standalone, per `shim.md` §14.6 |
+| `--trace=<path>` | JSONL metric records, `core.md` §7 |
 | `--log=<filter>` | `tracing-subscriber` env-filter string |
 
 **One check clap will not do for us**, and it is worth writing down because it
@@ -668,12 +668,12 @@ Alternatives considered:
 
 | Crate | Version | Use |
 |---|---|---|
-| `insta` | 1.48.0 | Frame-trace golden tests (`core.md` §15). Snapshot review is the right workflow for "assert every forwarded frame is byte-identical" |
+| `insta` | 1.48.0 | Frame-trace golden tests (`shim.md` §12). Snapshot review is the right workflow for "assert every forwarded frame is byte-identical" |
 | `proptest` | 1.11.0 | Position-encoding property tests; edit-log prefix consumption; spot anchoring |
 | `tempfile` | 3.x | Fixture repositories for `ProjectView` scope tests |
 | `rand` | **0.9** | Upstream rope/sum_tree tests, kept per §5, plus `util::RandomCharIter`. Pinned to Zed's 0.9 rather than crates.io's 0.10: the tests are kept verbatim and are written against `rng.random_range(..)`. Taking 0.10 would mean editing test bodies, which defeats keeping them |
 | `criterion` | 0.5 | `vendor/rope`'s benchmark only, per §5 |
-| `lsp-types` | 0.95.1 | Differential oracle for `shared::proto`, per §3 and `core.md` §18.5. Dev only — it must never appear in a non-dev dependency table, and that is worth a CI check, since the whole point of §3 is defeated the moment a runtime `use lsp_types::` appears |
+| `lsp-types` | 0.95.1 | Differential oracle for `shared::proto`, per §3 and `core.md` §8.5. Dev only — it must never appear in a non-dev dependency table, and that is worth a CI check, since the whole point of §3 is defeated the moment a runtime `use lsp_types::` appears |
 
 Deliberately not adding:
 
@@ -683,7 +683,7 @@ Deliberately not adding:
   `rope_benchmark.rs` is kept (§5) and answers whether the newtype wrappers
   inline away. Pinned to Zed's 0.5, since the benchmark is kept verbatim. No
   benchmark of our own code is planned.
-* **`arbitrary` / `cargo-fuzz`** — `core.md` §15 asks for codec fuzzing.
+* **`arbitrary` / `cargo-fuzz`** — `core.md` §10 asks for codec fuzzing.
   `proptest` covers the split-read / bogus-`Content-Length` cases well enough
   to start;
   add `cargo-fuzz` as a separate non-workspace target if the codec ever gets
@@ -693,7 +693,7 @@ Deliberately not adding:
 * **`pretty_assertions`** — nice, but `insta` covers the cases where diff
   quality actually matters.
 
-The injected clock for `core.md` §15's protocol race tests is a `trait Clock`
+The injected clock for `shim.md` §12's protocol race tests is a `trait Clock`
 with a `TestClock` impl in `shared`, not a dependency.
 
 ## 13. Explicitly not depended on
@@ -701,10 +701,10 @@ with a `TestClock` impl in `shared`, not a dependency.
 * **`tokio`** — §1.
 * **`anyhow`** — §10.
 * **`num_cpus`** — `std::thread::available_parallelism()` has been stable
-  since 1.59 and is what the pool sizing in `core.md` §13 needs.
+  since 1.59 and is what the pool sizing in `shim.md` §10 needs.
 * **`once_cell`** — `std::sync::OnceLock` / `LazyLock` are stable, and design
   §2 specifically requires the `std` `OnceLock` for `DocumentSnapshot: Sync`.
-* **`parking_lot`** — `core.md` §2 states there is no lock anywhere. If a
+* **`parking_lot`** — `shim.md` §2 states there is no lock anywhere. If a
   `parking_lot` import ever appears, something has gone wrong architecturally
   and the fix is not a faster mutex.
 * **`dashmap`** — same, more so.

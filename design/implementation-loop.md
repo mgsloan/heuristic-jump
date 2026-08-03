@@ -80,9 +80,9 @@ solving it. The only shared code during tuning is the seam and a frozen
 |  | **Conformance loop** | **Metric loop** |
 |---|---|---|
 | Scope | `vendor/`, `shared`, `driver`, `heuristic_jump`, `measure_*` | one `lang_*` crate |
-| Oracle | spec ledger + test suite + adversarial verifier | corpus numbers per stratum |
-| Progress | ledger items reaching `verified` | movement on the frontier ([section 10](#10-objectives-phases-and-the-frontier)) |
-| Done | all P0 items verified, verifier finds nothing for K rounds | frontier stops advancing, or budget exhausted |
+| Oracle | spec ledger + test suite + the audit gap count | corpus numbers per stratum |
+| Progress | ledger items reaching `verified`, gaps falling ([section 5](#5-the-auditor-and-the-conformance-loops-number)) | movement on the frontier ([section 10](#10-objectives-phases-and-the-frontier)) |
+| Done | no gaps left, and a human has ruled on the minor list | frontier stops advancing, or budget exhausted |
 | Failure mode | spec drift; the loop edits the spec to match the code | overfitting to the tuning corpus |
 | Concurrency | one writer | parallel, one per (language, server), in phase 2a ([section 13](#parallel-loops-and-what-they-share)) |
 
@@ -169,7 +169,7 @@ One iteration is:
 **The gate is scoped to the crates the loop owns**, per `CLAUDE.md`'s rule
 against routinely building the workspace. A Rust tuning iteration builds
 `lang_rust` and `measure_rust` and nothing else — no other grammar, no
-driver. Core §11's split of the measurement program into `measure_core`
+driver. `core.md` §7's split of the measurement program into `measure_core`
 plus a four-line `measure_<lang>` exists to make that possible: without
 it, measuring one language means compiling all of them, and the
 confinement is decorative. The full-workspace gate runs once per phase
@@ -334,43 +334,99 @@ it. An unbounded tuning session is exactly the failure Ralph exists to
 prevent — thirty iterations spent on a premise formed in the first
 three, with no mechanism that questions it.
 
-## 5. The verifier
+## 5. The auditor, and the conformance loop's number
 
 "Loops until it decides it matches the spec" has an obvious weak point:
 the entity deciding is the entity that wrote the code, in the same
 context, having already convinced itself.
 
-So the decision is taken away from it. Every iteration — or every K
-iterations, if cost matters — a **separate session with no memory of
-writing the code** is given the spec section and the implementation and
-asked one question: *where does this diverge?* It cannot edit anything.
-Its findings become new ledger items.
+So the decision is taken away from it. At every campaign close, a
+**separate session with no memory of writing the code** is given the
+spec and the implementation and asked one question: *is this
+implemented, and where is it not?* It cannot edit anything. It answers
+in two numbered lists — **gaps** and **minor items** — and that shape is
+what turns the audit from a safety net into the measurement the
+conformance loop otherwise lacks.
 
-Two properties worth keeping:
+### The count is the metric
 
-* **Adversarial framing.** "Find the divergence" produces findings;
+[Section 2](#2-two-loops-two-oracles) concedes that the conformance loop
+has no gradient: its properties are pass/fail, so it lives or dies on
+the ledger being good. The audit supplies the missing number. **Gap
+count is to the conformance loop what coverage is to a tuning loop** —
+something that moves campaign by campaign, that a campaign can be aimed
+at, and that says whether the last ten campaigns accomplished anything.
+
+Two lists rather than one, because they terminate differently:
+
+* **Gaps** — a spec claim is unimplemented, contradicted, or implemented
+  in a way that does not satisfy it. This count should go to zero.
+* **Minor items** — the claim is satisfied, but the manner invites
+  objection: naming, structure, a test that passes for the wrong reason.
+  This count should *not* be driven to zero.
+
+**When only minor items remain, the loop stops and asks.** Chasing them
+is where a model's judgement is least reliable and where the cost of a
+fix is highest relative to its value, so it is the wrong thing to spend
+unsupervised campaigns on. A human reads the minor list and decides
+which are real. That is a terminal condition rather than an asymptote,
+which matters because an asymptote is something a loop will happily
+grind against forever.
+
+### Making the count mean something
+
+A count produced by a model's judgement is not a measurement, and two
+audits of unchanged code will not agree. Left alone, that variance
+swamps the signal — a falling count could be a different auditor mood.
+
+So the audit has two parts, and only one of them is counted:
+
+* **Per ledger item, is it implemented?** The item set is fixed, so this
+  is classification rather than discovery and successive audits are
+  comparable. **This is the number.**
+* **What is missing that the ledger does not name?** Free-form, not
+  comparable between runs, and the most valuable thing the audit
+  produces — it is the only mechanism that catches a ledger that was
+  wrong in the first place ([section 19](#19-how-this-goes-wrong) ranks
+  that as the highest-consequence failure). These become new ledger
+  items, and are counted from the *next* audit onward.
+
+Comparing successive audits by item identity rather than by total is
+what makes the difference visible: a list that is the previous list
+minus what was fixed is progress; a different list of the same length is
+variance, and worth noticing.
+
+### Properties worth keeping
+
+* **Adversarial framing.** "Where does this diverge?" produces findings;
   "check whether this is correct" produces reassurance.
-* **Findings are items, not instructions.** They enter the queue and
-  get prioritised like anything else. A verifier that directly drives
-  the next iteration turns into a second, unaccountable planner.
-
-**A fresh session of the same model is enough to start.** The failure
-being caught is attention-based — the writer talked itself into an
-interpretation and then read the code through it — not capability-based,
-and a fresh context already destroys the shared premise. A second model
-adds different blind spots rather than more capability, and is worth
-adding only if the same-model verifier is observed rubber-stamping.
-That is a cheap experiment when the time comes: the same prompt, a
-different CLI.
+* **Findings are items, not instructions.** They enter the queue and get
+  prioritised like anything else. An auditor that directly drives the
+  next campaign becomes a second, unaccountable planner.
+* **The implementer sees the output, never the prompt.** It has to read
+  the gap list — that is the point — but the audit prompt itself is
+  `harness/`-owned and not in the implementer's context, for the same
+  reason [section 14](#one-prompt-per-variety-of-phase) keeps the gate's
+  internals out: a loop that knows exactly how it is judged optimises
+  for the judgement.
+* **A fresh session of the same model is enough to start.** The failure
+  being caught is attention-based — the writer talked itself into an
+  interpretation and then read the code through it — not
+  capability-based, and a fresh context already destroys the shared
+  premise. A second model adds different blind spots rather than more
+  capability, and is worth adding only if the auditor is observed
+  rubber-stamping. That is a cheap experiment: same prompt, different
+  CLI.
 
 The transparency golden tests, the double-response assertion, and the
-zero-inspection assertion (core §15) are the parts of the spec where
-the verifier matters least, because they are already mechanical. It
-matters most on the prose-shaped claims — "handlers get a snapshot, not
-a lock", "the driver must not depend on any language crate" — several
-of which are also mechanically checkable if someone writes the check.
-Converting verifier findings into permanent mechanical checks is itself
-a high-value ledger item, and the loop should be told so.
+zero-inspection assertion (core §15) are the parts of the spec where the
+audit matters least, because they are already mechanical. It matters
+most on the prose-shaped claims — "handlers get a snapshot, not a lock",
+"the driver must not depend on any language crate" — several of which
+are also mechanically checkable if someone writes the check. Converting
+an audit finding into a permanent mechanical check is itself a
+high-value ledger item, because it moves a claim from the fuzzy count to
+the exact one, and the loop should be told so.
 
 ## 6. Spec changes: what the loop may decide alone
 
@@ -446,8 +502,10 @@ what stops them being reopened.
 ## 7. Progress, stall, and the ways it is faked
 
 **Progress** is any of: a ledger status advancing; a test count
-increasing; a frontier point being added that is not dominated by an
-existing one; a decision item being resolved. All four are computable
+increasing; the audit's gap count falling
+([section 5](#the-count-is-the-metric)); a frontier point being added
+that is not dominated by an existing one; a decision item being
+resolved. All five are computable
 from the repository, which is the point — the loop does not get to
 assess its own progress in prose.
 
@@ -455,7 +513,7 @@ assess its own progress in prose.
 reverts is a result — a falsified variant is what a campaign is for — so
 the per-iteration rule that made sense under pure Ralph would fire
 constantly here. What counts is a *campaign* closing with none of the
-four forms of progress, and N of those in a row. **N is 3 for a
+five forms of progress, and N of those in a row. **N is 3 for a
 conformance loop and 5 for a tuning loop.** The asymmetry is the point:
 a tuning campaign legitimately spends several rounds on a restructuring
 that only pays off at the end, so a tight threshold would kill the
@@ -492,7 +550,7 @@ the metrics can be satisfied without work being done:
 | Delete or weaken tests | Test count is a ratchet; test *deletions* are flagged for review regardless of count |
 | Rewrite the gate script | `harness/` is owned by nobody and denied to every loop; changes to it are Class B |
 | Rewrite the spec to match the code | Class A/B split, plus `spec/changelog.md` review; any spec edit in the same commit as code touching the same item is flagged |
-| Tune to the corpus | Held-out repos are in a corpus root the loop is never given ([section 12](#12-held-out-integrity)) |
+| Tune to the corpus | Held-out repos are in a corpus split the loop is never given ([section 12](#12-held-out-integrity)) |
 | `cargo insta accept` a metric regression | The gate checks metric *direction* itself; insta pins the table's shape, not its values |
 | Split one item into ten to show motion | Ledger additions by the loop are marked `origin = "loop"` and reported separately from the reviewed baseline |
 | Add a language to show progress | Forbidden outright. A new `crates/lang_*` is outside every loop's owned paths, so the gate rejects it |
@@ -508,14 +566,17 @@ The phase structure is [`implementation-phases.md`](implementation-phases.md).
 It is short and it is the authority; this section says what each phase
 means for the loops and what its gate is.
 
-**Phase 1a — core needed for measurement.** Only the parts of core that
-`measure_core` and `measure_<lang>` require: `vendor/rope`, `sum_tree`,
-the newtype work in `rope-modifications.md` (which folds Zed's
-`util` items into rope rather than vendoring a third crate), `shared`
-(seam, vocabulary, `ProjectView`, the client-side subset of `proto`), the
+**Phase 1a — core needed for measurement.** [`core.md`](core.md) in its
+entirety, which is the document's whole scope: `vendor/rope`, `sum_tree`,
+the newtype work in `rope-modifications.md` (which folds Zed's `util`
+items into rope rather than vendoring a third crate), `shared` (seam,
+vocabulary, `ProjectView`, the client-side subset of `proto`), the
 framing codec, and `measure_core` itself. Explicitly **not** the router,
 the health model, the actor, dispatch, standalone, or divergence
-reporting.
+reporting — all of which are [`shim.md`](shim.md) and phase 2b. The two
+documents were split along exactly this line, so "what is in phase 1a" is
+now a question with a file for an answer rather than a list to maintain
+here.
 Gate: workspace builds, upstream rope tests pass unchanged,
 position-encoding property tests pass, `measure_core` drives a real
 server end to end on one repository.
@@ -561,8 +622,8 @@ Gate: the frontier stops advancing, candidates are re-measured on the
 held-out corpus, and **a human picks the point**
 ([section 10](#selecting-a-version-at-a-phase-gate)).
 
-**Phase 2b — the LSP shim**, concurrently, on `master`. Everything phase
-1a deferred: sections 1–15 of the core design.
+**Phase 2b — the LSP shim**, concurrently. Everything phase 1a deferred,
+which is [`shim.md`](shim.md) end to end.
 Gate: transparency golden tests, server-originated round-trips, protocol
 race tests, double-response assertion, codec fuzz.
 *Conformance loop.* The largest single body of work, and it has no
@@ -609,7 +670,7 @@ change during phase 2 is a Class B escalation, which is the correct
 price given it would interrupt every language loop at once.
 
 The residual risk is that the seam was designed in phase 1a with only
-one consumer built, and 2b discovers it needs something else. Core §12
+one consumer built, and 2b discovers it needs something else. `core.md` §1
 specifies both sides already, so this is a review-discipline problem at
 the 1a gate rather than an ordering problem — but it is the thing to be
 most careful about there.
@@ -625,7 +686,7 @@ So ground truth is a **frozen artifact**. `measure collect` runs once per
 identifier position, the LSP's answer, the LSP's latency. Tuning
 iterations run `measure replay`, which launches no language server at all
 — it replays handlers against the frozen positions and compares to the
-frozen answers. Core §11 specifies both modes.
+frozen answers. `core.md` §7 specifies both modes.
 
 Target: full replay over one language's tuning corpus in under a
 minute. If it is slower than the model's thinking time, the loop is I/O
@@ -659,7 +720,7 @@ that decides whether parallel tuning works at all: under wall-clock
 deadlines, five concurrent loops would each be measuring a number that
 depends on what the other four were doing.
 
-Core §11 now requires replay to enforce **no deadline at all**, and
+`core.md` §7 now requires replay to enforce **no deadline at all**, and
 `resolution.md` §1.3 makes a search exhaustive — it reads every candidate
 file and stops when it runs out of them. So there is no stopping rule
 left for machine load to perturb, and determinism is structural rather
@@ -758,6 +819,7 @@ both regimes:
 ```
 commit, phase, per-stratum {coverage, top1, contained, result-count
 distribution, n},
+conformance loops instead: {ledger by status, audit gaps, audit minors},
 work counters (bytes read, files parsed, nodes visited),
 measure_<lang> stripped size, lang_<lang> crate contribution,
 LOC per crate, test count
@@ -1040,16 +1102,16 @@ already the stated expectation for human-driven sessions, and a loop
 runs a hundred times more iterations.
 
 * **Held-out repositories and their `truth.jsonl` live in their own
-  corpus root** — `../heuristic-jump-heldout/`, a sibling of the tuning
-  corpus rather than a subdirectory of it (core §11). Not a convention:
-  the loop is given `--corpus` pointing at one root and never the
-  other, and a rule it is never told about is a rule it cannot weigh
-  against making the number go up.
+  split** — `../heuristic-jump-corpus/test/`, a sibling of `training/`
+  rather than a subdirectory of it (`core.md` §7). Not a convention:
+  the loop is given `--corpus` pointing at one and never the other, and
+  a rule it is never told about is a rule it cannot weigh against
+  making the number go up.
 * **The separation must be physical, not rule-based.** Claude Code's
   `denyRead` rules block the built-in file tools but do not stop `cat`
   in a bash subprocess, so a deny rule is defence in depth and never
   the boundary itself. The boundary is that the data is outside the
-  checkout entirely and its path is never passed in.
+  checkout entirely and the held-out path is never passed in.
 * **Held-out evaluation runs at phase gates, not at iterations**
   ([section 10](#selecting-a-version-at-a-phase-gate)). A number
   reported every iteration is a number that gets optimised against,
@@ -1080,19 +1142,28 @@ is more restrictive than an earlier draft of this document had it:
 ### Three tiers
 
 **`shared` is spec.** `LanguageHandler`, the vocabulary newtypes,
-`ProjectView`, `proto`, `Error`. Core §12 is a design commitment and
+`ProjectView`, `proto`, `Error`. `core.md` §1 is a design commitment and
 every crate depends on it. Language loops may not edit it, in any phase.
 The seam half is frozen at the end of phase 1a; a change to it is a
 Class B escalation, deliberately expensive, because a cheap seam change
 is a seam that erodes.
 
-**`similarity` is ported and frozen.** Only what comes across from the
-prior implementation — `Occurrences`, `IdentifierParts`, path–namespace
-scoring (`resolution.md` §5). It can be shared during phase 2
-precisely because it is *not* being written during phase 2: it is a
-known-good body of code that predates every language crate, so it
-generates no churn and no cross-language coupling. Nothing is added to
-it.
+**`similarity` is ported, and frozen for the duration of phase 2.**
+Only what comes across from the prior implementation —
+`Occurrences`, `IdentifierParts`, path–namespace scoring
+(`resolution.md` §5). It can be shared during phase 2 precisely because
+it is *not* being written during phase 2: a known-good body of code that
+predates every language crate generates no churn and no cross-language
+coupling.
+
+**Phase 3 may write it**, which follows from the general rule below
+rather than being an exception to it — `similarity` is shared resolution
+code, and phase 3 is a whole-repository phase. It is also the natural
+destination for what extraction produces, so phase 3 grows this crate
+rather than spawning a second shared one and inventing a boundary
+between them. If what lands there outgrows the name, renaming is part of
+the extraction and costs nothing, since phase 3 is output-preserving
+anyway.
 
 **Everything else is per-language, and duplication is left standing.**
 Two languages that need the same helper each write their own. No
@@ -1135,9 +1206,10 @@ service.
 
 ### Extraction is phase 3 work
 
-One writer, nothing running alongside, and the same equality constraint
-as everything else in phase 3: a promotion must leave every affected
-language's replay outputs byte-identical
+One writer, nothing running alongside, `crates/similarity/` writable,
+and the same equality constraint as everything else in phase 3: a
+promotion must leave every affected language's replay outputs
+byte-identical
 ([section 10](#phase-3-is-a-refactor-under-an-exact-oracle)). Duplication
 removed is binary size and line count removed, which is phase 3's
 objective — so extraction is not tidiness, it is how the number moves.
@@ -1169,7 +1241,7 @@ Isolation is not one mechanism. Four of them, weakest to strongest, and
 they protect different things:
 
 **1. Build isolation — the important one.** A loop's gate names the
-crates it owns and builds only those. Core §11's `measure_core` +
+crates it owns and builds only those. `core.md` §7's `measure_core` +
 `measure_<lang>` split is what makes a language measurable on its own, and
 without it the other three layers are theatre: a session confined to
 `crates/lang_rust/` that still needs every grammar to compile before it
@@ -1199,7 +1271,7 @@ result rather than trusting the actor:
   | lang-rust | `crates/lang_rust/`, `state/{metrics,journal,decisions}/rust*` |
   | lang-python | `crates/lang_python/` *except* `profile/`, `state/…/python*` |
   | python-pyright | `crates/lang_python/src/profile/pyright.rs`, `state/…/python-pyright*` |
-  | phase 3 | everything, one writer, nothing running alongside |
+  | phase 3 | everything, including `crates/similarity/`. One writer, nothing running alongside |
   | *nobody* | `harness/`, `crates/similarity/` |
 
 Ownership is by path, not by crate, which is what lets a per-server
@@ -1222,10 +1294,35 @@ binary is written once when the language is added and never again.
 **`harness/` is owned by nobody** — the gate script, the ratchet
 baselines, the frontier tool, and the held-out runner live there, and
 every loop is denied writes to it. Changes are Class B, made by a
-human. `crates/similarity/` is on that row for a different reason: it
+human. `crates/similarity/` shares that row for a different reason: it
 is ported and frozen ([above](#three-tiers)), so "nothing is added to
 it" is enforced by the same path check as everything else rather than
 by remembering.
+
+But a loop may **request** one, and needs to be able to. The harness is
+the loop's entire interface to feedback: if `harness/measure` does not
+report the number a campaign needs, or the gate rejects something it
+should allow, the loop is blocked in a way it cannot fix and — worse —
+can route around. **A silent workaround is the failure being prevented
+here.** A campaign that computes a metric its own way because the
+harness would not give it one has quietly forked the measurement, and
+nothing downstream can tell.
+
+So a harness request is an ordinary Class B escalation with its own
+kind: a `state/decisions/` file naming the capability, the campaign that
+needed it, and the workaround in force meanwhile — the same
+provisional-choice shape as any other decision, so it needs no separate
+queue, no separate review, and no new machinery on the dashboard. The
+loop continues; a human changes the harness or refuses.
+
+Two consequences. Recurring requests are a signal in the same way
+recurring decision kinds are ([section 16](#every-intervention-is-logged)):
+five campaigns asking for the same number means the harness is wrong,
+not that the campaigns are demanding. And **a harness change that
+touches measurement is a metric redefinition** — it invalidates
+comparability across the change exactly as
+[section 10](#the-metrics-history) describes, and triggers the same
+recompute sweep. Changes to gate ergonomics or the dashboard do not.
 
 That last row is what replaces the separate pinned checkout an earlier
 draft called for. The property actually needed is *the loop cannot
@@ -1374,7 +1471,8 @@ to do — that is the campaign's job. It does not advance a phase, answer
 an escalation, or judge whether a loop is making progress; those are a
 human's and the gate's respectively. A supervisor that starts making
 judgements becomes a second, unaccountable planner, which is the same
-failure [section 5](#5-the-verifier) guards against for the verifier.
+failure [section 5](#5-the-auditor-and-the-conformance-loops-number)
+guards against for the auditor.
 
 **Starting a campaign** is mechanical: allocate a UUID, make it both the
 campaign id and the session id (`--session-id`, per
@@ -1443,7 +1541,8 @@ One campaign per session:
      Green: commit using {{trailer-format}}.
      Red and unfixable in this experiment: revert to green, record why.
   4. Close when the item is verified, or three experiments produce no
-     commit, or the budget is spent.
+     commit, or the budget is spent. The auditor runs on close; its gap
+     list is your next campaign's most likely target.
   5. On close: write state/journal/{owner}.md — what you tried, what
      failed, and why. Write it for a session that will not remember this one.
 
@@ -1453,8 +1552,38 @@ state/decisions/{owner}-NNN.md, pick the reversible option, tag the
 sites `// DECISION-NNN: provisional`, and keep going. Never wait.
 ---
 Ledger: {open items for this phase}
-Recent: {last N campaign outcomes and journal tail}
+Open gaps: {from the last audit, with their ledger ids}
+Your campaigns so far: {one line each — target, outcome}
 Decisions affecting you: {unresolved}
+```
+
+**The auditor** (paired with the conformance loop, run at every campaign
+close). Not a loop — one session, one question, no edits:
+
+```
+{{CLAUDE.md}}
+
+You are auditing, not implementing. You may not edit anything.
+
+Spec: {{the design sections this phase covers}}
+Ledger: {{items for this phase, with their claims}}
+
+Answer in exactly two numbered lists.
+
+GAPS — a ledger claim that is unimplemented, contradicted, or
+implemented in a way that does not satisfy it. For each: the ledger id,
+what the claim requires, what the code does instead, and where.
+
+MINOR — the claim is satisfied but the manner invites objection.
+Naming, structure, a test that passes for the wrong reason.
+
+Then, separately and outside both lists: anything the spec requires that
+no ledger item names. These are not counted this round; they become
+ledger items and are counted from the next audit.
+
+Report a gap where you find one. Do not report a gap you cannot point
+at in the code, and do not pad either list to look thorough — the counts
+are measurements and inflating them destroys what they measure.
 ```
 
 **Tuning loop** (phase 2a) differs in what it targets and how it knows
@@ -1533,8 +1662,9 @@ Proposals: {unharvested state/shared-proposals/}
 
 ### One prompt per variety of phase
 
-Not one template with a swapped middle. The varieties are the three
-above, plus phase 6 as its own — it is tuning, but under a rule 2a does
+Not one template with a swapped middle. The varieties are the ones
+above — conformance and its auditor, tuning, optimisation — plus phase 6
+as its own — it is tuning, but under a rule 2a does
 not have (the shared library exists and is read-only), and a rule that
 applies to one phase and not another is exactly the thing a
 parameterised template hides in substitution logic where nobody reviews
@@ -1716,8 +1846,9 @@ possible. Choose the model tier per loop rather than globally: phase 3
 is mechanical work under an exact oracle
 ([`implementation-phases.md`](implementation-phases.md)), which is the
 best candidate for a cheaper tier, whereas phase 2a resolution logic is
-the hardest reasoning in the project. Tune verifier cadence — every
-iteration versus every K — as a cost knob rather than a fixed choice.
+the hardest reasoning in the project. The auditor is a fixed cost of one
+session per conformance campaign, and it is not a knob: it is the only
+number that loop has ([section 5](#the-count-is-the-metric)).
 
 **Model wall-clock.** Parallelism across languages, and the replay speed
 target. Neither costs tokens.
@@ -1815,7 +1946,7 @@ timestamp, kind, target, answer, rationale, resulting commit
 `kind` covers the full set: decision answered, phase-3 behaviour change
 approved or refused, frontier point selected, stall unblocked, budget
 raised, ratchet exception granted, spec edited by hand, loop killed or
-restarted, ledger corrected, **prompt revised**.
+restarted, ledger corrected, **prompt revised**, **harness changed**.
 
 **The log is the mechanism, not a record of it.** Answering a decision
 *means* appending to this file; the harness derives the decision's
@@ -1963,7 +2094,7 @@ problem we actually have, not a problem adjacent to it.
 | Decision records | **Adopt** MADR template; `DECISION-` code tags stay ours |
 | Journal | **Adopt** git trailers + `git interpret-trailers` |
 | Cost monitoring | **Adopt** `ccusage` |
-| Verifier | **Build the prompt**; a read-only session is the whole mechanism |
+| Auditor | **Build the prompt**; a read-only session is the whole mechanism |
 | Ledger extraction notation | **Steal** EARS |
 | SDD frameworks (Spec Kit, Kiro, OpenSpec, BMAD) | **Reject** |
 | Bencher (metric tracking service) | **Reject** — reasoning below |
@@ -2019,7 +2150,7 @@ Minimum viable version, in order:
 3. The commit-trailer convention and stall detection.
 4. One loop, conformance, on phase 1a. Watch it for ten iterations.
 
-Everything else — verifier sessions, held-out isolation, the frontier,
+Everything else — held-out isolation, the frontier,
 the proposal protocol, per-language billing — is phase 3+ machinery.
 Building it now is the premature optimisation `CLAUDE.md` opens by
 warning about, and it would be built against a guess at how the loop

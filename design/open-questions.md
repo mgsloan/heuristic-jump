@@ -31,7 +31,7 @@
 
 6. What should the shim do when the editor misbehaves - didOpen for a document
    already open, didChange for one never opened, didClose for one that isn't?
-   `core.md` section 18.6 answers the part that affects
+   `core.md` section 8.6 answers the part that affects
    correctness: mark the document untrusted, keep proxying, log it. What
    remains open is whether the user should be told, since silently ignoring
    hides editor bugs they would want reported.
@@ -58,26 +58,14 @@
     so the case for watching is stronger here — possibly strong enough to make
     standalone the reason the watcher gets built.
 
-11. **Error or `null` for abstention?** `core.md`
-    section 17.5 picks the error on section 9's reasoning, but that reasoning was written
+11. **Error or `null` for abstention?** `shim.md`
+    section 14.5 picks the error on `core.md` section 5's reasoning, but that reasoning was written
     about a transiently unresponsive server, where the failure really is
     transient. In standalone an abstention is permanent for that spot, and a
     permanent failure reported as a transient one is its own small lie. Needs a
     look at what Zed and VS Code actually render for each.
 
-12. **Should `Point + Point` become `Point + PointDelta`?**
-    `rope-modifications.md` gives the vendored rope's `LineIndex`,
-    `ByteColumn`, and `Utf16Column` no arithmetic operators at all, on the
-    grounds that adding two line numbers is meaningless. But `Point` and
-    `PointUtf16` keep their `Add`/`Sub`/`AddAssign` impls, which do exactly
-    that one level up - treating one operand as absolute and the other as
-    relative. It is kept because rope's internals rely on it throughout, so
-    removing it is a much larger change than the one that document describes.
-    The fix is a distinct `PointDelta` type. Worth doing if position
-    arithmetic turns out to be a source of bugs; not worth widening the
-    vendoring patch for pre-emptively.
-
-13. **How long may the candidate list be, and what happens at the cap?**
+12. **How long may the candidate list be, and what happens at the cap?**
     The larger question this replaces - what to do when several candidates are
     equally plausible - is decided: return all of them, ranked. See "Several
     candidates" under Success metrics.
@@ -101,18 +89,18 @@
     confidence. Truncation is the provisional choice, because it is the one
     that keeps producing data about the case.
 
-14. **When the precision floor arrives, should it differ by mode?**
-    `core.md` section 17.6 argues the counter-intuitive
+13. **When the precision floor arrives, should it differ by mode?**
+    `shim.md` section 14.6 argues the counter-intuitive
     direction: *tighter* in standalone, not looser. A wrong answer in proxy
     mode is contradicted by the real LSP seconds later; in standalone there is
     no divergence report and it stands forever. Needs a measurement rather
     than an argument.
 
-15. **Which server's behaviour should standalone imitate?** Now that the
+14. **Which server's behaviour should standalone imitate?** Now that the
     tool varies with the server behind it, standalone has no answer:
     there is nothing behind it. Either a neutral profile that makes no
     server-specific choice, or the most widely deployed server's profile
     on the grounds that it matches what users expect. The same question
     covers proxying a server we have no profile for. It matters more here
     than it looks, because there is no divergence report to correct a
-    mismatched convention - see question 14.
+    mismatched convention - see question 13.

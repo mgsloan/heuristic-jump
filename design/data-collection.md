@@ -9,12 +9,12 @@ after it is wrong and nothing says so."
 ## 0. What it produces, and when it is done
 
 ```
-../heuristic-jump-corpus/<lang>/
+../heuristic-jump-corpus/training/<lang>/
   repos/<name>/                 checkout at a pinned commit
   positions/<name>.jsonl        every query position, enumerated once
   truth/<server>/<name>.jsonl   one per server
   manifest.toml                 what was chosen and why
-../heuristic-jump-heldout/      same shape, select + final splits
+../heuristic-jump-corpus/test/  same shape, select + final splits
 ```
 
 **Gate:** for at least one language, every repository has positions, a
@@ -139,7 +139,7 @@ every server run consumes the same file.
 This is what makes cross-server comparison possible at all. If each
 server run enumerated its own positions, two servers' answers could not
 be aligned, and the agreement / divergence split that
-`core.md` §11 builds the whole per-server design
+`core.md` §7 builds the whole per-server design
 on would have nothing to join on.
 
 A position record is `(file, byte offset, text, node kind, class)`, where
@@ -281,7 +281,7 @@ poisoned in a way that looks like the heuristic doing well.
 
 Every server signals readiness differently — progress notifications,
 custom notifications, or nothing at all. That is the same problem
-`core.md` §7 solves for the shim, so the same
+`shim.md` §6 solves for the shim, so the same
 per-server adapter knowledge applies, though `measure_core` uses it to
 *wait* rather than to race.
 
@@ -298,7 +298,7 @@ answer and the elapsed time.
 
 The answer is a *list*, and all of it is recorded in the order the server
 gave it. `textDocument/definition` may legitimately return several
-locations, and `core.md` §10 classifies agreement against the child's
+locations, and `core.md` §6 classifies agreement against the child's
 whole set — so a truth file that kept only the first location would make
 `contained` uncomputable and silently understate the shim. Checkpoint every few hundred positions.
 

@@ -18,13 +18,38 @@ $ heuristic-jump
 ```
 
 In that mode it is the whole language server - it answers `initialize`
-itself and serves nothing but heuristic go-to-definition. That is
-for languages with no usable server, for debugging the heuristic
-without a server's variability in the picture, and for editors that
-can run several servers per language. There is no proper LSP to
-compare against, so precision cannot be measured there and no
-divergence is ever reported. See `core.md`
-section 17.
+itself and serves nothing but heuristic go-to-definition. There is no
+proper LSP to compare against, so precision cannot be measured there
+and no divergence is ever reported. `shim.md` section 14 has the
+mechanics.
+
+Four reasons it exists, in descending order of how much they should
+influence the design:
+
+* **Languages with no usable server.** Plenty of languages have no
+  language server, or one heavy enough that a user will not run it for
+  a quick read through a codebase. There the heuristic is not a stopgap
+  for something better - it is the only thing on offer, and the
+  comparison it has to win is against no navigation at all.
+
+* **Developing and debugging the heuristic.** Running resolution with
+  no server in the picture removes every source of variability that is
+  not the handler, which is exactly what you want when a jump lands in
+  the wrong place and you are trying to find out why.
+
+* **Editors that support several servers per language.** Zed and VS
+  Code both do, and both merge definition results. Running standalone
+  alongside rust-analyzer is a lower-effort deployment than proxying.
+  It is a genuinely worse one - the editor shows a picker instead of
+  jumping, the retry protocol cannot exist, and divergence goes
+  undetected, so precision loses its only ground truth - but it is the
+  fallback when proxying is not practical, and it should work rather
+  than be blocked.
+
+* **Servers with weak navigation.** A server that declares no
+  `definitionProvider` is a case the proxy defers. Standalone answers
+  most of it without needing a mixed mode: a user in that position can
+  run standalone as a second server.
 
 Each language implements its own resolution logic. Dispatch is simple -
 the go-to-definition call is handed directly to the language's
@@ -169,7 +194,7 @@ not about our code, so tuning never re-runs a language server: it
 replays the handler against the recorded positions. The `measure`
 binaries have both modes for this reason, and the fast one is what a
 tuning session actually runs. See `core.md`
-section 11.
+section 7.
 
 Where a language has more than one usable server - Python and
 TypeScript both do - each gets its own truth file, and each is a
@@ -194,12 +219,12 @@ reported from. Roughly 6-7 / 2 / 1-2 - `data-collection.md` §1 and
 `implementation-loop.md` §12.
 
 The held-out repos and their truth files live in a **separate corpus
-root**, outside the workspace, alongside but distinct from the tuning
-one. Keeping them in a sibling directory of the tuning corpus - rather
-than a subdirectory of it that everyone agrees not to look at - is what
-makes the separation something other than an honour system: a session
-is given one path and never the other. The layout is in
-`core.md` section 11.
+split**, outside the workspace: `../heuristic-jump-corpus/test/`,
+alongside but distinct from `training/`. Keeping them in a sibling
+directory - rather than a subdirectory of the tuning corpus that
+everyone agrees not to look at - is what makes the separation something
+other than an honour system: a session is given one path and never the
+other. The layout is in `core.md` section 7.
 
 Claude code sessions will then be used on each language to improve the
 metrics below.

@@ -43,7 +43,7 @@ Two things follow that are easy to get wrong, so they are stated up front:
   what that cost. [Section 7](#7-confidence-and-the-commit-decision) is what
   makes reinstating the floor a data change.
 * **Divergence reporting is load-bearing, and it is not rate limited.** The
-  core doc [section 10] now emits one `window/showMessage` per divergence with
+  `shim.md` [section 9] now emits one `window/showMessage` per divergence with
   no batching window and no cooldown. That is worth repeating here, because
   resolution is the thing generating the wrong answers that reporting exists to
   confess, and because it changes what a low-precision stratum *feels* like: a
@@ -63,7 +63,7 @@ document is about. Everything predicted in
 
 ### 1.1 What a handler is given, and what it owes
 
-From core doc [section 12], a handler receives a `Query` and returns an
+From core doc [section 1], a handler receives a `Query` and returns an
 `Outcome`. Restating the obligations that resolution code must actually honour:
 
 * **Byte offsets only.** UTF-16 never reaches here; the driver converts at the
@@ -112,7 +112,7 @@ And what a handler may **not** assume:
 * **That it is the only query running.** Fan-out draws from the same bounded
   pool as every other in-flight query.
 * **That it will be asked about a document at all.** A document the driver has
-  marked untrusted (core doc [section 18.6]) never reaches a handler; the
+  marked untrusted (core doc [section 8.6]) never reaches a handler; the
   driver abstains on its behalf. Handlers therefore do not validate document
   state, and should not try.
 
@@ -475,7 +475,7 @@ overturned it, and the second is the one that decides it.
 * `measure_core` needs a `ProjectView` too, and it must be *the same one*.
   Scope rules decide which candidates a search can find at all, so a second
   implementation on the measurement path means the corpus scores a tool that
-  is not the one that ships — the argument core doc [section 11] already makes
+  is not the one that ships — the argument core doc [section 7] already makes
   for snapshot construction, with more force here.
 * Under `implementation-phases.md` the measurement binaries exist **a whole
   phase before `driver` does**. A `ProjectView` that lives in `driver` is not
@@ -533,7 +533,7 @@ pub struct ProjectPath(Arc<ProjectPathInner>);   // private field, private ctor
 
 A handler cannot build one from a string. Every path it holds came from
 `candidates` or `lookup`, both of which consult the `ignore`-crate file list
-from core doc [section 6]. So "search scope is the project's own tracked
+from core doc [section 4]. So "search scope is the project's own tracked
 source" is enforced by the type system rather than by every language author
 remembering it, and `high-level.md`'s exclusions — gitignored files, external
 dependency sources — hold by construction.
@@ -932,7 +932,7 @@ predicate ill-defined once both sides are sets. The first is true and turns out
 to be the point: a jump and a picker are different interactions and the
 ambiguous case genuinely is the second one, so measuring it as a failed jump
 was measuring the wrong thing. The second was a real problem and is now solved
-rather than avoided — core doc [section 10] splits agreement into `top1` and
+rather than avoided — core doc [section 6] splits agreement into `top1` and
 `contained` precisely because the naive set predicate improves by returning
 more.
 
@@ -977,7 +977,7 @@ place so that a floor is later a table rather than a rewrite.
 ### 7.1 Confidence is a calibrated estimate, not a vibe
 
 `Confidence` means one thing: **the estimated probability that this answer will
-match the proper LSP**, under the agreement predicate in core doc [section 10].
+match the proper LSP**, under the agreement predicate in core doc [section 6].
 That definition is only worth anything if it is measured, so:
 
 * A handler computes confidence from a small, named set of bounded features per
@@ -1080,7 +1080,7 @@ impl CommitPolicy {
 }
 ```
 
-`Query` carries `policy: &'a CommitPolicy` (core doc [section 12]). Handlers
+`Query` carries `policy: &'a CommitPolicy` (core doc [section 1]). Handlers
 never construct `Outcome::Committed` directly.
 
 **In v1 this funnel is inert**, and that is the honest objection to it: it is a
@@ -1094,7 +1094,7 @@ narrow but, I think, sufficient:
   auditing every commit site in every language crate — the work scaling with
   languages, at the exact moment when there are the most of them.
 * The v1 policy object is not entirely vacuous: it is where the per-mode
-  distinction of core doc [section 17.6] will land, and having one place that
+  distinction of `shim.md` [section 14.6] will land, and having one place that
   is *allowed* to know about modes keeps mode knowledge out of `lang_*`.
 * It costs one field and one call.
 
@@ -1157,7 +1157,7 @@ One per row of `high-level.md`'s stratification list.
 The stratum is a property of the **reference**, assigned from stages 0–3 before
 any search runs. It is not "which stage produced the answer."
 
-This matters because core doc [section 12] requires a stratum on the `Abstain`
+This matters because core doc [section 1] requires a stratum on the `Abstain`
 arm too, and if the stratum were assigned by the successful stage, everything
 that failed would pile into whichever stage happened to give up. Per-stratum
 coverage would then be computed over a denominator that moves whenever the
@@ -1548,7 +1548,7 @@ snapshot, or the corpus metrics themselves. Failing seeds are committed under
   which cannot exist until a table does.
 
   Mechanically this is `measure replay` against the frozen `truth.jsonl`, not a
-  live corpus run — core doc [section 11](core.md#two-modes-collect-and-replay).
+  live corpus run — core doc [section 7](core.md#two-modes-collect-and-replay).
   Two consequences for this suite. It is cheap enough to be a *test*, which is
   the only reason it can sit in this list at all. And it is **deterministic**:
   the handler is deterministic by the property above and the LSP's answers are
@@ -1557,12 +1557,12 @@ snapshot, or the corpus metrics themselves. Failing seeds are committed under
   queries a stratum has — which is a property of the corpus, not of the run,
   and is what the per-stratum interval is for.
 * **Held-out corpus.** Per `high-level.md`'s development plan, 2–3 repositories per
-  language never seen by tuning, in `../heuristic-jump-heldout/` — a separate
-  root beside `../heuristic-jump-corpus/`, not a subdirectory of it, so
-  isolation is a path a session was never given rather than a rule it was
-  asked to respect (core doc [section 11],
-  `implementation-loop.md` §12). Both numbers reported; the gap is the
-  overfitting signal, and it should be reported per stratum, since overfitting
+  language never seen by tuning, in `../heuristic-jump-corpus/test/` — a
+  sibling of `training/`, not a subdirectory of it, so isolation is a path a
+  session was never given rather than a rule it was asked to respect (core
+  doc [section 7], `implementation-loop.md` §12). Both numbers reported; the
+  gap is the overfitting signal, and it should be reported per stratum, since
+  overfitting
   will not distribute evenly across them. This matters more under the
   permissive posture than it would have under a floor: with every stratum
   committing, there is far more surface for a tuning session to overfit the
@@ -1664,7 +1664,7 @@ documents do not rot.
 
 3. **Is `CommitPolicy` worth threading through `Query` in v1?**
    **Resolved — yes, adopted.** [Section 7.4](#74-where-the-decision-lives)
-   keeps it and core doc [section 12] now carries it. It is a parameter and a
+   keeps it and core doc [section 1] now carries it. It is a parameter and a
    discipline for handler authors, expressing a policy with no content today,
    which is the whole case against. The case for is that the alternative
    migration — auditing every `Outcome::Committed` site in every `lang_*`
@@ -1687,7 +1687,7 @@ documents do not rot.
    the agreement predicate ill-defined on both sides. The first was correct and
    was the wrong way round — the ambiguous case genuinely *is* a picker, so
    scoring it as a failed jump measured the wrong thing. The second was a real
-   gap and is closed rather than tolerated: core doc [section 10] splits
+   gap and is closed rather than tolerated: core doc [section 6] splits
    agreement into `top1` and `contained`, because the naive set predicate
    improves monotonically as the tool returns more, which is the flaw
    `high-level.md` rejects plain match rate for.
@@ -1736,7 +1736,7 @@ documents do not rot.
    next step. This got worse with the dropped floor — a demotion used to lead
    to an abstention and now leads to a committed wrong answer — and then
    better with the per-server oracle, which supplies the missing evidence for
-   free: core doc [section 11] observes that the set of positions where two
+   free: core doc [section 7] observes that the set of positions where two
    servers disagree is largely a map of where re-export and alias chains
    matter. So this question is answerable from the first multi-server corpus
    run without designing an experiment for it, and it should be one of the
@@ -1842,7 +1842,7 @@ documents do not rot.
 
 18. **Does the shared/profile split hold, or does it leak?**
     [Section 1.4](#14-the-correct-answer-depends-on-which-server)
-    adopts core doc [section 11]'s decomposition: shared logic owns the
+    adopts core doc [section 7]'s decomposition: shared logic owns the
     positions where servers agree, profiles own the rest. It is a good split
     and it may not survive contact. The failure mode is a divergence that is
     *not* localisable to a knob — where matching pyright means ranking

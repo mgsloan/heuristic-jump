@@ -58,12 +58,13 @@ depends on no language either**, taking its handler as `&dyn`, so one
 language can be measured without any other language building - which is
 what lets per-language work happen in parallel.
 
-The corpus lives outside the repository, in two roots so that held-out
-data is separated by a path rather than by an honour system:
+The corpus lives outside the repository, in one root holding two
+sibling splits, so that held-out data is separated by a path rather
+than by an honour system:
 
 ```
-../heuristic-jump-corpus/    repos, sampled positions, ground truth
-../heuristic-jump-heldout/   the select and final splits
+../heuristic-jump-corpus/training/   repos, sampled positions, ground truth
+../heuristic-jump-corpus/test/       the select and final splits
 ```
 
 ## The design documents
@@ -74,7 +75,8 @@ Read `design/high-level.md` first; it is the only one that stands alone.
 |---|---|
 | `high-level.md` | What the tool is and how it is judged: the retry protocol, divergence reporting, the success metrics, and the per-stratum table those metrics are reported in. Start here |
 | `implementation-phases.md` | The phase ordering, and short enough to read in a minute. It is the authority the other documents defer to |
-| `core.md` | The driver. Process and thread model, message routing, server health, document state, deadlines, the `LanguageHandler` seam, the measurement record, standalone mode, and the hand-written protocol types. By far the largest |
+| `core.md` | Everything that exists before there is a shim, which is phase 1a: the `LanguageHandler` seam, `DocumentSnapshot`, position encoding, `ProjectView`, the agreement predicate, the measurement record and the corpus scan, the hand-written protocol types, and the workspace layout |
+| `shim.md` | The LSP proxy, which is phase 2b: process and thread model, message routing, server health, document state, the retry protocol, divergence reporting, dispatch, and standalone mode |
 | `resolution.md` | What a language handler actually does with a reference - the pipeline stages, candidate verification, ranking, strata - worked out longhand against Rust |
 | `data-collection.md` | Choosing repositories and collecting ground truth from real language servers. Phases 1b through 1.5 |
 | `implementation-loop.md` | How the autonomous coding loops run: the spec ledger, the gate, campaigns, isolation between languages, the Pareto frontier and phase gates, cost accounting, and the operator dashboard |
