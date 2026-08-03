@@ -531,7 +531,11 @@ impl ProjectView {
 
     /// Literal search over every candidate file, executed on the worker
     /// pool. Exhaustive: see section 1.3.
-    pub fn scan(&self, req: &ScanRequest) -> ScanOutcome;
+    ///
+    /// `Result`, because a scan reads and a read fails when the deadline has
+    /// expired — and section 4 has no partial outcome for the expiry to be
+    /// reported as.
+    pub fn scan(&self, req: &ScanRequest) -> Result<ScanOutcome, Error>;
 }
 ```
 

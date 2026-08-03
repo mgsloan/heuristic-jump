@@ -123,9 +123,9 @@ fn is_identifier(node: &Node<'_>, text: &Rope) -> bool {
     for chunk in text.chunks_in_range(node.start_byte()..node.end_byte()) {
         for scalar in chunk.chars() {
             let shaped = if seen {
-                scalar.is_alphanumeric() || scalar == '_'
+                identifier_continue(scalar)
             } else {
-                scalar.is_alphabetic() || scalar == '_'
+                identifier_start(scalar)
             };
             if !shaped {
                 return false;
@@ -134,4 +134,25 @@ fn is_identifier(node: &Node<'_>, text: &Rope) -> bool {
         }
     }
     seen
+}
+
+/// The same rule against text rather than a node, for the two callers that
+/// have no tree: [`crate::ScanRequest`] refusing a literal that is not an
+/// identifier, and the word-boundary test that decides whether a byte match is
+/// a whole token.
+///
+/// It shares the per-character predicates rather than restating them, for the
+/// reason at the top of this module: two implementations that agree today are
+/// a definitional disagreement waiting to be measured as a resolution one.
+pub(crate) fn is_identifier_text(text: &str) -> bool {
+    let mut characters = text.chars();
+    characters.next().is_some_and(identifier_start) && characters.all(identifier_continue)
+}
+
+pub(crate) fn identifier_start(scalar: char) -> bool {
+    scalar.is_alphabetic() || scalar == '_'
+}
+
+pub(crate) fn identifier_continue(scalar: char) -> bool {
+    scalar.is_alphanumeric() || scalar == '_'
 }

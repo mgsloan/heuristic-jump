@@ -29,11 +29,12 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use ignore::WalkBuilder;
-use rope::{ByteLen, Rope};
+use rope::{ByteLen, ByteOffset, ByteRange, LineIndex, Rope};
 use rustc_hash::FxHashSet;
 
 use crate::deadline::Deadline;
 use crate::error::{Error, HandlerError, ProjectError};
+use crate::identifier::{identifier_continue, is_identifier_text};
 use crate::vocabulary::{DocumentUri, FileExtension};
 
 /// One workspace folder. Search scope is these and nothing else — external
@@ -313,6 +314,75 @@ impl<'a> CandidateFiles<'a> {
     }
 }
 
+/// What a handler asks `ProjectView` to search for.
+///
+/// `resolution.md` §4 splits the search in two: the handler builds the pattern
+/// and interprets the matches, the view executes it. This is the pattern half,
+/// and it is deliberately not expressive — every search starts from an exact
+/// identifier, which is what makes the cheapest possible prefilter available.
+#[derive(Debug)]
+pub struct ScanRequest<'a> {
+    literal: &'a str,
+    candidates: &'a CandidateFiles<'a>,
+}
+
+impl<'a> ScanRequest<'a> {
+    /// `None` when `literal` is not identifier-shaped.
+    ///
+    /// A checked constructor rather than a plain struct literal because
+    /// "every search starts from an exact identifier" is otherwise a sentence
+    /// in a document: a request for `foo(` or for the empty string would scan
+    /// every candidate file and match nothing, at full cost, and the abstention
+    /// would be recorded as `NoCandidates` — a claim about the project rather
+    /// than about the query.
+    pub fn new(literal: &'a str, candidates: &'a CandidateFiles<'a>) -> Option<Self> {
+        is_identifier_text(literal).then_some(Self {
+            literal,
+            candidates,
+        })
+    }
+
+    pub fn literal(&self) -> &'a str {
+        self.literal
+    }
+
+    pub fn candidates(&self) -> &'a CandidateFiles<'a> {
+        self.candidates
+    }
+}
+
+/// One whole-token match of the scanned literal.
+///
+/// `line` is redundant with `range` and is carried for the same reason
+/// [`crate::Location`] carries one (`core.md` §1): the scan has counted the
+/// newlines already, and a handler that wants to apply a lexical rule to the
+/// matched line would otherwise index the whole file again.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct Hit {
+    pub range: ByteRange,
+    pub line: LineIndex,
+}
+
+#[derive(Clone, Debug)]
+pub struct FileHits {
+    pub path: ProjectPath,
+    pub hits: Vec<Hit>,
+}
+
+/// `resolution.md` §4. There is no partial variant and no truncation flag:
+/// the scan reads every candidate or the query abstains, because a partial
+/// scan cannot tell "the only definition of this name in the project" from
+/// "the first of eleven", and global uniqueness is the main confidence signal
+/// the later stages rank on.
+#[derive(Debug)]
+pub struct ScanOutcome {
+    pub hits: Vec<FileHits>,
+    /// For the trace record, not for control flow. Both counters exist so
+    /// that a latency regression can be attributed to a diff.
+    pub files_scanned: FileCount,
+    pub bytes_scanned: ByteLen,
+}
+
 /// Instantiated per query, which is what makes the deadline check on every
 /// read possible without a deadline argument on every method.
 #[derive(Debug)]
@@ -408,6 +478,108 @@ impl ProjectView {
             String::from_utf8(bytes).map_err(|_| ProjectError::NotUtf8 { path: absolute })?;
         Ok(FileText::Disk(Arc::from(text)))
     }
+
+    /// The literal, word-boundary scan every search starts from
+    /// (`resolution.md` §4). Exhaustive: every candidate is read.
+    ///
+    /// `Result` rather than §3's printed `-> ScanOutcome`, which cannot be
+    /// written: `read` fails when the deadline has expired, and §4 forbids
+    /// reporting a partial scan, so there is nowhere for the expiry to go
+    /// except the `Err` (`state/spec-changelog.md`, CHANGE-conformance-011).
+    /// An unreadable or non-UTF-8 candidate fails the scan the same way,
+    /// deliberately: skipping it would make coverage depend on a race between
+    /// the walk and the read, and there would be nothing in the record saying
+    /// the answer was computed from less than the project.
+    ///
+    /// Sequential, where `resolution.md` §3 has the fan-out run on a bounded
+    /// pool. The pool is `shim.md` §10's and does not exist, and `CLAUDE.md`
+    /// withholds optimisation until the corpus harness shows it is worth it
+    /// and there is a benchmark. Order is not an optimisation question:
+    /// `hits` comes back in candidate order either way.
+    pub fn scan(&self, request: &ScanRequest<'_>) -> Result<ScanOutcome, Error> {
+        let mut outcome = ScanOutcome {
+            hits: Vec::new(),
+            files_scanned: FileCount(0),
+            bytes_scanned: ByteLen::ZERO,
+        };
+
+        for path in request.candidates.paths() {
+            let text = self.read(path)?;
+            outcome.files_scanned.0 += 1;
+            outcome.bytes_scanned.0 += text.len().0;
+
+            let hits = whole_token_matches(&text, request.literal);
+            if !hits.is_empty() {
+                outcome.hits.push(FileHits {
+                    path: path.clone(),
+                    hits,
+                });
+            }
+        }
+
+        Ok(outcome)
+    }
+}
+
+/// Every occurrence of `literal` in `text` that is a whole token, with the
+/// line each starts on.
+///
+/// A single `&str` rather than a chunk-wise match with a carry buffer: a match
+/// spanning two chunks is the whole difficulty, and getting it wrong drops
+/// definitions silently on exactly the files large enough to have several
+/// chunks. Disk reads are one chunk and cost nothing here; the join is paid
+/// only by open documents, of which there are none until the driver has a
+/// document map.
+fn whole_token_matches(text: &FileText, literal: &str) -> Vec<Hit> {
+    let mut chunks = text.chunks();
+    let first = chunks.next().unwrap_or("");
+    match chunks.next() {
+        None => matches_in(first, literal),
+        Some(second) => {
+            let mut joined = String::with_capacity(text.len().0);
+            joined.push_str(first);
+            joined.push_str(second);
+            joined.extend(chunks);
+            matches_in(&joined, literal)
+        }
+    }
+}
+
+fn matches_in(text: &str, literal: &str) -> Vec<Hit> {
+    let mut hits = Vec::new();
+    let mut line = LineIndex(0);
+    let mut counted = 0;
+
+    for (start, _) in text.match_indices(literal) {
+        let end = start + literal.len();
+        let before = text
+            .get(..start)
+            .and_then(|prefix| prefix.chars().next_back());
+        let after = text.get(end..).and_then(|suffix| suffix.chars().next());
+        if before.is_some_and(identifier_continue) || after.is_some_and(identifier_continue) {
+            continue;
+        }
+
+        line = advance_lines(line, text.get(counted..start).unwrap_or(""));
+        counted = start;
+        hits.push(Hit {
+            range: ByteRange {
+                start: ByteOffset(start),
+                end: ByteOffset(end),
+            },
+            line,
+        });
+    }
+
+    hits
+}
+
+/// Saturating, because `LineIndex` is a `u32` and the alternative at the
+/// boundary is a wrapping cast — which reports a plausible wrong line rather
+/// than an obviously wrong one, on a file no query was going to resolve in.
+fn advance_lines(from: LineIndex, text: &str) -> LineIndex {
+    let counted = u32::try_from(text.matches('\n').count()).unwrap_or(u32::MAX);
+    LineIndex(from.0.saturating_add(counted))
 }
 
 /// `resolution.md` §3: handlers work in chunks where they can, so a large open

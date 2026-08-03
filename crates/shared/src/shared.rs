@@ -36,8 +36,8 @@ pub use handler::{
 };
 pub use identifier::{Identifiers, identifier_at, identifiers};
 pub use project::{
-    CandidateFiles, FileChunks, FileCount, FileList, FileText, Generation, ProjectPath,
-    ProjectRoot, ProjectView, RelPath, SearchOrigin,
+    CandidateFiles, FileChunks, FileCount, FileHits, FileList, FileText, Generation, Hit,
+    ProjectPath, ProjectRoot, ProjectView, RelPath, ScanOutcome, ScanRequest, SearchOrigin,
 };
 // All seven of §1's text-shaped newtypes, not just the four `shared` itself
 // uses: `ByteColumn`, `Utf16Column` and `CharCount` are on the same list, and

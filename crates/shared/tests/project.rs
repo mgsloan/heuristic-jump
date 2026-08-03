@@ -16,24 +16,32 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use shared::{
-    Deadline, FileExtension, FileList, Generation, ProjectPath, ProjectRoot, ProjectView, RelPath,
-    SearchOrigin,
+    Clock, Deadline, Error, FileExtension, FileList, Generation, HandlerError, ProjectPath,
+    ProjectRoot, ProjectView, RelPath, ScanRequest, SearchOrigin, SystemClock,
 };
 
 const RUST: FileExtension = FileExtension::new("rs");
 
-/// The fixture, as paths relative to the single root. `notes.md` is the
-/// wrong extension and `vendored/copy.rs` is gitignored; both are files the
+/// The fixture, as (path, contents) relative to the single root. `notes.md` is
+/// the wrong extension and `vendored/copy.rs` is gitignored; both are files the
 /// walker sees and a handler must not.
-const FILES: &[&str] = &[
-    "src/lib.rs",
-    "src/util.rs",
-    "src/deep/inner.rs",
-    "other/far.rs",
-    "notes.md",
-    "vendored/copy.rs",
+///
+/// `alpha` appears as a whole token in two files and as a near miss in three
+/// more — `alphabet`, `_alpha`, `alpha1` — which is what the scan has to tell
+/// apart.
+const FILES: &[(&str, &str)] = &[
+    (
+        "src/lib.rs",
+        "fn alpha() {}\nfn alphabet() {}\nfn _alpha() {}\n    alpha();\nlet alpha1 = 0;\n",
+    ),
+    ("src/util.rs", "fn beta() {}\n"),
+    ("src/deep/inner.rs", "fn alphabet() {}\n"),
+    ("other/far.rs", "fn beta() {}\nfn alpha() {}\n"),
+    ("notes.md", "alpha\n"),
+    ("vendored/copy.rs", "fn alpha() {}\n"),
 ];
 
 #[test]
@@ -127,10 +135,143 @@ fn lookup_refuses_a_path_the_walker_did_not_return() {
     );
 }
 
+#[test]
+fn a_scan_matches_whole_tokens_only() {
+    let root = fixture("tokens");
+    let view = view(&root);
+    let origin = SearchOrigin::from_document(path(&view, &root, "src/lib.rs"));
+    let candidates = view.candidates(&[RUST], &origin);
+    let request = ScanRequest::new("alpha", &candidates).expect("an identifier literal");
+
+    let outcome = view.scan(&request).expect("an unbounded scan");
+    let found: Vec<(String, u32)> = outcome
+        .hits
+        .iter()
+        .flat_map(|file| {
+            let path = rel_of(&file.path);
+            file.hits.iter().map(move |hit| (path.clone(), hit.line.0))
+        })
+        .collect();
+
+    assert_eq!(
+        found,
+        [
+            ("src/lib.rs".to_owned(), 0),
+            ("src/lib.rs".to_owned(), 3),
+            // After `src/deep/inner.rs`, which is a nearer candidate and has
+            // only the near miss: hits come back in candidate order, not path
+            // order, which is what makes the scan's output as reproducible as
+            // the candidate list.
+            ("other/far.rs".to_owned(), 1),
+        ],
+        "the literal prefilter is a word-boundary scan: `alphabet`, `_alpha` \
+         and `alpha1` all contain the bytes and none of them is the token. A \
+         substring match would hand every one of them to the parse stage, \
+         which is the cost `resolution.md` §4's prefilter exists to avoid"
+    );
+    for file in &outcome.hits {
+        for hit in &file.hits {
+            assert_eq!(
+                hit.range.end.0 - hit.range.start.0,
+                "alpha".len(),
+                "a hit's range must be the token's, since it is what a \
+                 Location is built from"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_scan_reads_every_candidate_and_counts_what_it_read() {
+    let root = fixture("exhaustive");
+    let view = view(&root);
+    let origin = SearchOrigin::from_document(path(&view, &root, "src/lib.rs"));
+    let candidates = view.candidates(&[RUST], &origin);
+    let expected_files = candidates.count();
+    let request = ScanRequest::new("alpha", &candidates).expect("an identifier literal");
+
+    let outcome = view.scan(&request).expect("an unbounded scan");
+
+    assert_eq!(
+        outcome.files_scanned, expected_files,
+        "resolution.md §1.3 makes the scan exhaustive, and files_scanned is \
+         what says so in the trace record — a scan that stopped early and \
+         reported a full count is the one failure the record could not show"
+    );
+    assert!(
+        outcome.bytes_scanned.0 > 0,
+        "bytes_scanned is bytes actually read (conformance-005), so a scan \
+         that read four files cannot report zero"
+    );
+    assert_eq!(
+        outcome.hits.len(),
+        2,
+        "every candidate file holds the token, and only the two the fixture \
+         puts it in should come back"
+    );
+}
+
+#[test]
+fn a_scan_past_its_deadline_reports_nothing_rather_than_less() {
+    let root = fixture("deadline");
+    let view = view(&root);
+    let origin = SearchOrigin::from_document(path(&view, &root, "src/lib.rs"));
+    let candidates = view.candidates(&[RUST], &origin);
+    let request = ScanRequest::new("alpha", &candidates).expect("an identifier literal");
+
+    let arrived_at = SystemClock.now();
+    let clock = Arc::new(FrozenClock(arrived_at + Duration::from_millis(1))) as Arc<dyn Clock>;
+    let expired = Deadline::new(clock, arrived_at, Duration::ZERO);
+    let stopped = ProjectView::new(Arc::new(file_list(&root)), expired);
+
+    match stopped.scan(&request) {
+        Err(Error::Handler(HandlerError::DeadlineExpired)) => {}
+        other => panic!(
+            "an expired deadline produced {other:?}. resolution.md §4 has no \
+             partial-scan outcome to report, because a partial scan cannot \
+             tell the only definition of a name from the first of eleven — so \
+             the expiry has nowhere to go but the Err"
+        ),
+    }
+}
+
+#[test]
+fn a_scan_request_refuses_a_literal_that_is_not_an_identifier() {
+    let root = fixture("literal");
+    let view = view(&root);
+    let origin = SearchOrigin::from_document(path(&view, &root, "src/lib.rs"));
+    let candidates = view.candidates(&[RUST], &origin);
+
+    for literal in ["", "fn alpha", "alpha(", "1alpha"] {
+        assert!(
+            ScanRequest::new(literal, &candidates).is_none(),
+            "{literal:?} was accepted as a search literal. resolution.md §4 \
+             starts every search from an exact identifier, and a request that \
+             matches nothing at full cost abstains with NoCandidates — a claim \
+             about the project rather than about the query"
+        );
+    }
+    assert!(ScanRequest::new("alpha", &candidates).is_some());
+}
+
 fn view(root: &Path) -> ProjectView {
-    let files = FileList::enumerate(std::slice::from_ref(&root.to_path_buf()))
-        .expect("enumerating the fixture");
-    ProjectView::new(Arc::new(files), Deadline::none())
+    ProjectView::new(Arc::new(file_list(root)), Deadline::none())
+}
+
+fn file_list(root: &Path) -> FileList {
+    let roots = [root.to_path_buf()];
+    FileList::enumerate(&roots).expect("enumerating the fixture")
+}
+
+/// The one clock a test may read: `clippy.toml` bans `Instant::now`, and
+/// `disallowed_methods` does not honour `allow-*-in-tests`.
+#[derive(Debug)]
+struct FrozenClock(Instant);
+
+impl Clock for FrozenClock {
+    fn now(&self) -> Instant {
+        self.0
+    }
 }
 
 fn path(view: &ProjectView, root: &Path, relative: &str) -> ProjectPath {
@@ -142,8 +283,12 @@ fn path(view: &ProjectView, root: &Path, relative: &str) -> ProjectPath {
 fn rel_paths(view: &ProjectView, origin: &SearchOrigin) -> Vec<String> {
     view.candidates(&[RUST], origin)
         .paths()
-        .map(|path| path.rel().as_path().to_string_lossy().replace('\\', "/"))
+        .map(rel_of)
         .collect()
+}
+
+fn rel_of(path: &ProjectPath) -> String {
+    path.rel().as_path().to_string_lossy().replace('\\', "/")
 }
 
 /// One workspace root with a `.gitignore`. The empty `.git` directory is not
@@ -158,11 +303,11 @@ fn fixture(name: &str) -> PathBuf {
 
     fs::create_dir_all(root.join(".git")).expect("the fixture repository marker");
     fs::write(root.join(".gitignore"), "vendored/\n").expect("the fixture gitignore");
-    for relative in FILES {
+    for (relative, contents) in FILES {
         let file = root.join(relative);
         fs::create_dir_all(file.parent().expect("a parent directory"))
             .expect("a fixture directory");
-        fs::write(&file, "fn alpha() {}\n").expect("a fixture file");
+        fs::write(&file, contents).expect("a fixture file");
     }
 
     root

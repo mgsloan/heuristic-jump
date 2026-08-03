@@ -418,3 +418,40 @@ not yet declared is the intended state.
 **Campaign:** de2706af-51e1-4f63-828c-7cd3cfcc5195
 
 **Campaign:** ff3e1a40-5639-4c57-ac81-66ea1144762f
+
+## CHANGE-conformance-011 — resolution.md#3-projectview — `scan` cannot return a bare `ScanOutcome`
+
+**Contradiction:** §3 prints
+
+> `pub fn scan(&self, req: &ScanRequest) -> ScanOutcome;`
+
+while three claims in the same two sections make that return type
+unwritable. §3 itself, four paragraphs later: "Every read still checks the
+deadline first and **fails with the deadline variant of `shared::Error`**
+rather than starting I/O that cannot be used." §1.3: "The only thing that can
+stop a search early is the deadline, and when it does the query **abstains
+entirely** rather than committing from a partial view." §4, on `ScanOutcome`:
+"It does not stop on a byte budget, a file count, or a parse count, and
+**there is no partial-scan outcome to report**."
+
+A scan reads. So a scan can fail the way a read fails, and `ScanOutcome` is
+specified to have nowhere to put that: no partial flag, no truncation marker,
+no count that could be read as "and then it stopped".
+
+**Resolution:** `scan` returns `Result<ScanOutcome, Error>`. The deadline
+expiry propagates out of `read` with `?` and the caller never sees a
+`ScanOutcome` that is not the whole scan.
+
+This reading is the one that trades nothing off because the alternatives each
+give up something the documents insist on: a `ScanOutcome` with a `partial`
+field is the truncation flag §4 spent most of a section removing, and one
+without it would report a clipped scan as a complete one, which is the
+overclaimed-uniqueness failure §4 says is worst on exactly the large
+repositories the corpus is least able to catch. Nothing else in the shape
+changes — `ScanOutcome`'s three fields are §4's, verbatim.
+
+The document was wrong rather than the code being made to fit: this is a
+return type that could not have been implemented as printed, and the campaign
+that found it implemented `scan` for the first time.
+
+**Campaign:** 0faab934-4ecd-4a55-b992-c112e0bfcb4d
