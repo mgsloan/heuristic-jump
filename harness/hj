@@ -483,11 +483,32 @@ def open_gap_ids(docs: list[str]) -> dict[str, tuple[str, str]]:
     return out
 
 
+def audits_for(docs: list[str]) -> list[dict]:
+    """The gap-log rows belonging to a document set.
+
+    Gap ids are opaque — `sha256(section|claim)` — so a closed one cannot be
+    traced back to its document. What can is the row: an audit covers one
+    loop's documents, so a row whose `sections_audited` names any of these
+    documents is that loop's, and no row mixes two loops.
+    """
+    prefixes = tuple(f"{doc}#" for doc in docs)
+    return [
+        row
+        for row in read_jsonl(GAP_LOG)
+        if any(key.startswith(prefixes) for key in row.get("sections_audited", []))
+    ]
+
+
 def gap_ledger(docs: list[str]) -> dict[str, int]:
-    """Found, closed, still open — cumulative across every audit so far."""
+    """Found, closed, still open — cumulative across every audit so far.
+
+    Scoped to `docs`, which it previously took and used only for the open
+    count: found and closed came from every row in the log, so a second loop
+    reported the first one's totals as its own.
+    """
     found: set[str] = set()
     closed: set[str] = set()
-    for row in read_jsonl(GAP_LOG):
+    for row in audits_for(docs):
         found.update(row.get("opened", []))
         # A gap can be closed without ever having been *opened* in this log:
         # the audits before the log existed left no identities behind, so the

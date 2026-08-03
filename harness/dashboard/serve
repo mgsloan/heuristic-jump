@@ -343,10 +343,12 @@ def panel_decisions() -> str:
 # --- panel 2: loop status --------------------------------------------------
 
 
-def panel_loops() -> str:
+def panel_loops(loop: str = "") -> str:
     phase = hj.load_phase()
     rows = []
     for owner, config in sorted(phase.loops.items()):
+        if loop and owner != loop:
+            continue
         campaigns = hj.campaigns_of(owner)
         closed = [c for c in campaigns if c.get("outcome")]
         trailing = hj.trailing_without_progress(owner)
@@ -843,16 +845,11 @@ def panel_audit_table(loop: str = "") -> str:
     a baseline and re-read a tree it had no reason to suspect.
     """
     phase = hj.load_phase()
-    audits = list(hj.read_jsonl(hj.GAP_LOG))
-    if loop and loop in phase.loops:
-        # The gap log is shared, and a row belongs to whichever loop owns the
-        # documents it audited.
-        mine = {f"{doc}#" for doc in phase.loops[loop].docs}
-        audits = [
-            row
-            for row in audits
-            if any(key.startswith(tuple(mine)) for key in row.get("sections_audited", []))
-        ]
+    audits = (
+        hj.audits_for(phase.loops[loop].docs)
+        if loop and loop in phase.loops
+        else list(hj.read_jsonl(hj.GAP_LOG))
+    )
     if not audits:
         return panel("Audits", empty("No audit has run for this loop yet."))
 
@@ -995,12 +992,13 @@ def size_chart() -> str:
     )
 
 
-def audit_series() -> tuple[list[float], list[float]]:
-    """Cumulative found and closed, one point per audit."""
+def audit_series(docs: list[str]) -> tuple[list[float], list[float]]:
+    """Cumulative found and closed, one point per audit, for one loop's
+    documents. Unscoped it drew the same curve under every loop."""
     found: set[str] = set()
     closed: set[str] = set()
     found_at, closed_at = [], []
-    for row in hj.read_jsonl(hj.GAP_LOG):
+    for row in hj.audits_for(docs):
         found.update(row.get("opened", []))
         found.update(row.get("closed", []))
         closed.update(row.get("closed", []))
@@ -1023,14 +1021,16 @@ def sparkline(values: list[float], width: int = 320, height: int = 40) -> str:
     return f'<svg class="spark" viewBox="0 0 {width} {height}" preserveAspectRatio="none"><polyline points="{points}"/></svg>'
 
 
-def panel_metrics() -> str:
+def panel_metrics(loop: str = "") -> str:
     phase = hj.load_phase()
     blocks = []
     for owner, config in sorted(phase.loops.items()):
+        if loop and owner != loop:
+            continue
         rows = hj.read_jsonl(hj.metrics_path(owner))
         clean = [row.get("sections_clean", 0) for row in rows]
         counts = hj.audit_counts(config.docs)
-        found_at, closed_at = audit_series()
+        found_at, closed_at = audit_series(config.docs)
         charts = line_chart(
             [("found", "var(--series-1)", found_at), ("closed", "var(--series-2)", closed_at)],
             "Gaps found and gaps closed, cumulative",
@@ -1172,7 +1172,7 @@ def panel_sections(loop: str = "") -> str:
     return panel("Sections and gaps", "".join(blocks), note="gap ids are what a campaign names in its target")
 
 
-def panel_cost() -> str:
+def panel_cost(loop: str = "") -> str:
     """`design/loops.md` section 15's derived number is the one that should
     drive stopping decisions: cost per unit of progress, which should *rise*
     over a run as the easy wins are exhausted. A rising curve is the economic
@@ -1181,6 +1181,8 @@ def panel_cost() -> str:
     phase = hj.load_phase()
     blocks = []
     for owner in sorted(phase.loops):
+        if loop and owner != loop:
+            continue
         everything = hj.read_jsonl(hj.cost_path(owner))
         if not everything:
             continue
@@ -1425,9 +1427,9 @@ def fragment(view: str = "overview", loop: str = "") -> str:
         return panel_live(loop=loop)
     return (
         panel_decisions()
-        + panel_loops()
-        + panel_metrics()
-        + panel_cost()
+        + panel_loops(loop)
+        + panel_metrics(loop)
+        + panel_cost(loop)
         + panel_campaign_table(loop)
         + panel_audit_table(loop)
     )
@@ -1557,16 +1559,20 @@ body { margin:0; font:14px/1.5 -apple-system, "Segoe UI", system-ui, sans-serif;
 header { padding:14px 20px; border-bottom:1px solid var(--line); display:flex;
          align-items:baseline; gap:14px; position:sticky; top:0; background:var(--bg); z-index:2; }
 header h1 { font-size:15px; margin:0; font-weight:600; }
-header nav { display:flex; gap:6px; margin-left:8px; }
-.tab { font-size:12px; padding:4px 11px; border-radius:999px; text-decoration:none;
-       color:var(--dim); border:1px solid var(--line); white-space:nowrap; }
-.tab:hover { color:var(--fg); }
+/* `align-items:center` is load-bearing: a flex container defaults to
+   `stretch`, so the tabs grew to the nav's full height and `border-radius`
+   turned them into ellipses rather than buttons. */
+header nav { display:flex; gap:6px; margin-left:8px; align-items:center; flex:1; }
+.tab { font-size:12px; padding:5px 10px; border-radius:6px; text-decoration:none;
+       line-height:1.35; color:var(--dim); border:1px solid var(--line); white-space:nowrap; }
+.tab:hover { color:var(--fg); border-color:var(--dim); }
 .tab.on { background:var(--fg); color:var(--bg); border-color:var(--fg); }
 /* The loop selector answers a different question from the view tabs — which
-   loop, not which page — so it is shaped differently rather than being a
-   second row of the same pill. */
-.navgap { width:14px; display:inline-block; }
-.tab.loop { border-radius:4px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+   loop, not which page — so it sits at the other end of the header rather
+   than reading as five more views. */
+.loops { display:flex; gap:6px; align-items:center; margin-left:auto; }
+.loops .lead { font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:.06em; }
+.tab.loop { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
 .tab.loop.on { background:var(--accent); border-color:var(--accent); color:#fff; }
 main { padding:0 20px 60px; max-width:1100px; }
 .panel { margin:26px 0; }
@@ -1753,7 +1759,7 @@ def nav(view: str, loop: str = "") -> str:
         f' href="/?view={view}&loop={urllib.parse.quote(name)}">{esc(name)}</a>'
         for name in owners
     )
-    return f'{tabs}<span class="navgap"></span>{picker}'
+    return f'{tabs}<span class="loops"><span class="lead">loop</span>{picker}</span>'
 
 
 def page(title: str, body: str, poll: bool = True, view: str = "overview", loop: str = "") -> str:
