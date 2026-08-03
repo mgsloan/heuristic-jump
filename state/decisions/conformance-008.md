@@ -1,6 +1,6 @@
 ---
 id: conformance-008
-status: open
+status: accepted
 opened: 2026-08-03T06:30:00+00:00
 campaign: bc8f02bb-1cb1-48d7-8814-a22f8a2b8481
 kind: harness-request
@@ -84,3 +84,14 @@ loop, which is worth knowing explicitly rather than as an unexplained
 plateau — the loop's number is sections clean over sections total, and a
 section that cannot move is a denominator the loop is being scored against
 without a way to affect it.
+
+## Answer — 2026-08-03T06:36:51+00:00
+
+**Ruling:** accepted
+
+Option A — a human places crates/similarity/, as with the licence texts and the toolchain pin. NOT YET DONE: the port is blocked on a licensing question, below. Until it is placed, the reversible holding position in the record stands — write crates/lang_rust/Cargo.toml without similarity, tag it, and leave core.md section 9 alone.
+
+**Rationale:** A is not really a choice: loops.md section 13 says similarity is *ported* from the prior implementation, and porting is a human action by definition, like vendoring rope. So the deny rule is right and the missing piece is that nobody had done the porting. The measurement argument in the record is the one that makes it urgent rather than tidy — two sections are unreachable, and a section that cannot move is a denominator the loop is scored against with no way to affect it. B was correctly identified by the campaign as the shape its own prompt tells it to distrust: this loop editing a claim in the document it is audited against, to match what it is permitted to build. The blocker: the prior implementation is GPL-3.0-or-later and its text_similarity module came from Zed edit_prediction_context, also GPL-3.0-or-later. deps.md section 5 states the only GPL input is vendor/rope, deliberately, so that replacing rope would make the workspace permissively licensable. Every lang_* depends on similarity, so porting GPL code into crates/similarity/ would destroy that property for the whole handler layer. That is a licensing call and a standing Class B trigger, so it is not one an assistant session should make.
+
+Reconciling the sites tagged `// DECISION-conformance-008: provisional` is a
+normal campaign target, not an interrupt.
