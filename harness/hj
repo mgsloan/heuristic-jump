@@ -1341,6 +1341,14 @@ def prompt_values(phase: Phase, config: LoopConfig, campaign_id: str) -> dict[st
     # never learns the answer arrived will never pick it. An answered decision
     # drops off this list only once nothing in the tree still says
     # `DECISION-<id>: provisional`.
+    # An open `harness-request` is the harness loop's work, not a human's.
+    # These are raised by a loop that found the harness wrong and could not fix
+    # it, so routing them to a queue nobody is watching is the failure
+    # `design/loops.md` §13 warns about: the loop that raised it continues on a
+    # workaround, and the workaround is what survives. The loop that *can* fix
+    # it should find it as a target, and escalate only what is genuinely a
+    # judgement call.
+    requests = []
     decisions = []
     for path in sorted((STATE / "decisions").glob("*.md")):
         text = path.read_text()
@@ -1350,6 +1358,17 @@ def prompt_values(phase: Phase, config: LoopConfig, campaign_id: str) -> dict[st
             continue
         state = status.group(1).strip()
         name = title.group(1) if title else path.stem
+        kind = re.search(r"^kind:\s*(.+)$", text, re.MULTILINE)
+        is_request = bool(kind) and kind.group(1).strip() == "harness-request"
+        if is_request and state in ("open", "provisional") and config.writes_harness:
+            raiser = re.search(r"^campaign:\s*(\S+)", text, re.MULTILINE)
+            requests.append(
+                f"- **{path.stem}** — {name}\n"
+                f"  raised by campaign {raiser.group(1)[:8] if raiser else '?'};"
+                f" read `state/decisions/{path.stem}.md` for the options and what is"
+                " provisionally in force."
+            )
+            continue
         if state in ("open", "provisional"):
             decisions.append(f"- {path.stem}: {name} [{state}]")
         elif tagged_sites(path.stem):
@@ -1413,6 +1432,16 @@ def prompt_values(phase: Phase, config: LoopConfig, campaign_id: str) -> dict[st
         "spliced_sections": "\n\n".join(spliced) or "(no open gaps, so no section is spliced)",
         "campaigns_so_far": "\n".join(campaign_lines) or "- (none; this is the first campaign)",
         "open_decisions": "\n".join(decisions) or "- (none open)",
+        # The whole section, or nothing: a loop that cannot write `harness/`
+        # is never routed a request, and should not be shown a heading it can
+        # do nothing about.
+        "harness_requests": (
+            "\n" + fragment("harness-requests").replace(
+                "{{items}}", "\n".join(requests) or "- (none right now)"
+            )
+            if config.writes_harness
+            else ""
+        ),
         "other_findings": "\n\n".join(findings) or "(no other loop has published a digest)",
         "self_summary": (
             (STATE / "findings" / f"{config.owner}.md").read_text().strip()

@@ -288,7 +288,7 @@ thin or wrong, fixing it is part of your own close.
 ## Decisions affecting you
 
 {{open_decisions}}
-
+{{harness_requests}}
 ## Sections named by the current gaps
 
 {{spliced_sections}}
