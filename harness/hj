@@ -1604,6 +1604,44 @@ def spec_drift(campaign_id: str, target: str | None) -> dict | None:
     }
 
 
+PYTHON_SHEBANG = re.compile(rb"^#!.*python")
+
+
+def line_counts() -> dict[str, int]:
+    """Tracked lines by language, for the size-over-time chart.
+
+    Tracked only, so `target/` and the transcripts never enter it. Python is
+    found by shebang as well as by extension, because the harness's own tools —
+    `hj`, `dashboard/serve`, `corpus` — are extensionless commands and are most
+    of the Python here.
+
+    `reference/` is excluded. It is 15,000 lines of generated LSP specification
+    that would be four fifths of the markdown total and would never move, so
+    including it turns a chart about how the project grows into a flat line
+    with a step where the vendoring landed. `vendor/` is *not* excluded: it is
+    ours to edit, and the rope newtype sweep is real work that should show.
+    """
+    counts = {"rust": 0, "python": 0, "markdown": 0}
+    for name in git("ls-files").split("\n"):
+        if not name or name.startswith("reference/"):
+            continue
+        path = REPO / name
+        try:
+            data = path.read_bytes()
+        except OSError:
+            continue
+        if name.endswith(".rs"):
+            kind = "rust"
+        elif name.endswith(".py") or PYTHON_SHEBANG.match(data[:64]):
+            kind = "python"
+        elif name.endswith(".md"):
+            kind = "markdown"
+        else:
+            continue
+        counts[kind] += data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0)
+    return counts
+
+
 def cmd_campaign_close(args: argparse.Namespace) -> int:
     phase, config = loop_config(args.loop)
     rows = [row for row in read_jsonl(sessions_path()) if row.get("campaign") == args.id]
@@ -1640,6 +1678,7 @@ def cmd_campaign_close(args: argparse.Namespace) -> int:
             "progress": progress,
             "audited": audited,
             "spec_drift": drift,
+            "lines": line_counts(),
             **after,
         },
     )

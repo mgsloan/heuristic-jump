@@ -5,17 +5,15 @@ edition.workspace = true
 publish.workspace = true
 rust-version.workspace = true
 
-# MIT, like `heuristic_jump` and for the identical reason: `deps.md` §14 lists
-# that crate as "MIT -- binary crate; the artifact it builds is GPL", and it
-# depends on every `lang_*` and so on `similarity` too. So the field describes
-# copyright in this crate's own four lines, not the licence of what they link,
-# and §5 marks exactly `similarity` and `lang_*` GPL.
+# `conformance-014` (answered), which settles the rule and not just this crate:
+# **a `license` field describes copyright in that crate's own text.** The
+# licence of what it links is a property of the artifact and is recorded once,
+# in `deps.md` §14 — "binary crate; the artifact it builds is GPL".
 #
-# This previously read GPL-3.0-or-later, reasoning "GPL through `lang_rust`" —
-# a dependency rule `heuristic_jump` falsifies. `deps.md` §5's prose reaches
-# the same MIT conclusion by a reason that is false ("none of them depends on
-# `similarity`"), which is why the conclusion is escalated rather than assumed.
-# DECISION-conformance-014: provisional
+# This previously read GPL-3.0-or-later, reasoning "GPL through `lang_rust`".
+# `heuristic_jump` falsifies that rule: it depends on every `lang_*` and so on
+# `similarity`, and §14 lists it MIT. `measure_rust` is that case exactly —
+# four lines of `main`, whose artifact is GPL.
 license = "MIT"
 
 [lints]

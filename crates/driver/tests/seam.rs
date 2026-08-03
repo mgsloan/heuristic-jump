@@ -616,17 +616,22 @@ fn every_library_names_its_root_explicitly() {
 /// more `measure_*` arrive by copying the template and a hardcoded list would
 /// stop applying the moment one did.
 ///
-/// The rule is narrower than "reaches a GPL input", and §5's own layout in §14
-/// is what shows it: `heuristic_jump` depends on every `lang_*` and so on
-/// `similarity`, and is listed `MIT -- binary crate; the artifact it builds is
-/// GPL`. So the marking describes copyright in the crate's own text, and GPL
-/// marks exactly two things — `similarity`, which is ported, and `lang_*`,
-/// which §5 calls the handler layer beside it.
+/// The rule is narrower than "reaches a GPL input", and `conformance-014`
+/// (answered) states it: **a `license` field describes copyright in that
+/// crate's own text.** What it links is a property of the artifact, recorded
+/// once in §14 — "binary crate; the artifact it builds is GPL".
 ///
-/// That reading is why `measure_rust` moved to MIT and is tagged
-/// `DECISION-conformance-014`: it is `heuristic_jump`'s case exactly, a binary
-/// crate whose artifact is GPL, and its manifest previously reasoned "GPL
-/// through `lang_rust`" from a dependency rule `heuristic_jump` falsifies.
+/// §14's own layout is what showed it. `heuristic_jump` depends on every
+/// `lang_*` and so on `similarity`, and is listed MIT; so "reaching GPL makes
+/// you GPL" was already false in this workspace, and `measure_rust` moved to
+/// MIT rather than a third case being added to a section that has two rules.
+///
+/// One thing this scan therefore encodes and `deps.md` does not yet: GPL marks
+/// `similarity`, which is a port and so a derivative work, and `lang_*`, which
+/// §5 marks by the dependency rule just rejected. `conformance-014`'s
+/// follow-up leaves that open — `lang_*` may well stay GPL for the first
+/// reason rather than the second, and until §5 says which, this list is the
+/// only place the two are distinguished.
 fn expected_licence(member: &str) -> &'static str {
     const GPL: &str = "GPL-3.0-or-later";
 
