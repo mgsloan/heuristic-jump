@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc fa1796721beff4446e3cee23e7bf51cdb7207a783d166483e1e1918f4d234bb5 # shrinks to chunk = 1
+cc 46926b004c61ac74160f7abf3341ce179730d0be5ee00ec9faeca5106717e805 # shrinks to text = "\t0", chunk = 1

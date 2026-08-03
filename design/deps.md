@@ -51,6 +51,7 @@ pin that is a design constraint rather than a resolution detail.
 | `tempfile` | chosen |
 | `anyhow` | — | **rejected** |
 | `clap` (no default features) | heuristic_jump | **chosen** — see §11 |
+| `toml` (parse only) | measure_core | **chosen** for `servers.toml` — `state/decisions/conformance-010.md` |
 | `num_cpus` | — | **rejected**, `available_parallelism` |
 | `tokio` | — | **rejected** — see §1 |
 

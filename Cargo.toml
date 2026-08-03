@@ -77,6 +77,17 @@ serde = { version = "1", features = ["derive"] }
 # the whole graph anyway, and a `serde_json` without it silently compiles.
 serde_json = { version = "1", features = ["raw_value"] }
 thiserror = "2.0"
+# `servers.toml` names the oracle every language is scored against, and it is
+# written by a human in whatever valid TOML reads best — `[server.<name>]`
+# tables today, and it will keep diverging from whatever subset a hand-reader
+# accepts. Its failure mode is refusing a valid file at minute zero of a
+# hundred-hour collection run, which is what `state/decisions/conformance-010.md`
+# weighed the crates against. `default-features = false` drops the serializing
+# half: nothing here writes TOML, and `toml_write` leaves the graph with it.
+# What it does cost, measured rather than predicted: `toml`, `toml_datetime`,
+# `toml_parser`, `winnow` and `serde_spanned` — five, where the ruling weighed
+# four, because the parser is the half that keeps `winnow`.
+toml = { version = "1.1", default-features = false, features = ["parse", "serde"] }
 # `deps.md` §9: `env-filter` is what `--log` is a string for, and `fmt` is a
 # default feature. The subscriber is installed in `heuristic_jump` and nowhere
 # else — `driver` and `shared` emit through the `tracing` facade and have no

@@ -8,10 +8,12 @@
 //! flag, truth is per server rather than per language, and a checkout is
 //! verified rather than trusted.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use serde::Deserialize;
 use shared::{ConfigError, Error, LanguageId};
 
 /// `servers.toml` is at the root of the **code** repository, not in the corpus
@@ -57,10 +59,12 @@ pub(crate) struct Repository {
 /// A server as `servers.toml` names it, which is what the provenance header
 /// records and what a resumed collection is checked against.
 #[derive(Clone, Debug)]
-pub(crate) struct ServerEntry {
-    pub(crate) name: Box<str>,
-    pub(crate) command: Vec<String>,
-    pub(crate) version: Box<str>,
+pub struct ServerEntry {
+    pub name: Box<str>,
+    /// `${servers}` already expanded, so this is a command line and not a
+    /// template.
+    pub command: Vec<String>,
+    pub version: Box<str>,
 }
 
 impl Corpus {
@@ -170,52 +174,90 @@ pub(crate) fn verify_checkout(
     Ok(head)
 }
 
+/// `servers.toml`'s shape, deserialized rather than hand-read
+/// (`state/decisions/conformance-010.md`, answered).
+///
+/// The fields the installer owns — `pin` and `version_command` — are not
+/// declared, and serde ignores them: what `measure` needs is the command to
+/// run and the version string to compare a resume against, and a reader that
+/// declared the rest would have to be edited every time the install half of
+/// the manifest grew.
+#[derive(Debug, Deserialize)]
+struct ServerManifest {
+    servers_root: String,
+    /// Keyed by the name `--server` gives, which is what makes the flag a
+    /// lookup rather than a scan. A `BTreeMap` and not a hash map because a
+    /// manifest is read once and `iter_over_hash_type` is denied workspace-wide
+    /// for reasons that would apply the moment anything iterated this.
+    server: BTreeMap<String, ServerRecord>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ServerRecord {
+    /// The corpus's own language directory names. A list, because one server
+    /// answers for several — `typescript-language-server` covers JavaScript
+    /// and TypeScript, `clangd` covers C and C++.
+    languages: Vec<String>,
+    /// What the installed server reports through `version_command`, which is
+    /// what `data-collection.md` §4's drift check compares against — not the
+    /// tag it was installed by, which is `pin`.
+    version: String,
+    command: Vec<String>,
+}
+
 /// `--server <name>` against the code repository's manifest.
-pub(crate) fn resolve_server(language: LanguageId, name: &str) -> Result<ServerEntry, Error> {
+///
+/// Public for the reason `replay_table` and `check_resumable` are: the claim
+/// that this reads *the manifest in the repository* is the one that was false
+/// while nothing exercised it, and a test that pointed at a fixture of its own
+/// would have gone on passing.
+pub fn resolve_server(language: LanguageId, name: &str) -> Result<ServerEntry, Error> {
     let path = PathBuf::from(SERVERS_MANIFEST);
     let text = fs::read_to_string(&path).map_err(|source| ConfigError::ManifestUnreadable {
         path: path.clone(),
         source,
     })?;
 
-    let manifest = manifest::parse(&text, &path)?;
-    let servers_root = manifest
-        .root
-        .get("servers_root")
-        .and_then(manifest::Value::as_str)
-        .unwrap_or("");
+    let manifest: ServerManifest =
+        toml::from_str(&text).map_err(|source| ConfigError::ManifestMalformed {
+            path: path.clone(),
+            reason: source.to_string().into_boxed_str(),
+        })?;
 
-    manifest
-        .servers
+    let unknown = || ConfigError::UnknownServer {
+        manifest: path.clone(),
+        name: name.into(),
+        language_id: language,
+    };
+    let record = manifest.server.get(name).ok_or_else(unknown)?;
+    // Named *and* for this language: a language binary given another
+    // language's server would collect a truth file no handler can be scored
+    // against, and the provenance header would record it as if it could.
+    if !record
+        .languages
         .iter()
-        .find(|server| {
-            server.get("name").and_then(manifest::Value::as_str) == Some(name)
-                && server.get("language").and_then(manifest::Value::as_str)
-                    == Some(language.as_str())
-        })
-        .map(|server| ServerEntry {
-            name: name.into(),
-            command: server
-                .get("command")
-                .map(|value| value.as_list())
-                .unwrap_or_default()
-                .iter()
-                .map(|word| expand(word, servers_root, &path))
-                .collect(),
-            version: server
-                .get("version")
-                .and_then(manifest::Value::as_str)
-                .unwrap_or("")
-                .into(),
-        })
-        .ok_or_else(|| {
-            ConfigError::UnknownServer {
-                manifest: path.clone(),
-                name: name.into(),
-                language_id: language,
-            }
-            .into()
-        })
+        .any(|declared| declared == language.as_str())
+    {
+        return Err(unknown().into());
+    }
+
+    Ok(ServerEntry {
+        name: name.into(),
+        command: record
+            .command
+            .iter()
+            .map(|word| expand(word, &servers_root(&manifest), &path))
+            .collect(),
+        version: record.version.as_str().into(),
+    })
+}
+
+/// `HJ_SERVERS` overrides `servers_root`, "for a machine that puts the tree
+/// somewhere else" — which `servers.toml` documents and nothing implemented.
+/// An absolute override replaces the manifest-relative default on its own,
+/// since `Path::join` with an absolute path discards what it is joined to.
+fn servers_root(manifest: &ServerManifest) -> String {
+    std::env::var("HJ_SERVERS").unwrap_or_else(|_| manifest.servers_root.clone())
 }
 
 /// The `grammar` field of the provenance header this build would write.
@@ -367,134 +409,4 @@ fn git(repository: &Repository, arguments: &[&str]) -> Result<String, Error> {
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
-/// The smallest TOML that reads `servers.toml`, and no more.
-///
-/// DECISION-conformance-010: provisional. `deps.md` names no TOML parser and
-/// the dependency set is a standing Class B trigger, so rather than add one
-/// this reads the two shapes the manifest is documented to have — top-level
-/// `key = value`, and a `[[server]]` array of tables — and refuses everything
-/// else by line number. Confined to this module so that swapping in the `toml`
-/// crate is a local change if the escalation is answered that way.
-mod manifest {
-    use std::path::Path;
-
-    use shared::{ConfigError, Error};
-
-    #[derive(Debug)]
-    pub(crate) enum Value {
-        Text(String),
-        List(Vec<String>),
-    }
-
-    impl Value {
-        pub(crate) fn as_str(&self) -> Option<&str> {
-            match self {
-                Value::Text(text) => Some(text),
-                Value::List(_) => None,
-            }
-        }
-
-        pub(crate) fn as_list(&self) -> Vec<String> {
-            match self {
-                Value::Text(text) => vec![text.clone()],
-                Value::List(words) => words.clone(),
-            }
-        }
-    }
-
-    /// A list of pairs rather than a map: a manifest is read once, has a
-    /// handful of keys, and a stable order is worth more here than a lookup.
-    #[derive(Debug, Default)]
-    pub(crate) struct Table(Vec<(String, Value)>);
-
-    impl Table {
-        pub(crate) fn get(&self, key: &str) -> Option<&Value> {
-            self.0
-                .iter()
-                .find(|(name, _)| name == key)
-                .map(|(_, value)| value)
-        }
-
-        fn push(&mut self, key: String, value: Value) {
-            self.0.push((key, value));
-        }
-    }
-
-    #[derive(Debug, Default)]
-    pub(crate) struct Manifest {
-        pub(crate) root: Table,
-        pub(crate) servers: Vec<Table>,
-    }
-
-    pub(crate) fn parse(text: &str, path: &Path) -> Result<Manifest, Error> {
-        let mut manifest = Manifest::default();
-        let mut in_server = false;
-
-        for (index, line) in text.lines().enumerate() {
-            let line = strip_comment(line).trim();
-            if line.is_empty() {
-                continue;
-            }
-            if line == "[[server]]" {
-                manifest.servers.push(Table::default());
-                in_server = true;
-                continue;
-            }
-            let Some((key, value)) = line.split_once('=') else {
-                return Err(ConfigError::ManifestMalformed {
-                    path: path.to_path_buf(),
-                    line: index + 1,
-                }
-                .into());
-            };
-            let (key, value) = (key.trim().to_owned(), literal(value.trim()));
-            match manifest.servers.last_mut() {
-                Some(server) if in_server => server.push(key, value),
-                Some(_) | None => manifest.root.push(key, value),
-            }
-        }
-
-        Ok(manifest)
-    }
-
-    /// A `#` inside a quoted string is not a comment. Tracking that is the
-    /// difference between this and a `split_once('#')`, and paths under
-    /// `${servers}` are exactly where a `#` would show up.
-    fn strip_comment(line: &str) -> &str {
-        let mut quoted = false;
-        for (index, byte) in line.bytes().enumerate() {
-            match byte {
-                b'"' => quoted = !quoted,
-                b'#' if !quoted => return line.split_at(index).0,
-                _ => {}
-            }
-        }
-        line
-    }
-
-    fn literal(text: &str) -> Value {
-        if let Some(inner) = text
-            .strip_prefix('[')
-            .and_then(|rest| rest.strip_suffix(']'))
-        {
-            return Value::List(
-                inner
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|word| !word.is_empty())
-                    .map(unquote)
-                    .collect(),
-            );
-        }
-        Value::Text(unquote(text))
-    }
-
-    fn unquote(text: &str) -> String {
-        text.trim()
-            .trim_start_matches('"')
-            .trim_end_matches('"')
-            .to_owned()
-    }
 }

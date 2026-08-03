@@ -396,6 +396,59 @@ fn the_printed_table_is_byte_identical_across_runs() {
     }
 }
 
+/// §7's command line: "`collect` drives the server named in `servers.toml`,
+/// which carries its command and pinned version… Naming a server rather than
+/// passing a command line is what lets the provenance header record what was
+/// actually run without trusting the invocation to be repeated correctly."
+///
+/// Against the manifest **in the repository**, which is the whole assertion.
+/// `conformance-010`'s hand-reader accepted `[[server]]` with one `key = value`
+/// per line; `servers.toml` is `[server.<name>]` tables with multi-line arrays,
+/// so `collect` could not resolve a single server — and nothing failed, because
+/// the reader had no test and a test with a fixture of its own would have gone
+/// on passing. The ruling took `toml` for exactly this.
+#[test]
+fn a_server_resolves_against_the_manifest_in_the_repository() {
+    let rust = LanguageId::new("rust");
+
+    let server =
+        measure_core::resolve_server(rust, "rust-analyzer").expect("servers.toml names it");
+    assert_eq!(&*server.name, "rust-analyzer");
+    assert!(
+        server.version.starts_with("rust-analyzer "),
+        "the version compared on a resume is what the installed server reports, \
+         and this is {}",
+        server.version
+    );
+    let command = server.command.join(" ");
+    assert!(
+        command.ends_with("rust-analyzer") && !command.contains("${servers}"),
+        "the command is a command line and not a template: ${{servers}} expands \
+         to servers_root, resolved relative to the manifest, so the install \
+         tree relocates without editing an entry. Got {command}"
+    );
+
+    // Named, but for another language. A rust binary given the go server would
+    // collect a truth file no handler can be scored against, and the provenance
+    // header would record it as though it could.
+    let wrong_language = measure_core::resolve_server(rust, "gopls")
+        .expect_err("gopls answers for go, and this asked as rust");
+    let Error::Config(shared::ConfigError::UnknownServer { name, .. }) = &wrong_language else {
+        panic!("another language's server was refused as {wrong_language}");
+    };
+    assert_eq!(&**name, "gopls");
+
+    let unknown = measure_core::resolve_server(rust, "no-such-server")
+        .expect_err("servers.toml names no such server");
+    assert!(
+        matches!(
+            unknown,
+            Error::Config(shared::ConfigError::UnknownServer { .. })
+        ),
+        "an unnamed server was refused as {unknown}"
+    );
+}
+
 /// §7: "`truth.jsonl` carries its provenance in a header record: repository
 /// path and commit, server name and version, **grammar revision**, and the
 /// `measure` version that wrote it."

@@ -69,8 +69,12 @@ pub enum ConfigError {
         #[source]
         source: io::Error,
     },
-    #[error("{path}:{line} is not a key, a table header or a comment")]
-    ManifestMalformed { path: PathBuf, line: usize },
+    /// The reason is the parser's own message, rendered rather than carried:
+    /// `shared` is the seam crate and `core.md` §9's dependency list for it is
+    /// authoritative, so a `toml::de::Error` here would put a parser in the
+    /// graph of every crate that names an error.
+    #[error("{path} is not a server manifest: {reason}")]
+    ManifestMalformed { path: PathBuf, reason: Box<str> },
     #[error("{manifest} names no server {name:?} for {language_id}")]
     UnknownServer {
         manifest: PathBuf,

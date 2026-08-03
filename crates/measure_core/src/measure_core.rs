@@ -39,7 +39,7 @@ use shared::{Error, FileList, LanguageHandler, ProjectPath, SystemClock};
 
 pub use cli::{Cli, Command, Format, Replay};
 pub use client::{MAX_FRAME_BYTES, MAX_HEADER_BYTES, read_frame};
-pub use corpus::{grammar_pin, locked_grammar};
+pub use corpus::{ServerEntry, grammar_pin, locked_grammar, resolve_server};
 pub use record::{Decision, Mode, QueryRecord, StratumName};
 pub use truth::{Provenance, check_resumable};
 
@@ -77,7 +77,7 @@ pub fn run(handler: &dyn LanguageHandler, cli: Cli) -> Result<(), Error> {
 
         Command::Collect(arguments) => {
             let corpus = corpus::Corpus::open(&arguments.corpus.corpus, language)?;
-            let server = corpus::resolve_server(language, &arguments.server)?;
+            let server = resolve_server(language, &arguments.server)?;
             let collection = collect::Collection {
                 corpus: &corpus,
                 server: &server,

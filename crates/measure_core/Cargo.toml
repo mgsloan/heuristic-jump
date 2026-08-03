@@ -28,6 +28,9 @@ clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 shared.workspace = true
+# Parsing `servers.toml`, and nowhere else in the workspace
+# (`state/decisions/conformance-010.md`).
+toml.workspace = true
 tracing.workspace = true
 
 # The tests build a fixture corpus and drive `run` end to end, which needs a
