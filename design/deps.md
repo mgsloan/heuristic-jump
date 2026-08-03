@@ -8,42 +8,51 @@ Scope: the core driver only — `shared`, `driver`, `heuristic_jump`, plus the
 vendored text crates. `similarity` and `lang_*` dependencies are named
 where they are already implied, but not settled here.
 
-Versions are what crates.io resolves to as of 2026-08-02, against
-`rustc 1.95.0`. Zed's pins (`../zed/Cargo.toml` at `90d024b8`) are listed
-where they differ, since `high-level.md` commits to matching Zed's grammars and
-it is worth knowing when we are ahead of them.
+**This document names crates and reasons, not versions.** An exact patch
+version written down before any code exists is stale before the first commit,
+and a second copy of `Cargo.lock` in prose is one that will disagree with the
+real one without anything failing to notice. `Cargo.toml` and `Cargo.lock` are
+the authority on what resolves; what is decided *here* is which crates are in
+and which are out, and why.
+
+Three places a version is still load-bearing, and each says so where it
+appears rather than in a table: `lsp-types` is held at the release whose
+`Url` type matches ours (§3), `rand` is held at Zed's pin because the vendored
+tests are kept verbatim against its API (§5), and the tree-sitter *grammars*
+are pinned to Zed's revisions (§6) — a `high-level.md` commitment, and the one
+pin that is a design constraint rather than a resolution detail.
 
 ## 0. Summary table
 
-| Crate | Version | Where | Verdict |
-|---|---|---|---|
-| `crossbeam-channel` | 0.5.16 | driver | **chosen** over tokio — see §1 |
-| `rayon` | 1.12.0 | shared, driver, vendored rope | chosen |
-| `serde` | 1.0.229 | shared, driver | chosen |
-| `serde_json` | 1.0.151 (`raw_value`) | shared, driver | chosen |
-| `lsp-types` | 0.95.1 | **dev only** | **rejected as a runtime dep** — see §3 |
-| `url` | 2.5.8 | shared | chosen, now a direct dep |
-| `tree-sitter` | 0.26.11 | shared, driver | chosen (Zed: 0.26.9) |
-| `ignore` | 0.4.31 | shared | chosen — `shared`, not `driver`, see §7 |
-| `notify` | 8.2.0 | driver | **deferred** behind a feature — see §7 |
-| `lru` | 0.18.1 | driver | chosen, with a caveat — see §8 |
-| `thiserror` | 2.0.19 | shared | chosen; `anyhow` explicitly rejected — see §10 |
-| `tracing` | 0.1.44 | all | chosen |
-| `tracing-subscriber` | 0.3.23 | heuristic_jump | chosen |
-| `rustc-hash` | 2.x | driver, shared | chosen — the default map/set, see §8 |
-| `heapless` | 0.9.3 | vendored rope/sum_tree | forced by rope |
-| `unicode-segmentation` | 1.13.3 | vendored rope | forced by rope |
-| `log` | 0.4.x | vendored rope/sum_tree | forced by rope |
-| `memchr` | 2.8.3 | `lang_*` (not yet) | noted, out of scope |
-| `insta` | 1.48.0 | dev | chosen |
-| `rand` | 0.9 (Zed's pin) | dev | chosen — see §5, §12 |
-| `criterion` | 0.5 | dev | vendored rope's benchmark only — §5 |
-| `proptest` | 1.11.0 | dev | chosen |
-| `tempfile` | 3.x | dev | chosen |
-| `anyhow` | — | — | **rejected** |
-| `clap` | 4.6.5 (no default features) | heuristic_jump | **chosen** — see §11 |
-| `num_cpus` | — | — | **rejected**, `available_parallelism` |
-| `tokio` | — | — | **rejected** — see §1 |
+| Crate | Where | Verdict |
+|---|---|---|
+| `crossbeam-channel` | driver | **chosen** over tokio — see §1 |
+| `rayon` | shared, driver, vendored rope | chosen |
+| `serde` | shared, driver | chosen |
+| `serde_json` (`raw_value`) | shared, driver | chosen — the feature is not optional, see §4 |
+| `lsp-types` | **rejected as a runtime dep** — see §3 |
+| `url` | shared | chosen, now a direct dep |
+| `tree-sitter` | shared, driver | chosen; grammar revisions pinned to Zed's, the runtime is ours — §6 |
+| `ignore` | shared | chosen — `shared`, not `driver`, see §7 |
+| `notify` | driver | **deferred** behind a feature — see §7 |
+| `lru` | driver | chosen, with a caveat — see §8 |
+| `thiserror` | shared | chosen; `anyhow` explicitly rejected — see §10 |
+| `tracing` | all | chosen |
+| `tracing-subscriber` | heuristic_jump | chosen |
+| `rustc-hash` | driver, shared | chosen — the default map/set, see §8 |
+| `heapless` | vendored rope/sum_tree | forced by rope |
+| `unicode-segmentation` | vendored rope | forced by rope |
+| `log` | vendored rope/sum_tree | forced by rope |
+| `memchr` | `lang_*` (not yet) | noted, out of scope |
+| `insta` | chosen |
+| `rand` | chosen — held at Zed's pin, see §5, §12 |
+| `criterion` | vendored rope's benchmark only — §5 |
+| `proptest` | chosen |
+| `tempfile` | chosen |
+| `anyhow` | — | **rejected** |
+| `clap` (no default features) | heuristic_jump | **chosen** — see §11 |
+| `num_cpus` | — | **rejected**, `available_parallelism` |
+| `tokio` | — | **rejected** — see §1 |
 
 ## 1. Async runtime: none
 
@@ -78,13 +87,13 @@ at startup, all long-lived.
 
 Alternatives considered:
 
-* **`tokio` 1.53.1** — the obvious default. Genuinely better if we later
+* **`tokio`** — the obvious default. Genuinely better if we later
   supervise and restart the child (`open-questions.md` 7), because process
   supervision, backoff timers, and racing a restart against in-flight requests
   are all things `tokio::select!` expresses well. Not v1. Reversible: the
   channel-and-thread structure maps onto tokio tasks nearly mechanically,
   which is the reason this is safe to defer rather than a reason to adopt now.
-* **`smol` 2.0** — Zed's runtime, so it would ease sharing code with Zed. But
+* **`smol`** — Zed's runtime, so it would ease sharing code with Zed. But
   we are sharing data structures with Zed, not I/O code, so the benefit does
   not materialize.
 * **`std::sync::mpsc`** instead of crossbeam — plausible; std's channel is
@@ -95,7 +104,7 @@ Alternatives considered:
 
 ## 2. Channels
 
-`crossbeam-channel` 0.5.16, `unbounded()` everywhere, per `shim.md` §2.
+`crossbeam-channel`, `unbounded()` everywhere, per `shim.md` §2.
 
 One thing to get right: `shim.md` §2 says unbounded because a bounded channel
 could stall a reader. That is correct but it means memory is bounded only by
@@ -104,8 +113,8 @@ should log and watch, not just assert about.
 
 ## 3. LSP types: our own, not `lsp-types`
 
-**Chosen: hand-written wire types in `shared::proto`. `lsp-types` 0.95.1
-stays as a dev-dependency oracle only.**
+**Chosen: hand-written wire types in `shared::proto`. `lsp-types` stays as a
+dev-dependency oracle only.**
 
 The grounds are not dependency count. `core.md` §8 has the full
 argument; the dependency-relevant part:
@@ -134,25 +143,26 @@ argument; the dependency-relevant part:
   actually valuable, and it is the same mitigation used for the hand-written
   peek scanner in section 4 below.
 
-Version 0.95.1 for the oracle, for the reason the previous version of this
-section gave: 0.97.0 swapped `url::Url` for a pinned `fluent-uri` 0.1.4, and
-0.95.1's `Url` matches what we compare against. As a dev-dependency the
+**The oracle is held below the release that swapped `url::Url` for
+`fluent-uri`**, because the whole point is comparing against the same `Url`
+type we produce. That is a real constraint on which version is usable and is
+recorded in `Cargo.toml` with this reason beside it. As a dev-dependency the
 `bitflags` 1.x it drags in no longer duplicates in the shipped binary.
 
-**`url` 2.5.8 becomes a direct dependency** rather than a transitive one. It is
+**`url` becomes a direct dependency** rather than a transitive one. It is
 needed for `DocumentUri` normalization and for `file:` URI to path conversion,
 which is where the percent-encoding and Windows drive-letter bugs live and is
 not worth hand-rolling.
 
 Alternatives considered:
 
-* **Keeping `lsp-types` 0.95.1 at runtime.** The case for it is that
+* **Keeping `lsp-types` at runtime.** The case for it is that
   `InitializeParams` is large and deeply optional, so a hand-rolled struct
   could silently miss a nested field like `general.positionEncodings`. That is
   weaker than it looks: a field we fail to read is a `None` we can test for
   against a golden corpus, whereas a field we fail to *write* would be data
   loss — and we never write one, because we never round-trip.
-* **Zed's fork** (`zed-industries/lsp-types`, also 0.95.1) — a git dependency
+* **Zed's fork** (`zed-industries/lsp-types`) — a git dependency
   on a fork of a fork, existing for Zed-specific extension types we do not
   use. **`async-lsp` / `tower-lsp-server`** — full client/server frameworks
   that own the connection and deserialize everything, which is exactly what
@@ -171,7 +181,7 @@ which this choice is acceptable.
 
 ## 4. JSON
 
-`serde` 1.0.229 + `serde_json` 1.0.151 with the **`raw_value`** feature.
+`serde` + `serde_json` with the **`raw_value`** feature.
 
 `raw_value` is not optional here. Frame classification needs `method` and `id`
 out of a frame we are otherwise forwarding untouched, and the cheap way to do
@@ -232,8 +242,8 @@ What vendoring actually costs, measured rather than assumed:
 
 * `rope` is 4,132 lines across six files; `sum_tree` is 3,295 across four
   (`tree_map.rs`, 531 of those, is unused and gets deleted).
-* Non-Zed deps that come with it: `heapless` 0.9.3, `unicode-segmentation`
-  1.13.3, `rayon`, `log`, `tracing`. All ordinary.
+* Non-Zed deps that come with it: `heapless`, `unicode-segmentation`,
+  `rayon`, `log`, `tracing`. All ordinary.
 * Zed deps that do not: `util`, `ztracing`, and — in **dev**-dependencies —
   `gpui`, `zlog`, `ctor`.
 
@@ -281,7 +291,7 @@ Four patches, each recorded in `vendor/README.md`:
 
 Alternatives considered:
 
-* **`ropey` 1.6** (MIT). The serious alternative. It has UTF-16 support
+* **`ropey`** (MIT). The serious alternative. It has UTF-16 support
   (`char_to_utf16_cu` / `utf16_cu_to_char`), so the conversions are possible —
   but they route through char indices, so a byte↔UTF-16 conversion is two
   O(log n) seeks rather than one, and UTF-16 is not a summary dimension the
@@ -349,9 +359,9 @@ keeps the exit open.
 
 ## 6. Tree-sitter
 
-`tree-sitter = "0.26.11"`. Zed pins 0.26.9; semver-compatible, and the
-`high-level.md`'s requirement is that the *grammars* match Zed's pinned revisions, not
-that the runtime version does. Grammar crates are `lang_*` business and
+The tree-sitter **runtime** version is ours to choose and tracks a recent
+release; `high-level.md`'s requirement is that the *grammars* match Zed's
+pinned revisions, not that the runtime does. Grammar crates are `lang_*` business and
 out of scope here, except to note that the old repo's pins
 (`../heuristic_jump_old/Cargo.toml`) are the starting list, including the two
 that must stay as git revs: `tree-sitter-typescript` (zed-industries fork) and
@@ -367,7 +377,7 @@ latency observation made while developing.
 
 ## 7. File enumeration and watching
 
-**`ignore = "0.4.31"`** — chosen, no real alternative. It is ripgrep's walker,
+**`ignore`** — chosen, no real alternative. It is ripgrep's walker,
 so `.gitignore` semantics are correct for free, which is directly what the
 `high-level.md`'s "gitignored files are out of scope" needs. `walkdir` plus a
 hand-rolled ignore implementation would be reimplementing the hard part.
@@ -380,7 +390,7 @@ implementation of the rules that decide what a search can find, and it is
 worth paying: two implementations would mean the corpus scores a tool that is
 not the one that ships.
 
-**`notify = "8.2.0"`** — **deferred behind a non-default `watch` feature.**
+**`notify`** — **deferred behind a non-default `watch` feature.**
 
 `core.md` §4 gives the file list two invalidation paths that do not need it,
 so v1 should ship those and leave the watcher unbuilt. Reasons, strongest
@@ -395,8 +405,7 @@ first:
   and the child's globs. A `notify` watcher in proxy mode would be a second,
   worse copy of a signal already on the wire.
 * **`AbstainReason::NoCandidates` triggers a debounced background rescan**,
-  which pairs with the retry protocol and is the invalidation path that must
-  work anyway. Building it first makes any watcher a pure optimization rather
+  which is the invalidation path that must work anyway. Building it first makes any watcher a pure optimization rather
   than load-bearing.
 * `notify` on Linux is inotify, which needs a watch descriptor per directory
   and hits `max_user_watches` on large repos — exactly the failure `core.md`
@@ -417,7 +426,7 @@ so.
 
 ## 8. Parse cache
 
-**`lru = "0.18.1"`**, with a caveat: `shim.md` §5 wants the cache bounded by
+**`lru`**, with a caveat: `shim.md` §5 wants the cache bounded by
 *both* entry count and total bytes, and `lru` bounds only entries. So
 `driver` wraps it — track a running byte total, and after each `put`, `pop_lru`
 until under the byte ceiling. That is about fifteen lines and is fine.
@@ -471,8 +480,7 @@ Two rules so this does not become folklore:
 
 ## 9. Logging and tracing
 
-`tracing` 0.1.44 + `tracing-subscriber` 0.3.23 (`env-filter`, `fmt`), writing
-to **stderr**.
+`tracing` + `tracing-subscriber` (`env-filter`, `fmt`), writing to **stderr**.
 
 `tracing` is not really a choice — `rope` and `sum_tree` depend on it, so it
 is in the graph regardless, and having two logging facades would be silly.
@@ -543,7 +551,7 @@ Rules, so this stays a real closed set rather than `anyhow` with extra steps:
 * `#[non_exhaustive]` on the sub-enums but **not** on `Error` itself — within
   one workspace, an exhaustive match on the top level is a feature.
 
-**`thiserror = "2.0.19"`** supplies the `Display`/`Error`/`From` derives. It is
+**`thiserror`** supplies the `Display`/`Error`/`From` derives. It is
 a proc-macro with no runtime presence and does not weaken the "enumerate
 everything" property — the enum is still written out by hand; thiserror only
 writes the boilerplate impls. Hand-writing `Display` for ~60 variants is the
@@ -554,7 +562,7 @@ child's status), so the top-level match is exhaustive.
 
 ## 11. CLI parsing: `clap`
 
-**Chosen: `clap` 4.6.5, `default-features = false`, features
+**Chosen: `clap`, `default-features = false`, features
 `derive, std, help, usage, error-context, suggestions`.**
 
 The usage form is what makes this work:
@@ -597,8 +605,8 @@ contradict it, so there is no conflict rule to write, and `--proxy-only`
 without a server — pure-proxy mode with nothing to proxy — is caught by
 `requires` rather than by hand.
 
-Verified against clap 4.6.5 rather than assumed, since the whole decision rests
-on it:
+Verified against clap rather than assumed, since the whole decision rests on
+it:
 
 | Invocation | Result |
 |---|---|
@@ -675,14 +683,14 @@ Alternatives considered:
 
 ## 12. Testing
 
-| Crate | Version | Use |
-|---|---|---|
-| `insta` | 1.48.0 | Frame-trace golden tests (`shim.md` §12). Snapshot review is the right workflow for "assert every forwarded frame is byte-identical" |
-| `proptest` | 1.11.0 | Position-encoding property tests; edit-log prefix consumption; spot anchoring |
-| `tempfile` | 3.x | Fixture repositories for `ProjectView` scope tests |
-| `rand` | **0.9** | Upstream rope/sum_tree tests, kept per §5, plus `util::RandomCharIter`. Pinned to Zed's 0.9 rather than crates.io's 0.10: the tests are kept verbatim and are written against `rng.random_range(..)`. Taking 0.10 would mean editing test bodies, which defeats keeping them |
-| `criterion` | 0.5 | `vendor/rope`'s benchmark only, per §5 |
-| `lsp-types` | 0.95.1 | Differential oracle for `shared::proto`, per §3 and `core.md` §8.5. Dev only — it must never appear in a non-dev dependency table, and that is worth a CI check, since the whole point of §3 is defeated the moment a runtime `use lsp_types::` appears |
+| Crate | Use |
+|---|---|
+| `insta` | Frame-trace golden tests (`shim.md` §12). Snapshot review is the right workflow for "assert every forwarded frame is byte-identical" |
+| `proptest` | Position-encoding property tests; edit-log prefix consumption |
+| `tempfile` | Fixture repositories for `ProjectView` scope tests |
+| `rand` | Upstream rope/sum_tree tests, kept per §5, plus `util::RandomCharIter`. Pinned to Zed's 0.9 rather than crates.io's 0.10: the tests are kept verbatim and are written against `rng.random_range(..)`. Taking 0.10 would mean editing test bodies, which defeats keeping them |
+| `criterion` | `vendor/rope`'s benchmark only, per §5 |
+| `lsp-types` | Differential oracle for `shared::proto`, per §3 and `core.md` §8.5. Dev only — it must never appear in a non-dev dependency table, and that is worth a CI check, since the whole point of §3 is defeated the moment a runtime `use lsp_types::` appears |
 
 Deliberately not adding:
 
@@ -711,8 +719,11 @@ with a `TestClock` impl in `shared`, not a dependency.
 * **`anyhow`** — §10.
 * **`num_cpus`** — `std::thread::available_parallelism()` has been stable
   since 1.59 and is what the pool sizing in `shim.md` §10 needs.
-* **`once_cell`** — `std::sync::OnceLock` / `LazyLock` are stable, and design
-  §2 specifically requires the `std` `OnceLock` for `DocumentSnapshot: Sync`.
+* **`once_cell`** — `std::sync::OnceLock` / `LazyLock` are stable and cover
+  anything process-wide. Note that `DocumentSnapshot` no longer wants either:
+  `core.md` §2 parses at dispatch, so the snapshot holds a plain `Tree` field
+  and needs no cell to be `Sync`. A `OnceLock` on the query path would have
+  been a blocking primitive in a design that says it has none.
 * **`parking_lot`** — `shim.md` §2 states there is no lock anywhere. If a
   `parking_lot` import ever appears, something has gone wrong architecturally
   and the fix is not a faster mutex.
@@ -748,9 +759,24 @@ deliberately rather than by imitation:
   that is `publish` and `edition`; members write `edition.workspace = true`
   and `publish.workspace = true`. We add `rust-version` and keep `license`
   out, since ours differs per crate (§5).
-* **`[lints] workspace = true` in every member**, with the rules in
-  `[workspace.lints.rust]` and `[workspace.lints.clippy]` — one place, no
-  `#![deny(...)]` scattered in `lib.rs` files.
+* **`[lints] workspace = true` in every member we wrote** — one place, no
+  `#![deny(...)]` scattered in `lib.rs` files — with the rules in
+  `[workspace.lints.rust]` and `[workspace.lints.clippy]`.
+
+  **`vendor/*` does not inherit them**, and this is deliberate rather than an
+  oversight to fix later. Those crates are 7,400 lines of someone else's
+  text-datastructure code, plus upstream tests kept *verbatim* because being
+  unedited is what makes them an independent check on our newtype sweep
+  (`rope-modifications.md` §7). Bending them to `unwrap_used`, `panic`, and
+  the `cast_*` family would be a large amount of work that buys no
+  correctness, and every line of it would widen the re-sync diff. So each
+  vendored crate carries its own `[lints]` table — empty, or near enough —
+  and the workspace rules apply to `crates/*` only.
+
+  Editing `vendor/` is permitted (`CLAUDE.md`), so this is a choice about
+  where the rules are worth their cost, not a constraint. It is worth
+  restating in `vendor/README.md` as one of the recorded differences from
+  upstream.
 * **Clippy: deny a short list of real hazards, allow the style group
   wholesale.** Zed denies `dbg_macro`, `todo`, `redundant_clone`,
   `disallowed_methods`, `declare_interior_mutable_const`, and sets
@@ -911,9 +937,20 @@ cast_possible_wrap = "deny"
 cast_sign_loss = "deny"
 cast_lossless = "deny"
 cast_precision_loss = "deny"
-indexing_slicing = "deny"
-string_slice = "deny"                # byte-slicing a str can split a char
 char_lit_as_u8 = "deny"
+
+# NOT denied: `indexing_slicing` and `string_slice`. They were, and it did not
+# survive contact with what this code actually is. The bounded prefix scanner
+# (shim.md §3.1) is a hand-written byte scanner and is *nothing but* indexing
+# and slicing; so is most of the rope work. Under a deny those files become a
+# solid wall of #[expect], which turns a lint into decoration in the one place
+# it would have mattered most. The protection that actually holds here is
+# structural rather than lexical: WirePosition has private fields and yields a
+# ByteOffset only when handed the encoding and the text (core.md §8.3), the
+# offsets are newtypes rather than usize (rope-modifications.md), and the
+# cast_* denies above still catch the arithmetic. Slicing a str at a non-char
+# boundary panics loudly and immediately, which is the failure mode this
+# project can most afford.
 
 # -- determinism ------------------------------------------------------------
 # Hash iteration order varies between executions of the same program on the

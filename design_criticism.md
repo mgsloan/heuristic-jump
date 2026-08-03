@@ -1,9 +1,9 @@
 # Criticism of `design/` and `readme.md`
 
 Written against the tree at `5aa4a85`, covering `readme.md` and all ten
-documents in `design/` (~10,600 lines), and revised after the first round of
-fixes — findings that have since been acted on are removed rather than kept
-with a note, so what remains is what is still open.
+documents in `design/`, and revised after each round of fixes — findings that
+have been acted on are removed rather than kept with a note, so what remains
+is what is still open. It has shrunk by more than half.
 
 Nothing here is a style objection. Every item is either a claim I believe is
 false, an arithmetic result that contradicts a stated target, a decision I
@@ -83,14 +83,21 @@ remedy it offers — selecting an earlier point off the metrics history — does
 help, because the metrics history records work counters, not the delivered
 coverage that the deadline actually determines.
 
-**The missing measurement is cheap and should be in every metrics row**:
-replay already computes per-query work counters, so record the *predicted*
-deadline-abstention rate — the fraction of replayed queries whose work counters
-exceed a calibrated threshold. `resolution.md` open question 15 asks for exactly
-this ("report it per stratum and per repository size from the first corpus run")
-and `loops.md` §10 does not carry it into the metrics row. That is the one line
-that would make the trade visible during phase 2a instead of at the phase 3
-gate.
+**The measurement half of this has been addressed and the structural half has
+not.** `core.md` §7 now records latency at every point it can be — queue time,
+per-stage, whole-handler, and the real server's — and `loops.md` §10 carries
+per-stratum percentiles and the deadline-abstention rate in every metrics row.
+So the trade is now *visible* during phase 2a.
+
+What remains is that nothing *acts* on it. Phase 2a still gates on quality
+alone and phase 3 still may not change an answer, so a handler that only wins
+on an unbounded clock can be built, watched, recorded, and then handed to the
+one phase forbidden from fixing it. That is a deliberate choice rather than an
+oversight, and it may well be the right one — recording first and deciding
+later is the same posture the replay-time target took. It is listed here
+because the decision point is real and unscheduled: someone has to look at the
+deadline-abstention rate after the first corpus run and say whether phase 3's
+equality constraint survives it.
 
 ### 1.2 The optimisation target may be the one the design says does not matter
 
@@ -192,21 +199,15 @@ Recompute the cell. If the intended number really is 82%, some row is wrong and
 should be found; if it is 87%, the ranked-list decision is resting on a
 substantially thinner predicted margin than the prose claims.
 
-### 2.3 The corpus is an unreconstructable single point of failure, and irreversible decisions are welded to it
+### 2.3 Irreversible decisions are welded to the corpus without saying so
 
-`data-collection.md` is explicit and then moves on:
+The corpus costs ~100 machine-hours, gates phases 2 through 7, and
+`data-collection.md` says plainly that losing the directory loses it — it
+cannot be reconstructed from the manifest. Durability has since been ruled on
+deliberately (a clean checkout at a pinned SHA, nothing more), so that is not
+the complaint.
 
-> the checkout is the artifact, not the URL. Since nothing ever re-clones, a
-> repository that is force-pushed, renamed, or deleted upstream costs nothing —
-> but losing the corpus directory loses the corpus, and it cannot be
-> reconstructed from the manifest. It belongs in whatever gets backed up.
-
-That is the entire durability plan for the artifact that every number in the
-project is defined against, costing ~100 machine-hours and gating phases 2
-through 7. No checksums, no archive format, no offsite copy, no verification
-that a restored copy is the one that was collected.
-
-Worse, several cheap-looking decisions become 100-machine-hour decisions because
+The complaint is that several cheap-looking decisions become 100-machine-hour decisions because
 positions are frozen alongside truth:
 
 * **The identifier-shape rule** (`data-collection.md` §2) — "a named leaf node
@@ -222,71 +223,25 @@ positions are frozen alongside truth:
   honest answer is "recollect", and that answer should be written down next to
   the rule, because it turns a routine dependency update into a phase-length
   event.
-* **`20,000` positions per repository**, listed under "Decided. Kept." with no
-  power calculation, while `loops.md` "Decided 8" separately records that the
-  corpus is *assumed* large enough to distinguish improvement from sampling
-  noise and carries the assumption as a risk. Those two should be one decision
-  with one piece of arithmetic behind it.
+Durability itself has been ruled on and is deliberately thin: a clean checkout
+at a pinned SHA, no checksums and no archive. That is a defensible trade — it
+catches the failures that actually happen and needs nothing maintained — and it
+leaves the *irreversibility* unaddressed, which is the part still worth a
+paragraph.
 
-Add three lines to `data-collection.md`: a manifest checksum per truth file,
-a stated backup target, and a "what invalidates the corpus" list (repo commit,
-grammar revision, server version, identifier-shape rule, sampling seed) so the
-irreversibility is visible at the point where each of those is chosen.
-
-### 2.4 Sampling, thin strata, and the one number nobody will trust
-
-`data-collection.md` §3 records the thin-strata problem and explicitly declines
-to solve it, on the correct grounds that oversampling a stratum would require
-classifying positions with the code under measurement. It then hands the problem
-to "the phase that tunes against it", and `loops.md` receives it as a risk in
-§19 and an assumption in "Decided 8". Nobody solves it, and the two documents
-each believe the other is holding it.
-
-The arithmetic is more favourable than either document assumes — 100k positions
-per language at a 4% stratum is 4,000 samples, whose Wilson half-width at 90%
-agreement is about ±1 point, which is fine — so this is probably a non-problem.
-But it is currently carried as an unresolved fear in two documents, and one
-paragraph of arithmetic would retire it. Doing that also produces the number
-needed for §2.3's power calculation, so it is the same work.
-
-The `MacroGenerated` row at ~2% is the one that genuinely stays thin, and it is
-also the row the design cares least about. Say so and stop worrying.
+**What is missing is a stated "what invalidates the corpus" list**: repository
+commit, grammar revision, server version, the identifier-shape rule, and the
+sampling seed. Each of those is chosen somewhere in `data-collection.md` as a
+small local decision, and each silently costs ~100 machine-hours to revisit.
+Writing them down in one place is what makes the cost visible at the moment of
+choosing rather than at the moment of discovering.
 
 ---
 
-## 3. Gaps that must be filled before code
+## 3. The constants that decide behaviour are absent
 
-These are not disagreements. They are places where an implementer following the
-document arrives at a question it does not answer.
-
-### 3.1 Nobody owns the byte-offset → wire conversion for the *target* file
-
-`core.md` §8.4 establishes two types: `Location` (byte offsets, what a handler
-returns) and `WireLocation` (line/character, what goes on the wire), and says
-"the driver converts one to the other on the way out, in the same one place that
-owns `PositionEncoding`."
-
-But that conversion needs **the target file's text** — §8.4 says so directly:
-"only that one line's text is needed, and only to resolve the UTF-16 column."
-The target file is frequently not open, so this is a disk read.
-
-Now cross-reference `shim.md` §2: `core` "never parses, never searches, never
-touches the filesystem" and performs "only O(1) state transitions". And the
-response is emitted by `writer:editor`, which owns a pipe and nothing else.
-
-So the read has no home. The plausible fix is for the *worker* to build the
-`WireLocation` before handing the outcome back — it already holds a
-`ProjectView` and is inside the deadline — but that hands `PositionEncoding` to
-the dispatch layer, and `core.md` §3 and §8.3 are emphatic that encoding lives in
-exactly one place. Whichever way it is resolved, it is a real edit to §8.4,
-`shim.md` §2's actor contract, or both, and it should be resolved on paper
-because it touches the highest-risk correctness surface in the design.
-
-The same question applies, less urgently, to the `didSave` checksum
-(`core.md` §8.6), which §8.6 does correctly assign to a worker — showing the
-authors know the constraint and simply missed this instance.
-
-### 3.2 The constants that decide behaviour are absent
+Not a disagreement — a place where an implementer following the document
+arrives at a question it does not answer.
 
 The documents specify 1 KiB, 3 lines, 512 words, 4 in-flight, 750 ms, 2000 ms,
 20,000 positions. They do not specify:
@@ -357,83 +312,6 @@ against. I would keep the trace-record columns (`margin`, `considered`,
 `stratum_prior`/`stratum_final`) — those are genuinely unrecoverable later — and
 defer the rest to the phase that needs them.
 
-### 4.2 The rope newtype sweep is priced honestly and still looks like the wrong first move
-
-`rope-modifications.md` is a well-argued document that reaches a conclusion I
-would not take *yet*. What it commits to:
-
-* 51 public function signatures converted, plus all 17 of `ChunkSlice`'s;
-* all 54 `Point::new` / `PointUtf16::new` call sites edited;
-* `TextSummary` converted, described as "the largest scope increase";
-* body edits throughout, with the safety argument downgraded from "a mechanical
-  diff proves it" to "review checks the shape, tests check the behaviour" (§3);
-* the clean re-sync property explicitly conceded (§6);
-* a CI check asserting no bare `usize`/`u32` in `pub fn` signatures, plus an
-  allowlist file, to catch the one failure the diff cannot see;
-* `vendor/util` folded in, which §4 notes is *contingent on this work* and
-  should be reversed if the newtype sweep is ever dropped.
-
-And it lands in **phase 1a**, alongside the seam, `ProjectView`, `measure_core`,
-and the corpus plumbing — the phase `loops.md` §8 marks "Hand-driven or heavily
-supervised. The seam is decided here, and getting it wrong is expensive
-downstream."
-
-The value it buys is real: `ByteColumn` vs `Utf16Column` being distinct is the
-single mitigation for the bug class `core.md` §3 calls the highest-risk in the
-driver. But `core.md` §8.3's `WirePosition` already makes that bug
-unrepresentable *at the boundary*, which is where LSP positions enter, and
-`resolution.md` §1.1 states that UTF-16 never reaches a handler at all. So the
-marginal risk this closes is a confusion between two column units **inside code
-we wrote, below the boundary type that already prevents it**, at the cost of the
-largest single patch to a vendored crate in the project, taken before there is
-any code to protect.
-
-I would do the boundary types (`ByteOffset`, `ByteLen`, `ByteRange`,
-`LineIndex`) — those are needed by the seam and are a much smaller sweep — and
-defer `ByteColumn`/`Utf16Column`/`CharCount`/`TextSummary` until either the
-encoding property tests show a real failure or phase 3 has spare capacity. That
-also keeps the clean re-sync property for longer, and keeps `vendor/util` as an
-independent decision rather than a contingent one.
-
-If the sweep is done anyway, note the interaction with `deps.md` §14's
-workspace-wide lint config (§6.6 below): `rope`'s upstream tests are what verify
-the sweep, and they are kept verbatim precisely because they are unedited.
-
-### 4.3 The retry protocol's machinery costs more than its expected yield
-
-`Spot`, `is_repeat_of` with its four-arm asymmetric comparison, edit-anchoring
-of pending spots on every `didChange`, the widening-only-when-current rule, and
-the pending-query scan (`shim.md` §7) exist to serve one case: a repeat press at
-the same spot while the first request is still outstanding.
-
-By the design's own analysis, that case is close to empty:
-
-* When the server is `Warming` or `Unresponsive`, the policy is **eager**
-  (`shim.md` §6), so the first press is answered and there is no retry to detect.
-* When the server is `Ready`, it has already answered a definition request, and
-  `open-questions.md` question 4 records that a slow-but-alive server is
-  deliberately **not** pre-empted. So the retry serves only "a `Ready` server
-  that is slow on this particular query."
-* `high-level.md` says as much directly: "In a live session against a healthy
-  server the retry rule means the shim answers almost nothing."
-* `open-questions.md` question 2 records that the whole protocol assumes the
-  editor sends a second request rather than cancelling or deduping, verified for
-  Zed only, with no trace artifact and no VS Code answer.
-* `open-questions.md` question 3 records that under load the retry — the press
-  the protocol exists for — may be the one dropped by the in-flight cap.
-
-So: intricate, unverified for half the target clients, and serving a case the
-document says is nearly empty, while the case that actually delivers coverage
-(eager during `Warming`) needs none of it. The swallow machinery is needed
-regardless and is well-designed; `Spot` and anchoring are not.
-
-The cheapest experiment in the entire project is recording a VS Code trace
-against a deliberately slow server. It is a prerequisite for `shim.md` §7 and it
-has not been done. Do it before building any of this, and if VS Code cancels,
-delete `Spot` and the anchoring and rely on eager alone.
-
----
-
 ## 5. The loop design
 
 `loops.md` is 2,500 lines proposing autonomous loops for a project with no code,
@@ -470,47 +348,7 @@ genuinely mechanical; and require every `clean` verdict to cite the code
 satisfying each claim in that section, so a wrong verdict leaves evidence a
 later audit can contradict.
 
-### 5.2 `loops.md` contradicts itself on who runs phase 1a, and on whether the auditor writes
-
-* §8: "**Phase 1a** ... *Hand-driven or heavily supervised.* The seam is decided
-  here, and getting it wrong is expensive downstream in a way no loop will
-  notice."
-* §18: "**Phase 1a runs as a conformance loop**, so the machinery that loop
-  depends on is in scope and the rest is not."
-
-These are the two possible plans for the only phase currently in scope, and the
-document asserts both. §8's reasoning is the better one and §18's scoping
-depends on the opposite. This needs resolving before anything is built, because
-it decides whether `harness/gate`, the auditor, and the prompts are on the
-critical path at all.
-
-Separately: §3 says `state/audit/<doc>.toml` is "written only by the auditor",
-while §5 and the auditor prompt in §14 both say the auditor "may not edit
-anything" / "cannot edit anything." Presumably the harness captures the
-auditor's output and writes the file, but as written the document says the
-read-only session writes a file.
-
-### 5.3 Per-server loops have almost no legal moves
-
-§2's table gives the metric loop's concurrency as "parallel, one per (language,
-server), in phase 2a", and §13's ownership table splits `lang_python` into a
-language loop (everything except `profile/`) and a `python-pyright` loop owning
-exactly `crates/lang_python/src/profile/pyright.rs`.
-
-But `ServerProfile` starts empty, and both `core.md` §7 and `resolution.md` §1.4
-rule that a field appears "only when the corpus shows a systematic divergence
-that a field would fix" and that a handler must never branch on server identity.
-So the per-server loop owns one file, is forbidden to grow its type without
-what amounts to escalation-grade evidence, and is forbidden the one
-implementation shape (`if server.id == PYRIGHT`) that would let it do anything
-locally. §13 hedges — "whether per-server loops are worth spawning at all is a
-volume question" — but §2 presents them as the concurrency unit.
-
-Pick one. I would drop the per-server loop entirely from the design and keep
-per-server *metrics*, which is where the value is, adding a profile loop only
-if and when a profile grows enough fields to be worth an optimiser.
-
-### 5.4 Worktree cost is priced in RAM only
+### 5.2 Worktree cost is priced in RAM only
 
 §13 says each parallel loop gets its own `git worktree`, and that "a worktree is
 its own workspace root, so it gets its own `target/`", with the price described
@@ -527,7 +365,7 @@ and does not mention disk. It should, and it should say what happens when
 loop that fails its gate for reasons invisible in its own diff, which is the
 exact failure §13 designed the isolation to prevent.
 
-### 5.5 Smaller points on `loops.md`
+### 5.3 Smaller points on `loops.md`
 
 * **The ownership table contradicts itself on `crates/similarity/`**: the
   `phase 3` row grants "everything, including `crates/similarity/`" and the
@@ -557,124 +395,44 @@ These are Class A defects by `loops.md` §6's own definition — defensible answ
 that trade nothing off — and they should be fixed before anything reads these
 documents as a spec.
 
-### 6.1 The held-out split is stated three different ways
+### 6.1 Handler-side branching on server identity is forbidden by a comment, not by a type
 
-* `high-level.md`: "Of the 10 repos per language, 5 are held out."
-* `data-collection.md` §1: "Ten repositories each — five for training, five held
-  out."
-* `loops.md` §12: "`high-level.md`'s development plan holds out **3-4**
-  repositories per language" — and then, twenty lines later in the same section:
-  "**The split is five and five** (`data-collection.md` §1)."
-* `resolution.md` §11: "Per `high-level.md`'s development plan, **3–4**
-  repositories per language never seen by tuning."
+**Two different things are keyed by server identity, and only one of them is
+allowed to branch on it.** `core.md` §1 says so directly — `ServerAdapter`
+lives in `driver`, is matched against `serverInfo.name`, and exists precisely
+to do per-server things (`peek_mode`, `definition_indicates_ready`).
+`ServerProfile` lives in `shared`, reaches handlers, and must *not*:
 
-Two documents misquote a third, and one contradicts itself internally. This is
-also the most consequential single number in the corpus plan — `data-collection.md`
-§1 calls it "the one phase-1b decision that cannot be revisited."
+> handlers must not dispatch on server *identity* — `if server.id == PYRIGHT`
+> scattered through a handler is the per-language configuration format
+> `resolution.md` §1.2 rules out, wearing yet another hat. A handler reads a
+> field describing a behaviour; it does not ask which server it is talking to.
 
-### 6.2 The anti-restatement rule is stated and not followed, and the restatements have already drifted
+`resolution.md` §1.4 repeats it. So identity-branching **is** part of the
+design, in the driver; it is banned in handlers, where a per-server `if` is
+the rejected config format arriving by another route.
 
-`shim.md`'s preamble sets the rule clearly:
+The criticism is not that the rule is wrong — it is right, and the two-surface
+split it protects is one of the better ideas in the design. It is that the
+rule is enforced differently from every comparable rule here. `ProjectPath` is
+unforgeable, `WirePosition` is inert, handlers cannot construct
+`Outcome::Committed`. Here the guard is a doc comment, on a struct whose only
+member is the thing it forbids reading and which is also sufficient to detect
+standalone mode — something `resolution.md` §1.1 separately says a handler
+must never learn.
 
-> What this document does **not** own, and must not restate ... a second copy of
-> the encoding rule or the agreement predicate is exactly how the shipped metric
-> and the measured metric stop being the same number.
+**That the distinction is easy to misread is itself the evidence.** "The
+tool's behaviour varies by server" and "a handler may ask which server it is"
+are one sentence apart in the prose and opposite in the design.
 
-Against that:
+Two fixes, either sufficient: keep `ServerProfile` out of `Query` until it has
+a real behaviour field (§4.1 argues for that anyway, since it is empty), or
+make `ServerId` opaque to handlers — no `PartialEq`, no exported constants —
+so the comparison does not compile. The second costs nothing and turns a rule
+someone must remember into one they cannot break.
 
-* **The licensing rationale** ("`rope` is the only GPL input, so replacing it
-  would make the whole workspace permissively licensable without relicensing
-  anything") appears in `readme.md`, `high-level.md`, `core.md` §9, and
-  `deps.md` §5 — four copies, three of them near-verbatim.
-* **The corpus layout tree** appears in `readme.md`, `high-level.md`,
-  `core.md` §7, and `data-collection.md` §0 — four copies, and they already
-  differ (three splits vs two).
-* **The ±3-line tolerance and its justification** appear in `high-level.md`
-  and `core.md` §6 twice within the same section.
-* **The standalone rationale** appears in `high-level.md` and `shim.md` §14.1.
-* **`readme.md`'s first eighteen lines are byte-identical to
-  `high-level.md`'s**, while `readme.md` simultaneously claims `high-level.md`
-  is "the only one that stands alone."
-* **The held-out split**, §6.1 above — the one restatement that has already
-  produced a contradiction, exactly as the rule predicts.
+### 6.2 Assorted smaller ones
 
-### 6.3 `phases.md` 1.5's scope is much larger than its gate or the exit criterion
-
-* `phases.md` 1.5: "Collect the ground truth for **every language server on
-  every repo**." Seven languages, ten repositories each, more servers than
-  languages — `loops.md` §15 prices it at ~100 machine-hours and calls it "the
-  plan's long pole and its highest-uncertainty item."
-* `data-collection.md` §0 gate: "**for at least one language**, every repository
-  has positions, a truth file per server..."
-* `loops.md` §18 exit criterion: "`measure_rust replay` prints a per-stratum
-  table over real truth data, twice, identically." Rust only.
-
-Two of the three say one language is enough to finish the scoped work; the phase
-definition says all seven. The difference is roughly the difference between one
-week and two months of machine time, on the item the plan itself identifies as
-its long pole. `data-collection.md` §6 even recommends doing Rust first and C++
-second as a risk-reduction ordering, which only makes sense under the
-one-language reading.
-
-Resolve it in `phases.md`, which the readme calls "the authority the other
-documents defer to."
-
-### 6.4 The error/abstention separation leaks
-
-`CLAUDE.md`, `core.md` §1, `resolution.md` §1.1, and `deps.md` §10 all insist,
-correctly and at length, that abstention and failure are different things and
-must not share a type. Then `AbstainReason` carries `HandlerError` and
-`NoParse`, and `resolution.md` §8 says `HandlerError` "feeds the repeated-panic
-handler disable in `shim.md` §11."
-
-So a failure *is* an abstention reason, is consumed as a failure signal, and the
-one enum that exists to hold no failures holds two. This is defensible — the
-driver converts a failure into an abstention at the dispatch boundary, and
-`deps.md` §10 even says so ("Some `driver` code will convert an `Error` into an
-abstention; that conversion is explicit and logged") — but then the *reason*
-recorded should say the conversion happened, not pretend the handler chose to
-abstain. As written, the metrics cannot distinguish "this stratum has no
-coverage because resolution is hard" from "this handler is panicking", which is
-precisely the distinction `resolution.md` §8's last paragraph says the reasons
-exist to make.
-
-### 6.5 `ServerProfile.id` is a documented backdoor to something the design forbids
-
-`core.md` §1: `ServerProfile.id` is `Option<ServerId>`, `None` in standalone,
-and "a handler that branches on this is doing something wrong — but the absence
-has to be representable."
-
-Everywhere else, this design makes rules structural rather than customary —
-`ProjectPath` is unforgeable, `WirePosition` is inert, handlers cannot construct
-`Outcome::Committed`, and `core.md` §1 says so about each in turn. Here the rule
-is a comment, and the field it guards is simultaneously (a) the only member of
-the struct, (b) forbidden to read, and (c) sufficient to detect standalone mode,
-which `resolution.md` §1.1 separately says a handler must never learn.
-
-Either the field should not be in the struct handed to handlers, or the rule
-should be enforced the way every comparable rule in the design is enforced.
-
-### 6.6 Assorted smaller ones
-
-* **`deps.md` §14 puts `[lints] workspace = true` in every member**, and §15
-  then denies `unwrap_used`, `expect_used`, `panic`, `indexing_slicing`,
-  `string_slice`, and the `cast_*` family. Members include `vendor/rope` and
-  `vendor/sum_tree` — 7,400 lines of someone else's text-datastructure code,
-  plus the upstream tests `rope-modifications.md` §7 keeps *verbatim* precisely
-  because they are unedited. Editing `vendor/` is permitted now, so this is no
-  longer a contradiction, but satisfying those lints there is a large amount of
-  low-value work that would also enlarge every re-sync diff. `deps.md` §14
-  should carry a per-crate `[lints]` override for `vendor/*` as a deliberate
-  choice.
-* **`indexing_slicing` and `string_slice` are denied workspace-wide**, and
-  `shim.md` §3.1's bounded prefix scanner is a hand-written byte scanner that is
-  nothing but indexing and slicing. It will be written entirely under
-  `#[expect]`, which converts a deny into decoration in the one file where the
-  lint would have had the most value.
-* **`resolution.md` §6.4 requires a total order over candidate scores.** If
-  scores are `f32`, the idiomatic comparator is `partial_cmp().unwrap()`, and
-  `unwrap_used` is denied. `f32::total_cmp` solves it; nothing says so, and the
-  first implementer will reach for the `unwrap`.
 * `loops.md` describes the design corpus as "nine thousand lines" (§3) and "ten
   thousand-odd lines" (§0) and "ten thousand lines" (§6). It is ~10,600.
 * `core.md` §9 says the template handler's `Stratum::Unimplemented` "means the
@@ -687,17 +445,12 @@ should be enforced the way every comparable rule in the design is enforced.
   the load-bearing empirical claim under `shim.md` §7 and is recorded as a bare
   bullet with no trace, no date, and no version, in a document set that
   elsewhere cites `crates/lsp/src/lsp.rs:793` and `src/subtree.c:561`.
-* `DocumentSnapshot.parsed` is a `std::sync::OnceLock` (`core.md` §2). Under
-  fan-out, two workers sharing a snapshot can contend on it, and one blocks —
-  which is a lock on the query path, in a design whose stated rule is "no locks
-  anywhere" and "reaching for a lock means something is architecturally wrong."
-  It is the right primitive; the rule should acknowledge it rather than being
-  stated absolutely and then quietly excepted.
 * `high-level.md` scopes out `ExternalDependency` (predicted 4% of queries,
   0% coverage) while its own Future Work says "jumping into a dependency is a
   common go-to-definition." Those two sentences are about the same stratum and
   they disagree about how common it is — and §1.2's value weighting suggests it
-  is also where the slow-LSP tail lives.
+  is also where the slow-LSP tail lives. The corpus now records the per-position
+  server latency that would settle which of the two sentences is right.
 
 ---
 
@@ -745,52 +498,32 @@ written").
 
 ## 8. `readme.md` specifically
 
-Shorter, and mostly fine. Three things:
-
-* It duplicates `high-level.md`'s opening eighteen lines verbatim while telling
-  the reader that `high-level.md` is the one document that stands alone. Either
-  the readme should be the standalone one and `high-level.md` should start at
-  "Four reasons it exists", or the readme should link.
-* It duplicates the licensing rationale, which now exists in four places
-  (§6.2).
-* The "Planned layout" tree is the third copy of the workspace layout
-  (`core.md` §9, `deps.md` §14) and the fourth copy of the corpus layout. For a
-  file whose job is orientation, the table of documents at the bottom is the
-  valuable part and the trees are the part that will drift.
-
-The document table itself is good and should stay. The one improvement worth
-making: mark which documents are in scope for the current phase. A reader today
-cannot tell from `readme.md` that `shim.md` and most of `loops.md` describe work
-that `phases.md` explicitly defers.
-
----
+One thing left, and it is deliberate rather than an oversight: **the first
+eighteen lines are byte-identical to `high-level.md`'s**, while the readme
+tells the reader `high-level.md` is the one document that stands alone. Kept
+on purpose — the pitch is short and a reader arriving at either file should
+get it — so this is a note rather than a finding. If those two ever say
+different things about what the tool is, that is when it matters.
 
 ## 9. The short version
 
-If I could change four things:
+If I could change two things:
 
-1. **Put a predicted deadline-abstention rate in the metrics row** (§1.1), so
-   the gap between replay coverage and delivered coverage is visible during
-   phase 2a rather than at the phase 3 gate, where the equality constraint
-   forbids fixing it.
-2. **Make the latency-weighted stratum distribution a gate condition on
-   entering phase 2a** (§1.2). The design already says the headline metric may
-   be nearly uncorrelated with value; check before spending the dominant budget.
-3. **Record a VS Code trace** (§4.3). It is an afternoon, it is a prerequisite
-   for `shim.md` §7, and if the answer is "cancels", a large section of the shim
-   design deletes itself.
-4. **Fix the Class A defects** (§6): the 3–4 vs 5/5 split, the phase-1a
-   self-contradiction, the phase-1.5 scope, the `similarity` ownership row, the
-   four-way duplication.
+1. **Make the latency-weighted stratum distribution a gate condition on
+   entering phase 2a** (§1.2). The design says the headline metric may be
+   nearly uncorrelated with value, and now records the per-position server
+   latency that would settle it — but nothing looks at it before the dominant
+   budget is spent.
+2. **Defer the inert machinery out of phase 1a** (§4.1). The seam freezes at
+   that gate, and `CommitPolicy`, `Confidence`, and `ServerProfile` are all in
+   `Query` or `Outcome`. Keep the trace-record columns; they are the only part
+   that is genuinely unrecoverable later.
 
-Plus one standing recommendation that is not a defect: **defer the inert
-machinery** (§4.1) and the column-newtype half of the rope sweep (§4.2) out of
-phase 1a. Keep the trace-record columns; they are the only part that is
-genuinely unrecoverable later.
+Everything else here is a smaller correction or a note about volume.
 
 The design's core judgement — measure everything, freeze the oracle, abstain
 rather than block, keep languages independent — is right, and the parts of it
-that will be built first are the parts that are best argued. The risk is not
-that it is wrong. It is that it is *finished*: 10,600 lines of interlocking,
-cross-cited commitments written before a single measurement exists to check any
-of them against.
+that will be built first are the parts that are best argued. The risk was
+never that it is wrong. It is that it was *finished* before a single
+measurement existed to check any of it against; the last several rounds of
+edits have been that finish coming off, which is the right direction.

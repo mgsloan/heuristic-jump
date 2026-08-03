@@ -1,8 +1,8 @@
 # The LSP shim
 
 The proxy that sits between the editor and the proper language server: message
-routing, document state, server health, the retry protocol, dispatch, and
-divergence reporting. It is
+routing, document state, server health, dispatch, and divergence
+reporting. It is
 [`phases.md`](phases.md)'s phase 2b, and it is
 built *after* the handler seam and the measurement harness, which are
 [`core.md`](core.md).
@@ -228,14 +228,14 @@ along the edit path on every keystroke for a tree shared with N workers.
 `core` never parses, so a definition event that misses the parse cache is
 dispatched with `tree: None`. Two consequences, both benign:
 
-* The `Spot` for that query cannot be widened to a token, so it falls back to
-  exact-offset identity ([section 7](#7-go-to-definition-lifecycle)).
 * The worker parses for its own use, then returns the tree to `core` as a
   `Parsed { uri, version, tree }` event to be cached.
+* The next query on that document therefore starts warm, which is the only
+  thing the cache is for on this path.
 
-This gives the retry protocol exactly what it needs: the first query at a spot
-warms the cache, so by the time a user retries, the tree is present and the
-retry's `Spot` *can* be widened.
+Nothing on the definition path *consults* the cache before dispatching —
+[section 7](#7-go-to-definition-lifecycle) has no lookup to do — so a miss
+costs a parse inside the worker's deadline and nothing else.
 
 ## 3. Message routing
 
@@ -864,7 +864,7 @@ window.
 
 If a language server has not yet answered a single go-to-definition, it is
 plausibly still indexing. The moment it answers one, health becomes `Ready`
-and the retry rule takes over.
+and the shim goes quiet.
 
 Not permanently, though: `Ready` is a claim that can be withdrawn. Signal 2
 takes a server that stops answering back to `Unresponsive` and eager, and
@@ -890,7 +890,7 @@ Health selects the answering policy:
 | Health | Policy |
 |---|---|
 | `Warming` | **Eager.** Answer heuristically on the first request. |
-| `Ready` | **Retry-triggered.** Wait; answer only on a repeat query. |
+| `Ready` | **Silent.** Do not answer; the child will. |
 | `Unresponsive` | **Eager**, and answer an error rather than abstaining. |
 
 `Starting` is absent deliberately: no definition request can arrive before
@@ -899,11 +899,20 @@ logging, but — like the removed `Dead` and `Slow` — it is not allowed to
 imply behaviour it never drives.
 
 The eager rows follow directly from modelling health rather than just
-request-pendency, and they are most of the practical value of doing so. If the
-server is provably still indexing, making the user press go-to-definition
-twice to discover what the shim already knows is pure friction. Conversely
-when the server is `Ready`, waiting costs almost nothing and the proper answer
-arrives; `high-level.md`'s retry rule handles the occasional slow query.
+request-pendency, and they are **the entire practical value of doing so** —
+they are also now the only rows that do anything, since `Ready` means silence.
+If the server is provably still indexing, answering with what the shim already
+knows is the whole feature. Conversely when the server is `Ready`, waiting
+costs almost nothing and the proper answer arrives, so the shim stays out of
+the way; the occasional slow query on a healthy server is a case this version
+deliberately does not serve
+([section 7](#there-is-no-repeat-detection-and-that-is-a-deliberate-removal),
+`open-questions.md` question 4).
+
+That makes the health model load-bearing in a way it was not before. It used
+to share the job with a retry rule; now it is the only thing deciding whether
+the shim ever speaks, which is an argument for the generic warming signal
+above being conservative and for `Unresponsive` remaining reachable.
 
 The `Unresponsive` row differs in its abstention behaviour and is explained
 in [section 5](core.md#5-deadlines-and-abstention).
@@ -943,110 +952,88 @@ The protocol from `high-level.md`, stated precisely.
 ```rust
 struct PendingQuery {
     editor_id: EditorRequestId,
-    position: ByteOffset,     // where to actually run the query
-    spot: Spot,               // identity, for the repeat check
-    arrived: Instant,
-    /// Byte-space, as the handler returned it. The wire form is built when
-    /// the response is sent and is not retained -- see section 9.
-    answered_by_shim: Option<Vec<Location>>,
-}
-
-/// Query identity for the repeat check.
-#[derive(Clone)]
-struct Spot {
     uri: DocumentUri,
-    at: ByteOffset,
-    /// Present once a parse is available to widen the offset to a token.
-    token: Option<ByteRange>,
-}
-
-impl Spot {
-    /// Deliberately NOT `PartialEq`. Repeat-ness is not equality: it is
-    /// asymmetric in what it ignores, and the rules below are all cases
-    /// where a derived comparison would give the wrong answer.
-    fn is_repeat_of(&self, prior: &Spot) -> bool {
-        if self.uri != prior.uri {
-            return false;
-        }
-        match (self.token, prior.token) {
-            // Anywhere in the same token is the same question. A user
-            // re-triggering may land a character off.
-            (Some(a), Some(b)) => a.overlaps(b),
-            // One side was recorded before a parse existed. Widen using
-            // whichever token we do have.
-            (Some(a), None) => a.contains(prior.at),
-            (None, Some(b)) => b.contains(self.at),
-            // No parse on either side; exact offset is all there is.
-            (None, None) => self.at == prior.at,
-        }
-    }
+    position: ByteOffset,
+    arrived: Instant,
+    /// Byte-space, as the handler returned it, kept for the divergence
+    /// check in section 9 -- which compares (uri, line) and so needs
+    /// nothing else. The wire form was built in the worker and sent; it is
+    /// not retained. See core.md section 8.4.
+    answered_by_shim: Option<Vec<Location>>,
 }
 ```
 
-`core` holds these keyed by `editor_id`, plus a list scanned by
-`is_repeat_of`. The list is short — only queries still pending — so a linear
-scan beats indexing on something that has no equality relation. When more
-than one pending query matches, the **most recent** wins, so the result never
-depends on scan order.
+`core` holds these keyed by `editor_id`. They exist for three things and
+none of them is matching one query against another: cancellation
+([below](#cancellation)), knowing which id the child's later response
+belongs to, and carrying `arrived` so the trace record can report latency
+from the user's point of view.
 
-### Spots are anchors, not stored offsets
+### There is no repeat detection, and that is a deliberate removal
 
-`is_repeat_of` ignores versions, which is what makes a retry survive a
-formatter or a stray keystroke between the two presses. But byte offsets are
-meaningless across versions — offset 100 in v3 and offset 100 in v5 are
-different positions — so comparing a stored offset against a later one would
-be comparing coordinates from two different documents.
+An earlier revision recognised a **retry** — the same question asked twice
+while the first ask was still outstanding — and answered heuristically on
+the second press. That required a `Spot` type, an asymmetric
+`is_repeat_of` relation over four cases, re-anchoring every pending spot
+through every `didChange` so that offsets from different document versions
+could be compared, and a rule about widening an offset to its enclosing
+token only while the cached tree was current. It was the most intricate
+state in the driver.
 
-The fix is to keep pending spots in *current* coordinates. On every
-`didChange`, `core` walks its pending queries and translates each `Spot`
-through the edit:
+**All of it is gone**, and what it bought turns out to be small enough that
+the removal costs almost nothing:
 
-* Edit entirely after the spot — unchanged.
-* Edit entirely before it — shift `at` and `token` by the length delta.
-* **Edit overlapping the token — invalidate the spot.** If the identifier
-  itself changed, the user is no longer asking the same question, and a
-  later press there is a new query rather than a retry.
+* **The eager policies never used it.** When health is `Warming` or
+  `Unresponsive` the shim answers on first arrival
+  ([section 6](#what-health-is-for)), so there is no second press to
+  recognise. Those are the windows the tool exists for.
+* **What it served was one narrow case** — a `Ready` server, which has
+  already answered a definition request, being slow on this particular
+  query. `high-level.md` says outright that in a live session against a
+  healthy server "the shim answers almost nothing."
+* **It rested on an unverified premise.** The whole mechanism assumed the
+  editor sends a *second* request rather than cancelling the first or
+  deduping. That was confirmed for Zed and never for VS Code, so half the
+  machinery's target audience might never have triggered it.
+* **It was fragile under load.** The in-flight cap could drop the second
+  press — precisely the one the protocol existed to serve.
 
-This is the anchor pattern editors use for markers, and it is `core`'s kind
-of work: a short loop of arithmetic per edit. With it, every `Spot` in the
-pending list is expressed against the current document, and `is_repeat_of`
-compares like with like.
+So `Ready` now means the shim stays quiet and the child answers, which is
+the status quo the metric compares against and costs the user nothing they
+were not already paying. If the slow-but-alive case later proves worth
+serving, the place to serve it is the health model —
+`open-questions.md` question 4, which asks whether such a server should be
+pre-empted — and not a second protocol layered on top of it. That is the
+cheaper mechanism *and* the one with a measurement behind it, since health
+is inferred from the server's own behaviour rather than from the user's
+typing habits.
 
-### Widening only when the tree is current
-
-`core` widens an offset to its enclosing token using the cached tree — but
-that tree may be older than the document, and its node boundaries would then
-be wrong for the current text.
-
-So the rule is: **widen only when `edits_since_parse` is empty**, meaning the
-cached tree matches the current text exactly. Otherwise the `Spot` keeps
-`token: None` and relies on offset identity, which the anchoring above keeps
-valid. `core` never reparses to widen — that would be expensive work in the
-one place this design forbids it.
-
-In practice the tree is current whenever the user is not mid-keystroke, which
-is when they are pressing go-to-definition. The `(Some, None)` arm of
-`is_repeat_of` covers the rest: the first request at a spot often arrives
-before any parse exists, and the worker's parse lands before the retry comes
-in, so a widened retry is compared against an un-widened original.
+Three things fall out. `core` no longer walks its pending queries on every
+`didChange`, so `didChange` handling is genuinely O(1) in pending-query
+count rather than O(n). The parse cache is no longer consulted on the
+definition path at all, so [section 5](#5-document-state)'s "nothing may
+depend on an entry being present" has one fewer caller to be true for. And
+`ByteRange` needs no `shifted_by`, which is what removes `shared`'s one
+tree-sitter-shaped extension trait ([core.md section 1](core.md#vocabulary-types)).
 
 ### Flow
 
 1.  **Request arrives.** Forward to the child immediately (never gate
    forwarding on shim work). Record a `PendingQuery`.
-2.  **Determine the spot.** Build a `Spot`, widening the offset to its
-   enclosing identifier token if the parse cache already holds a tree for this
-   document —a lookup only, never a parse (see
-   [section 5](#5-document-state)). Compare against pending queries with
-   `is_repeat_of`.
-3.  **Check the policy.** If health says eager, or this is a repeat of a spot
-   with a still-pending query, dispatch to the handler. Otherwise do nothing
-   and let the child answer.
-4.  **Handler returns.** On `Committed`, answer *every* pending query at that
-   spot —the repeat and the original —as `high-level.md` specifies, and mark
-   each `answered_by_shim`. On `Abstain`, see
-   [section 5](core.md#5-deadlines-and-abstention).
-5.  **Child responds later.** `writer:editor` drops it, since it has already
+2.  **Check the policy.** If health says eager, dispatch to the handler.
+   Otherwise do nothing and let the child answer. That is the whole
+   decision — one lookup in [section 6](#what-health-is-for)'s table, no
+   comparison against any other query.
+3.  **Handler returns.** The dispatch wrapper encodes the locations for the
+   wire before `core` sees them
+   ([core.md section 8.4](core.md#the-conversion-happens-in-the-worker-not-in-core)),
+   so what arrives is a ranked list in both forms. On `Committed`, answer
+   the query and mark `answered_by_shim` with the byte-space list. On
+   `Abstain`, see
+   [section 5](core.md#5-deadlines-and-abstention). On `Err`, the wrapper has
+   already converted it to an abstention for the wire and recorded it as a
+   failure ([section 11](#11-failure-handling)).
+4.  **Child responds later.** `writer:editor` drops it, since it has already
    emitted a response for that id, and tells `core` which answer actually
    reached the editor
    ([section 3.2](#32-the-swallow-decision-belongs-to-writereditor)). If the
@@ -1091,7 +1078,7 @@ found", and it is a claim the shim has no basis for making. An error says the
 request could not be served, which is both true and something clients surface
 as a transient failure rather than an answer.
 
-### The `Unresponsive` error can discard a real answer, and the retry covers it
+### The `Unresponsive` error can discard a real answer, and health recovery covers it
 
 Worth stating, because the hazard is real and the reason it is tolerable is
 not obvious. Once the shim has answered request `id`, `writer:editor` drops
@@ -1105,15 +1092,14 @@ Standalone *knows* nothing will answer. `Unresponsive` only predicts it, and
 [section 6](#6-server-health-model)'s signal 3 exists precisely because the
 prediction is often wrong.
 
-What makes this acceptable is the retry protocol, and only in combination with
-that signal. The child's swallowed response still counts as evidence, so
-answering moves health to `Ready`; the user's second press then finds a
-`Ready` child, and an abstention there is silent rather than an error, so the
-child's answer reaches them. The cost is one wasted press during a window
-where the server was wedged anyway.
+What makes this acceptable is that signal. The child's swallowed response
+still counts as evidence that it produced one, so answering moves health back
+to `Ready`; the user's next press then finds a `Ready` child, the shim stays
+silent, and the child's answer reaches them. The cost is one wasted press
+during a window where the server was wedged anyway.
 
 Which means **the recovery path depends on swallowed responses counting**. If
-health could not be retracted, the second press would be eager as well, the
+health could not be retracted, every subsequent press would be eager too, each
 abstention would be another error, and there would be no press at which the
 child's answer could ever arrive. A grace timer before sending the error would
 also work and is not needed; this is written down so it is not reinvented.
@@ -1264,9 +1250,10 @@ Additional limits:
 
 | Failure | Response |
 |---|---|
-| Handler panics | `catch_unwind` at the dispatch boundary, treat as abstain, log. After repeated panics disable that handler **and tell the user via `window/showMessage`** — a silently disabled language looks like the tool simply not working |
-| Handler exceeds deadline | Drop the result, abstain, log |
-| Document unparseable | Abstain. A parse *cache* miss is not a failure — `tree()` parses on demand |
+| Handler returns `Err` | Serve as an abstention, record as `decision: "failed"` with the error's class ([core.md section 7](core.md#7-observability-and-the-corpus-scan)), log. The wire behaviour matches an abstention because a failure is not something a user can act on; the *record* must not, or a broken handler reads as a hard stratum |
+| Handler panics | `catch_unwind` at the dispatch boundary, then exactly as above. After repeated failures disable that handler **and tell the user via `window/showMessage`** — a silently disabled language looks like the tool simply not working |
+| Handler exceeds deadline | Drop the result, abstain, log. `AbstainReason::Deadline` is a *decision*, not a failure, and is recorded as one — including when it arrives as an `Err` from a read that found the deadline already gone, which the wrapper maps back ([core.md section 1](core.md#the-trait)) |
+| Document unparseable | `Err(Parse)` from `realise`, before the handler is called ([core.md section 2](core.md#snapshots-are-o1-to-take-and-are-parsed-before-a-handler-sees-one)), then handled as the first row. A parse *cache* miss is not a failure — the worker parses at dispatch |
 | Protocol projection fails, or document state drifts | Mark the document untrusted; queries against it abstain until a `didClose`/`didOpen` resyncs it. Forwarding is unaffected. [Section 8.6](core.md#86-modelling-errors-must-fail-closed) |
 | Child writes a malformed frame | Log; cannot recover framing, so exit rather than corrupt the stream |
 | Editor writes a malformed frame | Same |
@@ -1304,10 +1291,11 @@ tests that need a shim to run at all.
   exercises client-initiated traffic —which is what most LSP test harnesses
   do.
 *  **Protocol race tests** with an injected clock and a scripted fake child,
-  so the retry/answer/swallow/divergence sequences are deterministic. The
-  interesting cases are all orderings: child answers between the two editor
-  requests; child answers between the handler starting and finishing; cancel
-  arrives after the shim answered; two spots interleaved.
+  so the answer/swallow/divergence sequences are deterministic. The
+  interesting cases are all orderings: child answers between the handler
+  starting and finishing; cancel arrives after the shim answered; a second
+  request at the same position while the first is in flight; two documents
+  interleaved.
 *  **Double-response assertion.** A test harness invariant, enforced globally
   across every protocol test: the editor side must never see two responses
   with the same id. This is the single failure mode most likely to escape
@@ -1338,10 +1326,6 @@ tests that need a shim to run at all.
   a tree parsed at v5, assert the log retains exactly the v5..v7 edits and the
   next incremental reparse produces the same tree as a full parse of v7. The
   failure mode is silent divergence that no single-edit test catches.
-*  **Spot anchoring.** For edits before, after, and overlapping a pending
-  spot's token, assert the spot shifts, stays put, and invalidates
-  respectively —and that a retry after a formatter-style reindent is still
-  recognised as a repeat.
 *  **Untrusted-document tests.** Feed a `didChange` whose range is outside the
   rope, a non-increasing version, and a `didChange` for an unopened document;
   assert each marks the document untrusted, that subsequent queries against it
@@ -1364,7 +1348,7 @@ crates/driver/src/
   standalone.rs     synthesized InitializeResult, MethodNotFound catch-all
   actor.rs          the event loop, state ownership, snapshot-on-dispatch
   actor/
-    pending.rs      PendingQuery table, is_repeat_of scan, cancellation
+    pending.rs      PendingQuery table, cancellation
     health.rs       Child, ServerHealth, generic signals, policy table
     adapters.rs     ServerAdapter trait, name -> adapter lookup
     adapters/
@@ -1545,10 +1529,6 @@ and the policy function takes a `Child` rather than a `ServerHealth`.
 Consequently the following are dark in standalone, and should be structurally
 absent rather than conditionally skipped:
 
-* **The retry protocol** ([section 7](#7-go-to-definition-lifecycle)). Every
-  request is answered on first arrival, so there is no second press to detect.
-  `PendingQuery`, `Spot`, and `is_repeat_of` still exist — cancellation and
-  the trace record need them — but `is_repeat_of` is never consulted.
 * **Response swallowing** ([section 3](#3-message-routing)). No child
   responses exist to swallow. The double-response hazard the swallow rule
   guards against is replaced by the exactly-one-response invariant in
@@ -1569,8 +1549,7 @@ absent rather than conditionally skipped:
   spawned.
 * **Child death handling** ([section 6](#child-death)).
 
-Everything else — documents, the parse cache, spot anchoring, file
-enumeration, `ProjectView`, the worker pool, the deadline, the handler
+Everything else — documents, the parse cache, file enumeration, `ProjectView`, the worker pool, the deadline, the handler
 interface, the trace record — is byte-identical to proxy mode. That is the
 test of whether this stayed a variation: if `core`'s document and dispatch
 code needs to know which mode it is in, something has been wired wrong. The

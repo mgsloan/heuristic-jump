@@ -27,10 +27,18 @@ was installed and what it needed. The split matters because `collect`
 must record what it actually ran, and a prose document cannot be
 resolved by a program.
 
-**Gate:** for at least one language, every repository has positions, a
-truth file per server with a valid provenance header, and
-`measure replay` reproducing the recorded positions exactly. Plus the
-oracle-determinism check in [section 5](#5-validate-the-oracle-before-trusting-it).
+**Milestone — the calibration run.** For **Rust**, every repository has
+positions, a truth file with a valid provenance header, and `measure replay`
+reproducing the recorded positions exactly, plus the oracle-determinism check
+in [section 5](#5-validate-the-oracle-before-trusting-it). This says the
+pipeline is sound and is worth reaching before the other six start; see
+[section 6](#6-cost) for why Rust first.
+
+**Gate:** the same, for **all seven languages and every server**. That is the
+~100 machine-hours, and it is what phase 2a is blocked on. The milestone is
+not the gate — reaching it in a week does not mean the phase is done, and
+treating it as though it did is how the plan's long pole gets under-scoped
+([`loops.md` §18](loops.md#18-scope-phases-1-and-15-first)).
 
 ## 1. Repository selection
 
@@ -141,10 +149,26 @@ good and the question is whether the corpus earned it.
 Submodules would drag the corpus into the repository's own history,
 which is gigabytes of other people's code, and would couple corpus
 version to source version in a way nothing wants. Instead the checkouts
-live in the corpus root and collection starts by checking `git rev-parse
-HEAD` against the manifest for every repository, refusing to run on a
-mismatch. Cheap, and it catches the accidental `git pull` that would
-otherwise invalidate every byte offset silently.
+live in the corpus root, and both `collect` and `replay` start by
+verifying every repository they are about to touch:
+
+* `git rev-parse HEAD` matches the manifest's pinned SHA;
+* `git status --porcelain` is **empty**.
+
+Refuse to run on either failure. The SHA check catches the accidental
+`git pull`; the clean-tree check catches the rest of the ways a checkout
+drifts, and it is the one that actually matters, because a modified or
+extra file changes byte offsets and *does not change `HEAD`*. Untracked
+files count — the file list is an `ignore`-crate walk of the filesystem
+(`core.md` §4), so an untracked file that is not gitignored is a file the
+search will find and the truth file has never heard of.
+
+This is deliberately the whole integrity story: no checksums, no
+archive format, no verification that a restored copy is the one that was
+collected. A clean tree at a known SHA is cheap, catches the failures that
+actually happen, and needs nothing maintained. What it does not protect
+against is losing the corpus directory, which is covered by the note
+below rather than by machinery.
 
 **A repository is never bumped.** A newer commit is a different corpus,
 and re-pinning invalidates every position and every truth file that
@@ -320,7 +344,38 @@ condition to detect at position zero, not at position 20,000.
 
 Per (repository, server): start the server, wait for ready, probe, then
 walk `positions.jsonl` issuing `textDocument/definition`, recording the
-answer and the elapsed time.
+answer and how long the server took to give it.
+
+**The server's response time is recorded for every position**, not just for
+the ones that resolved, and it is as load-bearing as the answer itself:
+
+* **It is what `high-level.md`'s value weighting is computed from.** A correct
+  heuristic answer to a query the real server would have served in 150ms is
+  worth approximately nothing; the tool's value is concentrated in the slow
+  tail. Without a per-position latency there is no way to tell which of those
+  a corpus position is, and the headline coverage number silently weights them
+  equally.
+* **It is a fact about the frozen corpus, not about any later run.** It is
+  measured once here, travels in `truth.jsonl`, and is never re-measured —
+  `core.md` §7 carries it as `lsp_latency_us` and replay copies it through
+  untouched. That is the point: it describes how slow the real server was on
+  this repository at this commit, which is exactly the quantity the weighting
+  wants, and re-measuring it on a tuning machine would replace a property of
+  the oracle with a property of whatever else was running.
+* **Measured send-to-receive**, from writing the request frame to reading the
+  matching response, in microseconds. Not the server's internal timing, which
+  is not observable and is not what a user waits for.
+* **Recorded on `error` and `timeout` rows too** — for `timeout` it is the cap
+  rather than an observation, and the outcome field is what says so. Dropping
+  the timing on those would bias the distribution toward the fast tail
+  exactly where the tool is most valuable, which is the opposite of the
+  reason for collecting it.
+
+Because collection waits for readiness and the shim races it, these numbers
+are the *warm* server's latency and understate what a user experiences during
+startup — which is the window the tool exists for. That makes them a
+conservative floor for the value weighting rather than an estimate of it, and
+it is worth remembering before treating a small weighted number as bad news.
 
 The answer is a *list*, and all of it is recorded in the order the server
 gave it. `textDocument/definition` may legitimately return several
@@ -344,12 +399,12 @@ is bounded by RAM rather than CPU, since a warm index is large.
 
 Four outcomes, kept distinct:
 
-| Outcome | Meaning |
-|---|---|
-| `resolved` | one or more locations, **in the server's order** |
-| `none` | server answered, no definition — a real answer |
-| `error` | server returned an error |
-| `timeout` | no answer inside the cap |
+| Outcome | Meaning | Latency |
+|---|---|---|
+| `resolved` | one or more locations, **in the server's order** | observed |
+| `none` | server answered, no definition — a real answer | observed |
+| `error` | server returned an error | observed, to the error |
+| `timeout` | no answer inside the cap | the cap, not an observation |
 
 Collapsing `error` or `timeout` into `none` is the mistake that quietly
 inflates precision later, because the heuristic gets credit for
@@ -402,6 +457,11 @@ The questions this document opened with, settled — recorded because the
 reasoning matters more than the answer:
 
 * **20k positions per repository.** Kept.
+* **The server's response time is recorded per position**, on every outcome,
+  as a property of the frozen corpus — [above](#the-run).
+* **Checkouts are verified clean at a pinned SHA**, and that is the whole
+  integrity mechanism: no checksums, no archive —
+  [above](#manifesttoml-and-repositories-are-never-bumped).
 * **Repositories are never bumped**, so the "refresh positions on
   re-pin" problem does not arise. SHA manifest, verified checkouts, no
   submodules — [above](#manifesttoml-and-repositories-are-never-bumped).

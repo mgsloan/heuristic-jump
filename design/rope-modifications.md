@@ -86,18 +86,16 @@ never knows or cares that the definition sits in the vendored crate. That
 keeps [section 1](core.md#vocabulary-types)'s claim —
 that these are the shared vocabulary — true from the outside.
 
-There is one method this placement cannot accommodate.
-[Section 1](core.md#vocabulary-types) gives `ByteRange`
-a `shifted_by(&InputEdit)` for spot anchoring, and `InputEdit` is
-tree-sitter's. rope must not grow a tree-sitter dependency for one method, so:
+`ByteRange` carries only text-shaped operations — `contains`, `overlaps`,
+`len`, `is_empty`, `intersect` — all of which rope can define without
+depending on anything of ours.
 
-* rope's `ByteRange` carries only the text-shaped operations — `contains`,
-  `overlaps`, `len`, `is_empty`, `intersect`.
-* `shared` supplies `shifted_by` through an extension trait.
-
-That split is a little awkward to read and it is the honest consequence of the
-dependency direction. The alternative — a third crate below both, existing to
-hold two structs — is worse.
+An earlier revision needed one more, `shifted_by(&InputEdit)`, to re-anchor a
+pending query's position through an edit, and `InputEdit` is tree-sitter's —
+so it could not live in rope, and `shared` supplied it through an extension
+trait. That awkwardness is gone with its caller: `shim.md` §7 no longer tracks
+positions across edits, so nothing needs the method and `shared` needs no
+extension trait over rope's types at all.
 
 ## 3. What keeps this safe
 

@@ -13,7 +13,7 @@ handler against a corpus and score it. It is
 * The hand-written LSP wire types, the workspace layout, and the vendoring.
 
 **The LSP shim is [`shim.md`](shim.md)** — the proxy, the actor, message
-routing, server health, the retry protocol, divergence reporting, dispatch,
+routing, server health, divergence reporting, dispatch,
 and standalone mode. That is phase 2b, and none of it is needed to measure a
 handler. The split is not cosmetic: `measure_core` depends on `shared` and
 never on `driver` ([section 9](#the-dependency-graph)), so a language can be
@@ -63,14 +63,6 @@ pub struct LineIndex(pub u32);      // zero-based line
 impl ByteRange {
     pub fn contains(self, at: ByteOffset) -> bool;
     pub fn overlaps(self, other: ByteRange) -> bool;
-}
-
-// shared, as an extension trait: `shifted_by` needs tree-sitter's InputEdit,
-// and rope must not grow a tree-sitter dependency for one method.
-pub trait ByteRangeExt {
-    /// Shift by an edit's length delta; None if the edit fell inside,
-    /// which invalidates the range. Used for spot anchoring, shim.md section 7.
-    fn shifted_by(self, edit: &InputEdit) -> Option<ByteRange>;
 }
 
 // shared's own
@@ -137,7 +129,9 @@ pub trait LanguageHandler: Send + Sync {
     /// maintain its parse cache without depending on any grammar crate.
     fn grammar(&self) -> tree_sitter::Language;
 
-    fn goto_definition(&self, q: &Query<'_>) -> Outcome;
+    /// `Err` is a *failure*, never a decision. Abstention lives in `Outcome`.
+    /// See "Failure and abstention are different returns" below.
+    fn goto_definition(&self, q: &Query<'_>) -> Result<Outcome, Error>;
 }
 
 pub struct Query<'a> {
@@ -211,8 +205,6 @@ pub enum AbstainReason {
     /// The only plausible target is outside the workspace. Carries the name
     /// because standalone puts it in the error text (`shim.md` §8).
     External { name: Box<str> },
-    NoParse,
-    HandlerError,
 }
 
 /// Stratum -> minimum Confidence. Empty in v1, where `decide` returns
@@ -238,6 +230,40 @@ Notes on the shape:
   the deadline expired —and it should not share a type with "something went
   wrong." Under the future precision floor it also becomes the mechanism that
   holds the floor, which is a further reason not to model it as an error.
+*  **Failure and abstention are different returns, and that is why the
+  signature is `Result<Outcome, Error>`.** The bullet above says abstention
+  must not share a type with failure; the earlier signature `-> Outcome` did
+  not give failure a type at all, so it leaked back in the other direction —
+  `AbstainReason` grew `HandlerError` and `NoParse`, and a handler doing the
+  `?` propagation `CLAUDE.md` requires had nowhere to propagate *to*. Both
+  variants are gone. A handler that fails returns `Err(Error)`; a handler that
+  declines returns `Ok(Abstain { .. })`; the two are no longer spellable as
+  each other.
+
+  What reaches the editor is the same either way — the dispatch wrapper
+  converts an `Err` into an abstention on the wire, because a failure is not
+  something a user can act on and the shim's job is to get out of the way
+  ([`shim.md` §11](shim.md#11-failure-handling)). What differs is the
+  *record*: a converted failure is written as `decision: "failed"` with the
+  error's class, never as an abstention
+  ([section 7](#7-observability-and-the-corpus-scan)). Without that, a
+  stratum with no coverage because resolution is hard and a stratum with no
+  coverage because the handler is panicking are the same row, which is
+  precisely the distinction `resolution.md` §8 says the reasons exist to
+  make.
+
+  **One error class is mapped back, and it has to be: the deadline.**
+  `ProjectView` fails a read whose deadline has already expired
+  (`resolution.md` §3), so a handler doing ordinary `?` propagation surfaces
+  an expiry as `Err` — and a deadline expiry is a *decision*
+  ([section 5](#5-deadlines-and-abstention)), the one latency-shaped
+  abstention `high-level.md` allows. The dispatch wrapper therefore converts
+  that class, and only that class, into
+  `Abstain { reason: Deadline, .. }` and records it as an abstention. Getting
+  this backwards would log every deadline-aborted query on a large repository
+  as a handler failure, which is both false and exactly the wrong direction:
+  the abstention rate attributable to the deadline is a number
+  `resolution.md` open question 15 says to watch from the first corpus run.
 * **`AbstainReason` carries no resolution vocabulary.** Earlier revisions had
   `UnsupportedRole { role: ReferenceRole }` and `External { name: Namespace }`,
   which would have dragged two of `resolution.md`'s internal types into the
@@ -266,9 +292,13 @@ Notes on the shape:
   against the registry and gets `Option<LanguageId>`. Unknown languages fail
   to resolve at the boundary rather than travelling inward as a string that
   matches nothing, and lookup becomes pointer comparison.
-*  **Handlers get a snapshot, not a lock.** `DocumentSnapshot` holds cloned
-  `Rope` and `Tree` handles, both O(1), taken at dispatch —so a handler is
-  immune to edits that arrive while it runs, and `core` is never blocked.
+*  **Handlers get a snapshot, not a lock —literally, with no primitive in it
+  at all.** `DocumentSnapshot` holds a cloned `Rope` and a `Tree`, both O(1)
+  to clone, taken at dispatch —so a handler is immune to edits that arrive
+  while it runs, and `core` is never blocked. It contains no cell and no
+  interior mutability, which is what lets `CLAUDE.md`'s "no locks anywhere"
+  stay literally true on the one path where it was nearly not
+  ([section 2](#snapshots-are-o1-to-take-and-are-parsed-before-a-handler-sees-one)).
 *  **Handlers do their own disk reads, parses, and searches through
   `ProjectView` **, so the driver can enforce the scope rules (workspace only,
   gitignore respected), cache reads within a query, reuse the parse LRU from
@@ -353,26 +383,40 @@ through the same constructor in `shared`, which is what keeps the corpus
 scoring the code that ships (see
 [section 7](#7-observability-and-the-corpus-scan)).
 
-### Snapshots are O(1)
+### Snapshots are O(1) to take, and are parsed before a handler sees one
 
-Snapshot-on-dispatch is only viable because nothing is copied:
+Snapshot-on-dispatch is only viable because nothing is copied. It comes in two
+steps, and the split is what keeps `core` doing O(1) work while the parse still
+happens inside the worker and inside the deadline:
 
 ```rust
-pub struct DocumentSnapshot {
+/// What `core` builds at dispatch. Three refcount bumps and a struct move.
+pub struct SnapshotSeed {
     pub text: Rope,                  // structural sharing; O(1)
     pub version: DocumentVersion,    // the version above
     pub language_id: LanguageId,
     /// Cached tree at some older version, plus the edits that bring it
-    /// up to `version`. Never handed to handlers directly.
+    /// up to `version`. Never handed to a handler.
     base: Option<(Tree, Arc<Vec<InputEdit>>)>,
     grammar: tree_sitter::Language,
-    parsed: OnceLock<Tree>,
+}
+
+/// What a handler is given. The tree is already correct for the text.
+pub struct DocumentSnapshot {
+    pub text: Rope,
+    pub version: DocumentVersion,
+    pub language_id: LanguageId,
+    tree: Tree,                      // plain field: no cell, no interior mutability
+}
+
+impl SnapshotSeed {
+    /// Reparses incrementally from `base`, or parses from scratch if there
+    /// is none. Called by the worker, never by `core`.
+    pub fn realise(self) -> Result<DocumentSnapshot, Error>;
 }
 
 impl DocumentSnapshot {
-    /// A tree for exactly `self.version`. Reparses incrementally from
-    /// `base` on first call, or parses from scratch if there is none.
-    pub fn tree(&self) -> Result<&Tree, ParseError>;
+    pub fn tree(&self) -> &Tree;     // infallible; it is a field
 }
 ```
 
@@ -388,14 +432,38 @@ appending to it while a worker holds a snapshot copies the log via
 `Arc::make_mut`, which is bounded by edits-since-last-parse and so is a
 handful of small structs, never the document.
 
-** `parsed` must be the thread-safe cell.** Handlers may fan out across
-candidate files
-([section 10](shim.md#10-parallel-dispatch-and-resource-limits)), which means
-`&Query` —and therefore `&DocumentSnapshot` —crosses threads, which requires
-`DocumentSnapshot: Sync`. So `parsed` is a `std::sync::OnceLock<Tree>`, not
-the unsync variant. This works because tree-sitter declares `Tree` both `Send`
-and `Sync` (`binding_rust/lib.rs:3908`); `Node<'tree>` is likewise `Sync`, so
-nodes borrowed from a shared tree can be passed between fan-out workers.
+**`DocumentSnapshot` contains no synchronisation primitive, and that is the
+point of the two-step shape.** Handlers fan out across candidate files
+([section 10](shim.md#10-parallel-dispatch-and-resource-limits)), so `&Query`
+— and therefore `&DocumentSnapshot` — crosses threads and must be `Sync`. An
+earlier revision got that by memoising the parse in a `std::sync::OnceLock`,
+which works and is `Sync`, but is a blocking primitive on the query path in a
+design whose stated rule is that there are no locks anywhere: two fan-out
+workers calling `tree()` at once would have had one of them wait.
+
+Parsing eagerly removes the question instead of excusing it. `tree` is a plain
+field, `Sync` follows from tree-sitter declaring `Tree` both `Send` and `Sync`
+(`binding_rust/lib.rs:3908`), and there is nothing to contend on.
+`Node<'tree>` is likewise `Sync`, so nodes borrowed from the shared tree pass
+freely between fan-out workers.
+
+**Eager costs nothing real**, which is why this is a simplification rather
+than a trade:
+
+* Every query needs the tree anyway — stage 0 is reference extraction from it
+  (`resolution.md` §2), so there is no path that would have skipped the parse.
+* `resolution.md` §1.1 already asked handlers to call `tree()` even on paths
+  that abstain immediately, so the cache is warm for the next query on that
+  document. Eager makes that automatic instead of a rule someone can forget.
+* The parse is usually incremental from a cached base, and often the base is
+  already current.
+
+**And it moves the parse failure somewhere better.** `realise` returns
+`Result`, so an unparseable document fails at dispatch and never reaches a
+handler — `Err(Error::Parse)`, recorded as a failure
+([section 7](#7-observability-and-the-corpus-scan)) rather than as a decision
+the handler made. `tree()` is then infallible, which deletes a `Result` from
+the busiest call in every handler.
 
 ### Text and tree can never disagree
 
@@ -405,24 +473,30 @@ text and the v3 tree would be a trap — every offset in that tree is wrong for
 that text, and the mismatch is invisible until it produces a confidently
 wrong answer.
 
-So the stale tree is private. `base` holds it together with the edits that
-reconcile it, and `tree()` is the only way to get one:
+So the stale tree never leaves the seed. `base` holds it together with the
+edits that reconcile it, and `realise` is the only way across:
 
-1. First call applies `edits_since_parse` to a **private clone** of the base
-   tree via `Tree::edit`, then reparses against the v5 text with the edited
-   tree as the starting point — a normal tree-sitter incremental parse.
+1. It applies `edits_since_parse` to a **private clone** of the base tree via
+   `Tree::edit`, then reparses against the v5 text with the edited tree as the
+   starting point — a normal tree-sitter incremental parse.
 2. With no base, it is a full parse.
-3. The result is memoised, so a handler that asks repeatedly pays once.
+3. The result becomes `DocumentSnapshot.tree`, and the seed is consumed.
 
-**The handler cannot obtain a tree that does not match `text`.** The parse is
-paid inside the worker and inside the deadline, never in `core`.
+**A handler cannot obtain a tree that does not match `text`**, because there
+is only one tree and it was produced from that text. Not a rule about how to
+use the type — a property of the type. The parse is paid inside the worker and
+inside the deadline, never in `core`.
 
-Getting the result back to `core` is explicit rather than implicit: the worker
-owns the `DocumentSnapshot` for the duration of the query and hands it back at
-the end, and the dispatch wrapper — not the handler — checks whether `parsed`
-was filled and, if so, sends `Parsed { uri, version, tree }` to `core`. The
-handler is not involved and cannot forget. `core` caches it, so the next query
-on that document starts warm.
+Getting the result back to `core` is explicit rather than implicit: the
+dispatch wrapper — not the handler — sends `Parsed { uri, version, tree }` to
+`core` after `realise` succeeds. The handler is not involved and cannot
+forget. `core` caches it, so the next query on that document starts warm.
+
+**Both consumers realise the same way.** `realise` lives in `shared` alongside
+the seed, so `measure_core` builds its snapshots through it exactly as the
+driver does — which is the property [section 7](#the-corpus-scan-is-a-separate-program)
+depends on when it argues that the corpus scores the code that ships. `core`
+builds seeds and never realises one; that is what keeps it free of parsing.
 
 ## 3. Position encoding
 
@@ -543,10 +617,10 @@ contents beyond the parse LRU.**
   search was cut off, which is evidence about nothing, and rescanning on it
   would spend I/O in the window that just proved to be short of it.
 
-  This pairs neatly with the retry protocol: a second query on the same spot
-  is already the expected path, so the rescan usually lands exactly when it
-  is needed. Rescans are debounced, so a burst of misses triggers at most one,
-  and the two triggers share one debounce rather than one each.
+  A user who did not get an answer generally asks again, so the rescan
+  usually lands about when it is needed. Rescans are debounced, so a burst of
+  misses triggers at most one, and the two triggers share one debounce rather
+  than one each.
 * **Both invalidation paths are best-effort and neither blocks a query.** A
   query that arrives while a rescan is in flight uses the list it has.
 
@@ -724,13 +798,19 @@ resolved as abstained):
   "mode": "proxy",
   "server_health": "Warming",
   "decision": "committed",
+  "failure": null,
   "stratum_prior": "explicitly_imported",
   "stratum_final": "explicitly_imported",
   "confidence": 0.94,
   "margin": 0.62,
   "considered": 7,
+  "stages": ["ref:Type", "scope:miss", "import:Declared(crate::ast)",
+             "verify:9->3", "rank:margin=0.62"],
   "bytes_scanned": 1841203,
   "files_parsed": 14,
+  "queued_us": 400,
+  "stage_us": {"reference": 12, "scope": 40, "imports": 900, "search": 6800,
+               "verify": 500, "rank": 48},
   "heuristic_latency_us": 8300,
   "heuristic_locations": ["..."],
   "returned": 3,
@@ -748,6 +828,16 @@ LSP-latency value weighting. Everything from `stratum_prior` through
 `files_parsed` is reported *by the handler*, since only it knows which
 resolution path produced the answer and what it cost; the driver classifies
 `agreement` and `severity`, since only it has both answers.
+
+**`decision` has three values, not two**: `committed`, `abstained`, and
+`failed`. The third is what the handler seam's `Result<Outcome, Error>`
+([section 1](#the-trait)) exists to make recordable. On the wire a failure is
+served as an abstention, because that is what is useful to a user; in the
+record it must not be one, or the per-stratum table cannot tell a hard
+stratum from a broken handler. `failure` names the `Error` sub-enum that was
+converted — `"Parse"`, `"Project"`, `"Handler"` — and is `null` otherwise.
+The whole error is deliberately not carried: the class is what a metrics table
+can group on, and the detail is already in the log.
 
 **`position` is a byte offset**, like every other position inside the shim
 ([section 8](#8-protocol-types)). It is what `data-collection.md` records
@@ -771,6 +861,60 @@ derived from data collected while nothing was being gated, and a corpus run
 that kept only the collapsed `confidence` could never answer *what would a
 floor have cost?* — which is the question the permissive posture exists to
 ask (`resolution.md` §7.1).
+
+**Latency is recorded at every point it can be, and gated at none.**
+`high-level.md` reports latency per stratum, `resolution.md` §2 predicts that
+stages 0–2 are sub-millisecond and everything from 3 on is where the tail
+lives, and `high-level.md`'s value weighting turns on how slow the *real*
+server was. None of that is answerable from one number per query, so the
+record carries several and the rule is to write down whatever can be measured
+wherever it can be measured:
+
+| Field | Measured | Where it comes from |
+|---|---|---|
+| `queued_us` | request arrival → dispatch into a worker | driver only; zero in replay |
+| `stage_us` | wall clock per pipeline stage, handler-supplied | both |
+| `heuristic_latency_us` | dispatch → outcome, the handler's whole cost | both |
+| `lsp_latency_us` | the real server's send-to-receive time | `collect` only, frozen (`data-collection.md` §4) |
+
+`queued_us` exists because [section 5](#5-deadlines-and-abstention) starts the
+deadline at *arrival*, not at handler entry — a handler given its full budget
+that started 200ms late has already blown it from the user's point of view, and
+without this field that shows up as a fast handler and an unexplained
+abstention.
+
+`stage_us` is what makes a latency finding actionable rather than merely true:
+it is the difference between "p99 is 700ms" and "p99 is 700ms and 95% of it is
+stage 5". It shares `stages`' rules — bounded, nothing branches on it, and it
+is an *observation*, so it does not have to be reproducible the way the rest of
+the record does.
+
+Two things this deliberately does not do. **Nothing is gated on any of it**:
+phase 2a optimises quality and records cost without enforcing it
+(`loops.md` §10), and that is unchanged. And **none of it is trusted on a
+loaded machine** — under parallel loops these are noisy, which is exactly why
+they are reported beside the deterministic work counters rather than instead of
+them. A number that is only sometimes meaningful is still worth writing down;
+it is not worth thresholding.
+
+**`stages` is the handler's own account of what it did**, and it is the field
+that makes a failure diagnosable rather than merely counted. An ordered list of
+short labels the handler appends as it goes: which role the reference got, what
+each stage found or missed, how many candidates survived verification. The
+vocabulary is entirely the handler's — this is the sanctioned channel
+[section 1](#the-trait) means when it says the detail a handler knows "reaches
+the metrics through the trace record rather than the seam", and it is why
+`AbstainReason` can stay free of resolution vocabulary without that detail
+being lost.
+
+Three rules keep it from becoming a dumping ground. It is **bounded** — a small
+fixed maximum number of short labels, truncated rather than grown. **Nothing
+branches on it**, ever, exactly like `bytes_scanned`; a handler that read its
+own stage log back would have made the answer depend on it. And it is
+**stable across runs for the same input**, because the handler is deterministic
+([`resolution.md` §1.3](resolution.md#13-the-search-is-exhaustive-and-the-clock-may-only-abort-it)),
+which is what lets failures be *grouped* by it rather than merely listed —
+see [below](#the-table-is-not-enough-a-replay-has-to-show-its-failures).
 
 **`bytes_scanned` and `files_parsed` are counters, not limits.** Nothing
 compares them against a budget and no search stops because of them
@@ -819,8 +963,8 @@ part of the system with the strictest correctness requirements.
 The reason to hesitate is that a separate harness could drift into measuring a
 reimplementation rather than the real thing. That concern turns out to be
 weaker than it looks: **what `measure` measures is the handler, not the
-driver.** The proxy, the health model, and the retry protocol are not under
-test — resolution accuracy is. So as long as `measure_core` builds its
+driver.** The proxy and the health model are not under test — resolution
+accuracy is. So as long as `measure_core` builds its
 `Query` and `DocumentSnapshot` the same way, the code under test is genuinely
 identical.
 Snapshot construction therefore lives in `shared`, which makes that
@@ -969,11 +1113,78 @@ Constraints that make a replay trustworthy:
   wants, since it is a fact about how slow the real server was, not about
   this run.
 * **Replay measures the handler, not the driver**, same as `collect` — the
-  paragraph above applies unchanged. Nothing in the proxy, the health model,
-  or the retry protocol is under test in either mode.
+  paragraph above applies unchanged. Nothing in the proxy or the health model
+  is under test in either mode.
 * **A truth file is regenerated, never edited.** Metrics compared across two
   corpus versions are not comparable, and a partially refreshed corpus is the
   worst case: it looks like a regression.
+
+### The table is not enough: a replay has to show its failures
+
+The per-stratum table says *which* stratum is losing and by how much. It does
+not say **what the losses look like**, and without that a tuning campaign is
+being asked to form a hypothesis about a cause from a summary statistic.
+"`ExplicitImport` coverage is 71%" supports no hypothesis; "of the 2,900
+misses, 2,400 stopped at `import:Namespace` with zero candidates surviving
+qualifier verification" supports exactly one.
+
+This is the difference between a metric that reports work and a metric that
+drives it, and it is the same distinction [section 8's abstention
+reasons](resolution.md#8-strata-and-abstention-reasons) exist to draw, carried
+one level further.
+
+**Replay already computes every failing row** — it has the position, both
+answers, the stratum, the abstention reason, and `stages`. It simply prints an
+aggregate and discards them. So:
+
+* **`replay --records <path>`** writes the per-query JSONL of
+  [the record above](#7-observability-and-the-corpus-scan), unchanged and
+  unfiltered. No new schema: a replay row and a field row are the same shape,
+  which is the property [the two modes](#two-modes-collect-and-replay) already
+  turn on.
+* **Digesting those into something readable is the harness's job**, not
+  `measure_core`'s — the same split that keeps `measure_core` ignorant of
+  `state/`. `harness/measure` runs the replay, prints the table, and writes a
+  failure digest beside it.
+
+**The digest groups; it does not sample first.** A thousand individual
+failures is not readable in any context window, and a random twenty of them is
+an anecdote. Grouping is what turns them into findings, and the key is
+available mechanically:
+
+* **abstentions** by `(stratum_prior, reason, stages)` — coverage loss;
+* **mismatches** by `(stratum_final, agreement, severity, stages)` — precision
+  loss, with `match_contained` kept apart from `mismatch` since they are
+  different problems: one is a ranking failure, the other a candidate-generation
+  failure.
+
+Each group carries its count, its share of that stratum, and only then a
+**small seeded sample** of concrete cases — repository, file, line, the
+identifier, what we returned, what the server said. Seeded so two runs of the
+same campaign read the same examples, and small because the group's *size* is
+the finding and the examples are only there to make it concrete.
+
+Grouping by `stages` is what does the real work here, and it is free: two
+queries that failed the same way have the same stage log by construction, so
+the clusters fall out of an exact string group-by rather than out of anybody's
+judgement about similarity.
+
+Two things to be explicit about, because both are ways this could do harm.
+
+**This is the sharpest overfitting tool in the project.** Handing a tuning loop
+the individual corpus positions it is failing is precisely how it learns five
+repositories instead of a language — `high-level.md` already says that is the
+default outcome rather than a risk. The mitigation is the shape above rather
+than a rule: the digest leads with counts and shapes, so the cheapest thing to
+act on is a *pattern*, and a fix aimed at three named positions is visibly
+worth less than one aimed at a group of four hundred. The tuned/held-out gap
+(`loops.md` §12) remains the detector, and this makes watching it matter more,
+not less.
+
+**It is a tuning-corpus activity only.** The held-out split is shown as a
+verdict and never as rows (`loops.md` §12). That holds here by construction and
+not by rule: failures are digested from a `--corpus` path, and a loop is given
+the tuning path and never the other one.
 
 ### The oracle is the server being proxied
 
@@ -1029,29 +1240,14 @@ predicted.
 ### Where the corpus lives
 
 Not inside the repository. One root outside the workspace, holding two
-sibling splits, each passed by path:
+sibling splits — `training/` and `test/` — each passed by path.
 
-```
-../heuristic-jump-corpus/
-  training/                     tuning corpus
-    rust/
-      repos/<name>/             checkout, pinned commit
-      positions/<name>.jsonl    enumerated once, shared by every server
-      truth/rust-analyzer/<name>.jsonl
-      manifest.toml             what was chosen and why
-    python/
-      repos/<name>/
-      positions/<name>.jsonl
-      truth/pyright/<name>.jsonl
-      truth/pylsp/<name>.jsonl
-      manifest.toml
-    ...
-  test/                         held out, same shape
-```
-
-`data-collection.md` owns this layout and the rules that go with it — how
-repositories are chosen, why positions are enumerated once rather than per
-server, and what the manifest records.
+**[`data-collection.md` §0](data-collection.md) owns the layout** and the
+rules that go with it: how repositories are chosen, why positions are
+enumerated once rather than per server, and what the manifest records. It is
+not reproduced here, because a directory tree in two documents is a directory
+tree that will disagree with itself. What belongs in *this* document is why
+the shape is what it is.
 
 **Truth is per server, not per language.** Repositories are shared across
 servers — the checkout is the expensive artifact and the source text is the
@@ -1094,7 +1290,7 @@ per-language, so the language is never an argument.
 measure-<lang> enumerate --corpus <dir> [--repo <name>]... [--limit N] [--seed N]
 measure-<lang> collect   --corpus <dir> --server <name> [--repo <name>]... [--restart]
 measure-<lang> replay    --corpus <dir> --server <name> [--repo <name>]...
-                         [--format table|json]
+                         [--format table|json] [--records <path>]
 ```
 
 * **`enumerate`** parses each repository, samples positions, writes
@@ -1108,9 +1304,13 @@ measure-<lang> replay    --corpus <dir> --server <name> [--repo <name>]...
   Resuming is the default; `--restart` discards a partial truth file, which is
   the destructive option and therefore the explicit one.
 * **`replay`** reads the frozen truth and prints the per-stratum table.
-  `--format json` is what the harness consumes. It **writes nothing** — the
-  harness decides what to record, so `measure_core` needs no knowledge of
-  `state/`.
+  `--format json` is what the harness consumes. `--records <path>` additionally
+  dumps the per-query JSONL, which is what failure inspection is built from
+  ([above](#the-table-is-not-enough-a-replay-has-to-show-its-failures)); with
+  no `--records` it **writes nothing**, so the default stays a pure function of
+  its inputs and `measure_core` still needs no knowledge of `state/`. Grouping
+  those records into a readable digest is the harness's job, not this
+  binary's.
 
 Three properties the flags are chosen to give:
 
@@ -1261,6 +1461,45 @@ pub struct WireLocation { uri: DocumentUri, range: WireRange }
 The driver converts one to the other on the way out, in the same one place
 that owns `PositionEncoding`. Handlers never see a `WireLocation` and cannot
 construct one.
+
+#### The conversion happens in the worker, not in `core`
+
+Which thread does it is not a detail, because the conversion **reads the
+target file**: turning a byte range into a line and a UTF-16 character needs
+that line's text, and the target is frequently a file the editor never opened.
+`core` may not do that — it does only O(1) state transitions and never touches
+the filesystem ([`shim.md` §2](shim.md#thread-layout)) — and `writer:editor`
+owns a pipe and nothing else.
+
+So the **dispatch wrapper** does it: `driver` code, on the worker thread,
+after the handler returns and before the outcome is sent back to `core`. That
+is the same component that already returns a `Parsed` event without the
+handler's involvement ([section 2](#text-and-tree-can-never-disagree)), and it
+is still the shim doing it — the worker *is* the shim, on a pool thread.
+
+The reason it must be there rather than anywhere later is the one this
+document already used to make the agreement predicate read nothing: **the
+per-query read cache is only alive inside the query.** A handler cannot return
+a `Location` for a file it did not read — `Location::at_node` needs a node,
+which needs a parse, which needs a read — so at the moment the handler
+returns, every target file's text is already in the view's cache and the
+conversion is nearly free. One event loop later it is a disk read; by
+divergence time ([section 6](#6-the-agreement-predicate)) the document may
+never have been open at all.
+
+Two consequences:
+
+* **The dispatch result carries both forms.** `core` sends the `WireLocation`s
+  to `writer:editor` and retains the byte-space `Location`s in the pending
+  query, since the agreement predicate compares `(uri, line)` and the wire
+  form is never needed again ([`shim.md` §7](shim.md#state)).
+* **`PositionEncoding` reaches the dispatch wrapper and stops there.** It is a
+  `Copy` value settled once from `InitializeResult` and handed to the wrapper
+  alongside the query; it does not reach the handler, so
+  [section 3](#3-position-encoding)'s rule that no encoding ever crosses the
+  handler seam is unaffected. `measure_core` puts nothing on a wire and does
+  none of this, which is why the conversion lives in `driver` rather than in
+  `shared`.
 
 **Why `Location` carries a line.** It looks redundant with `range`, and
 strictly it is. It is there because the alternative is worse in two places:
@@ -1792,23 +2031,15 @@ the exact patches applied, and — for the items lifted out of `util` — where
 each came from and under what license, so that a future re-sync can tell at a
 glance whether upstream changed anything that matters.
 
-**Licensing consequence, stated plainly:** `rope` is GPL-3.0-or-later, so the
-shipped binary is GPL-3.0-or-later. That is a project-level commitment
-following from vendoring, not a detail, and `high-level.md` says so under
-"License".
+**Licensing consequence, stated plainly:** vendoring `rope` makes the shipped
+binary GPL-3.0-or-later, while `crates/*` stay MIT. That is a project-level
+commitment following from a decision in this section, which is why it is
+mentioned here at all.
 
-It does **not** follow that our own crates are GPL. `crates/*` are `MIT`:
-vendoring GPL code does not transfer copyright in code we wrote, and MIT is
-GPL-3.0-compatible, so an MIT crate combines into a GPL binary needing no
-extra grant. Marking them GPL would volunteer a restriction that `rope`
-imposes on the *combination* only.
-
-The point of keeping them MIT is that `rope` is the sole GPL input —`sum_tree`
-is Apache-2.0, which is one-way compatible into GPL-3.0. So if `ropey` ever
-wins the argument in `deps.md` §5, the whole workspace becomes permissively
-licensable without relicensing a line. Relicensing later requires every
-contributor's agreement; declaring MIT now costs nothing. `deps.md` §5 has the
-per-crate table and the caveats.
+**[`deps.md` §5](deps.md) owns it** — the per-crate table, why our own crates
+are MIT rather than GPL, and what that preserves. Not restated, because a
+licensing rule that exists in four documents is one that will be wrong in at
+least one of them.
 
 ## 10. Testing
 

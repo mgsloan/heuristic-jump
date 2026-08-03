@@ -1,20 +1,30 @@
 1. When it's whole project search, how to choose the better module when
    it's heuristic? Maybe something like repomap's pagerank?
 
-2. Does the editor actually send a second go-to-definition request while the
-   first is still pending? It might instead cancel the first and send a new one,
-   or dedupe and send nothing at all. The entire retry-triggered design assumes
-   the first of these. This needs a trace from Zed and from VS Code, pressing
-   go-to-definition twice against a deliberately slow server, before much is
-   built on top of it.
+2. **Does the editor actually send a second go-to-definition request while the
+   first is still pending?**
+   **Resolved — void, there is no retry protocol.** `shim.md` §7 removes
+   repeat detection entirely: `Spot`, `is_repeat_of`, and the re-anchoring of
+   pending positions through every `didChange` are gone, and the policy table
+   is now eager while the server is `Warming` or `Unresponsive` and silent
+   while it is `Ready`. Nothing depends on what the editor does with a second
+   press, so nothing needs the trace.
 
-   - *Zed* does send two requests
+   Recorded rather than deleted, because the question is the reason the
+   machinery went. It was answered for Zed (two requests) and never for VS
+   Code, so half the target audience might never have triggered it — and what
+   it served was one narrow case, a `Ready` server slow on one query, which
+   `high-level.md` already described as the shim answering "almost nothing".
+   Intricate state, unverified premise, thin payoff. If the slow-but-alive
+   case is ever worth serving, question 4 is the cheaper place to serve it,
+   because health is inferred from the server's own behaviour rather than from
+   the user's typing habits.
 
-3. The shim caps concurrent heuristic queries and abstains past the cap. But a
-   retry is itself a new query, so under load the second press - the one the
-   whole retry protocol exists to serve - could be the one that gets dropped.
-   Should retries of an already-pending spot bypass the cap, or hold reserved
-   slots?
+3. **Should retries bypass the in-flight cap?**
+   **Resolved — void, same reason.** There are no retries to bypass it. The
+   observation that made this worth asking survives as evidence in question 2:
+   under load the cap could drop the second press, the very one the protocol
+   existed to serve.
 
 4. Should a slow-but-alive proper LSP be pre-empted, the way a warming one is?
    Right now it isn't - a server that has answered one definition request is
@@ -180,3 +190,7 @@
     tuned against languages that do have servers transfers to languages that
     do not. That may well be true. It is unmeasured, and it should be stated
     as a bet rather than left to look like coverage.
+
+16. This can offer something that most LSPs do not - lookups from places like
+    comments. Possibly also greater support for cross-language lookups (and from
+    markdown docs etc)

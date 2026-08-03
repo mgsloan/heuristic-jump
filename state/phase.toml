@@ -10,9 +10,13 @@
 
 phase = "1a"
 
-# Phase 1a is one writer, hand-driven or heavily supervised. The seam is
-# decided here and getting it wrong is expensive downstream in a way no loop
-# will notice (`design/loops.md` section 8).
+# Phase 1a is one writer, and it runs as a conformance loop. The one carve-out
+# is the seam — `LanguageHandler`, `Query`, `Outcome`, `ProjectView`, the
+# vocabulary newtypes — which is decided and frozen here and is a Class B
+# escalation *even during 1a*, when `crates/shared/` is otherwise the loop's
+# own. Getting it wrong is expensive downstream in a way no loop will notice:
+# a language loop cannot observe that the seam made its job harder, only that
+# it is slow (`design/loops.md` section 8).
 [loop.conformance]
 status = "running" # running | paused | blocked | done
 prompt = "conformance.md"
@@ -87,16 +91,22 @@ permission_mode = "bypassPermissions"
 # budget_usd = 15.0
 # model = "opus"
 
-# Phase 2a adds a row per (language, server), and that is the whole of adding
-# a language to the loop set — the same property the workspace layout already
-# has for adding a language crate. The rows are not written yet because there
-# is nothing to tune until there is a corpus (`design/loops.md` section 18).
+# Phase 2a adds one row per *language* — not per (language, server), which an
+# earlier revision had: a language with two usable servers has two metric
+# tables and one optimiser that reads both, because a per-server loop owns a
+# single profile file it may not grow except on corpus evidence and may not
+# branch on server identity at all, which leaves it almost no legal move
+# (`design/loops.md` section 10, "Several servers do not mean several loops").
+#
+# A row is the whole of adding a language to the loop set — the same property
+# the workspace layout already has for adding a language crate. None are
+# written yet because there is nothing to tune until there is a corpus
+# (`design/loops.md` section 18).
 #
 # [loop.lang-rust]
 # status = "paused"
 # prompt = "tuning.md"
 # language = "rust"
-# server = "rust-analyzer"
 # stall_n = 5
 # crates = ["lang_rust", "measure_rust"]
 # write = [

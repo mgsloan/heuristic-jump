@@ -92,7 +92,7 @@ solving it. The only shared code during tuning is the seam and a frozen
 | Progress | a section going clean ([section 5](#5-the-auditor-and-the-conformance-loops-number)) | movement on the frontier ([section 10](#10-objectives-phases-and-the-frontier)) |
 | Done | every section clean, and a human has ruled on the minor list | frontier stops advancing, or budget exhausted |
 | Failure mode | spec drift; the loop edits the spec to match the code | overfitting to the tuning corpus |
-| Concurrency | one writer | parallel, one per (language, server), in phase 2a ([section 13](#parallel-loops-and-what-they-share)) |
+| Concurrency | one writer | parallel, **one per language**, in phase 2a ([section 13](#parallel-loops-and-what-they-share)) |
 
 Conflating these is the first mistake available. A conformance loop
 with no number to chase will invent one; a metric loop with a spec
@@ -120,8 +120,11 @@ thing and every downstream number would agree that all was well.
 
 [Section 5](#5-the-auditor-and-the-conformance-loops-number) already
 reads the spec and the code and reports gaps. Those gaps *are* the work
-queue. `state/audit/<doc>.toml` holds the result, written only by the
-auditor and read by everyone:
+queue. `state/audit/<doc>.toml` holds the result, and **the harness writes
+it from the auditor's output** — the auditor session itself edits nothing,
+which is what keeps it a judgement rather than a participant
+([section 5](#5-the-auditor-and-the-conformance-loops-number)). Read by
+everyone:
 
 ```toml
 [section."shim.md#3-message-routing"]
@@ -270,7 +273,7 @@ A campaign:
 
 1. **Opens** by picking a target and writing it down in
    `state/campaigns/<owner>/<id>.md` — for a tuning loop, the
-   (stratum, language, server) with the largest share × gap, plus the
+   (stratum, language) with the largest share × gap, plus the
    hypothesis about why it is losing coverage; for a conformance loop, a
    open gap, or an unjudged section. The
    session id and its resume command are recorded here at open
@@ -640,8 +643,20 @@ here.
 Gate: workspace builds, upstream rope tests pass unchanged,
 position-encoding property tests pass, `measure_core` drives a real
 server end to end on one repository.
-*Hand-driven or heavily supervised.* The seam is decided here, and
-getting it wrong is expensive downstream in a way no loop will notice.
+*Conformance loop*, per [section 18](#18-scope-phases-1-and-15-first) —
+this is the phase the loop machinery is built for and first run against.
+
+**With one thing carved out: the seam.** `LanguageHandler`, `Query`,
+`Outcome`, `ProjectView`, and the vocabulary newtypes are decided here,
+they are frozen at this gate, and getting them wrong is expensive
+downstream in a way no loop will notice — a language loop cannot
+observe that the seam made its job harder, it can only be slow. So a
+commit that changes a seam type is a **Class B escalation even during
+1a**, when it is otherwise the loop's own crate. The loop proposes and
+keeps going on its provisional choice; a human rules at the batch. That
+is the narrowest form of the supervision an earlier revision of this
+section asked for as a blanket rule, and it puts the review exactly
+where the irreversibility is rather than over the whole phase.
 
 **Phase 1b — repo collection**, concurrently. Needs no code at all, so
 it starts on day one. C, C++, Go, JavaScript, TypeScript/TSX, Rust,
@@ -673,8 +688,11 @@ no tokens and almost no model time, which is exactly why it is easy to
 under-scope: it is invisible to every other kind of accounting
 ([section 15](#15-cost-and-timing)).
 
-**Phase 2a — per-language quality loops**, one per (language, server),
-in parallel. Each starts by instantiating the language-crate template
+**Phase 2a — per-language quality loops**, one per language, in
+parallel. **One loop per language, not one per (language, server)** — a
+language with two usable servers has two oracles and two metric tables,
+and one optimiser that reads both
+([section 10](#several-servers-do-not-mean-several-loops)). Each starts by instantiating the language-crate template
 from phase 1a — whose default handler resolves nothing, so the first
 measurable point is a real zero rather than a build error. Top-1
 agreement and coverage only; cost metrics recorded, never gated.
@@ -846,8 +864,8 @@ coverage point and a kilobyte that nobody can currently justify.
 So there are **two objective regimes**, and they are phases 2a and 3:
 
 * **Phase 2a, quality.** Precision and recall, and nothing else. Cost
-  metrics are *recorded* and never *gated*. Per (language, server),
-  parallel.
+  metrics are *recorded* and never *gated*. One loop per language,
+  parallel; metrics still per (language, server).
 * **Phase 3, cost.** Latency, binary size, line count. Cross-language,
   serial, single writer, and — the part that makes it tractable —
   **output-preserving**.
@@ -916,19 +934,30 @@ commit, phase, per-stratum {coverage, top1, contained, result-count
 distribution, n},
 conformance loops instead: {sections clean/total, open gaps, audit minors},
 work counters (bytes read, files parsed, nodes visited),
-replay wall clock,
+replay wall clock, per-stratum heuristic latency percentiles and the
+per-stage breakdown, deadline-abstention rate,
 measure_<lang> stripped size, lang_<lang> crate contribution,
 LOC per crate, test count
 ```
 
-**Replay wall clock is in the row despite being machine-dependent**, which
-looks like it contradicts the rule below that wall-clock numbers are taken
-at gates. It does not, because it is not measuring the same thing: the
+**The wall-clock numbers are in the row despite being machine-dependent**,
+which looks like it contradicts the rule below that they are taken at gates. It does not, because it is not measuring the same thing: the
 latency numbers below are a claim about the *shipped tool* and have to be
 comparable, whereas this is a claim about *how long the loop's own feedback
 took* and only ever needs to be right to within a factor. It is noisy under
 parallel loops and should be read as a trend, never gated on
 ([section 9](#there-is-no-replay-time-target-and-that-is-deliberate)).
+
+The same applies to the per-query latency figures `core.md` §7 records —
+per-stratum percentiles, the per-stage breakdown, and the rate of
+`AbstainReason::Deadline`. They are written down because they can be, and
+because a number nobody recorded is a number nobody can go back for; they are
+not gated, not on the frontier, and not trustworthy to better than a factor
+while the loops run in parallel. The authoritative latency measurement is
+still the quiet-machine pass at a gate. **The deadline-abstention rate is the
+one worth watching most**, since it is the whole of the gap between what
+replay reports and what the shim would deliver
+(`resolution.md` open question 15).
 
 Append-only, in git, one row per commit, **one file per owner** so that
 concurrent loops never write the same file. It is a *cache*, not a
@@ -1068,36 +1097,54 @@ Two things stay off the axes deliberately:
   maintainability — is not something a frontier can see. Report it;
   let review use it.
 
-### Multiple servers do not multiply the frontier
+### Several servers do not mean several loops
 
-A language with two usable servers has two oracles and two metric
-tables (`core.md` §7), which threatens to make the frontier
-four-dimensional and therefore useless. It does not, because the two
-surfaces being optimised are different code:
+A language with two usable servers has two oracles and two metric tables
+(`core.md` §7), which threatens either a four-dimensional frontier or two
+loops contending on one crate. It needs to be neither, and the way out is
+to notice that the two oracles disagree about only a small, specific part
+of the corpus:
 
 * **Shared handler logic** is evaluated on the positions where *every*
-  server for that language agrees. One 2D frontier per language, and
-  the axes mean the same thing regardless of deployment.
+  server for that language agrees. That is the bulk of the corpus, the
+  axes mean the same thing regardless of deployment, and it is **the
+  frontier** — one per language, still 2D.
 * **A `ServerProfile`** is evaluated on the positions where servers
-  differ, against that server alone. One 2D frontier per profile, and
-  changing one profile provably cannot move another server's numbers,
-  because no other server's queries are in its evaluation set.
+  differ, against that server alone. Changing one profile cannot move
+  another server's numbers, because no other server's queries are in its
+  evaluation set. Those numbers are *reported beside* the frontier, the
+  same treatment containment and result count get.
 
-So the count of frontiers grows with servers but their dimensionality
-does not, and the pieces stay independent. That independence is the
-reason for the decomposition — a joint objective over all servers would
-have to weight them by expected deployment share, which is a number
-nobody has.
+So the frontier stays one per language and two-dimensional however many
+servers there are, and a joint objective — which would have to weight
+servers by expected deployment share, a number nobody has — is never
+needed.
+
+**One loop owns both surfaces.** An earlier revision split them, giving
+each server its own loop owning its own profile file, on the grounds that
+disjoint evaluation sets make genuinely independent work. The evaluation
+argument was right and the conclusion did not follow. A per-server loop
+owns one file it is forbidden to grow except on corpus evidence
+(`core.md` §7, `resolution.md` §1.4), and is forbidden the one shape —
+`if server.id == PYRIGHT` — that would let it do anything locally, so it
+is a loop with almost no legal move. Meanwhile the language loop beside
+it does all the work and cannot see the profile, which is where a
+divergence it just caused would show up.
+
+So a language is one loop, and it reads every table for its language. The
+decomposition survives intact as an *evaluation* rule, which is what it
+was actually good for: tune shared logic where the servers agree, tune a
+profile where they do not, and never average the two.
+
+For a language with one usable server — Rust, Go — every position is
+trivially unanimous, there is no profile, and none of this machinery does
+anything. That is the intended behaviour, not a special case.
 
 It also assigns each surface the data that actually determines it.
 Tuning shared logic against a single server's full corpus would bake
 that server's conventions into code that runs behind all of them; the
 agreement subset is exactly the part where "correct" is not a matter of
 opinion.
-
-For a language with one usable server — Rust, Go — every position is
-trivially unanimous, there is no profile, and none of this machinery
-does anything. That is the intended behaviour, not a special case.
 
 ### Selecting a version at a phase gate
 
@@ -1199,8 +1246,8 @@ ignored.
 
 ## 12. Held-out integrity
 
-`high-level.md`'s development plan holds out 3-4 repositories per language
-and calls the tuned/held-out gap the overfitting signal. Under
+`high-level.md`'s development plan holds out five of the ten repositories
+per language and calls the tuned/held-out gap the overfitting signal. Under
 autonomous loops this needs teeth, because "learning a particular
 repo's conventions is the default outcome rather than a risk" is
 already the stated expectation for human-driven sessions, and a loop
@@ -1379,8 +1426,7 @@ result rather than trusting the actor:
   |---|---|
   | conformance | `vendor/`, `crates/{shared,driver,heuristic_jump,measure_*}/`, `design/` |
   | lang-rust | `crates/lang_rust/`, `state/{metrics,journal,decisions}/rust*` |
-  | lang-python | `crates/lang_python/` *except* `profile/`, `state/…/python*` |
-  | python-pyright | `crates/lang_python/src/profile/pyright.rs`, `state/…/python-pyright*` |
+  | lang-python | `crates/lang_python/`, `state/…/python*` |
   | phase 3 | everything, including `crates/similarity/`. One writer, nothing running alongside |
   | *nobody* | `harness/`, `crates/similarity/` |
 
@@ -1396,18 +1442,20 @@ conformance loop is building the phase-2 machinery
 the parts that will judge *later* loops, and never the gate, the prompts,
 or the auditor that judge it now.
 
-Ownership is by path, not by crate, which is what lets a per-server
-profile loop coexist with the language loop that owns the rest of the
-same crate. A profile is one file; the language logic is the rest. The
-two are evaluated on disjoint sets of corpus positions
-([section 10](#multiple-servers-do-not-multiply-the-frontier)), so they
-are genuinely independent work rather than two writers sharing a
-surface.
+**A language is one loop, servers and all.** An earlier revision split
+`lang_python/` between a language loop and a per-server profile loop, on
+the grounds that the two are evaluated on disjoint corpus positions
+([section 10](#several-servers-do-not-mean-several-loops)) and so are
+independent work. Disjoint evaluation sets did not make it independent
+*work*: a profile loop owns one file it may not grow except on corpus
+evidence and may not branch on server identity at all, which leaves it
+almost no legal move, while the loop beside it changes the shared logic
+whose divergences the profile exists to absorb. So the whole crate has
+one owner, and it reads every metric table for its language.
 
-Whether per-server loops are worth spawning at all is a volume
-question — start with the language loop, and split a profile out only
-when the disagreement set is large enough to be worth an optimiser of
-its own.
+Ownership is still by path rather than by crate, because the state
+directories partition that way and a language's `state/…/{language}*`
+files are what keep two *languages* from colliding.
 
 Two rows carry most of the weight. **`measure_core` and
 `measure_<lang>` belong to the conformance loop**, never to a language
@@ -1712,7 +1760,7 @@ it succeeded:
 CLAUDE.md is already in your context. Its constraints are absolute and
 override anything here.
 
-You are the {language}/{server} tuning loop, in phase {phase}.
+You are the {language} tuning loop, in phase {phase}.
 You may write only: crates/lang_{language}/, state/…/{language}*.
 There is no shared resolution code. If you need a utility another
 language also needs, write it locally and note it in
@@ -1720,12 +1768,20 @@ state/shared-proposals/{language}-NNN.md. Phase 3 harvests those.
 
 One campaign per session, and a campaign is one hypothesis:
   1. Pick the stratum with the largest share × gap from the table below.
-     State a hypothesis about *why* it is losing coverage.
+     Then read that stratum's failure groups — they are what a hypothesis
+     is formed from; the table only says where to look.
+     State a hypothesis about *why* it is losing coverage, in terms of a
+     group rather than of a stratum.
      Write both to state/campaigns/{owner}/{campaign_id}.md.
-  2. Experiment. After each change run `harness/measure {language} {server}`,
-     which replays the frozen corpus and prints the per-stratum table.
+  2. Experiment. After each change run `harness/measure {language}`,
+     which replays the frozen corpus against every server your language
+     has, prints a per-stratum table per server, and rewrites the failure
+     digest.
      Commit what improves top-1 agreement or coverage without regressing
      the other; revert what does not.
+     Judge a change by what happened to the *group* you targeted, not only
+     by the stratum total — a fix that moved four hundred cases and a fix
+     that moved three look similar in a rounded percentage.
   3. Close when the hypothesis is confirmed and committed, or falsified,
      or five experiments move nothing, or the budget is spent.
   4. On close: write up what the hypothesis was and what actually
@@ -1737,8 +1793,18 @@ One campaign per session, and a campaign is one hypothesis:
 
 Optimise top-1 agreement, not containment. Returning more candidates
 raises containment for free and is not progress.
+
+If your language has more than one server, optimise the shared logic on
+the positions where they agree — that is the frontier. A position where
+they disagree is a profile question, not a resolution one, and the two
+are never averaged.
 ---
 Per-stratum table: {coverage, top1, contained, count, n}
+Failure groups: {per stratum, the largest abstention and mismatch groups
+  keyed by (reason | severity, stage log) — count, share, and a few
+  concrete cases each. `core.md` §7. Prefer a hypothesis that explains a
+  large group; a fix aimed at the named examples is worth much less than
+  one aimed at the shape they share}
 Frontier: {non-dominated points so far}
 Your campaigns so far: {one line each — target, hypothesis, outcome}
 Your summary: {current theory, what is ruled out}
@@ -1888,15 +1954,17 @@ by owner for the same reason the metrics are, with per-experiment
 detail nested inside it:
 
 ```
-campaign id, session id, loop, language, server, phase, target,
+campaign id, session id, loop, language, phase, target,
 commits produced, experiments (committed / reverted / empty),
 input tokens (cached / uncached), output tokens,
 model seconds, gate seconds, outcome
 ```
 
-`language` and `server` are null for the phases that are not per-language
-(1a, 1b, 2b, 3), which is what lets the same file answer both "what did
-Python cost" and "what did the driver cost".
+`language` is null for the phases that are not per-language (1a, 1b, 2b,
+3), which is what lets the same file answer both "what did Python cost"
+and "what did the driver cost". There is no `server` column: a campaign
+belongs to a language, and a language's servers are all measured by the
+same one.
 
 No instrumentation inside the model is needed for this. Each campaign is
 one session, the harness records which loop and target it launched, and
@@ -1922,8 +1990,7 @@ new definition.
 Per phase, the useful ratios are different:
 
 * **1a, 2b (conformance):** tokens per gap closed.
-* **2a (per language, per server):** tokens per coverage point, per
-  stratum. This is the number that says when to stop, and it should
+* **2a (per language):** tokens per coverage point, per stratum. This is the number that says when to stop, and it should
   *rise* over a run as the easy wins are exhausted. A rising
   cost-per-point curve is the economic form of the frontier flattening,
   and it usually turns up before the frontier visibly stalls.
@@ -2033,9 +2100,9 @@ behaviour:
   experiments so far, last commit, and state (running / stalled /
   blocked / budget exhausted). A stalled loop with an unanswered
   question is the thing most likely to be silently costing you a day.
-* **Metrics.** The per (language, server) frontier chart, the
-  per-stratum table, current versus the recorded baseline, and the
-  held-out verdict. This is the chart
+* **Metrics.** The per-language frontier chart, the per-stratum table —
+  one per server where a language has several — current versus the
+  recorded baseline, and the held-out verdict. This is the chart
   [`phases.md`](phases.md) asks for at the
   phase 2a gate; it wants to exist before then, because a frontier is
   more useful watched than reviewed once.
@@ -2172,7 +2239,7 @@ forensics, or because a session predates the harness:
 The per-campaign row in `state/sessions.jsonl` stays as the index:
 
 ```
-campaign id (= session id), loop, phase, language, server, target,
+campaign id (= session id), loop, phase, language, target,
 prompt sha, started, ended, commits produced, tokens, outcome,
 transcript path
 ```
@@ -2301,11 +2368,25 @@ three phases long.
 * **Phase 1c** — the language servers, installed and documented.
 * **Phase 1.5** — ground truth for every (repository, server), frozen.
 
-**Exit criterion: `measure_rust replay` prints a per-stratum table over
-real truth data, and produces the same table twice.** At that point the
-tool has an oracle. Nothing before that point has one, and nothing after
-it lacks one — which is why it is the place to stop and reassess rather
-than a milestone to pass through.
+**Exit criterion, in two parts, because they answer different questions:**
+
+* **The pipeline works** — `measure_rust replay` prints a per-stratum table
+  over real truth data, and produces the same table twice. Rust only, and
+  deliberately: this is the calibration run
+  (`data-collection.md` §6), and it is what says the machinery is sound.
+* **The corpus is complete** — every one of the seven languages has ground
+  truth for every (repository, server), per
+  [`phases.md`](phases.md) and `data-collection.md` §0. This is the ~100
+  machine-hours, and it is the part that gates phase 2a.
+
+The first is a milestone worth reaching early and stopping to look at; the
+second is the phase. Conflating them is how the long pole gets
+under-scoped — the pipeline proving itself on Rust in a week is not phase
+1.5 being done.
+
+At that point the tool has an oracle. Nothing before that point has one, and
+nothing after it lacks one — which is why it is the place to stop and reassess
+rather than a milestone to pass through.
 
 ### What that needs from this document
 

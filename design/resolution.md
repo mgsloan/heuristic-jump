@@ -54,9 +54,8 @@ Two things follow that are easy to get wrong, so they are stated up front:
 **Coverage means handler coverage.** `high-level.md` now distinguishes *handler
 coverage* — the fraction of corpus queries resolution answers at all, measured
 by replay — from *delivered coverage*, the fraction of live queries where an
-answer reached the user, which is mostly a fact about the health model and the
-retry rule. Only the first is being optimized, and it is the only one this
-document is about. Everything predicted in
+answer reached the user, which is mostly a fact about the health model. Only the
+first is being optimized, and it is the only one this document is about. Everything predicted in
 [section 12](#12-predicted-coverage-and-precision) is handler coverage.
 
 ## 1. Scope and the seam
@@ -82,20 +81,33 @@ From core doc [section 1], a handler receives a `Query` and returns an
 * **All I/O through `ProjectView`.** Not a style rule. It is what lets the
   driver enforce scope, count bytes and files for the trace record, and reuse
   the parse cache.
-* **Every failure is `shared::Error`.** Per `CLAUDE.md` and core doc
-  [section 9](core.md#the-dependency-graph), there is one system-wide enum,
-  and resolution's failures are
-  variants of it rather than a local error type per crate. Abstention is
-  emphatically not in it — `AbstainReason` is an outcome, not a failure.
+* **Say what you did.** Each stage appends a short label to the query's
+  `stages` log — the role it assigned, what it found or missed, how many
+  candidates survived (core doc [section 7]). This is not logging and it is
+  not optional: it is the only thing that makes a *failure* diagnosable, since
+  `AbstainReason` deliberately carries no resolution vocabulary and a stratum
+  total says nothing about cause. Failures are grouped by this string, so two
+  queries that failed the same way must produce the same labels — which they
+  do, the handler being deterministic. Nothing may branch on it.
+* **Every failure is `shared::Error`, and there is somewhere to send it.** Per
+  `CLAUDE.md` and core doc [section 9](core.md#the-dependency-graph), there is
+  one system-wide enum, and resolution's failures are variants of it rather
+  than a local error type per crate. `goto_definition` returns
+  `Result<Outcome, Error>`, so `?` works and a handler never has to launder a
+  failure into a decision. Abstention is emphatically not in `Error` —
+  `AbstainReason` is an outcome — and failure is emphatically not in
+  `AbstainReason`, which is why the `HandlerError` and `NoParse` variants an
+  earlier revision had are gone (core doc [section 1]).
 
 And what a handler may **not** assume:
 
-* **That the query document is already parsed.** `doc.tree()` is the only way
-  to a tree, it parses on first call inside the worker and inside the
-  deadline, and it is memoised (core doc [section 2]). So a handler calls it
-  freely and never branches on cache state — but it must budget for the first
-  call being a full parse of the file, which on a large generated file is not
-  small.
+* ~~That the query document is already parsed.~~ **It is.** Core doc
+  [section 2] parses at dispatch, before a handler is called, so `doc.tree()`
+  is a field access that cannot fail and a handler never branches on cache
+  state. What a handler must still budget for is that the *dispatch* may have
+  paid a full parse of a large file out of the same deadline it is now
+  spending. An unparseable document never arrives at all — the dispatch
+  wrapper fails it first.
 * **That the file list is fresh or complete.** It is a cache, refreshed
   lazily. A miss is a miss, not a proof of absence — which is why
   `AbstainReason::NoCandidates` exists as a distinct signal
@@ -107,9 +119,9 @@ And what a handler may **not** assume:
   polling `expired()` often enough that the abort is prompt — the deadline
   differs by mode (750ms proxying, 2000ms standalone, `shim.md`
   [section 14.6]) and a handler never learns which.
-* **That it is called once per user gesture.** The retry protocol, speculative
-  editor requests, and `measure replay` all produce repeats at the same spot.
-  Resolution must be deterministic — see below.
+* **That it is called once per user gesture.** Speculative editor requests, a
+  user pressing again, and `measure replay` all produce repeats at the same
+  position. Resolution must be deterministic — see below.
 * **That it is the only query running.** Fan-out draws from the same bounded
   pool as every other in-flight query.
 * **That it will be asked about a document at all.** A document the driver has
@@ -336,12 +348,12 @@ are `high-level.md`'s "requires type inference" class; see
 [section 10.5](#105-methods-fields-and-the-type-inference-class) for what can
 still be done with them.
 
-This stage needs a tree, so it is where `doc.tree()` is first called and where
-a cold-cache full parse is paid (core doc [section 2]). That parse is also what
-warms the driver's cache for the retry, which is the case the core doc's `Spot`
-widening depends on — so a handler should call `tree()` even on a path that
-turns out to abstain immediately, rather than short-circuiting on a cheap
-lexical check and leaving the cache cold for the second press.
+This stage needs a tree, and it has one: the parse happened at dispatch (core
+doc [section 2]), so `doc.tree()` is free here and the cold-cache cost was
+already paid out of the deadline before the handler started. An earlier
+revision asked handlers to call `tree()` even on paths that abstain
+immediately, so that the driver's cache was warmed for the next query; eager
+parsing makes that automatic and the rule is gone.
 
 ### Stage 1: local scope resolution
 
@@ -952,11 +964,16 @@ real reduction in the cost of getting ranking wrong, and it is the main reason
 this decision improves the strata the tool is worst at.
 
 The comparator is still a total order, and determinism is still required —
-by the retry protocol, by `shim.md`'s mode-equivalence test (§14.9), and by
-`measure replay`
+by `shim.md`'s mode-equivalence test (§14.9) and by `measure replay`
 ([section 1.3](#13-the-search-is-exhaustive-and-the-clock-may-only-abort-it)).
 Score, then import tier, then `(ProjectPath, name_range.start)`
-lexicographically. Applied to a *collected* result set, never to candidates
+lexicographically. Scores are `f32`, so the comparator is
+**`f32::total_cmp`** — not `partial_cmp` with an `unwrap`, which
+`CLAUDE.md` forbids anyway, and not a hand-rolled epsilon comparison, which
+would not be a total order. `total_cmp` is total by construction, including
+across `NaN`, which matters less because a `NaN` score is a bug than because
+a comparator that is *only usually* a total order produces a sort that is
+only usually deterministic. Applied to a *collected* result set, never to candidates
 reduced in fan-out completion order — and now the whole ordering matters, not
 just which element ends up first, so an unstable comparator that used to be
 invisible below the winner is now visible in the picker.
@@ -1204,8 +1221,10 @@ reason is reproducible from the same snapshot; that one depends on the budget,
 which is why `core.md` §7 makes replay enforce budgets deterministically
 rather than by wall clock.
 
-Three variants from earlier revisions are gone, and their absence is the
-clearest single summary of what the last two decisions did:
+Five variants from earlier revisions are gone, and their absence is the
+clearest single summary of what the last several decisions did.
+
+Three went because the answer changed:
 
 * **`Ambiguous { considered }`** — ambiguity now commits.
 * **`BelowThreshold { confidence }`** — there is no threshold.
@@ -1216,6 +1235,14 @@ clearest single summary of what the last two decisions did:
 The first two return with the floor, and `Ambiguous` is the one to reinstate
 first, since it is the abstention with the best precision-per-unit-coverage
 trade in the predicted table. The third does not return at all.
+
+Two went because they were never decisions in the first place:
+
+* **`HandlerError`** and **`NoParse`** were failures wearing an outcome's
+  clothes. `goto_definition` returns `Result<Outcome, Error>` now, so a
+  failure has somewhere to go, and the enum is once again what its name says.
+  Core doc [section 1] has the argument; the metrics consequence — a broken
+  handler must not read as a hard stratum — is the point of it.
 
 `Deadline` is the newcomer, and it is the only reason here that is not a
 property of the code: two runs of the same query on the same snapshot can
@@ -1255,7 +1282,7 @@ Two of these the driver acts on rather than merely logging:
 * **`NoCandidates`** triggers the background file-list rescan from core doc
   [section 4](core.md#4-project-file-enumeration), debounced. The query that
   triggered it still abstains; the
-  retry sees a fresh list. This is the mechanism that section assumed, and it
+  next query there sees a fresh list. This is the mechanism that section assumed, and it
   is trustworthy precisely because the scan was exhaustive: "not found" now
   means the name is not in the file list, which is evidence about the list.
   Under the old partial-scan rule it meant "not found *yet*", which is
@@ -1263,8 +1290,12 @@ Two of these the driver acts on rather than merely logging:
   cut off rather than completed, so it says nothing about the list, and
   rescanning would spend I/O in the window that just proved to be short of
   it.
-* **`HandlerError`** feeds the repeated-panic handler disable in
-  `shim.md` [section 11](shim.md#11-failure-handling).
+* **An `Err` return** — not an abstention reason at all, since core doc
+  [section 1] removed `HandlerError` from this enum — feeds the
+  repeated-failure handler disable in
+  `shim.md` [section 11](shim.md#11-failure-handling). It reaches the editor
+  as an abstention and the metrics as `decision: "failed"`, which is the
+  whole point of separating them.
 
 The rest exist so the per-stratum table can say *why* a stratum has low
 coverage, which is the difference between a table that drives work and a table
@@ -1552,7 +1583,8 @@ snapshot, or the corpus metrics themselves. Failing seeds are committed under
   no run-to-run noise to threshold against, only sampling noise in how many
   queries a stratum has — which is a property of the corpus, not of the run,
   and is what the per-stratum interval is for.
-* **Held-out corpus.** Per `high-level.md`'s development plan, 3–4 repositories per
+* **Held-out corpus.** Per `high-level.md`'s development plan, **five** of the
+  ten repositories per
   language never seen by tuning, in `../heuristic-jump-corpus/test/` — a
   sibling of `training/`, not a subdirectory of it, so isolation is a path a
   session was never given rather than a rule it was asked to respect (core

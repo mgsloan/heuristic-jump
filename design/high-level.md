@@ -49,10 +49,9 @@ influence the design:
   Code both do, and both merge definition results. Running standalone
   alongside rust-analyzer is a lower-effort deployment than proxying.
   It is a genuinely worse one - the editor shows a picker instead of
-  jumping, the retry protocol cannot exist, and divergence goes
-  undetected, so precision loses its only ground truth - but it is the
-  fallback when proxying is not practical, and it should work rather
-  than be blocked.
+  jumping, and divergence goes undetected, so precision loses its only
+  ground truth - but it is the fallback when proxying is not practical,
+  and it should work rather than be blocked.
 
 * **Servers with weak navigation.** A server that declares no
   `definitionProvider` is a case the proxy defers. Standalone answers
@@ -95,10 +94,18 @@ not just a startup condition: the server also restarts (e.g. on a
 Cargo.toml change), hangs, and crashes, and those windows are when the
 heuristic has the most to offer.
 
-When a go-to-definition request is received, run the proper LSP. If a
-query is done again on the same spot and it still hasn't responded,
-give the heuristic one. Also complete the proper LSP request with the
-heuristic one.
+When a go-to-definition request is received it is forwarded to the
+proper LSP immediately, and whether the heuristic also answers depends
+on the server's health. While the server is still starting up, or has
+stopped answering, the heuristic answers straight away - those are the
+windows the tool exists for. While the server is healthy the shim stays
+silent and the real answer arrives, which costs the user nothing they
+were not already paying.
+
+An earlier version instead waited for the user to ask a second time at
+the same spot before answering. That is gone; `shim.md` section 7 says
+why, and the short version is that it was the most intricate state in
+the driver serving the one case that mattered least.
 
 If the proper LSP returns after a heuristic result is used, but its
 result is different, notify the user.
@@ -254,22 +261,22 @@ is not something this version tries to manage.
 
 Handler coverage is measured by the corpus scan, not by watching a live
 session, and the distinction matters because the two differ by an order
-of magnitude. In a live session against a healthy server the retry rule
-means the shim answers almost nothing - the user has to press twice - so
-what a session measures is mostly how often people double-press, which
-is a fact about habits rather than about resolution.
+of magnitude. In a live session against a healthy server the shim stays
+silent and answers nothing at all, so what a session measures is mostly
+how often the server was unhealthy - a fact about the user's machine and
+project size rather than about resolution.
 
 **Delivered coverage** - the fraction of live queries where a heuristic
 answer actually reached the user - is the second number, and it is kept
-because it is the only thing that judges the health model and the retry
-protocol. Those are real design choices and without it they have no
-feedback at all. It is reconstructible after the fact from the trace
+because it is the only thing that judges the health model. That is a real
+design choice, and now the *only* thing deciding whether the shim ever
+speaks, so without this number it has no feedback at all. It is reconstructible after the fact from the trace
 records, which carry `server_health` and `decision` per query, so it
 needs no separate instrumentation.
 
 Only handler coverage is being optimized. Delivered coverage is a
 diagnostic for a different part of the system, and treating it as the
-target would make a change to the retry rule look like a resolution
+target would make a change to the health model look like a resolution
 regression.
 
 That is a deliberate starting point rather than an oversight, and it
@@ -372,9 +379,9 @@ being in it**, and the tier is taken from the top-ranked location, since
 that is where a user who trusts the ordering looks first:
 
 Landing within 3 lines of the proper LSP's answer counts as a match, not
-an error. At that distance the right definition is on screen and the
-user is already looking at it, so calling it wrong would measure
-something nobody experiences as wrong.
+an error, and columns are not compared at all. `core.md` section 6 owns
+that predicate and argues it; what matters here is only that the tiers
+below are measured against it.
 
 * Same file, further off than 3 lines. Recoverable - the user is at
   least in the right place - but they have to hunt.
