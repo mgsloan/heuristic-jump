@@ -1670,3 +1670,128 @@ here is the one the previous campaign gave for the same thing: the log has to
 be truncated at the *cached tree's* version, which `TreeCache::version` knows
 and `Documents` does not, and reconciling that is designing `core`'s actor. No
 audit gap names it. Files: `driver/src/documents.rs`, `driver/src/trees.rs`.
+
+## 50f21a18 — `core.md#vendoring-the-zed-crates[148fd8d277]`, the rope newtype sweep
+
+**Outcome: confirmed.** Four commits. `rope-modifications.md` §4's sweep is
+done, and with it the substantive half of every one of that document's twenty
+unjudged sections. `vendor/README.md` records it as a patch class.
+
+### Why this target, when eight gaps were open
+
+Because six of the eight were not open. Before picking, I read the code behind
+each `found:` rather than the `found:` itself, and the measure_core cluster —
+both `#two-modes` gaps, `#what-the-templates-handler-does`,
+`#the-command-line`'s determinism gap, `#the-oracle` — was already closed.
+The three campaigns the harness recorded as **`crashed`** at 15:18–15:56 local
+had committed `[core-two-modes]`, `[core-templates]`, `[core-failures]` and
+`[core-command-line]`, all *after* the 14:56 audit. **A campaign recorded
+`crashed` is not a campaign that did nothing**, and the audit that follows it
+does not know that. `git log --since` against the audit timestamp in
+`state/audit/core.toml` is the two-minute check that settles it, and it is
+worth doing before reading the gap list at all.
+
+What that leaves genuinely open is small: the driver's request path (three
+gaps that are one thing, and that thing is `shim.md`'s transport and actor —
+**phase 2b** by `design/phases.md`, which is why I did not take them), the
+captured corpus for pyright/gopls, `#9-workspace-layout` (names crates outside
+every owned path, so it can never close), and this one.
+
+### The sweep itself
+
+Two and a half hours, mostly compiler-driven, ~650 lines changed in rope and
+~40 downstream. The previous campaign's estimate (~51 signatures, 54
+`Point::new` sites, 17 `ChunkSlice` functions, nine `TextSummary` fields) was
+accurate, and its advice to budget a whole campaign for it was right.
+
+What made it tractable, in order of how much each saved:
+
+* **Do rope in one pass, not two.** I started intending "line-shaped types
+  first, byte-shaped second, commit between". That was wrong and I abandoned
+  it early: the two halves land on the *same lines* — `point_to_offset` takes a
+  `Point` and returns an `Offset` — so splitting means editing every one of
+  those lines twice and holding a half-converted crate in between. One pass,
+  green at the end, committed whole.
+* **§3's two body-preserving mechanisms are load-bearing, not stylistic.**
+  Parameter shadowing (`let offset = offset.0;` as the first line) and the
+  `_raw` rename for a moved return type between them keep almost every body
+  byte-identical to upstream's. I used `_raw` seven times and it is now a
+  crate-wide convention worth knowing: `point_to_offset_raw`, `len_raw`,
+  `floor_char_boundary_raw`, `ceil_char_boundary_raw`,
+  `offset_utf16_to_offset_raw`, `point_utf16_to_offset_raw`, `seek_raw`.
+* **Let rustc drive.** `cargo build -p rope --lib`, fix everything it names,
+  then `--tests`, then `--all-targets`, then downstream. The editor's
+  diagnostics arrive faster than a build and were enough for whole batches.
+* **Test bodies get local wrappers, not rewrites.** `at(usize) -> Offset`,
+  `span(Range<usize>) -> ByteRange`, `point(u32, u32)`, `point_utf16(u32, u32)`
+  in rope's test module. The randomised tests keep their `usize` arithmetic
+  and name the unit only where they reach the API, so the diff in the 800-line
+  test module stays readable.
+
+**All 24 upstream tests passed on the first green build**, which is the whole
+argument for keeping them (§7) and the only verification available, since §3
+concedes that a mechanical diff check cannot prove this correct.
+
+### Approaches considered and dropped
+
+* *Taking `#5-deadlines[f0a42a21e1]` and `#both-sides-are-sets[6e601d5bd1]`
+  together*, which is a real campaign — they are one hypothesis ("the driver
+  has no request path") sharing one file. Dropped on scope, not on size:
+  `design/phases.md` puts the shim at **2b**, and the honest way to satisfy
+  those two claims is a stdio transport, a codec, a peek scanner and the
+  `core` actor. A next campaign that wants them should escalate the phase
+  question first rather than build 1,000 lines of phase-2b work under a
+  phase-1a prompt. Note the audit will keep listing them, and they will keep
+  looking cheap.
+* *Splitting the sweep across commits* — see above.
+* *Giving `LineIndex`/`ByteColumn` an `Add<u32>` to save body edits.* §4
+  refuses it and the refusal is right, but the thing to know is that
+  **nothing in the crate can detect it being given up**: the bodies compile
+  with the lenient impls present *and* with every `.0` deleted, so all 24
+  upstream tests would go on passing while the change was reversed. That is
+  why the third check exists.
+* *Aligning `rope-modifications.md` §4's conversion table with `TabPosition`.*
+  Deliberately not done. The doc's table is hand-audited and predates that
+  upstream type; editing the document toward code I wrote in the same campaign
+  is the one shape the audit cannot catch, and the omission creates no gap —
+  the section's claim is about the API speaking in newtypes, which it does.
+
+### The checks, and what mutation-testing them found
+
+`vendor/rope/tests/newtype_api.rs` holds four, three of which are source scans
+and therefore worthless unless they can fail:
+
+* **`no_public_signature_names_a_bare_primitive`** — §6's CI check, against
+  `vendor/rope/allowed-primitives.txt` (one entry: `longest_row`). Mutated by
+  reverting `Rope::is_char_boundary` to `usize`, which **still compiles** —
+  its internal callers go through `Chunk` — so this is a regression the build
+  would not have caught. Caught.
+* **`no_newtype_implements_a_trait_against_a_bare_primitive`** — the opacity
+  claim. Mutated by planting `impl Add<u32> for LineIndex`. Caught. Note the
+  scan stops each `impl` header at its opening brace, because `Offset::MAX`'s
+  body says `usize::MAX` two lines from an impl that must not mention one.
+* **`no_public_field_names_a_bare_primitive`** — added last, and it **failed on
+  its first run**: `TabPosition { byte_offset: usize, char_offset: usize }` is
+  public, upstream added it after `rope-modifications.md` was written, and the
+  hand-audited conversion list therefore does not name it. Exactly the failure
+  mode §6 predicts, arriving from the direction §6 predicts. Converted to
+  `Offset`/`CharCount`. **Write the check before believing the sweep is
+  complete.**
+
+### Two edits that are more than rewrapping, and are in the commit message too
+
+`TextSummary.chars` narrows `usize` → `CharCount`'s `u32` (§4's printed struct
+asks for it; bounds a summary to 4G scalar values, the bound `Point.row`
+already imposed), and `Offset`'s `Dimension`/`TextDimension` impls add a
+`ByteLen` to a position rather than two `usize`s — the one place §4's
+position/quantity split is crossed on purpose, since a running seek total *is*
+a position advanced by a length.
+
+### Also closed
+
+The five answered decisions (`conformance-002`, `-006`, `-009`, `-012`,
+`-013`) still carried `// DECISION-…: provisional` at twelve sites, which
+`core.md#6`'s audit minor names as polluting the outstanding-choice report.
+`grep -r DECISION-` is now empty; an answered ruling reads
+`` `conformance-006` (answered) ``. `provisional_decisions` in the metrics row
+went 12 → 0.
