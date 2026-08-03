@@ -147,3 +147,40 @@ the fix adds an obligation to the driver (it must know the URI at dispatch)
 rather than removing one.
 
 **Campaign:** e3b8dbf4-56aa-48fc-9a4d-4018d7464f4d
+
+## CHANGE-conformance-004 — core.md#vocabulary-types — `Location`'s printed fields lose their `pub`, per the ruling on conformance-004
+
+**Contradiction:** §1 and §8.4 both print
+
+```rust
+pub struct Location {
+    pub uri: DocumentUri,
+    pub range: ByteRange,
+    pub line: LineIndex,
+}
+```
+
+while §1's doc comment on the same block says "Constructed only via
+`Location::at_node`, so the two cannot disagree", and §8.4's prose says
+"`Location` is therefore constructed only through `Location::at_node(uri,
+node)`, which derives both from the same node, so the two cannot drift apart
+by hand." With three public fields a struct literal is available to every
+crate in the workspace, so both cannot hold.
+
+**Resolution:** the three `pub`s are removed from both code blocks and §1's
+doc comment names the accessors. This is not a reading this campaign chose:
+`state/decisions/conformance-004.md` was answered `accepted` on
+2026-08-03T05:13:34+00:00, and the ruling says in as many words that "the code
+blocks are what is wrong, and removing those three pubs is the Class A
+follow-up". It trades nothing off because the prose it aligns with was already
+the operative claim — §8.4's argument for carrying `line` at all depends on
+row and range being derived together — and because no consumer needs a
+literal: the three known ones (§8.4's `WireLocation` conversion, §6's
+`(uri, line)` predicate, §7's `heuristic_locations`) are all reads.
+
+**Not a spec-toward-code edit, and here is the check for it:** the code already
+took this reading in campaign e3b8dbf4 and tagged it provisional at
+`Location::at_node`; this commit removes that tag and changes nothing about
+the type. The document moved, the code did not.
+
+**Campaign:** bc8f02bb-1cb1-48d7-8814-a22f8a2b8481

@@ -98,12 +98,14 @@ pub struct EditorRequestId(Box<str>);
 /// byte-range, still entirely byte-space. It is carried because a handler
 /// gets it for free from the tree-sitter node it already verified, and it
 /// saves the driver a whole-file line index later -- see section 8.4.
-/// Constructed only via `Location::at_node`, so the two cannot disagree.
+/// Constructed only via `Location::at_node`, so the two cannot disagree:
+/// the fields are private and read through `uri()`, `range()` and `line()`
+/// (`state/decisions/conformance-004.md`).
 #[derive(Clone, PartialEq, Eq)]
 pub struct Location {
-    pub uri: DocumentUri,
-    pub range: ByteRange,
-    pub line: LineIndex,
+    uri: DocumentUri,
+    range: ByteRange,
+    line: LineIndex,
 }
 
 /// Invariant: 0.0..=1.0, enforced by the constructor.
@@ -1456,11 +1458,12 @@ So there are two types, and the distinction is load-bearing:
 
 ```rust
 /// What a handler returns. Byte offsets, always -- plus the row, which
-/// is also byte-space and which the handler gets for free.
+/// is also byte-space and which the handler gets for free. Private, and
+/// built only by `at_node` -- see "Why `Location` carries a line" below.
 pub struct Location {
-    pub uri: DocumentUri,
-    pub range: ByteRange,
-    pub line: LineIndex,
+    uri: DocumentUri,
+    range: ByteRange,
+    line: LineIndex,
 }
 
 /// What goes on the wire. Constructed only by the driver, at the edge.

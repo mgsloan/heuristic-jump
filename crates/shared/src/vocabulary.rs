@@ -271,8 +271,10 @@ impl<'de> Deserialize<'de> for EditorRequestId {
 /// a whole-file line index later.
 ///
 /// The fields are private and the only constructor is `at_node`, so the row
-/// and the range are derived from one node and cannot drift apart. See
-/// `state/decisions/conformance-004.md`.
+/// and the range are derived from one node and cannot drift apart — a line
+/// that disagrees with its range is a confidently wrong jump a few lines off,
+/// which is this tool's value proposition inverted
+/// (`state/decisions/conformance-004.md`, answered).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Location {
     uri: DocumentUri,
@@ -281,10 +283,6 @@ pub struct Location {
 }
 
 impl Location {
-    // DECISION-conformance-004: provisional. `core.md` §1 and §8.4 print this
-    // struct with `pub` fields while §8.4's prose says it is "constructed only
-    // through `Location::at_node`"; both cannot hold, and this is the reading
-    // under which the invariant is a property of the type.
     pub fn at_node(uri: DocumentUri, node: &Node<'_>) -> Self {
         // A document with more than u32::MAX lines is not one tree-sitter
         // parsed: `Point.row` is a u32 on the C side already, so this
