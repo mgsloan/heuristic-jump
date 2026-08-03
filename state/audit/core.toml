@@ -94,7 +94,18 @@ last_audited = "2026-08-03T04:41:48+00:00"
   where = "crates/driver/src/driver.rs:1"
 
 [section."core.md#both-sides-are-sets"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-03T05:10:16+00:00"
+
+  [[section."core.md#both-sides-are-sets".gap]]
+  claim = "agreement holds exactly one of match_top1, match_contained, mismatch; severity is classified from the shim's top-ranked location only when agreement is mismatch; divergence is reported on mismatch only; and the pending-query record holds the shim's ranked list preserving order"
+  found = "none of it exists \u2014 grep across crates/ for agreement, match_top1, match_contained, mismatch, severity, top1 and contained returns two unrelated prose hits (handler.rs:54, error.rs:53). No pending-query record, no classifier, no reporting path; driver is `mod dispatch` alone (driver.rs:10). MECHANICAL CHECK AVAILABLE: one three-variant Agreement enum in shared with severity carried inside the mismatch variant makes 'severity is undefined otherwise' unrepresentable rather than asserted"
+  where = "crates/driver/src/driver.rs:10"
+
+  [[section."core.md#both-sides-are-sets".minor]]
+  claim = "the shim's answer is a ranked list whose order is load-bearing, and must not collapse to a set"
+  note = "the only existing code for this is Outcome::Committed { locations: Vec<Location> }, which preserves order but is an unannotated Vec that CommitPolicy::decide passes straight through (handler.rs:151-162); the ranking contract is satisfied by the incidental choice of container, and a handler that sorted or deduplicated on the way out would break top1 with nothing to notice"
+  where = "crates/shared/src/handler.rs:74"
 
 [section."core.md#7-observability-and-the-corpus-scan"]
 state = "gaps"
@@ -163,16 +174,50 @@ last_audited = "2026-08-03T04:41:48+00:00"
   where = "crates/shared/src/shared.rs:1"
 
 [section."core.md#84-location-is-byte-based-and-this-fixes-a-real-inconsistency"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-03T05:10:16+00:00"
+
+  [[section."core.md#84-location-is-byte-based-and-this-fixes-a-real-inconsistency".gap]]
+  claim = "there are two types: Location (byte offsets, plus the row) and WireLocation { uri, range: WireRange }, constructed only by the driver at the edge"
+  found = "Location exists and is byte-based (vocabulary.rs:128-152), but WireLocation and WireRange exist nowhere. The name appears only in a doc comment referring to proto::WireLocation (vocabulary.rs:116), and shared declares no proto module (shared.rs:12-17). The half of the distinction the section calls load-bearing is the absent half"
+  where = "crates/shared/src/shared.rs:12"
+
+  [[section."core.md#84-location-is-byte-based-and-this-fixes-a-real-inconsistency".gap]]
+  claim = "the dispatch wrapper converts on the worker thread after the handler returns, the dispatch result carries both forms, and PositionEncoding reaches the wrapper and stops there"
+  found = "driver::dispatch takes (&dyn LanguageHandler, &Query) with no PositionEncoding and returns Dispatched::Decided(Outcome), carrying the handler's byte-space Vec<Location> unchanged (dispatch.rs:113-144). No conversion, no second form, and no PositionEncoding type anywhere in crates/. MECHANICAL CHECK AVAILABLE: give WireLocation one constructor taking PositionEncoding and keep both private to the driver module that owns the encoding, so 'handlers cannot construct one' fails to compile rather than being reviewed"
+  where = "crates/driver/src/dispatch.rs:131"
+
+  [[section."core.md#84-location-is-byte-based-and-this-fixes-a-real-inconsistency".minor]]
+  claim = "Location is printed with three pub fields, while the prose says it is constructed only through Location::at_node"
+  note = "the code takes the prose reading \u2014 private fields, three accessors, tagged DECISION-conformance-004: provisional. Stronger than the printed struct, but a visible divergence from the printed block that its own author marked provisional, so it wants a human ruling"
+  where = "crates/shared/src/vocabulary.rs:135"
 
 [section."core.md#85-the-untagged-unions-are-the-actual-risk"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-03T05:10:16+00:00"
+
+  [[section."core.md#85-the-untagged-unions-are-the-actual-risk".gap]]
+  claim = "the five unions are modelled with untagged permitted only for the three kind-disjoint cases, contentChanges gets a hand-written Deserialize dispatching on the presence of range, and each union has negative tests plus a golden corpus and an lsp-types dev-dependency oracle"
+  found = "none of the five types exist; no crate in the workspace derives or implements Deserialize, and neither serde nor serde_json is declared (crates/shared/Cargo.toml:20-27, root Cargo.toml:24-65). No corpus directory and no lsp-types dev-dependency, so the two mitigations the section calls the condition for dropping lsp-types are also absent. MECHANICAL CHECK AVAILABLE: once proto exists, a test grepping its sources for serde(untagged) against an explicit allowlist of the three kind-disjoint unions turns 'never by declaration order' into a failing test"
+  where = "crates/shared/Cargo.toml:20"
 
 [section."core.md#86-modelling-errors-must-fail-closed"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-03T05:10:16+00:00"
+
+  [[section."core.md#86-modelling-errors-must-fail-closed".gap]]
+  claim = "any failure or detected inconsistency deserializing a state-bearing message marks the document untrusted, queries against it abstain unconditionally until a didClose/didOpen resync, and three O(1) self-checks (range outside our rope, non-increasing version or didChange for an unopened document, didSave checksum) turn drift into a detectable event"
+  found = "no trust state exists. driver is `mod dispatch` alone with no document map (driver.rs:10), DocumentSnapshot carries a version but no trust flag and no path that can refuse a query (document.rs:44-52), AbstainReason has no variant for it (handler.rs:112-128), and error.rs:10-15 states that the Document and Codec sub-enums arrive with their producers. MECHANICAL CHECK AVAILABLE: model the document map's value as an enum whose untrusted variant yields no SnapshotSeed, making 'an untrusted document cannot be queried' a type property"
+  where = "crates/driver/src/driver.rs:10"
 
 [section."core.md#87-where-it-lives"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-03T05:10:16+00:00"
+
+  [[section."core.md#87-where-it-lives".gap]]
+  claim = "the wire types live in shared::proto rather than a separate crate"
+  found = "shared declares deadline, document, error, handler, project and vocabulary, and no proto (shared.rs:12-17); there are no wire types in the workspace to place. The satisfied halves were needed anyway \u2014 Location and DocumentUri are in shared (vocabulary.rs:82,128) and url is declared, but the manifest attributes it to the vocabulary rather than to the wire types the section says bring it (crates/shared/Cargo.toml:27)"
+  where = "crates/shared/src/shared.rs:12"
 
 [section."core.md#9-workspace-layout"]
 state = "gaps"
@@ -195,13 +240,35 @@ state = "unjudged"
 state = "unjudged"
 
 [section."core.md#adding-a-language"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-03T05:10:16+00:00"
+
+  [[section."core.md#adding-a-language".gap]]
+  claim = "Phase 1a builds the language-crate template as an instantiable template: crates/lang_<x>/{Cargo.toml, src/lang_<x>.rs} depending on shared + similarity + its grammar, and crates/measure_<x>/{Cargo.toml, src/measure_<x>.rs} depending on measure_core + lang_<x>, plus one line in heuristic_jump"
+  found = "neither directory exists, nor do measure_core or similarity, which the template's manifests must depend on; Cargo.toml:3-9 lists only crates/driver, crates/heuristic_jump, crates/shared and the two vendored crates. Stratum::Unimplemented exists as the template's designated return value (handler.rs:103) with no template to return it, and heuristic_jump is `fn main() {}` (heuristic_jump.rs:6), so the one enumerating line has nowhere to go. These paths are in the loop's own write list (state/phase.toml:72-74), so this is not blocked by ownership"
+  where = "Cargo.toml:3"
 
 [section."core.md#what-the-templates-handler-does"]
 state = "unjudged"
 
 [section."core.md#vendoring-the-zed-crates"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-03T05:10:16+00:00"
+
+  [[section."core.md#vendoring-the-zed-crates".gap]]
+  claim = "vendor/rope's public API speaks in newtypes: ByteOffset/ByteLen/ByteRange instead of usize and Range<usize>, and LineIndex/ByteColumn/Utf16Column/CharCount instead of the bare u32s in Point, PointUtf16 and TextSummary"
+  found = "not one public signature is converted. Rope::len -> usize (rope.rs:336), Rope::point_to_offset -> usize (rope.rs:475), Point { row: u32, column: u32 } (point.rs:10), PointUtf16 the same (point_utf16.rs:8), TextSummary.len: usize (rope.rs:1304). The newtypes exist only as an added unused file, which says so itself (byte_offset.rs:1-7), as does vendor/README.md:76-80"
+  where = "vendor/rope/src/rope.rs:336"
+
+  [[section."core.md#vendoring-the-zed-crates".gap]]
+  claim = "ByteOffset, ByteLen, ByteRange, LineIndex, ByteColumn, Utf16Column and CharCount are defined in rope and re-exported by shared"
+  found = "rope defines and exports all seven (rope.rs:36-40) but shared re-exports four \u2014 ByteLen, ByteOffset, ByteRange, LineIndex \u2014 so ByteColumn, Utf16Column and CharCount are not nameable as shared::\u2026 by a crate that may not depend on rope. MECHANICAL CHECK AVAILABLE: one `use shared::{\u2026}` naming all seven in an existing test makes the re-export list a compile error rather than a reading"
+  where = "crates/shared/src/shared.rs:26"
+
+  [[section."core.md#vendoring-the-zed-crates".gap]]
+  claim = "sum_tree needs no patching; the ztracing redirect is a single-line patch to rope"
+  found = "sum_tree is patched three ways \u2014 `use tracing::instrument` replacing ztracing at sum_tree.rs:11 and again in src/cursor.rs, tree_map.rs deleted, and the #[ctor] logger deleted (vendor/README.md:84-90). The section accounts only for the tree_map deletion and places the ztracing redirect solely in rope, but sum_tree has its own ztracing import sites"
+  where = "vendor/sum_tree/src/sum_tree.rs:11"
 
 [section."core.md#10-testing"]
 state = "gaps"
