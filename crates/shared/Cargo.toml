@@ -22,17 +22,18 @@ ignore.workspace = true
 rope.workspace = true
 rustc-hash.workspace = true
 serde.workspace = true
+# On §9's list for `shared` from the start, and it arrives here with the two
+# users that need the *format* rather than the `Serialize`/`Deserialize`
+# traits, which are generic over it: `proto::ProgressParams` keeps its value
+# as a `RawValue` because what a progress payload means is per-server
+# (`shim.md` §6), and the response envelope echoes the request id as the JSON
+# text `EditorRequestId` stores, which is a `RawValue` too. Both are
+# `serde_json`-specific by construction.
+serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tree-sitter.workspace = true
 url.workspace = true
 
-# `serde_json` is a dev-dependency and not yet a dependency: nothing in
-# `shared` writes a frame, and `proto`'s only inbound door is `Deserialize`,
-# which is generic over the format. The property tests need *a* format to open
-# that door with, and it has to be the one production uses (`core.md` §8.3:
-# `WirePosition::encode` is the only other constructor, so a test cannot build
-# one any other way — which is the point of the type).
 [dev-dependencies]
 proptest.workspace = true
-serde_json.workspace = true
