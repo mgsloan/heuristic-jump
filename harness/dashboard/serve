@@ -703,9 +703,15 @@ def panel_sessions() -> str:
             identifier = campaign.get("campaign", "")
             path = Path(adapter("transcript-path", owner, identifier).strip() or "/nonexistent")
             link = (
-                f'<a href="/transcript/{urllib.parse.quote(owner)}/{urllib.parse.quote(identifier)}">read</a>'
+                f'<a href="/transcript/{urllib.parse.quote(owner)}/{urllib.parse.quote(identifier)}">transcript</a>'
                 if path.exists()
                 else '<span class="empty">no transcript</span>'
+            )
+            record = REPO / str(campaign.get("record") or "")
+            record_link = (
+                f'<a href="/record/{urllib.parse.quote(owner)}/{urllib.parse.quote(identifier)}">record</a> · '
+                if record.is_file()
+                else ""
             )
             anchors = [a.strip() for a in (campaign.get("target") or "").split(",") if a.strip()]
             if len(anchors) > 1:
@@ -723,16 +729,17 @@ def panel_sessions() -> str:
                 f"<td>{esc(campaign.get('commits', 0))}</td>"
                 f"<td><code>{esc((campaign.get('prompt_sha') or '')[:12])}</code></td>"
                 f"<td><code>{esc(campaign.get('cli_version') or '—')}</code></td>"
-                f"<td>{esc(campaign.get('started', ''))}</td><td>{link}</td></tr>"
+                f"<td>{esc(campaign.get('started', ''))}</td>"
+                f"<td>{record_link}{link}</td></tr>"
             )
     if not rows:
         return panel("Sessions", empty("No campaign has run yet."))
     return panel(
-        "Sessions",
+        "Campaigns",
         "<table><thead><tr><th>id</th><th>loop</th><th>target</th><th>outcome</th><th>commits</th>"
         "<th>prompt sha</th><th>cli</th><th>started</th><th></th></tr></thead>"
         f"<tbody>{''.join(rows)}</tbody></table>",
-        note="prompt sha and CLI version are recorded because neither change is detectable after the fact",
+        note="one campaign is one session — the campaign id is the session id, so there is nothing to correlate",
     )
 
 
@@ -807,6 +814,7 @@ def campaign_is_running(identifier: str) -> bool:
 VIEWS = (
     ("overview", "Overview"),
     ("sections", "Sections and gaps"),
+    ("campaigns", "Campaigns"),
     ("interventions", "Interventions"),
     ("live", "Live"),
 )
@@ -815,11 +823,13 @@ VIEWS = (
 def fragment(view: str = "overview") -> str:
     if view == "sections":
         return panel_sections()
+    if view == "campaigns":
+        return panel_sessions() + panel_cost()
     if view == "interventions":
         return panel_interventions()
     if view == "live":
         return panel_live()
-    return panel_decisions() + panel_loops() + panel_metrics() + panel_cost() + panel_sessions()
+    return panel_decisions() + panel_loops() + panel_metrics()
 
 
 # --------------------------------------------------------------------------
@@ -1202,6 +1212,19 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(200, fragment(view if view in dict(VIEWS) else "overview"))
             elif route == "/version":
                 self.send(200, version_token(), "text/plain; charset=utf-8")
+            elif route.startswith("/record/"):
+                _, _, owner, campaign = route.split("/", 3)
+                path = STATE / "campaigns" / owner / f"{campaign}.md"
+                if not path.is_file():
+                    self.send(404, page("Record", empty("No such campaign record.")))
+                else:
+                    body = (
+                        f'<p class="meta"><a href="/?view=campaigns">&larr; campaigns</a> · '
+                        f'<code>{esc(campaign)}</code> · '
+                        f'<a href="/transcript/{urllib.parse.quote(owner)}/{urllib.parse.quote(campaign)}">transcript</a></p>'
+                        + markdownish(path.read_text())
+                    )
+                    self.send(200, page("Campaign record", body, poll=False))
             elif route.startswith("/transcript/"):
                 _, _, owner, campaign = route.split("/", 3)
                 limit = int(query.get("limit", ["120"])[0])

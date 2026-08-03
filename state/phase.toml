@@ -38,6 +38,13 @@ splice_sections = 3
 # is what a campaign costs.
 detail_gaps = 8
 
+# Turns a campaign should aim for. Campaigns were closing at about seventy with
+# two commits, which throws away context that a fresh session has to re-derive
+# from nothing — so work moves from the cheap side to the expensive side every
+# time one closes early. The upper bound is real too: the last turns of a very
+# long campaign are its most expensive and least informed.
+turn_target = "100 to 200"
+
 # The documents the audit covers. `core.md` and `shim.md` make checkable
 # claims; `resolution.md` describes an approach whose success is *measured*,
 # so conforming to it would be optimising the wrong thing

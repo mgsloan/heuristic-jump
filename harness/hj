@@ -126,6 +126,7 @@ class LoopConfig:
     rotation: int
     splice_sections: int
     detail_gaps: int
+    turn_target: str
     budget_usd: float | None
     model: str | None
     language: str | None
@@ -156,6 +157,7 @@ def load_phase() -> Phase:
             rotation=table.get("rotation", 6),
             splice_sections=table.get("splice_sections", 3),
             detail_gaps=table.get("detail_gaps", 8),
+            turn_target=table.get("turn_target", "100-200"),
             budget_usd=table.get("budget_usd"),
             model=table.get("model"),
             language=table.get("language"),
@@ -1343,6 +1345,7 @@ def prompt_values(phase: Phase, config: LoopConfig, campaign_id: str) -> dict[st
         "trailer_format": (HARNESS / "trailer-format.md").read_text().strip(),
         "decision_template": (HARNESS / "decision-template.md").read_text().strip(),
         "stall_n": str(config.stall_n),
+        "turn_target": config.turn_target,
         "audit_summary": (
             f"{counts['sections_clean']}/{counts['sections_total']} sections clean, "
             f"{counts['sections_unjudged']} unjudged, {counts['open_gaps']} open gaps, "

@@ -27,6 +27,25 @@ the measurement and nothing downstream can tell.
 
 # One campaign per session
 
+**Aim for {{turn_target}} turns.** Campaigns have been closing at around
+seventy, with two commits — which means the reading was paid for and then
+thrown away. A fresh session does not inherit your context; it re-derives it
+from nothing. So a target that is cheap for you *now* is expensive for
+whoever gets it next, and closing early moves work from the cheap side to the
+expensive side.
+
+This does not contradict "read in few large pieces" below, and the difference
+is worth being precise about: **that rule is about turns spent on retrieval,
+this target is about turns spent on work.** Nineteen `grep`s to find one
+function is nineteen wasted turns and you should not spend them. Ninety turns
+implementing four related gaps is the campaign doing its job. If you find
+yourself at forty turns with the target closed, the answer is another target,
+not a slower search for this one.
+
+Below the range, look for more work. Above it, close — a campaign that runs
+long enough to fill its context is one whose last turns are its most expensive
+and least informed.
+
 A campaign is one **hypothesis**. That is usually one target — an open gap,
 or an unjudged section — and may be several when they are the same piece of
 work seen from different sides. What it is never is a list of unrelated items
