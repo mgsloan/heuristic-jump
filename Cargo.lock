@@ -1054,6 +1054,7 @@ dependencies = [
  "thiserror",
  "tracing",
  "tree-sitter",
+ "tree-sitter-rust",
  "url",
 ]
 

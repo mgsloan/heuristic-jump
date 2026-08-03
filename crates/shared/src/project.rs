@@ -31,6 +31,7 @@ use std::sync::Arc;
 use ignore::WalkBuilder;
 use rope::{ByteLen, ByteOffset, ByteRange, LineIndex, Rope};
 use rustc_hash::FxHashSet;
+use tree_sitter::{Language, Parser, Point, Tree};
 
 use crate::deadline::Deadline;
 use crate::error::{Error, HandlerError, ProjectError};
@@ -389,11 +390,22 @@ pub struct ScanOutcome {
 pub struct ProjectView {
     files: Arc<FileList>,
     deadline: Deadline,
+    /// DECISION-conformance-012: provisional. `resolution.md` §3's `parse`
+    /// takes a path and text and no grammar, so there is no route to one
+    /// except this. Handed over at construction the same way §3 hands over
+    /// the worker pool; the view is per query and a query is dispatched to
+    /// one handler, so there is exactly one language it could be.
+    grammar: Language,
 }
 
 impl ProjectView {
-    pub fn new(files: Arc<FileList>, deadline: Deadline) -> Self {
-        Self { files, deadline }
+    // DECISION-conformance-012: provisional. The third parameter.
+    pub fn new(files: Arc<FileList>, deadline: Deadline, grammar: Language) -> Self {
+        Self {
+            files,
+            deadline,
+            grammar,
+        }
     }
 
     pub fn roots(&self) -> &[ProjectRoot] {
@@ -477,6 +489,50 @@ impl ProjectView {
         let text =
             String::from_utf8(bytes).map_err(|_| ProjectError::NotUtf8 { path: absolute })?;
         Ok(FileText::Disk(Arc::from(text)))
+    }
+
+    /// A parsed tree for a candidate file, which is what decides whether a
+    /// literal hit is a definition (`resolution.md` §4: the scan finds and
+    /// tree-sitter decides).
+    ///
+    /// No LRU. `resolution.md` §3 says "from the parse LRU when possible" and
+    /// there is no possible: the cache would be shared mutable state behind
+    /// the `Sync` `&Query` several fan-out threads hold, which is a lock, and
+    /// `conformance-005` already ruled that question the same way for reads —
+    /// no corpus, no benchmark, no cache. `path` is taken anyway because it is
+    /// the key such a cache would use and because a parse failure has to be
+    /// nameable.
+    ///
+    /// No deadline check, deliberately. The return type is `Option`, so an
+    /// expiry here would be indistinguishable from an unparseable file, and
+    /// the two must not be merged — a handler's next `read` fails with the
+    /// deadline variant, which is where the abstention comes from.
+    pub fn parse(&self, path: &ProjectPath, text: &FileText) -> Option<Tree> {
+        let mut parser = Parser::new();
+        if let Err(error) = parser.set_language(&self.grammar) {
+            // Not silently discarded and not propagated either: the signature
+            // is §3's and has no error channel, and a grammar the parser
+            // rejects is a build-time mistake that would fail identically on
+            // every file, so it is worth one loud line rather than a hundred.
+            tracing::error!(
+                path = %path.to_absolute().display(),
+                %error,
+                "the view's grammar was rejected by the parser"
+            );
+            return None;
+        }
+
+        match text {
+            FileText::Disk(text) => parser.parse(text.as_bytes(), None),
+            FileText::Open(text) => {
+                let mut read = |offset: usize, _position: Point| {
+                    text.chunks_in_range(offset..text.len())
+                        .next()
+                        .unwrap_or("")
+                };
+                parser.parse_with_options(&mut read, None, None)
+            }
+        }
     }
 
     /// The literal, word-boundary scan every search starts from

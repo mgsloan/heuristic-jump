@@ -22,6 +22,7 @@ use shared::{
     Clock, Deadline, Error, FileExtension, FileList, Generation, HandlerError, ProjectPath,
     ProjectRoot, ProjectView, RelPath, ScanRequest, SearchOrigin, SystemClock,
 };
+use tree_sitter::Language;
 
 const RUST: FileExtension = FileExtension::new("rs");
 
@@ -222,7 +223,7 @@ fn a_scan_past_its_deadline_reports_nothing_rather_than_less() {
     let arrived_at = SystemClock.now();
     let clock = Arc::new(FrozenClock(arrived_at + Duration::from_millis(1))) as Arc<dyn Clock>;
     let expired = Deadline::new(clock, arrived_at, Duration::ZERO);
-    let stopped = ProjectView::new(Arc::new(file_list(&root)), expired);
+    let stopped = ProjectView::new(Arc::new(file_list(&root)), expired, grammar());
 
     match stopped.scan(&request) {
         Err(Error::Handler(HandlerError::DeadlineExpired)) => {}
@@ -254,8 +255,58 @@ fn a_scan_request_refuses_a_literal_that_is_not_an_identifier() {
     assert!(ScanRequest::new("alpha", &candidates).is_some());
 }
 
+/// `resolution.md` §4's split, end to end through the view: the literal scan
+/// finds and the parse decides. Both halves have to come from the same object
+/// or a handler is deciding against a tree it built itself, out of a file it
+/// reached some other way.
+#[test]
+fn the_scan_finds_and_the_parse_decides() {
+    let root = fixture("parse");
+    let view = view(&root);
+    let document = path(&view, &root, "src/lib.rs");
+
+    let text = view.read(&document).expect("reading a candidate");
+    let tree = view
+        .parse(&document, &text)
+        .expect("a tree for a candidate the view itself handed out");
+
+    assert_eq!(tree.root_node().kind(), "source_file");
+    assert_eq!(
+        tree.root_node().end_byte(),
+        text.len().0,
+        "the tree does not cover the text it was parsed from, so a byte range \
+         from one cannot be read against the other"
+    );
+
+    let origin = SearchOrigin::from_document(document.clone());
+    let candidates = view.candidates(&[RUST], &origin);
+    let request = ScanRequest::new("alpha", &candidates).expect("an identifier literal");
+    let outcome = view.scan(&request).expect("an unbounded scan");
+    let file = outcome.hits.first().expect("hits in src/lib.rs");
+    let hit = file.hits.first().expect("the first hit");
+
+    assert_eq!(file.path, document);
+    let node = tree
+        .root_node()
+        .named_descendant_for_byte_range(hit.range.start.0, hit.range.end.0)
+        .expect("a node covering the hit");
+    assert_eq!(
+        (node.kind(), node.byte_range()),
+        ("identifier", hit.range.start.0..hit.range.end.0),
+        "a hit's byte range has to land exactly on the token the grammar sees, \
+         or the parse cannot be what accepts or rejects it — which is the one \
+         thing resolution.md §4 will not let a lexical rule do"
+    );
+}
+
 fn view(root: &Path) -> ProjectView {
-    ProjectView::new(Arc::new(file_list(root)), Deadline::none())
+    ProjectView::new(Arc::new(file_list(root)), Deadline::none(), grammar())
+}
+
+/// DECISION-conformance-012: provisional. The grammar reaches `parse` through
+/// the constructor.
+fn grammar() -> Language {
+    tree_sitter_rust::LANGUAGE.into()
 }
 
 fn file_list(root: &Path) -> FileList {

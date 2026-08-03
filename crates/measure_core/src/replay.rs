@@ -122,7 +122,10 @@ impl Replay<'_> {
         // depend on machine load, so *coverage* — not just latency — would
         // become a property of what else was running.
         let deadline = shared::Deadline::none();
-        let project = ProjectView::new(Arc::clone(files), deadline.clone());
+        // DECISION-conformance-012: provisional. The grammar reaches
+        // `ProjectView::parse` through the constructor rather than through the
+        // method, so it is handed over here.
+        let project = ProjectView::new(Arc::clone(files), deadline.clone(), self.handler.grammar());
         let policy = CommitPolicy::permissive();
         let profile = ServerProfile { id: None };
 

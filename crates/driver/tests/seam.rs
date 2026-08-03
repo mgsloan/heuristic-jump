@@ -35,22 +35,45 @@ fn the_handler_seam_is_defined_in_shared() {
     );
 }
 
+/// The grammar half is asserted against `[dependencies]` rather than against
+/// every line of the manifest, which is what it used to read.
+///
+/// §9's graph is the graph the shipped binary has, and a `[dev-dependencies]`
+/// grammar is not in it — `measure_core`'s own manifest already writes that
+/// reading down, for the same reason: "taking a grammar directly rather than
+/// reaching for `lang_rust` is what keeps the test honest about
+/// `&dyn LanguageHandler`". `shared` needs one to test `ProjectView::parse`
+/// at all, since a `tree_sitter::Language` cannot be constructed without a
+/// grammar crate.
+///
+/// A `lang_*` edge stays banned in *every* table. A language crate in a test
+/// is the thing the runtime edge would have been, only later: it would let
+/// `driver` or `shared` be written against one language's behaviour and pass.
 #[test]
 fn neither_driver_nor_shared_depends_on_a_language() {
     for crate_name in ["driver", "shared"] {
-        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join(crate_name)
-            .join("Cargo.toml");
-        let text = std::fs::read_to_string(&manifest)
-            .unwrap_or_else(|error| panic!("reading {}: {error}", manifest.display()));
+        let text = manifest_text(crate_name);
+        assert!(
+            !text.is_empty(),
+            "no manifest for {crate_name}, so every assertion below is vacuous"
+        );
 
         for line in text.lines() {
-            let dependency = line.split(['.', ' ', '=']).next().unwrap_or("").trim();
+            let named = line.split(['.', ' ', '=']).next().unwrap_or("").trim();
             assert!(
-                !dependency.starts_with("lang_") && !dependency.starts_with("tree-sitter-"),
+                !named.starts_with("lang_"),
+                "{crate_name} names {named} in its manifest: core.md §9's graph has no edge \
+                 from {crate_name} to a language crate, in any table, and grammar() exists so \
+                 that it needs none"
+            );
+        }
+
+        for dependency in dependencies_in(&text) {
+            assert!(
+                !dependency.starts_with("tree-sitter-"),
                 "{crate_name} depends on {dependency}: core.md §9's graph has no edge from \
-                 {crate_name} to a language, and grammar() exists so that it needs none"
+                 {crate_name} to a grammar, and grammar() returning a runtime \
+                 tree_sitter::Language is what makes that possible"
             );
         }
     }

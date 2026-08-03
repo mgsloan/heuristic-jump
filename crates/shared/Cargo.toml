@@ -35,5 +35,11 @@ tracing.workspace = true
 tree-sitter.workspace = true
 url.workspace = true
 
+# `ProjectView::parse` takes a `tree_sitter::Language`, which cannot be
+# constructed without a grammar crate, so a test of it needs one. Dev-only and
+# not an edge §9's graph forbids — the same reading `measure_core`'s manifest
+# takes, and `driver`'s seam test asserts the distinction rather than assuming
+# it.
 [dev-dependencies]
 proptest.workspace = true
+tree-sitter-rust.workspace = true
