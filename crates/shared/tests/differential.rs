@@ -55,13 +55,11 @@ const CORPUS: &str = include_str!("golden-traffic.jsonl");
 #[derive(Deserialize, Debug)]
 struct Entry {
     kind: Kind,
-    /// Where the message came from. Read only by a human, and required so that
-    /// captured traffic and hand-authored traffic stay distinguishable once
-    /// both are in the file.
-    #[expect(
-        dead_code,
-        reason = "It is documentation that the deserializer enforces the presence of. Dropping the field would let a line be added with no provenance, which is the one thing this corpus cannot afford to lose track of."
-    )]
+    /// Where the message came from, and `CAPTURED` when it came off a wire.
+    /// Required rather than optional so a line cannot be added with no
+    /// provenance, and read rather than decorative: §8.5 asks for captured
+    /// traffic specifically, so which half a line is in is a property with a
+    /// test.
     source: Box<str>,
     message: Box<RawValue>,
 }
@@ -129,10 +127,52 @@ fn the_corpus_exercises_every_kind_the_differential_can_compare() {
     );
 }
 
+/// §8.5 does not ask for a corpus, it asks for **captured** traffic: "real
+/// `initialize` / `InitializeResult` pairs and document traffic captured from
+/// Zed and VS Code against rust-analyzer, pyright, and gopls".
+///
+/// The distinction is the whole argument. A hand-authored message contains the
+/// fields somebody thought of, and §8.6 says in as many words that "a field
+/// that appears in no captured message is untested by construction, and that is
+/// exactly the long tail". So a corpus that drifted back to being entirely
+/// hand-written would satisfy the differential and not the section, and nothing
+/// would say so — which is what this asserts instead.
+///
+/// The three kinds named are the server-to-client ones. The client half is
+/// composed by an editor nobody here runs, and a message this project wrote to
+/// look like VS Code's is hand-authored however it is labelled.
+#[test]
+fn the_corpus_holds_traffic_nobody_here_composed() {
+    let corpus = corpus();
+    let captured: Vec<&Entry> = corpus
+        .iter()
+        .filter(|entry| entry.source.starts_with("CAPTURED"))
+        .collect();
+    assert!(
+        !captured.is_empty(),
+        "no captured message in golden-traffic.jsonl: core.md §8.5 makes real traffic one of \
+         the two conditions on which hand-rolled wire types are acceptable, and hand-authored \
+         messages are the population it says is not the long tail"
+    );
+
+    for kind in [
+        Kind::InitializeResult,
+        Kind::DefinitionResult,
+        Kind::Progress,
+    ] {
+        assert!(
+            captured.iter().any(|entry| entry.kind == kind),
+            "no captured {kind:?}: the header of golden-traffic.jsonl says how to record one, \
+             and a server saying something we did not predict is the only way this corpus \
+             finds a field nobody modelled"
+        );
+    }
+}
+
 fn corpus() -> Vec<Entry> {
     CORPUS
         .lines()
-        .filter(|line| !line.trim().is_empty())
+        .filter(|line| !line.trim().is_empty() && !line.starts_with('#'))
         .enumerate()
         .map(|(index, line)| {
             serde_json::from_str::<Entry>(line)
