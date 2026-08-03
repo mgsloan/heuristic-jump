@@ -937,12 +937,18 @@ def panel_audit_table() -> str:
     )
 
 
-def panel_size() -> str:
+def size_chart() -> str:
     """How much code and prose exist, one point per campaign close.
 
-    Counted at close rather than continuously, because a campaign's tree is
-    only meaningful once it is green — mid-campaign the count includes an
-    experiment that may be reverted.
+    It belongs beside the gap and section charts rather than in a panel of its
+    own: those two say how much of the spec is satisfied, and this says how
+    much was written to satisfy it. Read apart they are easy to misread in
+    opposite directions — sections clean moving slowly looks like nothing
+    happening, and lines growing fast looks like progress.
+
+    Counted at close rather than continuously, because a tree is only
+    meaningful once it is green; mid-campaign the count includes an experiment
+    that may be reverted.
 
     `reference/` is left out. It is 15,000 lines of generated LSP
     specification, which would be four fifths of the markdown and would never
@@ -957,27 +963,18 @@ def panel_size() -> str:
             points.append((row.get("ended") or "", counts))
     points.sort(key=lambda pair: pair[0])
     if len(points) < 2:
-        return panel("Size", empty("Not enough closed campaigns yet to draw a trend."))
+        return ""
 
     series = [
         ("rust", "var(--series-1)", [float(counts.get("rust") or 0) for _, counts in points]),
         ("markdown", "var(--series-2)", [float(counts.get("markdown") or 0) for _, counts in points]),
         ("python", "var(--series-3)", [float(counts.get("python") or 0) for _, counts in points]),
     ]
-    latest = points[-1][1]
-    first = points[0][1]
-    deltas = " · ".join(
-        f"{kind} {latest.get(kind, 0) - first.get(kind, 0):+,}" for kind in ("rust", "markdown", "python")
-    )
-    total = sum(latest.get(kind, 0) for kind in ("rust", "markdown", "python"))
-    return panel(
-        "Size",
-        f'<p class="headline"><strong>{total:,}</strong> tracked lines'
-        f'<span class="note">{latest.get("rust", 0):,} rust · '
-        f'{latest.get("markdown", 0):,} markdown · {latest.get("python", 0):,} python</span></p>'
-        + line_chart(series, "Tracked lines by language", "one point per campaign close"),
-        note=f"over {len(points)} campaigns: {deltas}. Excludes `reference/`, which is generated; "
-        "includes `vendor/`, which is ours to edit",
+    total = sum(points[-1][1].get(kind, 0) for kind in ("rust", "markdown", "python"))
+    return line_chart(
+        series,
+        f"Tracked lines by language, {total:,} total",
+        "one point per campaign close · excludes generated `reference/`",
     )
 
 
@@ -1025,7 +1022,7 @@ def panel_metrics() -> str:
             [("clean", "var(--series-1)", clean)],
             f"Sections clean, of {counts['sections_total']}",
             "one point per commit",
-        )
+        ) + size_chart()
         ledger = hj.gap_ledger(config.docs)
         # Gaps closed leads. Sections clean cannot move until every claim in a
         # section lands, and the sections are large, so early on it reads as
@@ -1414,7 +1411,6 @@ def fragment(view: str = "overview") -> str:
         + panel_cost()
         + panel_campaign_table()
         + panel_audit_table()
-        + panel_size()
     )
 
 
