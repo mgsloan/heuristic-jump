@@ -30,7 +30,7 @@ audit_every = 2
 # own. Getting it wrong is expensive downstream in a way no loop will notice:
 # a language loop cannot observe that the seam made its job harder, only that
 # it is slow (`design/loops.md` section 8).
-[loop.conformance]
+[loop.core]
 status = "paused" # running | paused | blocked | done
 prompt = "conformance.md"
 stall_n = 3        # campaigns without progress before the loop stops and asks
@@ -130,16 +130,20 @@ write = [
   "crates/measure_rust/**",
   "crates/lang_rust/**",
   "design/**",
-  "state/campaigns/conformance/**",
-  "state/journal/conformance.md",
+  "state/campaigns/core/**",
+  "state/journal/core.md",
+  # Both prefixes: new records are `core-NNN`, and the sixteen the loop
+  # issued while it was called `conformance` keep their ids, so it must
+  # still be able to reconcile one.
+  "state/decisions/core-*.md",
   "state/decisions/conformance-*.md",
-  "state/metrics/conformance.jsonl",
-  "state/findings/conformance.md",
+  "state/metrics/core.jsonl",
+  "state/findings/core.md",
   # Both, for now. The per-loop file is where new entries go; the flat one
   # stays writable because a campaign whose prompt was rendered before the
   # split would otherwise fail the gate on a path it was told to use, and
   # because its oldest entry is `CHANGE-bootstrap`, which is nobody's loop.
-  "state/spec-changelog/conformance.md",
+  "state/spec-changelog/core.md",
   "state/spec-changelog.md",
   "state/handoff.md",
 ]

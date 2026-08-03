@@ -8,8 +8,8 @@
 # of code (`design/loops.md` section 7).
 
 phase = "1a"
-taken = "2026-08-03T22:57:54+00:00"
-commit = "615e89244a93cd7cfab39033a9d7928a73617d82"
+taken = "2026-08-03T23:09:12+00:00"
+commit = "4224b8a25df78d64c29a3a5fd82de6ec0555ff36"
 
 [doc."core.md"]
 anchors = [
@@ -116,6 +116,7 @@ anchors = [
   "mechanics-isolation-in-four-layers",
   "parallel-loops-and-what-they-share",
   "branches-exist-for-one-commit-at-a-time",
+  "workers-one-loop-several-campaigns-at-once",
   "14-what-runs-the-loops",
   "the-supervisor-is-a-reconciler-not-a-scheduler",
   "prompts-as-starting-points",
