@@ -77,6 +77,17 @@ already correct; only the texts they point at are missing.
 Tagged site: `Cargo.toml`, `[workspace.package]`, `// DECISION-conformance-002:
 provisional` as a TOML comment beside `rust-version`.
 
+**That tag is invisible to the health metric, and that is part of this
+request.** `hj record`'s `provisional_decisions` counter greps `crates` and
+`vendor` only — deliberately, so that the decision records and prompts talking
+*about* the tag do not make the number start at thirty. But a provisional
+choice about a root file has nowhere to live except a root file, so this
+campaign's row reads `provisional_decisions: 0` with one in force. The fix is
+either to include the root manifests in the grep or to accept that
+root-scoped choices are counted by `state/decisions/` alone; inventing a
+tagged site inside `crates/` to move the number would be the wrong repair, so
+none was invented.
+
 This is the most reversible option because it leaves no file to delete. If
 the answer is option 1 or 2, a later campaign adds the four paths and the
 symlinks in one commit, and the only edit to existing work is removing the

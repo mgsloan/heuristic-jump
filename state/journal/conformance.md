@@ -76,3 +76,11 @@ and applies to library names, which are Rust identifiers. The Zed analogy in
 the sentence is what makes it invisible: `zed`'s crate and binary are both
 `zed`, so that case cannot distinguish the two rules. CHANGE-conformance-001,
 and the `[[bin]]` block now exists.
+
+**A footnote with a sharp edge:** `hj record`'s `provisional_decisions`
+counter greps `crates` and `vendor` only, so a `DECISION-...: provisional` tag
+in the root `Cargo.toml` counts as zero. This campaign's first metrics row
+reads `provisional_decisions: 0` with one provisional choice in force. Do not
+repair that by adding a tagged comment somewhere inside `crates/` — the number
+would be right and the site would be fiction. It is written up in
+`conformance-002` where the tag actually is.
