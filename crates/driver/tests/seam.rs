@@ -420,6 +420,98 @@ fn the_licence_text_is_symlinked_into_every_member() {
     }
 }
 
+/// `deps.md` §13, "Explicitly not depended on", which is a list of decisions
+/// rather than a list of crates — each name is there because some section
+/// argued it away, and §0's summary table repeats four of them in its verdict
+/// column.
+///
+/// Two of the entries carry their own reason for existing as a *test* rather
+/// than a note:
+///
+/// > **`parking_lot`** — `shim.md` §2 states there is no lock anywhere. If a
+/// > `parking_lot` import ever appears, something has gone wrong
+/// > architecturally and the fix is not a faster mutex.
+///
+/// > **`once_cell`** — … A `OnceLock` on the query path would have been a
+/// > blocking primitive in a design that says it has none.
+///
+/// Those are the shape the whole list has: the dependency is not the problem,
+/// it is the evidence. Adding `anyhow` does not break anything either — it
+/// makes §10's closed error set stop being closed, quietly, one `?` at a time.
+///
+/// **Asserted against declarations, not against `Cargo.lock`.** Six of these
+/// names are in the lockfile right now — `once_cell`, `regex`, `memchr`,
+/// `aho-corasick`, `walkdir` and `indexmap` — reached transitively through
+/// `ignore`, `toml`, `proptest`, `criterion` and `tracing-subscriber`. §13 is
+/// about what we reach for, and a scan of the lock would be red on arrival and
+/// would stay red for reasons nobody can act on.
+///
+/// The two qualified entries are qualified in §13's own words. `regex`:
+/// "`DefinitionHints` in `resolution.md` wants it, so it will land in a
+/// `lang_*` crate. Nothing in the driver needs it." And the scan family:
+/// "the literal scan primitive is a handler's. `driver` executes the scan on
+/// its pool but the matching itself lives behind that seam. `memchr` is the
+/// likely pick when we get there." So both are banned everywhere except
+/// `crates/lang_*`, which is where they are expected to arrive.
+#[test]
+fn no_member_declares_a_crate_section_13_rejects() {
+    /// §13's list, plus the four §0's table marks rejected. The rejections
+    /// argued in §4, §5, §8, §9, §11 and §12 — `simd-json`, `ropey`,
+    /// `schnellru`, `env_logger`, `lexopt`, `mockall` — are deliberately not
+    /// here: they are alternatives a section weighed, not commitments it made,
+    /// and folding them in would make this scan a second copy of six sections
+    /// rather than a check on one.
+    const REJECTED: &[&str] = &[
+        "tokio",
+        "anyhow",
+        "num_cpus",
+        "once_cell",
+        "parking_lot",
+        "dashmap",
+        "jiff",
+        "chrono",
+        "time",
+        "gix",
+        "git2",
+    ];
+
+    /// Rejected for the driver and expected in a handler, per §13.
+    const HANDLER_ONLY: &[&str] = &["regex", "memchr", "aho-corasick", "grep-searcher"];
+
+    let members = workspace_members();
+    assert!(
+        !members.is_empty(),
+        "no workspace members parsed out of Cargo.toml, so this test would pass vacuously"
+    );
+
+    for member in &members {
+        let manifest = workspace_file(&format!("{member}/Cargo.toml"));
+        assert!(
+            !manifest.is_empty(),
+            "no manifest for {member}, so every assertion below is vacuous"
+        );
+        let handler = member.starts_with("crates/lang_");
+
+        for (table, key, _) in dependency_entries(&manifest) {
+            let name = key.strip_suffix(".workspace").unwrap_or(&key);
+            assert!(
+                !REJECTED.contains(&name),
+                "{member} declares {name} in [{table}]: deps.md §13 rejects it, and the \
+                 dependency is the evidence rather than the problem — §13's entries are there \
+                 because a section argued each one away, and the argument is what stops \
+                 holding when the crate arrives"
+            );
+            assert!(
+                handler || !HANDLER_ONLY.contains(&name),
+                "{member} declares {name} in [{table}]: deps.md §13 puts the literal scan \
+                 primitive and the regex behind the handler seam — driver executes the scan \
+                 on its pool, but the matching itself is a lang_* crate's, and a driver that \
+                 can match is one the seam no longer describes"
+            );
+        }
+    }
+}
+
 /// `deps.md` §14's first two conventions, which are one mechanism:
 ///
 /// > **Every dependency version lives in `[workspace.dependencies]`.** Member
