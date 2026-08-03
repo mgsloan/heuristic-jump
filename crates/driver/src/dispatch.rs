@@ -13,7 +13,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use rustc_hash::FxHashMap;
-use shared::{Error, HandlerError, LanguageHandler, Outcome, Query};
+use shared::{Deadline, Error, HandlerError, LanguageHandler, Outcome, Query};
 
 /// The handler set, resolved once at startup. `heuristic_jump` is the one
 /// place the language list is enumerated (`core.md` §9), so this takes the
@@ -125,10 +125,47 @@ pub enum Dispatched {
 /// The direct call. No trait object registry lookup, no message, no
 /// indirection beyond the one `&dyn` the handler set needs.
 ///
-/// The hard cap that `core.md` §5 puts on top of this — dropping the result of
-/// a handler that returns *after* its deadline — belongs to the caller, which
-/// is the only thing that knows whether the answer is still wanted.
+/// `core.md` §5's hard cap is applied here rather than left to the caller.
+/// The deadline is not a fact the caller holds and this function does not —
+/// it is `query.deadline`, which the handler was already required to poll, so
+/// enforcing it here makes "the driver drops a late answer" a property of the
+/// only path a handler is reached by.
 pub fn dispatch(handler: &dyn LanguageHandler, query: &Query<'_>) -> Dispatched {
+    hard_cap(query.deadline, call(handler, query))
+}
+
+/// The hard cap, separated from `dispatch` because it is the half of it that
+/// can be tested: a `Query` cannot be built without a `DocumentSnapshot`, and
+/// that cannot be built without a grammar, so there is no handler double until
+/// a `lang_*` crate exists.
+///
+/// A late *failure* stays a failure. The cap exists to stop a late answer
+/// reaching the user, and a failure is not an answer; recording it as an
+/// expiry would merge a broken handler with a slow one, which is the
+/// distinction `Dispatched` exists to keep (`core.md` §7).
+pub fn hard_cap(deadline: &Deadline, dispatched: Dispatched) -> Dispatched {
+    match dispatched {
+        Dispatched::Decided(outcome) => {
+            if deadline.expired() {
+                // Not a handler bug on its own: a deadline can expire between
+                // the last poll and the return. Visible at `debug` because the
+                // record says `abstain`/`deadline` either way, so nothing
+                // downstream can tell the two apart.
+                tracing::debug!(
+                    ?outcome,
+                    "dropping an answer that arrived after its deadline"
+                );
+                Dispatched::DeadlineExpired
+            } else {
+                Dispatched::Decided(outcome)
+            }
+        }
+        Dispatched::DeadlineExpired => Dispatched::DeadlineExpired,
+        Dispatched::Failed(error) => Dispatched::Failed(error),
+    }
+}
+
+fn call(handler: &dyn LanguageHandler, query: &Query<'_>) -> Dispatched {
     match handler.goto_definition(query) {
         Ok(outcome) => Dispatched::Decided(outcome),
         // Written as an exhaustive match on `Error` rather than a catch-all,

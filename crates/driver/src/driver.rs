@@ -7,6 +7,8 @@
 //! one rule the workspace graph is built around. `tests/seam.rs` asserts it
 //! rather than leaving it to be read.
 
+mod config;
 mod dispatch;
 
-pub use dispatch::{Dispatched, Registry, dispatch};
+pub use config::{Config, DeadlineMs, DeadlineOverride, Heuristics, Mode, ServerCommand};
+pub use dispatch::{Dispatched, Registry, dispatch, hard_cap};
