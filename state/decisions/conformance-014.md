@@ -1,6 +1,6 @@
 ---
 id: conformance-014
-status: open
+status: accepted
 opened: 2026-08-03T22:34:00+00:00
 campaign: 51628b98-b5ea-48b1-bb77-696ecc51face
 kind: class-b
@@ -82,7 +82,27 @@ question into a rewrite of §5's table.
 
 ## Decision
 
-Undecided — waiting on a human.
+**Option B — `measure_<lang>` is MIT**, answered 2026-08-03.
+
+The rule this settles, which is the part that outlives the crate: **a
+`license` field describes copyright in that crate's own text.** The licence
+of what it links is a property of the artifact and is recorded once, in
+`deps.md` §14 — "binary crate; the artifact it builds is GPL".
+
+What decided it is this campaign's own finding rather than the argument in
+the record above. `heuristic_jump` depends on `lang_rust` and so on
+`similarity`, and is marked MIT. So "reaching GPL makes you GPL" is already
+false in the workspace, independently of `measure_<lang>`; adopting it here
+would have meant re-marking `shared` and `heuristic_jump` too. B makes the
+scheme consistent; A would have added a third case to a section that already
+had two rules.
+
+**Follow-up, not settled here:** `lang_*` is still marked GPL by the rule
+this rejects, and §5 states both rules. That section needs one edit stating
+the single rule and applying it to every crate — including saying what
+`lang_*` is under it, which may still be GPL for a different reason
+(`similarity` is a port and so a derivative work, which is not the same
+claim as "it depends on GPL").
 
 ## Provisional choice in force
 
