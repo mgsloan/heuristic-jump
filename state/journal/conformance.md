@@ -1180,3 +1180,54 @@ this: there is no transport, no codec and no actor, so `TreeCache` has no
 owner outside the tests. Building that owner is the driver-cluster campaign
 (`#4-project-file-enumeration`, `#86-modelling-errors`, `#both-sides-are-sets`,
 `#10-testing[ddadbddae0]`), and it is one campaign per gap at least.
+
+## Campaign 7a30ee1a — `#7-observability-and-the-corpus-scan[c4505d900b]`
+
+Confirmed in one experiment. The gap was the seam widening `record.rs`'s
+`HandlerReport` had already named and deferred: `Outcome` carried `locations`,
+`confidence` and one `Stratum`, so §7's `margin`, `considered`, `stages`,
+`stage_us`, `bytes_scanned`, `files_parsed` and the two strata had no route
+across. `Outcome`'s arms now carry `Strata` and `Trace`
+(`state/decisions/conformance-013.md`, Class B on the frozen seam).
+
+**The section's other gap, `[10d2239070]`, was entirely stale** — it reads "no
+record type, no serialization and no emission site exists" against a tree where
+`measure_core/src/record.rs` is §7's record, `replay::write_records` serializes
+it, and `measure_core` is a workspace member. Half a campaign's budget goes on
+re-reading gaps like this. The findings file has said "check the code before
+believing a gap" for three campaigns now and it is still the highest-value line
+in it.
+
+**What cost time, and will again: `result_large_err`.** Widening `Outcome` with
+six inline fields pushed `driver`'s `Dispatched` past clippy's 128-byte
+threshold, and the lint fires at three `Result<_, Dispatched>` signatures in
+`dispatch.rs` — none of which the diff touched, so the error reads as unrelated
+breakage. The fix that keeps the call sites honest is to box *inside* the new
+type (`Trace(Option<Box<TraceParts>>)`), never at the use site: the seam type
+stays one pointer wide, and `None` means the `NotAnIdentifier` path — the
+commonest abstention there is — allocates nothing for a channel it never writes
+to. **Any future widening of a seam enum will hit this**, because `Dispatched`
+is now close to the line again.
+
+**A bulk edit through `python3` does not get formatted.** The PostToolUse hook
+formats what `Edit`/`Write` touch; a script that rewrites four test files leaves
+them unformatted and the gate fails at step 1 before compiling anything. Run
+`cargo fmt -p <crate>` on every crate the script touched, immediately.
+
+**Abandoned: an in-process assertion on the table's coverage/precision split.**
+§7 says coverage is reported on `stratum_prior` and precision on
+`stratum_final`, so `Table::observe` now puts the coverage counters in the prior
+row and the agreement counters in the settled one, and `precision()`'s
+denominator becomes the three agreement counters rather than `committed` (on a
+refined query, `committed` is the other row's number). No test asserts it and
+none can from where the code sits: `Table` is `pub(crate)`, and `measure_core`'s
+`report` writes the JSON with `std::io::stdout().write_all`, which bypasses
+cargo's test capture — so a test cannot read back the table it just caused.
+Verified by eye against the JSON `cargo test` prints: 14 queries and 14 commits
+under `explicitly_imported`, 14 `match_top1` under `ambiguous_name`.
+
+**If a future campaign wants that assertion**, the cheap route is a
+`pub(crate)`-to-`pub` on `Table` plus a `replay` that returns its table rather
+than only printing it — not a stdout capture, and not a second table
+implementation in the test, which would fork the metric §7 exists to keep
+single.
