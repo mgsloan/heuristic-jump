@@ -19,6 +19,7 @@ set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(dirname "$here")"
 hj="$here/hj"
+adapter="$here/adapter"
 
 loop="${1:-}"
 if [ -z "$loop" ]; then
@@ -50,28 +51,18 @@ if [ -n "$dry_run" ]; then
 fi
 
 session="$(cat /proc/sys/kernel/random/uuid)"
-transcripts="${HJ_TRANSCRIPTS:-$repo/../heuristic-jump-transcripts}/$loop"
-mkdir -p "$transcripts"
+out="$("$adapter" transcript-path "$loop" "audit-$session")"
 
 # A fresh session of the same model is enough: the failure being caught is
 # attention-based, not capability-based, and a fresh context already destroys
 # the shared premise. HJ_AUDIT_MODEL is the cheap experiment section 5
 # describes, for when the auditor is observed rubber-stamping.
-model_args=()
-[ -n "${HJ_AUDIT_MODEL:-}" ] && model_args=(--model "$HJ_AUDIT_MODEL")
-
-claude -p \
-	--session-id "$session" \
-	--tools "Read,Grep,Glob" \
-	--permission-mode bypassPermissions \
-	"${model_args[@]}" \
-	<"$work/prompt" |
-	tee "$transcripts/audit-$session.md"
-status=${PIPESTATUS[0]}
+"$adapter" audit "$session" "$work/prompt" "$out" --model "${HJ_AUDIT_MODEL:-}"
+status=$?
 
 if [ "$status" -ne 0 ]; then
 	echo "audit: the auditor session exited $status; state/audit/ is unchanged" >&2
 	exit "$status"
 fi
 
-"$hj" audit-merge "$loop" "$transcripts/audit-$session.md"
+"$hj" audit-merge "$loop" "$out"

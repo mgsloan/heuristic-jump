@@ -22,6 +22,7 @@ demanding.
 ## Running one
 
 ```sh
+harness/hj baseline-take              # once, at the start of a phase
 harness/loop conformance              # campaigns until stalled or stopped
 harness/dashboard/serve               # the operator view, at localhost:8787
 harness/hj status                     # the same thing in a terminal
@@ -40,9 +41,11 @@ boundary, which is safe because every experiment commits or reverts.
 | `gate` | `fmt`, `clippy`, `nextest`, diff scope, audit consistency, metrics row — in that order, all mandatory, scoped to the crates the loop owns |
 | `audit` | a fresh read-only session judging spec against code, and the merge of its verdict into `state/audit/` |
 | `hj` | everything mechanical: section lists, audit merges, scope checks, prompt rendering, campaign records, metrics rows |
+| `adapter` | every vendor-specific invocation, in one file. See below |
 | `dashboard/serve` | the operator view, and the place escalations are answered |
 | `prompts/` | one prompt per variety of phase. Not one template with a swapped middle |
 | `trailer-format.md`, `decision-template.md` | the commit trailer convention and the decision-record shape, spliced into the prompts at launch so there is one copy of each |
+| `section-baseline.toml` | the denominator, frozen for the phase. See below |
 
 Run `harness/hj --help` for the subcommands.
 
@@ -59,6 +62,62 @@ gate is usable from the first commit, when there is no `Cargo.toml` at all.
 covers Claude's file tools and not bash subprocesses, so anything the hook
 blocks is reachable through `sh -c`. The gate inspects the result instead of
 trusting the actor.
+
+## One adapter, because the CLI is the largest dependency here
+
+`deps.md` is careful about every crate; nothing was that careful about the
+fact that this harness is built on one vendor's CLI surface. `--session-id`,
+headless `-p`, `--output-format stream-json`, `--tools`, the `PreToolUse`
+payload shape and the transcript layout are product surfaces. They are not
+versioned like a crate, cannot be pinned in a lockfile, cannot be vendored,
+and change under you on upgrade — so the mitigation has to be a different
+shape: **isolate rather than pin** (`design/loops.md` §17).
+
+`harness/adapter` is the only file that invokes `claude` or knows the shape
+of what it emits. `loop`, `audit`, `hooks/` and `dashboard/` call its
+subcommands — `campaign`, `audit`, `summary`, `parse-stream`,
+`transcript-path`, `hook-path`, `version` — and `parse-stream` normalises the
+stream into our own `{kind, text, name, summary, input, diff}` records, so
+nothing downstream reads a vendor record. Replacing the runner means
+rewriting one file. `$HJ_RUNNER` swaps the binary.
+
+**Each campaign records the CLI version** beside the prompt sha, for the same
+reason: a prompt revision changes the generator of campaigns and nothing
+downstream can detect it, and a CLI upgrade does the same thing without
+anybody deciding to change anything.
+
+## The denominator is frozen, not re-derived
+
+`sections clean / sections total` is parsed from headings in documents the
+conformance loop is allowed to edit — so re-deriving it each audit would let
+the loop merge two dirty sections into one clean one and move its own score
+without touching a line of code (`design/loops.md` §7).
+
+`harness/hj baseline-take` freezes the section list for the phase into
+`harness/section-baseline.toml`, which lives here because everything a loop
+must not move lives here. After that: a baseline section that no longer
+exists is still counted and is never clean; a section added since is audited,
+because it is real work, but does not move the score this phase. Both show up
+in `hj baseline-drift` and on the dashboard.
+
+## Class A spec edits are provisional too
+
+Rewriting the spec toward the code is the one gaming route on §7's list that
+the audit cannot catch **by construction** — the auditor compares the code
+against the spec as it currently reads, so moving the spec deletes the gap
+from the instrument that would have reported it, and the section goes clean.
+
+Two mechanisms, both in the dashboard's top panel. Every `state/spec-changelog.md`
+entry waits there until a human marks it read, which appends to the
+intervention log. And `hj campaign-close` flags any campaign whose commits
+include both a `design/` edit and code — scoped to the campaign rather than
+the commit, because the iteration contract produces one commit per experiment
+and "same commit" is a test the loop's own working style defeats without
+anyone intending it.
+
+Neither prevents anything. This is the failure with the thinnest defence in
+the whole design, and the honest version is that it is made *visible* rather
+than impossible.
 
 ## The auditor never writes
 

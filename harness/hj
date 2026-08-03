@@ -47,11 +47,18 @@ DENIED_ALWAYS = [
     "state/audit/**",
     "state/interventions.jsonl",
     "state/sessions.jsonl",
-    "crates/similarity/**",
     "CLAUDE.md",
     "clippy.toml",
     ".claude/**",
 ]
+
+# The one path whose owner is a function of the phase: shared resolution code
+# is writable only during whole-repository phases, when there is one writer and
+# nothing running alongside (`design/loops.md` section 13). Resolved against
+# `state/phase.toml` so the table has one answer at any moment, rather than
+# being granted by one row and denied by another.
+WHOLE_REPOSITORY_PHASES = ("3", "7")
+PHASE_DEPENDENT_DENIALS = ["crates/similarity/**"]
 
 OUTCOMES = ("confirmed", "falsified", "no-movement", "budget", "crashed", "error")
 
@@ -117,7 +124,6 @@ class LoopConfig:
     budget_usd: float | None
     model: str | None
     language: str | None
-    server: str | None
 
 
 @dataclass
@@ -146,9 +152,14 @@ def load_phase() -> Phase:
             budget_usd=table.get("budget_usd"),
             model=table.get("model"),
             language=table.get("language"),
-            server=table.get("server"),
         )
     return result
+
+
+def denied_paths(phase: Phase) -> list[str]:
+    if phase.phase in WHOLE_REPOSITORY_PHASES:
+        return list(DENIED_ALWAYS)
+    return DENIED_ALWAYS + PHASE_DEPENDENT_DENIALS
 
 
 def loop_config(owner: str) -> tuple[Phase, LoopConfig]:
@@ -226,6 +237,47 @@ def sections_of(doc: str) -> list[Section]:
 
 def section_index(docs: list[str]) -> dict[str, Section]:
     return {s.key: s for doc in docs for s in sections_of(doc)}
+
+
+# --------------------------------------------------------------------------
+# The baseline: the denominator, frozen for the phase
+#
+# It lives in `harness/` and not `state/` for the reason everything else in
+# `harness/` does — a loop must not be able to move the thing that scores it,
+# and here the score is a fraction whose denominator is parsed out of
+# documents the conformance loop is allowed to edit.
+
+BASELINE = HARNESS / "section-baseline.toml"
+
+
+def read_baseline() -> dict:
+    if not BASELINE.exists():
+        return {}
+    return tomllib.loads(BASELINE.read_text())
+
+
+def baseline_anchors(doc: str) -> set[str] | None:
+    """`None` when no baseline has been taken, which means "fall back to the
+    documents and say so" rather than "the denominator is zero"."""
+    entry = read_baseline().get("doc", {}).get(doc)
+    if entry is None:
+        return None
+    return {f"{doc}#{anchor}" for anchor in entry.get("anchors", [])}
+
+
+def baseline_drift(docs: list[str]) -> list[str]:
+    lines = []
+    for doc in docs:
+        expected = baseline_anchors(doc)
+        if expected is None:
+            lines.append(f"{doc}: no baseline; the denominator is being re-derived each audit")
+            continue
+        live = {s.key for s in sections_of(doc)}
+        for key in sorted(expected - live):
+            lines.append(f"{key}: in the baseline, gone from the document — counted, and never clean")
+        for key in sorted(live - expected):
+            lines.append(f"{key}: added since the baseline — audited, but it does not move the score")
+    return lines
 
 
 def section_text(section: Section) -> str:
@@ -324,24 +376,46 @@ def write_audit(doc: str, verdicts: dict[str, SectionVerdict], order: list[str])
 
 
 def audit_counts(docs: list[str]) -> dict[str, int]:
-    clean = total = gaps = minors = unjudged = 0
+    """The conformance loop's number.
+
+    Counted against the *baseline* rather than the documents as they read
+    now, because the section list is parsed from headings in documents the
+    loop may edit: re-deriving the denominator each audit would let it merge
+    two dirty sections into one clean one and move the score without touching
+    a line of code (`design/loops.md` section 7).
+
+    A baseline section that no longer exists is counted and is never clean.
+    A section added since the baseline is audited — it is real work — but
+    does not move the score this phase.
+    """
+    clean = total = gaps = minors = unjudged = missing = added = 0
     for doc in docs:
-        known = {s.key for s in sections_of(doc)}
+        expected = baseline_anchors(doc)
+        live = {s.key for s in sections_of(doc)}
         verdicts = read_audit(doc)
-        total += len(known)
-        for key in known:
+        scored = expected if expected is not None else live
+        total += len(scored)
+        added += len(live - scored)
+        for key in scored:
+            if key not in live:
+                missing += 1
+                continue
             verdict = verdicts.get(key)
             if verdict is None or verdict.state == "unjudged":
                 unjudged += 1
                 continue
             if verdict.state == "clean":
                 clean += 1
-            gaps += len(verdict.gaps)
-            minors += len(verdict.minors)
+        for key, verdict in verdicts.items():
+            if key in live:
+                gaps += len(verdict.gaps)
+                minors += len(verdict.minors)
     return {
         "sections_clean": clean,
         "sections_total": total,
         "sections_unjudged": unjudged,
+        "sections_missing": missing,
+        "sections_added": added,
         "open_gaps": gaps,
         "audit_minors": minors,
     }
@@ -523,6 +597,18 @@ def test_count(members: list[str]) -> int | None:
     return sum(len(suite.get("testcases", {})) for suite in listing.get("rust-suites", {}).values())
 
 
+def cli_version() -> str:
+    """Recorded per campaign beside the prompt sha, and for the same reason
+    (`design/loops.md` section 17). A prompt revision changes the *generator*
+    of campaigns and nothing downstream can detect it; a CLI upgrade does the
+    same thing, arrives without anybody deciding to change anything, and is
+    otherwise completely invisible."""
+    result = subprocess.run(
+        [str(HARNESS / "adapter"), "version"], capture_output=True, text=True, check=False
+    )
+    return result.stdout.strip() or "unknown"
+
+
 def provisional_decisions() -> int:
     """Sites still running on a provisional choice. Its count is a health
     metric — rising steadily means the loop is running ahead of its decisions
@@ -575,6 +661,57 @@ def cmd_section_text(args: argparse.Namespace) -> int:
     if section is None:
         die(f"no section {args.key}")
     print(section_text(section))
+    return 0
+
+
+def cmd_baseline_take(args: argparse.Namespace) -> int:
+    """Freeze the denominator at the start of a phase. A human action: this
+    writes into `harness/`, which every loop is denied."""
+    phase = load_phase()
+    existing = read_baseline()
+    if existing and existing.get("phase") == phase.phase and not args.force:
+        die(
+            f"a baseline for phase {phase.phase} was already taken at {existing.get('taken')}. "
+            "Re-taking it mid-phase makes the metrics history discontinuous; pass --force if "
+            "that is what you mean, and log it as an intervention."
+        )
+    docs = sorted({doc for config in phase.loops.values() for doc in config.docs})
+    lines = [
+        "# The denominator of `sections clean / sections total`, frozen for the",
+        "# phase. Written by `harness/hj baseline-take`, read by everything else.",
+        "#",
+        "# It is here rather than in `state/` because the section list is parsed",
+        "# from headings in documents the conformance loop may edit, and a loop",
+        "# that could re-derive its own denominator could merge two dirty",
+        "# sections into one clean one and move the score without touching a line",
+        "# of code (`design/loops.md` section 7).",
+        "",
+        f"phase = {toml_string(phase.phase)}",
+        f"taken = {toml_string(now())}",
+        f"commit = {toml_string(head_sha())}",
+        "",
+    ]
+    for doc in docs:
+        anchors = [section.anchor for section in sections_of(doc)]
+        lines.append(f"[doc.{toml_string(doc)}]")
+        lines.append("anchors = [")
+        lines += [f"  {toml_string(anchor)}," for anchor in anchors]
+        lines.append("]")
+        lines.append("")
+        print(f"baseline: {doc}: {len(anchors)} sections")
+    BASELINE.write_text("\n".join(lines))
+    print(f"baseline: written to {BASELINE.relative_to(REPO)} for phase {phase.phase}")
+    return 0
+
+
+def cmd_baseline_drift(args: argparse.Namespace) -> int:
+    phase = load_phase()
+    docs = sorted({doc for config in phase.loops.values() for doc in config.docs})
+    drift = baseline_drift(docs)
+    for line in drift:
+        print(f"baseline: {line}")
+    if not drift:
+        print("baseline: the documents match the baseline")
     return 0
 
 
@@ -690,7 +827,8 @@ def cmd_check_audit(args: argparse.Namespace) -> int:
 
 
 def cmd_check_scope(args: argparse.Namespace) -> int:
-    _, config = loop_config(args.loop)
+    phase, config = loop_config(args.loop)
+    denied = denied_paths(phase)
     if args.rev:
         # Forensics on an existing commit. A commit without this loop's
         # `loop:` trailer is a human's, and ownership does not apply to it —
@@ -703,8 +841,8 @@ def cmd_check_scope(args: argparse.Namespace) -> int:
     paths = commit_paths(args.rev) if args.rev else working_tree_paths()
     violations = []
     for path in paths:
-        if matches_any(path, DENIED_ALWAYS):
-            violations.append((path, "denied to every loop"))
+        if matches_any(path, denied):
+            violations.append((path, "denied to every loop in this phase"))
         elif not matches_any(path, config.write):
             violations.append((path, f"outside {args.loop}'s owned paths"))
     for path, reason in violations:
@@ -726,7 +864,8 @@ def cmd_check_path(args: argparse.Namespace) -> int:
     subprocesses, so anything this blocks is reachable through `sh -c`. The
     gate's diff-scope check is what actually enforces
     (`design/loops.md` section 13)."""
-    _, config = loop_config(args.loop)
+    phase, config = loop_config(args.loop)
+    denied = denied_paths(phase)
     failed = False
     for raw in args.path:
         path = Path(raw)
@@ -736,8 +875,8 @@ def cmd_check_path(args: argparse.Namespace) -> int:
             print(f"{raw} is outside the repository", file=sys.stderr)
             failed = True
             continue
-        if matches_any(relative, DENIED_ALWAYS):
-            print(f"{relative} is denied to every loop, in every phase.", file=sys.stderr)
+        if matches_any(relative, denied):
+            print(f"{relative} is denied to every loop in phase {phase.phase}.", file=sys.stderr)
             failed = True
         elif not matches_any(relative, config.write):
             print(
@@ -882,11 +1021,10 @@ def prompt_values(phase: Phase, config: LoopConfig, campaign_id: str) -> dict[st
         "phase": phase.phase,
         "stall_notice": stall_notice,
         "language": config.language or "n/a",
-        "server": config.server or "n/a",
         "campaign_id": campaign_id,
         "campaign_record": f"state/campaigns/{config.owner}/{campaign_id}.md",
         "owned_paths": "\n".join(f"- `{p}`" for p in config.write),
-        "denied_paths": "\n".join(f"- `{p}`" for p in DENIED_ALWAYS),
+        "denied_paths": "\n".join(f"- `{p}`" for p in denied_paths(phase)),
         "gate_command": f"harness/gate {config.owner}",
         "docs": ", ".join(f"`design/{d}`" for d in config.docs) or "(none)",
         "trailer_format": (HARNESS / "trailer-format.md").read_text().strip(),
@@ -1019,9 +1157,9 @@ def cmd_campaign_open(args: argparse.Namespace) -> int:
             "loop": config.owner,
             "phase": phase.phase,
             "language": config.language,
-            "server": config.server,
             "prompt": config.prompt,
             "prompt_sha": prompt_sha,
+            "cli_version": cli_version(),
             "started": now(),
             "start_commit": head_sha(),
             "record": str(record.relative_to(REPO)),
@@ -1033,6 +1171,41 @@ def cmd_campaign_open(args: argparse.Namespace) -> int:
         Path(args.prompt_out).write_text(rendered)
     print(campaign_id)
     return 0
+
+
+def spec_drift(campaign_id: str, target: str | None) -> dict | None:
+    """Did this campaign edit the spec and the code it is judged against?
+
+    Scoped to the campaign rather than the commit, and that matters more than
+    it sounds: the iteration contract deliberately produces one commit per
+    experiment with one target each, so "the spec edit and the code are in the
+    same commit" is a test the loop's own working style defeats without anyone
+    intending it (`design/loops.md` section 7).
+
+    Not a gate failure. Rewriting the spec toward the code is the one gaming
+    route the audit cannot catch *by construction* — moving the spec removes
+    the gap from the instrument that would have reported it — so the answer is
+    to make it visible to a human, not to guess at intent here.
+    """
+    design_edits: set[str] = set()
+    code_edits: set[str] = set()
+    for commit in commits_for_campaign(campaign_id):
+        for path in commit_paths(commit):
+            if path.startswith("design/"):
+                design_edits.add(path)
+            elif path.startswith(("crates/", "vendor/")):
+                code_edits.add(path)
+    if not (design_edits and code_edits):
+        return None
+    target_doc = (target or "").split("#")[0]
+    return {
+        "design": sorted(design_edits),
+        "code": sorted(code_edits)[:20],
+        "target": target,
+        # The sharper case: the document edited is the one the campaign's own
+        # target lives in, so the edit and the claim being scored coincide.
+        "touches_target_document": bool(target_doc) and f"design/{target_doc}" in design_edits,
+    }
 
 
 def cmd_campaign_close(args: argparse.Namespace) -> int:
@@ -1055,6 +1228,7 @@ def cmd_campaign_close(args: argparse.Namespace) -> int:
         or after["open_gaps"] < before["open_gaps"]
         or (tests_before is not None and tests_after is not None and tests_after > tests_before)
     )
+    drift = spec_drift(args.id, args.target)
 
     append_jsonl(
         sessions_path(),
@@ -1068,10 +1242,17 @@ def cmd_campaign_close(args: argparse.Namespace) -> int:
             "commits": len(commits),
             "outcome": args.outcome,
             "progress": progress,
+            "spec_drift": drift,
             **after,
         },
     )
     print(f"campaign {args.id[:8]} closed: {args.outcome}, {len(commits)} commit(s), progress={progress}")
+    if drift:
+        print(
+            "campaign: flagged — this campaign edited design/ and code in the same run"
+            + (", in the document its own target names" if drift["touches_target_document"] else "")
+            + ". Not a failure; it goes to the dashboard for a human to read."
+        )
     return 0
 
 
@@ -1113,15 +1294,74 @@ def cmd_status(args: argparse.Namespace) -> int:
         )
         print(f"    campaigns   {len(campaigns)} opened, {len(closed)} closed, {trailing} without progress (stall N={config.stall_n})")
         for campaign in campaigns[-5:]:
+            flag = "  [spec drift]" if campaign.get("spec_drift") else ""
             print(
                 f"      {campaign.get('campaign', '?')[:8]}  "
-                f"{(campaign.get('target') or '-'):<48.48}  {campaign.get('outcome') or 'open'}"
+                f"{(campaign.get('target') or '-'):<48.48}  {campaign.get('outcome') or 'open'}{flag}"
             )
+        for line in baseline_drift(config.docs):
+            print(f"    baseline    {line}")
     print()
     print(f"  provisional DECISION- tags: {provisional_decisions()}")
     decisions = sorted((STATE / "decisions").glob("*.md"))
     waiting = [p for p in decisions if re.search(r"^status:\s*open\s*$", p.read_text(), re.MULTILINE)]
     print(f"  decisions: {len(decisions)} recorded, {len(waiting)} waiting on a human")
+    changes = spec_changes()
+    unread = [entry for entry in changes if not entry["reviewed"]]
+    print(f"  spec changes: {len(changes)} recorded, {len(unread)} not yet read by a human")
+    flagged = [
+        campaign
+        for owner in phase.loops
+        for campaign in campaigns_of(owner)
+        if campaign.get("spec_drift")
+    ]
+    if flagged:
+        print(f"  campaigns that edited design/ and code together: {len(flagged)} — read them")
+    return 0
+
+
+CHANGELOG_ENTRY = re.compile(r"^##\s+(?P<id>CHANGE-[A-Za-z0-9_-]+)\s+—\s+(?P<rest>.*)$", re.MULTILINE)
+
+
+def spec_changes() -> list[dict]:
+    """Class A spec edits, and whether anyone has read them yet.
+
+    They are provisional until reviewed in exactly the sense a Class B
+    provisional choice is: applied immediately so the loop never idles, and
+    scheduled for the next batch (`design/loops.md` section 6). An edit nobody
+    was scheduled to read is the one that lets the spec drift toward whatever
+    was built.
+    """
+    path = STATE / "spec-changelog.md"
+    if not path.exists():
+        return []
+    text = path.read_text()
+    reviewed = {
+        row.get("target")
+        for row in read_jsonl(STATE / "interventions.jsonl")
+        if row.get("kind") == "spec-change-reviewed"
+    }
+    entries = []
+    matches = list(CHANGELOG_ENTRY.finditer(text))
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        entries.append(
+            {
+                "id": match.group("id"),
+                "heading": match.group("rest").strip(),
+                "body": text[match.end() : end].strip(),
+                "reviewed": match.group("id") in reviewed,
+            }
+        )
+    return entries
+
+
+def cmd_spec_changes(args: argparse.Namespace) -> int:
+    entries = spec_changes()
+    waiting = [entry for entry in entries if not entry["reviewed"]]
+    for entry in entries:
+        print(f"{'   ' if entry['reviewed'] else '-> '}{entry['id']}  {entry['heading']}")
+    print(f"spec-changelog: {len(entries)} entry(s), {len(waiting)} not yet read by a human")
     return 0
 
 
@@ -1156,6 +1396,16 @@ def main() -> int:
     p = sub.add_parser("section-text", help="print one section's body, for splicing into a prompt")
     p.add_argument("key", help="e.g. core.md#7-measurement")
     p.set_defaults(run=cmd_section_text)
+
+    p = sub.add_parser("baseline-take", help="freeze the section denominator for this phase")
+    p.add_argument("--force", action="store_true", help="re-take mid-phase; makes the metrics history discontinuous")
+    p.set_defaults(run=cmd_baseline_take)
+
+    p = sub.add_parser("baseline-drift", help="how the documents have moved since the baseline")
+    p.set_defaults(run=cmd_baseline_drift)
+
+    p = sub.add_parser("spec-changes", help="Class A spec edits, and which are still unread")
+    p.set_defaults(run=cmd_spec_changes)
 
     p = sub.add_parser("audit-plan", help="which sections the next audit covers")
     p.add_argument("loop")

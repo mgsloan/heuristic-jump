@@ -20,8 +20,9 @@ set -uo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 hj="$(dirname "$here")/hj"
+adapter="$(dirname "$here")/adapter"
 
-path="$(jq -r '.tool_input.file_path // .tool_input.path // empty')"
+path="$("$adapter" hook-path)"
 [ -n "$path" ] || exit 0
 
 if ! "$hj" check-path "$HJ_LOOP" "$path"; then

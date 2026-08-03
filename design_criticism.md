@@ -365,27 +365,27 @@ and does not mention disk. It should, and it should say what happens when
 loop that fails its gate for reasons invisible in its own diff, which is the
 exact failure §13 designed the isolation to prevent.
 
-### 5.3 Smaller points on `loops.md`
+### 5.3 The harness is built and unvalidated, and only the second half is a problem
 
-* **The ownership table contradicts itself on `crates/similarity/`**: the
-  `phase 3` row grants "everything, including `crates/similarity/`" and the
-  `*nobody*` row lists `crates/similarity/`. The prose resolves it (frozen
-  during phase 2, writable in phase 3) but the table is the enforcement
-  mechanism and it says both.
-* **Class A/B is judged by the party with the incentive**, as §19 admits. The
-  countermeasure — "any spec edit in the same commit as code touching the same
-  item is flagged" — is defeated by making it two commits, which the iteration
-  contract encourages anyway (one target per iteration).
-* **The five-panel dashboard, POST endpoint, transcript renderer, supervisor,
-  and cost join** are ~600 lines of specification for tooling that §18 correctly
-  says is not built yet, and that §18 then proposes the conformance loop should
-  build during the phase-1.5 window. That is a reasonable use of idle wall clock
-  and a large amount of design written against an unvalidated premise.
-* **`ccusage`, `--session-id`, `--fork-session`, `denyRead`, `PreToolUse`, and
-  bubblewrap `allowWrite`** are all external product surfaces of one vendor's
-  CLI. §17 adopts them without noting that the harness's core mechanisms depend
-  on them staying stable, which is a larger dependency risk than any crate in
-  `deps.md` — a document that spends 966 lines being careful about exactly this.
+The dashboard, supervisor, gate, auditor, and prompts now exist in `harness/`,
+so the earlier version of this finding — a large specification for tooling
+nobody had built — no longer applies.
+
+What does apply is `loops.md` §18's own sentence about it: "conformance to
+this document is necessary and not sufficient. An audit can check that the
+supervisor has the structure described here. It cannot check that the
+resulting campaigns are any good, because that is a claim about behaviour
+under load, and the first real evidence arrives when phase 2a runs."
+
+That is correct and it is worth not losing, because the natural failure is
+quiet: the machinery works, the loops run, the numbers move, and whether any
+of it produced better campaigns than a person would have is a question nobody
+is scheduled to ask. §15's "calibration is the first ten campaigns" is the
+place it gets asked, and it names three things to check — did the loop pick
+sensible targets, did it leave the tree green, did the journal accumulate
+anything a human would have wanted written down. Those ten campaigns are now
+the highest-value measurement in the project, and the third question is the
+one most likely to be skipped.
 
 ---
 

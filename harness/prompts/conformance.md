@@ -75,14 +75,42 @@ wrong. Two classes:
 section reference that does not resolve, a type name that changed, a false
 claim about a dependency's API, an example that does not compile. The test
 is: *is there a defensible answer that does not trade anything off?* Fix the
-document, and append to `state/spec-changelog.md` with the contradiction
-quoted and the resolution stated.
+document, and append to `state/spec-changelog.md` in exactly this shape,
+because a human is scheduled to read it and the dashboard finds entries by
+their id:
+
+```markdown
+## CHANGE-{{loop}}-NNN — <section anchor> — <one line on what changed>
+
+**Contradiction:** the two claims, quoted, with where each one is.
+
+**Resolution:** what the document now says, and why this reading is the one
+that trades nothing off.
+
+**Campaign:** {{campaign_id}}
+```
+
+**A Class A edit is provisional until someone reads it**, in the same sense a
+Class B provisional choice is: you apply it immediately and never wait, but
+it is not settled. Rewriting the spec toward the code is the one way of
+faking progress that the audit *cannot* catch — moving the spec removes the
+gap from the instrument that would have reported it, and the section then
+goes clean. If you find yourself editing a design document and the code it
+describes in the same campaign, that is exactly the shape being watched for:
+say so plainly in the changelog entry, and expect to be asked.
 
 **Class B — escalate, and keep going anyway.** Anything that trades something
 off. Always escalate when the change touches a metric target or budget, the
 `LanguageHandler` seam or a vocabulary type, the dependency set or anything
 in `deps.md` section 13, licensing or `vendor/`, or one of the numbered open
 questions in any document.
+
+**The seam is Class B even in phase 1a**, when `crates/shared/` is otherwise
+yours to write. `LanguageHandler`, `Query`, `Outcome`, `ProjectView` and the
+vocabulary newtypes are decided in this phase and frozen at its gate, and
+getting them wrong is expensive in a way nothing downstream will report: a
+language loop cannot observe that the seam made its job harder, only that it
+is slow. Owning the file is not permission to decide its shape.
 
 To escalate: write a decision record in the shape below, pick the most
 reversible option, tag every affected site

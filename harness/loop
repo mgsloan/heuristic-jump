@@ -18,6 +18,7 @@ set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(dirname "$here")"
 hj="$here/hj"
+adapter="$here/adapter"
 
 loop="${1:-}"
 if [ -z "$loop" ]; then
@@ -79,9 +80,6 @@ permission_mode_of() {
 	PY
 }
 
-transcripts="${HJ_TRANSCRIPTS:-$repo/../heuristic-jump-transcripts}/$loop"
-mkdir -p "$transcripts"
-
 # The PreToolUse hook reads this and no-ops without it, so an interactive
 # session in this repository is unaffected by the ownership rules.
 export HJ_LOOP="$loop"
@@ -103,67 +101,24 @@ while :; do
 
 	prompt="$(mktemp)"
 	campaign="$("$hj" campaign-open "$loop" --prompt-out "$prompt")" || exit 2
-	transcript="$transcripts/$campaign.jsonl"
+	transcript="$("$adapter" transcript-path "$loop" "$campaign")"
 	echo
 	echo "=== campaign $campaign  ($loop, $(date -u +%FT%TZ))"
 	echo "    record:     state/campaigns/$loop/$campaign.md"
 	echo "    transcript: $transcript"
-	echo "    resume:     claude --resume $campaign"
+	echo "    resume:     $("$adapter" resume-command "$campaign")"
 
-	extra_args=()
-	budget="$(budget_of "$loop")"
-	[ -n "$budget" ] && extra_args+=(--max-budget-usd "$budget")
-	model="$(model_of "$loop")"
-	[ -n "$model" ] && extra_args+=(--model "$model")
-
-	# A permission prompt in `-p` mode is a denial, and the campaign has to run
-	# `harness/gate`, `cargo` and `git commit` without one. So prompts are off
-	# by default and the containment is the design's, not the CLI's: the
-	# PreToolUse hook rejects an edit outside owned paths as fast feedback, and
-	# the gate's diff-scope check is the enforcement, because it inspects the
-	# result rather than trusting the actor (design/loops.md section 13).
-	# Override with `permission_mode` in state/phase.toml to supervise a run.
-	claude -p \
-		--session-id "$campaign" \
-		--output-format stream-json \
-		--verbose \
-		--permission-mode "$(permission_mode_of "$loop")" \
-		"${extra_args[@]}" \
-		<"$prompt" >"$transcript"
+	"$adapter" campaign \
+		"$campaign" "$prompt" "$transcript" "$(permission_mode_of "$loop")" \
+		--model "$(model_of "$loop")" \
+		--budget "$(budget_of "$loop")"
 	exit_status=$?
 	rm -f "$prompt"
 
 	# The campaign reports its own outcome and target on the last lines it
 	# writes; the harness does not infer either. `progress` is computed from
 	# the repository, which is the number that actually gates the stall.
-	summary="$(python3 - "$transcript" <<-'PY'
-		import json, sys
-		text = []
-		for line in open(sys.argv[1], errors="replace"):
-		    line = line.strip()
-		    if not line:
-		        continue
-		    try:
-		        event = json.loads(line)
-		    except json.JSONDecodeError:
-		        continue
-		    if event.get("type") == "result" and isinstance(event.get("result"), str):
-		        text.append(event["result"])
-		    elif event.get("type") == "assistant":
-		        for block in event.get("message", {}).get("content", []):
-		            if block.get("type") == "text":
-		                text.append(block["text"])
-		blob = "\n".join(text)
-		outcome = target = ""
-		for line in blob.splitlines():
-		    if line.startswith("OUTCOME:"):
-		        outcome = line.split(":", 1)[1].strip()
-		    elif line.startswith("TARGET:"):
-		        target = line.split(":", 1)[1].strip()
-		print(outcome)
-		print(target)
-	PY
-	)"
+	summary="$("$adapter" summary "$transcript")"
 	outcome="$(printf '%s\n' "$summary" | sed -n 1p)"
 	target="$(printf '%s\n' "$summary" | sed -n 2p)"
 

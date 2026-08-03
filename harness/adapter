@@ -1,0 +1,239 @@
+#!/usr/bin/env bash
+# The only place a vendor-specific invocation appears. `design/loops.md`
+# section 17, "The largest dependency in this project is not a crate".
+#
+# `--session-id`, `-p`, `--output-format stream-json`, `--tools`, the
+# `PreToolUse` payload shape, and the transcript layout are all product
+# surfaces of one vendor's CLI. They are not versioned like a crate, cannot be
+# pinned in a lockfile, cannot be vendored, and change under you on upgrade.
+# The usual mitigation is unavailable, so the mitigation is a different shape:
+# **isolate rather than pin**.
+#
+# So `loop`, `audit`, `gate`, `hooks/` and `dashboard/` talk to this file and
+# never to `claude` directly. Replacing the runner means rewriting this and
+# nothing else.
+#
+# Subcommands, in rough order of how much breaks if the surface behind them
+# moves:
+#
+#   campaign <session> <prompt-file> <transcript> <permission-mode> [--model M] [--budget USD]
+#       Run one campaign headlessly, teeing the stream to <transcript>.
+#       If headless-with-a-fixed-prompt goes away, there is no loop.
+#   audit <session> <prompt-file> <out> [--model M]
+#       Run one read-only session. The tool restriction is the boundary that
+#       makes the auditor a judgement rather than a participant.
+#   summary <transcript>
+#       The campaign's own TARGET and OUTCOME lines, one per line of output.
+#   parse-stream <transcript>
+#       Normalise the stream into our own event shape, one JSON object per
+#       line: {kind, text?, name?, summary?, input?, diff?}. Everything
+#       downstream reads this and not the vendor's records.
+#   transcript-path <owner> <campaign>
+#   hook-path        (reads a PreToolUse payload on stdin)
+#   version          the CLI version, recorded per campaign
+#   resume-command <campaign>
+
+set -uo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo="$(dirname "$here")"
+
+runner="${HJ_RUNNER:-claude}"
+
+usage() {
+	sed -n '2,40p' "${BASH_SOURCE[0]}" >&2
+	exit 2
+}
+
+command="${1:-}"
+[ -n "$command" ] || usage
+shift
+
+case "$command" in
+
+version)
+	"$runner" --version 2>/dev/null | head -1
+	;;
+
+transcript-path)
+	owner="${1:?owner}"
+	campaign="${2:?campaign}"
+	root="${HJ_TRANSCRIPTS:-$repo/../heuristic-jump-transcripts}"
+	echo "$root/$owner/$campaign.jsonl"
+	;;
+
+resume-command)
+	echo "$runner --resume ${1:?campaign}"
+	;;
+
+campaign)
+	session="${1:?session}"
+	prompt="${2:?prompt file}"
+	transcript="${3:?transcript}"
+	mode="${4:?permission mode}"
+	shift 4
+	extra=()
+	while [ $# -gt 0 ]; do
+		case "$1" in
+		--model)
+			[ -n "${2:-}" ] && extra+=(--model "$2")
+			shift 2
+			;;
+		--budget)
+			[ -n "${2:-}" ] && extra+=(--max-budget-usd "$2")
+			shift 2
+			;;
+		*)
+			echo "adapter: unknown argument: $1" >&2
+			exit 2
+			;;
+		esac
+	done
+	mkdir -p "$(dirname "$transcript")"
+	# A permission prompt in headless mode is a denial, and a campaign has to
+	# run the gate, cargo and git without one. The containment is the design's:
+	# the PreToolUse hook for fast feedback, the gate's diff-scope check for
+	# enforcement (design/loops.md section 13).
+	"$runner" -p \
+		--session-id "$session" \
+		--output-format stream-json \
+		--verbose \
+		--permission-mode "$mode" \
+		"${extra[@]}" \
+		<"$prompt" >"$transcript"
+	;;
+
+audit)
+	session="${1:?session}"
+	prompt="${2:?prompt file}"
+	out="${3:?output file}"
+	shift 3
+	extra=()
+	while [ $# -gt 0 ]; do
+		case "$1" in
+		--model)
+			[ -n "${2:-}" ] && extra+=(--model "$2")
+			shift 2
+			;;
+		*)
+			echo "adapter: unknown argument: $1" >&2
+			exit 2
+			;;
+		esac
+	done
+	mkdir -p "$(dirname "$out")"
+	# The tool restriction is what makes "it cannot edit anything" true rather
+	# than instructed, which is why the verdict comes back as text and the
+	# harness writes state/audit/ itself.
+	"$runner" -p \
+		--session-id "$session" \
+		--tools "Read,Grep,Glob" \
+		--permission-mode bypassPermissions \
+		"${extra[@]}" \
+		<"$prompt" | tee "$out"
+	exit "${PIPESTATUS[0]}"
+	;;
+
+summary)
+	python3 - "${1:?transcript}" <<-'PY'
+		import json, sys
+
+		text = []
+		for line in open(sys.argv[1], errors="replace"):
+		    line = line.strip()
+		    if not line:
+		        continue
+		    try:
+		        event = json.loads(line)
+		    except json.JSONDecodeError:
+		        continue
+		    if event.get("type") == "result" and isinstance(event.get("result"), str):
+		        text.append(event["result"])
+		    elif event.get("type") == "assistant":
+		        for block in event.get("message", {}).get("content", []):
+		            if block.get("type") == "text":
+		                text.append(block["text"])
+		blob = "\n".join(text)
+		outcome = target = ""
+		for line in blob.splitlines():
+		    if line.startswith("OUTCOME:"):
+		        outcome = line.split(":", 1)[1].strip()
+		    elif line.startswith("TARGET:"):
+		        target = line.split(":", 1)[1].strip()
+		print(outcome)
+		print(target)
+	PY
+	;;
+
+parse-stream)
+	python3 - "${1:?transcript}" <<-'PY'
+		import json, sys
+
+		# Our shape, not theirs. The vendor's stream carries records that are
+		# plainly internal and will drift between versions; everything
+		# downstream reads what this emits instead.
+		def emit(**row):
+		    print(json.dumps(row))
+
+		def summarise(name, args):
+		    for key in ("command", "file_path", "pattern", "path", "url"):
+		        if args.get(key):
+		            return str(args[key])
+		    return ""
+
+		for line in open(sys.argv[1], errors="replace"):
+		    line = line.strip()
+		    if not line:
+		        continue
+		    try:
+		        event = json.loads(line)
+		    except json.JSONDecodeError:
+		        continue
+		    kind = event.get("type")
+		    if kind == "assistant":
+		        for block in event.get("message", {}).get("content", []):
+		            block_kind = block.get("type")
+		            if block_kind == "text":
+		                emit(kind="text", text=block.get("text", ""))
+		            elif block_kind == "thinking":
+		                emit(kind="thinking", text=block.get("thinking", ""))
+		            elif block_kind == "tool_use":
+		                args = block.get("input") or {}
+		                row = {
+		                    "kind": "tool",
+		                    "name": block.get("name", "?"),
+		                    "summary": summarise(block.get("name", ""), args),
+		                    "input": args,
+		                }
+		                if "old_string" in args and "new_string" in args:
+		                    row["diff"] = {
+		                        "old": str(args.get("old_string", "")),
+		                        "new": str(args.get("new_string", "")),
+		                    }
+		                emit(**row)
+		    elif kind == "user":
+		        content = event.get("message", {}).get("content", [])
+		        if isinstance(content, list):
+		            for block in content:
+		                if block.get("type") != "tool_result":
+		                    continue
+		                body = block.get("content")
+		                if isinstance(body, list):
+		                    text = "\n".join(p.get("text", "") for p in body if isinstance(p, dict))
+		                else:
+		                    text = str(body or "")
+		                emit(kind="tool_result", text=text)
+		    elif kind == "result":
+		        emit(kind="result", text=str(event.get("result", "")))
+	PY
+	;;
+
+hook-path)
+	jq -r '.tool_input.file_path // .tool_input.path // empty'
+	;;
+
+*)
+	echo "adapter: unknown subcommand: $command" >&2
+	usage
+	;;
+esac

@@ -500,7 +500,18 @@ that changed; a claim about a dependency's API that is factually false;
 an example that does not compile. The test is: *is there a defensible
 answer that does not trade anything off?* Fix, and append to
 `state/spec-changelog.md` with the contradiction quoted and the resolution
-stated. Class A edits are reviewed in batch, after the fact.
+stated.
+
+**Class A edits are provisional until reviewed**, in the same sense a
+Class B provisional choice is: applied immediately so the loop never
+idles, tagged in the changelog, and surfaced on the dashboard for the
+next batch alongside the escalations
+([section 16](#decisions-carry-their-evidence)). The difference from
+Class B is only that the loop does not have to *wait* for anyone, not
+that nobody looks. An edit nobody was scheduled to read is the one that
+lets the spec drift toward whatever was built —
+[below](#7-progress-stall-and-the-ways-it-is-faked) has why that
+particular drift is invisible to every other mechanism here.
 
 **Class B — escalate, and keep going anyway.** Anything that trades
 something off. Specifically, always escalate when the change touches:
@@ -611,12 +622,39 @@ the metrics can be satisfied without work being done:
 |---|---|
 | Delete or weaken tests | Test count is a ratchet; test *deletions* are flagged for review regardless of count |
 | Rewrite the gate script | `harness/` is owned by nobody and denied to every loop; changes to it are Class B |
-| Rewrite the spec to match the code | Class A/B split, plus `state/spec-changelog.md` review; any spec edit in the same commit as code touching the same item is flagged |
+| Rewrite the spec to match the code | Class A/B split, plus scheduled review of `state/spec-changelog.md`; **any campaign whose commits include both a `design/` edit and code under the same anchor is flagged**, whether or not they share a commit. See below — this one has no other defence |
 | Tune to the corpus | Held-out repos are in a corpus split the loop is never given ([section 12](#12-held-out-integrity)) |
 | `cargo insta accept` a metric regression | The gate checks metric *direction* itself; insta pins the table's shape, not its values |
 | Split one item into ten to show motion | Progress is sections clean over sections total ([section 3](#sections-clean-is-the-number)); the denominator is mechanical, so splitting a gap in two moves nothing |
 | Write a test that passes trivially | The audit judges the claim, not the test; a passing test with an unsatisfied claim is still a gap |
 | Add a language to show progress | Forbidden outright. A new `crates/lang_*` is outside every loop's owned paths, so the gate rejects it |
+
+**One of those rows is weaker than the others and it is worth saying
+why.** Rewriting the spec toward the code is the only entry on the list
+that the audit cannot catch, and it cannot catch it *by construction*:
+the auditor compares the implementation against the spec as it currently
+reads, so an edit that moves the spec makes the gap disappear from the
+one instrument that would have reported it. The section then goes clean
+and the number goes up. Every other row here has a second mechanism
+behind it; this one has only the changelog, which is why
+[section 6](#6-spec-changes-what-the-loop-may-decide-alone) now schedules
+a human to read it rather than leaving it to be found.
+
+The detector is also scoped to the **campaign**, not the commit, and that
+matters more than it sounds. The iteration contract deliberately produces
+one commit per experiment with one target each
+([section 4](#4-the-iteration-contract)), so "the spec edit and the code
+are in the same commit" was a test the loop's own working style defeats
+without anybody intending to. A campaign already records which commits
+belong to it, so widening the window costs nothing and closes the gap.
+
+A related consequence worth carrying: the conformance loop's number is
+*sections clean over sections total*
+([section 3](#sections-clean-is-the-number)), and the section list is
+parsed from headings in documents the loop may edit. So the denominator
+should be snapshotted in `harness/` at the start of a phase rather than
+re-derived each audit — otherwise merging two dirty sections into one
+clean one moves the score without touching a line of code.
 
 None of these is airtight against a determined optimiser. They are
 airtight enough against an *undirected* one, which is the actual risk:
@@ -1427,8 +1465,15 @@ result rather than trusting the actor:
   | conformance | `vendor/`, `crates/{shared,driver,heuristic_jump,measure_*}/`, `design/` |
   | lang-rust | `crates/lang_rust/`, `state/{metrics,journal,decisions}/rust*` |
   | lang-python | `crates/lang_python/`, `state/…/python*` |
-  | phase 3 | everything, including `crates/similarity/`. One writer, nothing running alongside |
-  | *nobody* | `harness/`, `crates/similarity/` |
+  | phase 3 | everything except `harness/`. One writer, nothing running alongside |
+  | *nobody, ever* | `harness/` |
+
+  And one row that is not about a loop at all, because it is the only
+  entry whose answer depends on which phase is current:
+
+  | Path | Writable |
+  |---|---|
+  | `crates/similarity/` | whole-repository phases only — 3 and 7. Denied to every loop that runs alongside another |
 
 `design/` is writable by the conformance loop because Class A spec fixes
 edit the design documents themselves
@@ -1464,10 +1509,18 @@ binary is written once when the language is added and never again.
 **`harness/` is owned by nobody** — the gate script, the ratchet
 baselines, the frontier tool, and the held-out runner live there, and
 every loop is denied writes to it. Changes are Class B, made by a
-human. `crates/similarity/` shares that row for a different reason: it
-is ported and frozen ([above](#three-tiers)), so "nothing is added to
-it" is enforced by the same path check as everything else rather than
-by remembering.
+human.
+
+`crates/similarity/` used to share that row, and it was wrong to put it
+there: the phase 3 row granted it and the *nobody* row denied it, in
+the same table, and the table is the enforcement mechanism rather than
+a summary of the prose. It gets its own row above because it is the one
+path whose owner is a function of the phase — nobody during 2a, the
+optimisation loop during 3 and 7 — which is just the general rule
+([above](#three-tiers)) stated where the gate can read it: **shared
+resolution code is writable only during whole-repository phases.** The
+gate resolves the table against `state/phase.toml`, so there is one
+answer at any moment.
 
 But a loop may **request** one, and needs to be able to. The harness is
 the loop's entire interface to feedback: if `harness/measure` does not
@@ -2286,7 +2339,7 @@ problem we actually have, not a problem adjacent to it.
 
 | Need | Verdict |
 |---|---|
-| Loop runner | **Build** — ~20 lines of bash. Read `rxdt/loopgate_harness` and `mikehostetler/wreckit` first as reference designs |
+| Loop runner | **Build** — ~20 lines of bash, with every vendor-specific flag behind one adapter file ([below](#the-largest-dependency-in-this-project-is-not-a-crate)). Read `rxdt/loopgate_harness` and `mikehostetler/wreckit` first as reference designs |
 | Stall detection | **Steal constants** from `frankbria/ralph-claude-code`; logic is ours |
 | Edit-scope hook | **Adopt** `PreToolUse` — as fast feedback, not as a boundary |
 | Held-out isolation | **Build** — physical separation; `denyRead` as defence in depth only |
@@ -2298,15 +2351,72 @@ problem we actually have, not a problem adjacent to it.
 | Test runner | **Adopt** `cargo-nextest` (machine-readable output for the test-count ratchet) |
 | Decision records | **Adopt** MADR template; `DECISION-` code tags stay ours |
 | Journal | **Adopt** git trailers + `git interpret-trailers` |
-| Cost monitoring | **Adopt** `ccusage` |
+| Cost monitoring | **Adopt** `ccusage` — behind the adapter, and replaceable from the teed stream |
 | Auditor | **Build the prompt**; a read-only session is the whole mechanism |
 | Spec claim notation | **Steal** EARS, for phrasing auditable claims |
 | SDD frameworks (Spec Kit, Kiro, OpenSpec, BMAD) | **Reject** |
 | Bencher (metric tracking service) | **Reject** — reasoning below |
 | `beads` (agent-facing issue graph) | **Reject** — reasoning below |
 
-Three rejections worth recording, because they are the ones that will
-be proposed again:
+### The largest dependency in this project is not a crate
+
+`deps.md` spends its whole length being careful about crates — what each
+one buys, what it costs, what happens if it goes away. Nothing has been
+that careful about the table above, and the table above contains a
+**bigger** exposure than anything in `deps.md`: the harness's core
+mechanisms are built on one vendor's CLI surface.
+
+`--session-id`, `--fork-session`, `-p`, `--output-format stream-json`,
+`denyRead`, `PreToolUse`, `/sandbox`'s `allowWrite`, and `ccusage` are
+all product surfaces of Claude Code. They are not versioned the way a
+crate is, cannot be pinned in a lockfile, cannot be vendored, and change
+under you on upgrade. The usual mitigation — pin it and vendor it if it
+disappears — is simply unavailable, so the mitigation has to be a
+different shape: **isolate rather than pin.**
+
+Sorted by what actually breaks:
+
+| Surface | If it changes |
+|---|---|
+| headless `-p` with a fixed prompt | there is no loop. Nothing else here works without it |
+| `--session-id` | campaign id and session id stop being the same value, so the cost join, the transcript path, and resume all need a correlation step ([section 16](#sessions-assign-the-id-own-the-transcript)) |
+| `--output-format stream-json` | no teed transcript, so the dashboard's campaign view goes dark and forensics falls back to scraping the vendor's own store — which [section 16](#sessions-assign-the-id-own-the-transcript) already refuses to depend on |
+| `ccusage` | cost accounting only, and the teed stream already carries the token counts, so this is a parsing job rather than a loss |
+| `--fork-session` | one human convenience on the dashboard |
+| `PreToolUse`, `denyRead` | nothing that was a boundary. [Section 13](#mechanics-isolation-in-four-layers) already classes both as fast feedback and defence in depth, never the boundary itself |
+| `/sandbox` `allowWrite` | the real isolation boundary — but the mechanism underneath is `bubblewrap`, which is an ordinary Linux tool we can invoke ourselves. Losing the wrapper costs a script, not the property |
+
+Two things follow, and both are cheap.
+
+**One adapter, and it is the only place a vendor-specific invocation
+appears.** Every `claude` flag, every hook shape, every transcript path
+lives in one file in `harness/`; the supervisor, the gate, and the
+dashboard talk to that file and never to the CLI. This is the same move
+the design makes for `ServerAdapter` and for `shared::proto`, applied to
+the tool that runs the loops instead of to the ones it talks to — and
+[section 16](#sessions-assign-the-id-own-the-transcript)'s refusal to
+scrape the vendor's session store is that instinct already applied once,
+in the single place it was most obviously needed. Generalising it is the
+whole fix.
+
+**Record the CLI version per campaign**, beside the prompt sha
+([section 16](#every-intervention-is-logged)). The argument there is
+exact: a prompt revision changes the *generator* of campaigns and nothing
+downstream can detect it, so metrics either side are not comparable. A
+CLI upgrade does the same thing, arrives without anybody deciding to
+change anything, and is otherwise completely invisible. Pin it in
+`external-dependencies.md` with the language servers, and treat an
+upgrade as the intervention it is.
+
+The honest summary: this is a real risk, it is larger than any crate
+choice, and it is accepted because the alternative — building a loop
+runner against a stable API that does not exist — is not a better
+trade. What is not acceptable is running it unnamed, which is what the
+table above was doing.
+
+### Three rejections worth recording
+
+Because they are the ones that will be proposed again:
 
 **Bencher.** It tracks arbitrary metrics with statistical thresholds
 and fails CI on regression, which sounds exactly like the ratchets in
@@ -2513,8 +2623,13 @@ the countermeasures are the weakest part of this document.
   Successive audits of the same section by fresh sessions are the only
   defence, and it is a statistical one.
 * **The loop rewrites the spec toward what it built.** Class A/B is a
-  judgement call made by the entity with the incentive. The changelog
-  makes it auditable after the fact, not preventable.
+  judgement call made by the entity with the incentive, and the audit is
+  structurally blind to it — moving the spec removes the gap from the
+  instrument that would have reported it
+  ([section 7](#7-progress-stall-and-the-ways-it-is-faked)). Scheduled
+  changelog review and a campaign-scoped detector make it *visible* after
+  the fact. Neither makes it preventable, and this remains the failure
+  with the thinnest defence in the whole design.
 * **Overfitting.** Expected, per `high-level.md`. Held-out isolation catches
   the gross version; a loop that finds a genuinely general improvement
   and a repo-specific hack in the same iteration will ship both.

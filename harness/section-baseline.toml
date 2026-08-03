@@ -1,0 +1,50 @@
+# The denominator of `sections clean / sections total`, frozen for the
+# phase. Written by `harness/hj baseline-take`, read by everything else.
+#
+# It is here rather than in `state/` because the section list is parsed
+# from headings in documents the conformance loop may edit, and a loop
+# that could re-derive its own denominator could merge two dirty
+# sections into one clean one and move the score without touching a line
+# of code (`design/loops.md` section 7).
+
+phase = "1a"
+taken = "2026-08-03T03:26:11+00:00"
+commit = "229cf98884813813072f2b50c4e1732d49f0eb0f"
+
+[doc."core.md"]
+anchors = [
+  "1-handler-interface",
+  "vocabulary-types",
+  "the-trait",
+  "2-document-snapshots",
+  "snapshots-are-o1-to-take-and-are-parsed-before-a-handler-sees-one",
+  "text-and-tree-can-never-disagree",
+  "3-position-encoding",
+  "4-project-file-enumeration",
+  "5-deadlines-and-abstention",
+  "6-the-agreement-predicate",
+  "both-sides-are-sets",
+  "7-observability-and-the-corpus-scan",
+  "the-corpus-scan-is-a-separate-program",
+  "one-measurement-library-one-tiny-binary-per-language",
+  "two-modes-collect-and-replay",
+  "the-table-is-not-enough-a-replay-has-to-show-its-failures",
+  "the-oracle-is-the-server-being-proxied",
+  "where-the-corpus-lives",
+  "the-command-line",
+  "8-protocol-types",
+  "81-why-not-lsp-types",
+  "82-what-replaces-it-and-why-it-is-smaller-than-it-sounds",
+  "83-the-wire-position-type-is-inert",
+  "84-location-is-byte-based-and-this-fixes-a-real-inconsistency",
+  "85-the-untagged-unions-are-the-actual-risk",
+  "86-modelling-errors-must-fail-closed",
+  "87-where-it-lives",
+  "9-workspace-layout",
+  "the-dependency-graph",
+  "why-shared-is-separate-from-driver",
+  "adding-a-language",
+  "what-the-templates-handler-does",
+  "vendoring-the-zed-crates",
+  "10-testing",
+]

@@ -9,11 +9,25 @@ them here; they are reviewed in batch, after the fact
 Anything that trades something off is Class B and belongs in
 `state/decisions/`, not here.
 
-Each entry quotes the contradiction and states the resolution. Newest last.
+**An entry is provisional until a human reads it** (`design/loops.md` §6).
+Applied immediately so the loop never idles, and surfaced on the dashboard
+for the next batch alongside the escalations. That scheduling is not
+ceremony: rewriting the spec toward the code is the one gaming route on §7's
+list that the audit cannot catch by construction, because moving the spec
+removes the gap from the instrument that would have reported it.
+
+Each entry quotes the contradiction and states the resolution, under a
+heading the harness can find:
+
+```
+## CHANGE-<owner>-NNN — <section anchor> — <one line>
+```
+
+Newest last.
 
 ---
 
-## 2026-08-02 — bootstrap — `loops.md` decision-record paths
+## CHANGE-bootstrap-001 — loops.md#6-spec-changes-what-the-loop-may-decide-alone — decision-record paths
 
 Section 6 says an escalation is `state/decisions/NNN.md`; section 13 says
 `state/decisions/<owner>-NNN.md` and argues for the prefix explicitly: "a
