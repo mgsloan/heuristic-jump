@@ -1,0 +1,17 @@
+[package]
+name = "driver"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+license = "MIT"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/driver.rs"
+doctest = false
+
+[dependencies]
+shared.workspace = true

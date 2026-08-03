@@ -1772,9 +1772,13 @@ Two of the names are chosen rather than mechanical:
   [section 2](shim.md#thread-layout). Two different things called `core` in one
   system is a needless ambiguity; `driver` is what the prose calls the crate
   anyway.
-* **`heuristic_jump`** for the binary crate, so the produced binary is
-  `heuristic-jump` without a `[[bin]]` rename — the same relationship Zed has
-  between its `zed` crate and its `zed` binary.
+* **`heuristic_jump`** for the binary crate, with a two-line `[[bin]]` rename
+  so that the produced binary is `heuristic-jump`. Cargo names a binary target
+  after the package verbatim and does not hyphenate it — package
+  `heuristic_jump` builds `heuristic_jump` — so the rename is what makes the
+  artifact match the name `deps.md` §11's `clap` command and every invocation
+  in these documents already use. Zed needs no such rename only because its
+  crate and its binary are both `zed`.
 
 ### The dependency graph
 

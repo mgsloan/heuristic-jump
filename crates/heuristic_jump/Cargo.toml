@@ -1,0 +1,20 @@
+[package]
+name = "heuristic_jump"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+license = "MIT"
+
+[lints]
+workspace = true
+
+# Cargo names a binary target after the package, not after a hyphenated form
+# of it, so the artifact this crate exists to produce needs the rename that
+# `core.md` §9 once said it did not. CHANGE-conformance-001.
+[[bin]]
+name = "heuristic-jump"
+path = "src/heuristic_jump.rs"
+
+[dependencies]
+driver.workspace = true

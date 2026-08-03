@@ -863,7 +863,8 @@ them, and like every crate in Zed. Two names are deliberate rather than
 mechanical: **`driver` rather than `core`**, since a crate named `core`
 shadows Rust's own and `core.md` already uses "core" for the actor; and
 **`heuristic_jump`** for the binary crate, so the artifact is `heuristic-jump`
-with no `[[bin]]` rename.
+— which takes a two-line `[[bin]]` rename, since cargo names a binary target
+after its package verbatim (`core.md` §9, CHANGE-conformance-001).
 
 A `cargo-deny` config asserting that `GPL` appears in the graph only via
 `vendor/rope` is worth having from the start: it is the check that notices if
