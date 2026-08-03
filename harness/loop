@@ -91,6 +91,7 @@ export HJ_LOOP="$loop"
 "$hj" campaign-reap "$loop"
 
 count=0
+crashes=0
 while :; do
 	desired="$(status_of "$loop")"
 	if [ "$desired" != "running" ]; then
@@ -181,6 +182,23 @@ while :; do
 	"$hj" campaign-close "$loop" --id "$campaign" --outcome "$outcome" ${target:+--target "$target"}
 
 	"$hj" cost "$loop"
+
+	# Consecutive crashes are their own stop condition. They are excluded from
+	# the stall count on purpose — a crash is not evidence the loop cannot make
+	# progress — but that exclusion means nothing else would ever halt a loop
+	# whose sessions are all failing. Running out of quota looks exactly like
+	# this: no result event, so no outcome, so `crashed`, forever.
+	if [ "$outcome" = "crashed" ]; then
+		crashes=$((crashes + 1))
+		if [ "$crashes" -ge 3 ]; then
+			echo
+			echo "loop: three campaigns crashed in a row. Sessions are failing rather" >&2
+			echo "      than working — quota, credentials, or the CLI. Stopping." >&2
+			exit 1
+		fi
+	else
+		crashes=0
+	fi
 
 	if ! "$hj" stall "$loop"; then
 		echo
