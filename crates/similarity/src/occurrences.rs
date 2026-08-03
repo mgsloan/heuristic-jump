@@ -359,7 +359,7 @@ impl<S> AsRef<Occurrences<S>> for Occurrences<S> {
     clippy::cast_precision_loss,
     reason = "occurrence counts are bounded by document size, far below f32's exact-integer range"
 )]
-fn ratio(numerator: usize, denominator: usize) -> f32 {
+pub(crate) fn ratio(numerator: usize, denominator: usize) -> f32 {
     if denominator == 0 {
         0.0
     } else {

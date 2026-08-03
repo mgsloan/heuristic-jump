@@ -762,7 +762,10 @@ Jaccard (`declaration_scoring.rs:440-469`). This is exactly what
 `ModuleTarget::Namespace` needs in stage 3, and it is the piece that is
 genuinely hard to rewrite well.
 
-**Kept: the retrieval score's structure**, not its constants.
+**Kept as a model and not as code: the retrieval score's structure**, not its
+constants. It is the one thing on this list that did *not* come across into
+`crates/similarity`, because it ranks a candidate set and the candidate set
+lives in the handler.
 `retrieval_score` (`declaration_scoring.rs:80-97`) is a tiered
 `if`-chain — same file, then exact path import, then wildcard path import,
 then namespace similarity, then a uniqueness fallback of
@@ -770,7 +773,16 @@ then namespace similarity, then a uniqueness fallback of
 [section 6](#6-candidate-verification) reproduces it. Its weights were tuned
 for a different objective and are discarded.
 
-**Dropped: body text similarity.** The old scoring's largest feature group
+**Ported, but not a signal the pipeline uses: body text similarity.** The
+crate carries `CodeParts`, `NGram` and `SlidingWindow`; nothing in
+[section 2](#2-the-resolution-pipeline)'s stages calls them. An earlier
+revision left them behind entirely. Porting the whole toolkit and not wiring
+it up is the better trade, because *having the machinery* and *using the
+signal* are different decisions, and only the second one is argued below —
+[open question 7](#open-questions) is what would revisit it, and it is cheap
+to answer with the code present and expensive without it.
+
+The old scoring's largest feature group
 compared the *text around the cursor* against a candidate's body and signature
 — four Jaccard variants and four weighted-overlap variants
 (`declaration_scoring.rs:423-438`). That is the right signal for edit

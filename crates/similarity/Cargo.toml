@@ -19,10 +19,11 @@ workspace = true
 path = "src/similarity.rs"
 doctest = false
 
-# The three the original is written against, plus `rustc-hash` for the 32-bit
-# hasher the occurrence hashes come from. `arraydeque` is *not* here: it served
-# the n-gram window, and `resolution.md` §5 drops body-text similarity.
+# What the original is written against. The whole toolkit is ported, including
+# the parts `resolution.md` §5's pipeline does not use — see the crate docs for
+# why available and used are different questions here.
 [dependencies]
+arraydeque.workspace = true
 hashbrown.workspace = true
 itertools.workspace = true
 smallvec.workspace = true

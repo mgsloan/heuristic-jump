@@ -1,14 +1,15 @@
-//! Where occurrence hashes come from: splitting text into identifier parts.
+//! Where occurrence hashes come from: splitting text into parts.
 //!
-//! Ported from the prior implementation's `src/text_similarity/source.rs`
-//! (`resolution.md` §5). `CodeParts` and the n-gram window came across with
-//! it upstream and are dropped here: both serve body-text similarity, which
-//! §5 excludes because it prefers the definition most resembling the call
-//! site's surroundings — among several same-named candidates, a
-//! plausible-wrong-answer generator.
+//! Ported whole from the prior implementation's `src/text_similarity/source.rs`.
+//! `IdentifierParts` is what `resolution.md` §5's pipeline uses; `CodeParts`
+//! and `NGram` feed body-text similarity, which that pipeline does not use.
+//! They are here because having the machinery is not the same as using the
+//! signal, and `resolution.md` open question 7 is the one that would change
+//! its mind — cheap to answer with the code present, expensive without it.
 
 use crate::occurrences::HashFrom;
-use std::{iter::Peekable, path::Path};
+use arraydeque::ArrayDeque;
+use std::{iter::Peekable, marker::PhantomData, path::Path};
 
 pub trait OccurrenceSource {
     fn occurrences_in_utf8_bytes(
@@ -20,7 +21,7 @@ pub trait OccurrenceSource {
     }
 
     /// Occurrences from a path, the omitting file extension. Note that this does not split on
-    /// components.
+    /// components (they are omitted by `IdentifierParts` but not `CodeParts`).
     fn occurrences_in_path(path: &Path) -> impl Iterator<Item = HashFrom<Self>> {
         let path_bytes = path.as_os_str().as_encoded_bytes();
         let bytes = if let Some(extension) = path.extension() {
@@ -40,11 +41,53 @@ pub trait OccurrenceSource {
 #[derive(Debug)]
 pub struct IdentifierParts;
 
+/// Occurrences source for finding similar code, by including full identifiers and sequences of
+/// symbols.
+///
+/// * Splits the input on ascii whitespace
+/// * Splits these into runs of ascii punctuation or alphanumeric/unicode characters
+///
+/// Due to common use in identifiers, `_` and `-` are not treated as punctuation. This is consistent
+/// with not splitting on case transitions.
+#[derive(Debug)]
+pub struct CodeParts;
+
+/// Source type for occurrences that come from n-grams, aka w-shingling. Each N length interval of
+/// the input will be treated as one occurrence.
+///
+/// Note that this hashes the hashes it's provided for every output - may be more efficient to use a
+/// proper rolling hash. Unfortunately, I didn't find a rust rolling hash implementation that
+/// operated on updates larger than u8.
+#[derive(Debug)]
+pub struct NGram<const N: usize, S> {
+    _source: PhantomData<S>,
+}
+
 impl OccurrenceSource for IdentifierParts {
     fn occurrences_in_utf8_bytes(
         str_bytes: impl IntoIterator<Item = u8>,
     ) -> impl Iterator<Item = HashFrom<Self>> {
         HashedIdentifierParts::new(str_bytes.into_iter())
+    }
+}
+
+impl OccurrenceSource for CodeParts {
+    fn occurrences_in_utf8_bytes(
+        str_bytes: impl IntoIterator<Item = u8>,
+    ) -> impl Iterator<Item = HashFrom<Self>> {
+        HashedCodeParts::new(str_bytes.into_iter())
+    }
+}
+
+impl<const N: usize, S: OccurrenceSource> OccurrenceSource for NGram<N, S> {
+    fn occurrences_in_utf8_bytes(
+        str_bytes: impl IntoIterator<Item = u8>,
+    ) -> impl Iterator<Item = HashFrom<NGram<N, S>>> {
+        NGramIterator {
+            hashes: S::occurrences_in_utf8_bytes(str_bytes),
+            window: ArrayDeque::new(),
+            _source: PhantomData,
+        }
     }
 }
 
@@ -108,6 +151,96 @@ impl<I: Iterator<Item = u8>> Iterator for HashedIdentifierParts<I> {
             return Some(hasher.finish().into());
         }
 
+        None
+    }
+}
+
+struct HashedCodeParts<I: Iterator<Item = u8>> {
+    str_bytes: Peekable<I>,
+    // TODO: Since this doesn't do lowercasing, it might be more efficient to find str slices and
+    // hash those, instead of hashing a byte at a time. This would be a bit complex with chunked
+    // input, though.
+    hasher: Option<FxHasher32>,
+    prev_char_is_punctuation: bool,
+}
+
+impl<I: Iterator<Item = u8>> HashedCodeParts<I> {
+    fn new(str_bytes: I) -> Self {
+        Self {
+            str_bytes: str_bytes.peekable(),
+            hasher: None,
+            prev_char_is_punctuation: false,
+        }
+    }
+}
+
+impl<I: Iterator<Item = u8>> Iterator for HashedCodeParts<I> {
+    type Item = HashFrom<CodeParts>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        fn is_punctuation(ch: u8) -> bool {
+            ch.is_ascii_punctuation() && ch != b'_' && ch != b'-'
+        }
+
+        for ch in self.str_bytes.by_ref() {
+            let included = !ch.is_ascii() || !ch.is_ascii_whitespace();
+            if let Some(mut hasher) = self.hasher.take() {
+                if !included {
+                    return Some(hasher.finish().into());
+                }
+
+                let is_punctuation = is_punctuation(ch);
+                let should_split = is_punctuation != self.prev_char_is_punctuation;
+                self.prev_char_is_punctuation = is_punctuation;
+
+                if should_split {
+                    let result = hasher.finish().into();
+                    let mut hasher = FxHasher32::default();
+                    hasher.write_u8(ch);
+                    self.hasher = Some(hasher);
+                    return Some(result);
+                } else {
+                    hasher.write_u8(ch);
+                    self.hasher = Some(hasher);
+                }
+            } else if included {
+                let mut hasher = FxHasher32::default();
+                hasher.write_u8(ch);
+                self.hasher = Some(hasher);
+                self.prev_char_is_punctuation = is_punctuation(ch);
+            }
+        }
+
+        if let Some(hasher) = self.hasher.take() {
+            return Some(hasher.finish().into());
+        }
+
+        None
+    }
+}
+
+struct NGramIterator<const N: usize, S, I> {
+    hashes: I,
+    window: ArrayDeque<u32, N, arraydeque::Wrapping>,
+    _source: PhantomData<S>,
+}
+
+impl<const N: usize, S, I> Iterator for NGramIterator<N, S, I>
+where
+    I: Iterator<Item = HashFrom<S>>,
+{
+    type Item = HashFrom<NGram<N, S>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        for hash in self.hashes.by_ref() {
+            if self.window.push_back(hash.into()).is_some() {
+                let mut hasher = FxHasher32::default();
+                for hash in &self.window {
+                    hasher.write_u32(*hash);
+                }
+                return Some(hasher.finish().into());
+            }
+        }
         None
     }
 }

@@ -11,10 +11,20 @@
 //! and weighted-overlap metrics — and path/namespace similarity, which is what
 //! stage 3 needs and the piece §5 calls genuinely hard to rewrite well.
 //!
-//! **Dropped.** Body-text similarity, because it prefers the definition that
-//! most resembles the call site's surroundings, and among several same-named
-//! candidates that is a plausible-wrong-answer generator. With it go
-//! `CodeParts` and the n-gram window, which existed to serve it.
+//! **Ported but unused.** Body-text similarity — [`CodeParts`], [`NGram`],
+//! and [`SlidingWindow`] — is not a signal §5's pipeline uses, because it
+//! prefers the definition that most resembles the call site's surroundings,
+//! and among several same-named candidates that is a plausible-wrong-answer
+//! generator. The code is here anyway: having the machinery and using the
+//! signal are different questions, and `resolution.md` open question 7 asks
+//! whether it comes back as a tiebreak. That question is cheap to answer with
+//! the code present and expensive without it.
+//!
+//! **Not ported.** The retrieval score's tiering — same file, exact path
+//! import, wildcard import, namespace similarity, then `1 / declaration_count`
+//! — which §5 keeps as a *model* rather than as code: `resolution.md` §6
+//! reproduces it in the handler, where the candidate set it ranks lives. Its
+//! weights were tuned for a different objective and are discarded.
 //!
 //! **Frozen for the duration of phase 2** (`loops.md` §13): no loop may write
 //! here, because shared resolution code is writable only during
@@ -22,6 +32,7 @@
 //! lands here.
 
 mod occurrences;
+mod sliding_window;
 mod source;
 
 use std::path::Path;
@@ -29,7 +40,8 @@ use std::path::Path;
 pub use crate::occurrences::{
     HashFrom, Occurrences, Similarity, SmallOccurrences, WeightedSimilarity,
 };
-pub use crate::source::{IdentifierParts, OccurrenceSource};
+pub use crate::sliding_window::SlidingWindow;
+pub use crate::source::{CodeParts, IdentifierParts, NGram, OccurrenceSource};
 
 /// How much a namespace like `a::b::c` looks like a candidate file's path.
 ///

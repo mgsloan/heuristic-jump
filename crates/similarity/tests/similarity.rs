@@ -11,8 +11,8 @@
 use proptest::prelude::{Strategy, any};
 use proptest::{prop_assert, prop_assume, proptest};
 use similarity::{
-    IdentifierParts, OccurrenceSource, Occurrences, Similarity, SmallOccurrences,
-    WeightedSimilarity, namespace_path_similarity,
+    CodeParts, IdentifierParts, OccurrenceSource, Occurrences, Similarity, SlidingWindow,
+    SmallOccurrences, WeightedSimilarity, namespace_path_similarity,
 };
 use std::path::Path;
 
@@ -96,6 +96,142 @@ fn a_namespace_scores_against_the_path_that_declares_it() {
 
     // The extension is excluded, so it cannot be the thing that matches.
     assert!(namespace_path_similarity("rs", Path::new("src/foo.rs")) == 0.0);
+}
+
+fn code_parts(text: &str) -> Vec<u32> {
+    CodeParts::occurrences_in_str(text).map(u32::from).collect()
+}
+
+#[track_caller]
+fn code_splits_into(text: &str, expected: &[&str]) {
+    let expected: Vec<u32> = expected.iter().flat_map(|part| code_parts(part)).collect();
+    assert_eq!(code_parts(text), expected, "splitting {text:?}");
+}
+
+/// `CodeParts` keeps full identifiers and punctuation runs, which is what
+/// makes it the wrong tokenizer for finding *the* declaration and the right
+/// one for finding *related* code. Ported with it, unused by the pipeline.
+#[test]
+fn code_parts_split_on_whitespace_and_punctuation_runs() {
+    code_splits_into("", &[]);
+    code_splits_into("a", &["a"]);
+    code_splits_into("ABC", &["ABC"]);
+    code_splits_into(
+        "pub fn write_u8(&mut self, byte: u8) {",
+        &[
+            "pub", "fn", "write_u8", "(&", "mut", "self", ",", "byte", ":", "u8", ")", "{",
+        ],
+    );
+    // Neither `_` nor `-` is punctuation here, for the same reason case
+    // transitions do not split: they are common inside identifiers.
+    code_splits_into(
+        "snake_case kebab-case PascalCase camelCase XMLParser _leading_underscore --multiple--delimiters--",
+        &[
+            "snake_case",
+            "kebab-case",
+            "PascalCase",
+            "camelCase",
+            "XMLParser",
+            "_leading_underscore",
+            "--multiple--delimiters--",
+        ],
+    );
+}
+
+/// The window's whole claim is that moving it incrementally gives the same
+/// answer as rebuilding from the text it currently covers. Every mutation
+/// checks both metrics against a freshly built `Occurrences`, which is what
+/// makes this worth having as a test rather than as an assertion of shape.
+#[expect(
+    clippy::float_cmp,
+    reason = "incremental and rebuilt are the same arithmetic in the same order"
+)]
+#[test]
+fn a_sliding_window_agrees_with_rebuilding_it() {
+    struct Checked {
+        inner: SlidingWindow<u32, Occurrences<IdentifierParts>, IdentifierParts>,
+        target: Occurrences<IdentifierParts>,
+        text: String,
+        first_line: u32,
+        last_line: u32,
+    }
+
+    impl Checked {
+        #[track_caller]
+        fn check(&self) {
+            let rebuilt = Occurrences::new(IdentifierParts::occurrences_in_str(&self.text));
+            assert_eq!(
+                self.inner.weighted_overlap_coefficient(),
+                rebuilt.weighted_overlap_coefficient(&self.target),
+                "weighted_overlap_coefficient over {:?}",
+                self.text
+            );
+            assert_eq!(
+                self.inner.weighted_jaccard_similarity(),
+                rebuilt.weighted_jaccard_similarity(&self.target),
+                "weighted_jaccard_similarity over {:?}",
+                self.text
+            );
+        }
+
+        #[track_caller]
+        fn push_back(&mut self, line: &str) {
+            self.inner
+                .push_back(self.last_line, IdentifierParts::occurrences_in_str(line));
+            self.text.push_str(line);
+            self.text.push('\n');
+            self.last_line += 1;
+            self.check();
+        }
+
+        #[track_caller]
+        fn pop_front(&mut self) {
+            assert_eq!(self.inner.pop_front(), Some(self.first_line));
+            let newline = self.text.find('\n').map_or(0, |index| index + 1);
+            self.text.drain(0..newline);
+            self.first_line += 1;
+            self.check();
+        }
+
+        #[track_caller]
+        fn clear(&mut self) {
+            self.inner.clear();
+            self.text.clear();
+            self.first_line = 0;
+            self.last_line = 0;
+            self.check();
+        }
+    }
+
+    let target = Occurrences::new(IdentifierParts::occurrences_in_str("a b c d"));
+    let mut window = Checked {
+        inner: SlidingWindow::new(Occurrences::new(IdentifierParts::occurrences_in_str(
+            "a b c d",
+        ))),
+        target,
+        text: String::new(),
+        first_line: 0,
+        last_line: 0,
+    };
+
+    window.push_back("a");
+    window.pop_front();
+
+    window.push_back("a b");
+    window.push_back("a");
+    window.pop_front();
+    window.pop_front();
+
+    window.push_back("a b");
+    window.push_back("a b c");
+    window.pop_front();
+    window.push_back("a b c d");
+    window.pop_front();
+    window.pop_front();
+
+    window.clear();
+    window.push_back("d d d");
+    window.pop_front();
 }
 
 fn identifier_text() -> impl Strategy<Value = String> {
