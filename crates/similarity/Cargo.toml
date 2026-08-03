@@ -23,6 +23,17 @@ doctest = false
 # the parts `resolution.md` §5's pipeline does not use — see the crate docs for
 # why available and used are different questions here.
 [dependencies]
+# `core.md` §9's graph draws this edge and its bullet states it outright. It has
+# no user yet — the ported code is generic over its own occurrence and
+# identifier types, which is why it could be ported before any vocabulary
+# existed — and it is declared anyway, per `conformance-011`. `deps.md` §14's
+# "each arrives with its first user" is a rule about third-party crates, where
+# an unused dependency is version risk carried for nothing; a path dependency
+# in the same workspace carries none. The alternative was for the edge to
+# arrive during phase 2, in a crate no loop may write, at the moment a language
+# loop is blocked on it.
+shared.workspace = true
+
 arraydeque.workspace = true
 hashbrown.workspace = true
 itertools.workspace = true
