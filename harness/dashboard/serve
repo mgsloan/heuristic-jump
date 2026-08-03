@@ -452,6 +452,163 @@ def line_chart(
     )
 
 
+# What a campaign wrote *about itself* rather than as work. The journal, the
+# findings digest, its own record and every metrics row are bookkeeping; the
+# decision records and the spec changelog are not — those are things a campaign
+# produced, and reading a diff without them would hide the escalations.
+BOOKKEEPING = (
+    ":!state/campaigns",
+    ":!state/journal",
+    ":!state/findings",
+    ":!state/metrics",
+    ":!state/cost",
+    ":!state/audit",
+    ":!state/sessions.jsonl",
+    ":!state/interventions.jsonl",
+)
+
+
+_HEADINGS: dict[str, str] = {}
+
+
+def heading_of(key: str) -> str:
+    """`core.md#the-trait` back to "The trait".
+
+    An anchor is what the harness keys on and what a campaign types; it is not
+    what anybody wants to read in a table.
+    """
+    if not _HEADINGS:
+        for path in sorted(hj.DESIGN.glob("*.md")):
+            for section in hj.sections_of(path.name):
+                _HEADINGS[section.key] = section.heading
+    return _HEADINGS.get(key, key.split("#")[-1])
+
+
+def target_links(target: str | None) -> str:
+    keys = [a.strip() for a in (target or "").split(",") if a.strip()]
+    if not keys:
+        return "—"
+    return "<br>".join(
+        f'<a class="target" href="/section/{urllib.parse.quote(key.split("#")[0])}/'
+        f'{urllib.parse.quote(key.split("#")[-1])}">{esc(heading_of(key))}</a>'
+        for key in keys
+    )
+
+
+def campaign_commits(identifier: str) -> list[tuple[str, str]]:
+    raw = git_out("log", "--reverse", "--format=%H%x1f%s", f"--grep=campaign: {identifier}", "HEAD")
+    out = []
+    for line in raw.splitlines():
+        if "\x1f" in line:
+            sha, subject = line.split("\x1f", 1)
+            out.append((sha, subject))
+    return out
+
+
+def git_out(*args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(REPO), *args], capture_output=True, text=True, check=False
+    ).stdout
+
+
+def render_campaign_diff(owner: str, identifier: str) -> str:
+    """The work a campaign did, per commit, with the bookkeeping cut out.
+
+    Per commit rather than one combined range, because the harness's own
+    commits land between a campaign's — a range would sweep them in, and they
+    are precisely what this view exists to leave out.
+    """
+    commits = campaign_commits(identifier)
+    if not commits:
+        return page("Diff", empty(f"No commits carry `campaign: {esc(identifier)}`."), poll=False)
+
+    blocks = []
+    total_add = total_del = 0
+    for sha, subject in commits:
+        raw = git_out("show", "--format=", "--patch", "--no-color", sha, "--", *BOOKKEEPING)
+        files, added, deleted = render_patch(raw)
+        total_add += added
+        total_del += deleted
+        if not files:
+            continue
+        blocks.append(
+            f'<article class="commit"><h3><code>{esc(sha[:8])}</code> {inline(subject)}'
+            f'<span class="note"><span class="add">+{added}</span> '
+            f'<span class="del">-{deleted}</span></span></h3>{files}</article>'
+        )
+
+    head = (
+        f'<p class="meta"><a href="/?view=overview">&larr; dashboard</a> · '
+        f'campaign <code>{esc(identifier[:8])}</code> · {len(commits)} commit(s) · '
+        f'<span class="add">+{total_add}</span> <span class="del">-{total_del}</span> · '
+        f'<a href="/record/{urllib.parse.quote(owner)}/{urllib.parse.quote(identifier)}">record</a> · '
+        f'<a href="/transcript/{urllib.parse.quote(owner)}/{urllib.parse.quote(identifier)}">transcript</a>'
+        f'</p><p class="note">The campaign\'s own journal, findings, record and metrics rows are '
+        f'excluded — they are what it wrote <em>about</em> itself. Decision records and the spec '
+        f'changelog are kept, because those are work.</p>'
+    )
+    return page("Diff", head + ("".join(blocks) or empty("Only bookkeeping.")), poll=False)
+
+
+HUNK = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$")
+
+
+def render_patch(raw: str) -> tuple[str, int, int]:
+    """Unified diff to a table per file, with both line numbers."""
+    files: list[str] = []
+    rows: list[str] = []
+    name = None
+    old_no = new_no = 0
+    added = deleted = 0
+
+    def flush() -> None:
+        if name is not None and rows:
+            files.append(
+                f'<div class="file"><div class="filename"><code>{esc(name)}</code></div>'
+                f'<table class="diff"><tbody>{"".join(rows)}</tbody></table></div>'
+            )
+        rows.clear()
+
+    for line in raw.splitlines():
+        if line.startswith("diff --git "):
+            flush()
+            name = line.split(" b/", 1)[-1]
+            continue
+        if line.startswith(("index ", "--- ", "+++ ", "new file", "deleted file", "similarity ", "rename ")):
+            continue
+        hunk = HUNK.match(line)
+        if hunk:
+            old_no, new_no = int(hunk.group(1)), int(hunk.group(2))
+            rows.append(
+                f'<tr class="hunk"><td class="ln"></td><td class="ln"></td>'
+                f'<td class="code">{esc(hunk.group(3).strip() or "…")}</td></tr>'
+            )
+            continue
+        if line.startswith("+"):
+            added += 1
+            rows.append(
+                f'<tr class="ins"><td class="ln"></td><td class="ln">{new_no}</td>'
+                f'<td class="code">{esc(line[1:])}</td></tr>'
+            )
+            new_no += 1
+        elif line.startswith("-"):
+            deleted += 1
+            rows.append(
+                f'<tr class="del-row"><td class="ln">{old_no}</td><td class="ln"></td>'
+                f'<td class="code">{esc(line[1:])}</td></tr>'
+            )
+            old_no += 1
+        elif line.startswith(" "):
+            rows.append(
+                f'<tr><td class="ln">{old_no}</td><td class="ln">{new_no}</td>'
+                f'<td class="code">{esc(line[1:])}</td></tr>'
+            )
+            old_no += 1
+            new_no += 1
+    flush()
+    return "".join(files), added, deleted
+
+
 def campaign_diffstat() -> dict[str, tuple[int, int]]:
     """Lines added and deleted per campaign, from one pass over the history.
 
@@ -511,11 +668,7 @@ def panel_campaign_table() -> str:
         d_clean = (close.get("sections_clean") or 0) - (open_row.get("sections_clean") or 0)
         d_gaps = (close.get("open_gaps") or 0) - (open_row.get("open_gaps") or 0)
 
-        shown = (
-            "<br>".join(f"<code>{esc(anchor.split('#')[-1])}</code>" for anchor in targets)
-            if targets
-            else "—"
-        )
+        shown = target_links(close.get("target"))
 
         def signed(value: int, good_when_positive: bool = True) -> str:
             if value == 0:
@@ -529,7 +682,8 @@ def panel_campaign_table() -> str:
             f"<td>{shown}</td>"
             f'<td class="num">{esc(close.get("outcome"))}</td>'
             f'<td class="num">{esc(close.get("commits"))}</td>'
-            f'<td class="num add">+{added:,}</td><td class="num del">-{deleted:,}</td>'
+            f'<td class="num add"><a href="/diff/conformance/{urllib.parse.quote(identifier)}">+{added:,}</a></td>'
+            f'<td class="num del"><a href="/diff/conformance/{urllib.parse.quote(identifier)}">-{deleted:,}</a></td>'
             f'<td class="num">{signed(d_clean)}</td>'
             f'<td class="num">{signed(d_gaps, good_when_positive=False)}</td>'
             f'<td class="num">{(money.get("output_tokens") or 0):,}</td>'
@@ -824,15 +978,7 @@ def panel_sessions() -> str:
                 if record.is_file()
                 else ""
             )
-            anchors = [a.strip() for a in (campaign.get("target") or "").split(",") if a.strip()]
-            if len(anchors) > 1:
-                items = "".join(f"<li><code>{esc(a)}</code></li>" for a in anchors)
-                target_cell = (
-                    f'<details><summary>{len(anchors)} targets</summary>'
-                    f'<ul class="sites">{items}</ul></details>'
-                )
-            else:
-                target_cell = f"<code>{esc(anchors[0])}</code>" if anchors else "—"
+            target_cell = target_links(campaign.get("target"))
             rows.append(
                 f"<tr><td><code>{esc(identifier[:8])}</code></td><td>{esc(owner)}</td>"
                 f"<td>{target_cell}</td>"
@@ -1142,8 +1288,29 @@ tr.unjudged td.state { color:var(--dim); }
 .campaigns { font-size:12px; }
 .campaigns td, .campaigns th { padding:4px 7px; }
 .campaigns td:nth-child(2) { line-height:1.45; }
-.campaigns .add { color:var(--good); }
-.campaigns .del { color:var(--bad); }
+.campaigns .add, .campaigns .add a { color:var(--good); }
+.campaigns .del, .campaigns .del a { color:var(--bad); }
+.campaigns a { text-decoration:none; }
+.target { color:var(--fg); }
+pre.spec { max-height:none; }
+.campaigns a:hover { text-decoration:underline; }
+
+/* diff view */
+.commit { margin:18px 0; }
+.commit h3 { display:flex; gap:10px; align-items:baseline; font-weight:500; }
+.file { border:1px solid var(--line); border-radius:5px; margin:8px 0; overflow:hidden; }
+.filename { background:var(--card); padding:5px 9px; border-bottom:1px solid var(--line); }
+table.diff { border-collapse:collapse; width:100%; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; }
+table.diff td { border:0; padding:0 8px; vertical-align:top; white-space:pre-wrap; word-break:break-word; }
+table.diff td.ln { width:1%; text-align:right; color:var(--dim); user-select:none; padding:0 6px;
+                   border-right:1px solid var(--line); white-space:nowrap; }
+table.diff td.code { width:100%; }
+tr.ins { background:color-mix(in oklab, var(--good) 16%, transparent); }
+tr.del-row { background:color-mix(in oklab, var(--bad) 16%, transparent); }
+tr.ins td.code::before { content:"+"; color:var(--good); margin-left:-8px; padding-right:2px; }
+tr.del-row td.code::before { content:"-"; color:var(--bad); margin-left:-8px; padding-right:2px; }
+tr.hunk td { background:var(--card); color:var(--dim); font-size:11px; padding:2px 8px; }
+.add { color:var(--good); } .del { color:var(--bad); }
 .up { color:var(--good); }
 .down { color:var(--bad); }
 .dim { color:var(--dim); }
@@ -1340,6 +1507,32 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(200, fragment(view if view in dict(VIEWS) else "overview"))
             elif route == "/version":
                 self.send(200, version_token(), "text/plain; charset=utf-8")
+            elif route.startswith("/section/"):
+                _, _, doc, anchor = route.split("/", 3)
+                index = hj.section_index([doc])
+                section = index.get(f"{doc}#{anchor}")
+                if section is None:
+                    self.send(404, page("Section", empty(f"No {esc(doc)}#{esc(anchor)}.")))
+                else:
+                    verdict = hj.read_audit(doc).get(section.key)
+                    state = verdict.state if verdict else "unjudged"
+                    gaps = ""
+                    if verdict and verdict.gaps:
+                        gaps = "<h4>open gaps</h4><ul class='gaps'>" + "".join(
+                            f"<li><code>{esc(hj.gap_id(section.key, gap.claim))}</code> "
+                            f"<strong>{esc(gap.claim)}</strong><br>{esc(gap.found)}<br>"
+                            f"<code>{esc(gap.where)}</code></li>"
+                            for gap in verdict.gaps
+                        ) + "</ul>"
+                    body = (
+                        f'<p class="meta"><a href="/?view=sections">&larr; sections</a> · '
+                        f'<code>design/{esc(doc)}</code> · <span class="{esc(state)}">{esc(state)}</span></p>'
+                        f"{gaps}<pre class=\"spec\">{esc(hj.section_text(section))}</pre>"
+                    )
+                    self.send(200, page(section.heading, body, poll=False))
+            elif route.startswith("/diff/"):
+                _, _, owner, campaign = route.split("/", 3)
+                self.send(200, render_campaign_diff(owner, campaign))
             elif route.startswith("/record/"):
                 _, _, owner, campaign = route.split("/", 3)
                 path = STATE / "campaigns" / owner / f"{campaign}.md"
