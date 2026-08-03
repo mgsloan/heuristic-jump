@@ -370,8 +370,12 @@ needs no helper either. The "and/or `sum_tree`" question resolves to rope.
 |---|---|---|
 | `is_utf8_char_boundary` | 4-line `const fn` | private in `chunk.rs`, its only caller |
 | `debug_panic!` | ~10-line macro | `macro_rules!` at the crate root, **not** `#[macro_export]`ed |
-| `RandomCharIter` | ~40 lines, tests only | `#[cfg(test)]` module at the crate root |
-| `seeded` | ~20 lines, ours not upstream's | the same test module ([section 7](#7-testing)) |
+| `RandomCharIter` | ~40 lines, tests only | `src/test_support.rs`, a `#[cfg(test)] mod` at the crate root |
+| `seeded` | ~20 lines, ours not upstream's | the same module ([section 7](#7-testing)) |
+
+`test_support` is a file rather than an inline module because the benchmark
+needs it too, and for that it has to be `#[path]`-includable — see the import
+sites below.
 
 Details that matter:
 
@@ -384,8 +388,17 @@ Details that matter:
   `debug_panic!` needs; `rand` is already a dev-dependency, which is what
   `RandomCharIter` needs. rope's `Cargo.toml` loses both `util` lines and gains
   nothing.
-* **Five import sites change**, across two files: `chunk.rs:6`, `:76`, `:192`,
-  `:825`, and `rope.rs:1733`.
+* **Six import sites change**, across three files: `chunk.rs:6`, `:76`,
+  `:192`, `:825`, `rope.rs:1733`, and `benches/rope_benchmark.rs:10`.
+
+  The sixth is the one that constrains the table above. A bench target is
+  compiled as its own crate, so it can reach neither `util` (not vendored) nor
+  rope's `#[cfg(test)]` module, and upstream only gets away with
+  `use util::RandomCharIter;` there because rope dev-depends on
+  `util = { features = ["test-support"] }`. The bench therefore
+  `#[path = "../src/test_support.rs"] mod test_support;`, which keeps one copy
+  of the source without putting it in rope's public API or pulling `rand` out
+  of dev-dependencies. `state/spec-changelog.md`, CHANGE-conformance-002.
 
 **Attribution is not optional.** `util` is Apache-2.0 and rope is
 GPL-3.0-or-later. Apache-2.0 is one-way compatible into GPL-3.0, so the move

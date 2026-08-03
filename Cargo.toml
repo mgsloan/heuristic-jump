@@ -1,6 +1,12 @@
 [workspace]
 resolver = "3"
-members = ["crates/driver", "crates/heuristic_jump", "crates/shared"]
+members = [
+  "crates/driver",
+  "crates/heuristic_jump",
+  "crates/shared",
+  "vendor/rope",
+  "vendor/sum_tree",
+]
 
 [workspace.package]
 edition = "2024"
@@ -18,6 +24,32 @@ rust-version = "1.95.0"
 [workspace.dependencies]
 driver = { path = "crates/driver" }
 shared = { path = "crates/shared" }
+rope = { path = "vendor/rope" }
+sum_tree = { path = "vendor/sum_tree" }
+
+# Held at `../zed/Cargo.toml`'s values at `90d024b8`, because the vendored
+# crates are written against them and `deps.md` §5 records each as forced by
+# rope rather than chosen. Two deliberate differences from Zed:
+#
+# * `log` drops Zed's `kv_unstable_serde`/`serde` features. Nothing in rope or
+#   sum_tree uses structured logging — they call `log::error!`/`log::info!` —
+#   and the features exist for Zed crates we did not take.
+# * `proptest` is crates.io's rather than Zed's git rev. The rev is there for
+#   the `attr-macro` feature, which `sum_tree`'s `property_test.rs` does not
+#   use, and `deps.md` §12 wants proptest for our own property tests anyway.
+heapless = "0.9.2"
+log = "0.4"
+rayon = "1.8"
+tracing = "0.1.40"
+unicode-segmentation = "1.10"
+
+# `rand` is pinned to 0.9 rather than crates.io's current major on purpose:
+# upstream's tests are kept verbatim and are written against
+# `rng.random_range(..)`. Taking 0.10 would mean editing test bodies, which
+# defeats keeping them (`deps.md` §12, `rope-modifications.md` §7).
+rand = "0.9"
+criterion = { version = "0.5", features = ["html_reports"] }
+proptest = "1"
 
 [workspace.lints.rust]
 # Edition 2024 made `env::set_var` and friends unsafe; be explicit about scope.

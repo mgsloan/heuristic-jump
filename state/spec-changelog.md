@@ -79,3 +79,33 @@ artifact's name, so the claim now fails a test rather than fading out of a
 document if the rename is ever dropped.
 
 **Campaign:** b59733c6-ebff-47a4-bccf-232abc532a07
+
+## CHANGE-conformance-002 — rope-modifications.md#folding-vendorutil-in — the kept benchmark is a sixth `util` import site
+
+**Contradiction:** §4 says "**Five import sites change**, across two files:
+`chunk.rs:6`, `:76`, `:192`, `:825`, and `rope.rs:1733`", and its table puts
+`RandomCharIter` in "a `#[cfg(test)]` module at the crate root". §7 and
+`deps.md` §5 patch 4 both keep `benches/rope_benchmark.rs`, whose line 10 is
+`use util::RandomCharIter;`. A bench is compiled as its own crate: it can see
+neither `util` (not vendored) nor a `#[cfg(test)]` module of the library. With
+five sites patched the benchmark does not build — checked, not reasoned about:
+`cargo build -p rope --all-targets` fails with `unresolved import util`.
+
+Upstream only gets away with it because rope dev-depends on
+`util = { workspace = true, features = ["test-support"] }`, which patch 1
+deletes.
+
+**Resolution:** six sites across three files. `test_support` is a file,
+`vendor/rope/src/test_support.rs`, and the bench opens with
+`#[path = "../src/test_support.rs"] mod test_support;`. This trades nothing
+off: one copy of the source, no new dependency (`rand` is already a
+dev-dependency, and benches get dev-dependencies), and nothing added to rope's
+public API — which the alternatives both cost. Making the module `pub` and
+feature-gating it would put a test helper in the shipped API surface or force
+a default feature; copying `RandomCharIter` into the bench would give the
+crate two copies of a borrowed Apache-2.0 item to keep in step.
+
+The document's table is updated in the same edit, since "`#[cfg(test)]` module
+at the crate root" is what made the file-versus-inline choice look free.
+
+**Campaign:** 4ba19af5-b041-4f2f-9d85-e5553eb14c57

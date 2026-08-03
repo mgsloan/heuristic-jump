@@ -1,0 +1,38 @@
+[package]
+name = "rope"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+
+# Deliberately NOT `[lints] workspace = true`: `deps.md` §14 keeps the
+# workspace rules on `crates/*` only, so upstream's text stays unedited and
+# the re-sync diff stays readable. Recorded in `vendor/README.md`.
+#
+# The one entry is not a rule but a false positive: `rust_analyzer` is a cfg
+# Zed sets from outside cargo, and Zed allows this lint workspace-wide
+# (`../zed/Cargo.toml`). Their cfg, not ours to delete.
+[lints.rust]
+unexpected_cfgs = { level = "allow" }
+
+[lib]
+path = "src/rope.rs"
+
+[dependencies]
+heapless.workspace = true
+log.workspace = true
+rayon.workspace = true
+sum_tree.workspace = true
+unicode-segmentation.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+rand.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "rope_benchmark"
+harness = false
+
+[package.metadata.cargo-machete]
+ignored = ["tracing"]
