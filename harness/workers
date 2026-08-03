@@ -1,33 +1,46 @@
 #!/usr/bin/env bash
-# Start every worker of a loop. `design/loops.md` section 13, "Workers".
+# Run a loop as N workers, in rounds. `design/loops.md` section 13, "Workers".
 #
-# One `harness/loop --worker <n>` per worker, in the background, each in its
-# own worktree on its own branch. Deliberately not a supervisor: it starts
-# them, prints where their logs are, and waits. Restart policy, health checks
-# and reconciliation are the supervisor's job and the supervisor does not
-# exist yet (section 14).
+# A round is: plan, then N campaigns in parallel, then wait for all of them.
+# The barrier is the cost of the design and is deliberate — the planner needs
+# to see what the last round did before it can divide the next one, and a
+# worker that started early would be dividing against a stale picture.
 #
-# Run one worker in the foreground instead when you want to watch it:
+# The planner is a session rather than a rule because the split that matters
+# is "which of these targets share their reading", which is a judgement about
+# the code. A first-come claim gets disjointness and nothing else: it hands
+# out the top-ranked gaps in order and cannot notice that two of them are the
+# same file.
 #
-#     harness/loop core --worker 1
+# Run one worker in the foreground when you want to watch it, which skips the
+# planner and gives it the whole gap list:
 #
-#   harness/workers <loop> [--logs <dir>]
+#     harness/loop core --worker 1 --once
+#
+#   harness/workers <loop> [--rounds <n>] [--logs <dir>]
 
 set -uo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(dirname "$here")"
+hj="$here/hj"
+adapter="$here/adapter"
 
 loop="${1:-}"
 if [ -z "$loop" ]; then
-	echo "usage: harness/workers <loop> [--logs <dir>]" >&2
+	echo "usage: harness/workers <loop> [--rounds <n>] [--logs <dir>]" >&2
 	exit 2
 fi
 shift
 
-logs="${repo}/../heuristic-jump-logs"
+rounds=0
+logs="$repo/../heuristic-jump-logs"
 while [ $# -gt 0 ]; do
 	case "$1" in
+	--rounds)
+		rounds="${2:?count}"
+		shift 2
+		;;
 	--logs)
 		logs="${2:?directory}"
 		shift 2
@@ -40,34 +53,66 @@ while [ $# -gt 0 ]; do
 done
 
 cd "$repo" || exit 2
+export HJ_CONTROL="$repo"
 
-count="$(
-	python3 - "$loop" <<-'PY'
+read_key() {
+	python3 - "$loop" "$1" "$2" <<-'PY'
 		import sys, tomllib, pathlib
 		phase = tomllib.loads(pathlib.Path("state/phase.toml").read_text())
-		print(int(phase.get("loop", {}).get(sys.argv[1], {}).get("workers", 1) or 1))
+		print(phase.get("loop", {}).get(sys.argv[1], {}).get(sys.argv[2], sys.argv[3]))
 	PY
-)"
+}
 
+count="$(read_key workers 1)"
 if [ "$count" -le 1 ]; then
 	echo "workers: $loop declares $count worker; run harness/loop $loop directly." >&2
 	exit 2
 fi
 
 mkdir -p "$logs"
-echo "workers: starting $count for $loop"
-pids=()
-for n in $(seq 1 "$count"); do
-	log="$logs/$loop-$n.log"
-	"$here/loop" "$loop" --worker "$n" >"$log" 2>&1 &
-	pids+=($!)
-	echo "  $loop-$n  pid $!  $log"
-	# Stagger the starts. Three workers opening a campaign in the same second
-	# would each read the gap list before any of them had written a claim to
-	# it, which is the one race the claim mechanism cannot absorb.
-	sleep 5
-done
+echo "workers: $count for $loop, in rounds"
 
-echo "workers: running. Set status = \"paused\" in state/phase.toml to stop them"
-echo "         after their current campaigns, or kill: ${pids[*]}"
-wait
+round=0
+while :; do
+	if [ "$(read_key status missing)" != "running" ]; then
+		echo "workers: state/phase.toml says $loop is not running; stopping."
+		exit 0
+	fi
+
+	round=$((round + 1))
+	echo
+	echo "=== round $round  ($loop, $(date -u +%FT%TZ))"
+
+	# Plan. A round without a plan is still a round: the workers fall back to
+	# the whole gap list, which is what a single worker has always had. That is
+	# worse than a plan and much better than not running.
+	prompt="$(mktemp)"
+	answer="$(mktemp)"
+	if "$hj" render-planner "$loop" --workers "$count" --out "$prompt"; then
+		session="$(cat /proc/sys/kernel/random/uuid)"
+		if "$adapter" audit "$session" "$prompt" "$answer" --model "${HJ_PLAN_MODEL:-}"; then
+			"$hj" plan-merge "$loop" "$answer" --workers "$count" ||
+				echo "workers: the plan did not parse; workers take the whole list." >&2
+		else
+			echo "workers: the planning session failed; workers take the whole list." >&2
+		fi
+	fi
+	rm -f "$prompt" "$answer"
+
+	pids=()
+	for n in $(seq 1 "$count"); do
+		"$here/loop" "$loop" --worker "$n" --once >"$logs/$loop-$n.log" 2>&1 &
+		pids+=($!)
+		echo "  $loop-$n  pid $!  $logs/$loop-$n.log"
+	done
+
+	for pid in "${pids[@]}"; do
+		wait "$pid"
+	done
+	echo "round $round: all $count workers closed"
+
+	if [ "$rounds" -gt 0 ] && [ "$round" -ge "$rounds" ]; then
+		echo "workers: ran $round round(s), which was the limit."
+		exit 0
+	fi
+done

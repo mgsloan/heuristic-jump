@@ -57,6 +57,11 @@ done
 # the loop declares `writes_harness`, so the campaign cannot reach its own.
 export HJ_PINNED_HARNESS="$here"
 
+# Desired state comes from the integration checkout, never from the
+# worker's branch: three workers each read their own copy otherwise, so
+# pausing here would not stop any of them.
+export HJ_CONTROL="$(dirname "$here")"
+
 integration="$(dirname "$here")"
 
 worktree_of() {
@@ -146,9 +151,9 @@ merge_back() {
 }
 
 status_of() {
-	python3 - "$1" <<-'PY'
+	python3 - "$1" "$HJ_CONTROL" <<-'PY'
 		import sys, tomllib, pathlib
-		phase = tomllib.loads(pathlib.Path("state/phase.toml").read_text())
+		phase = tomllib.loads((pathlib.Path(sys.argv[2]) / "state/phase.toml").read_text())
 		print(phase.get("loop", {}).get(sys.argv[1], {}).get("status", "missing"))
 	PY
 }

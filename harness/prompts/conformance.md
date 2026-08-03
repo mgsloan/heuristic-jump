@@ -258,6 +258,8 @@ record and never yours.
 
 Documents in scope this phase: {{docs}}
 
+{{assignment}}
+
 ### Open gaps
 
 {{open_gaps}}

@@ -38,6 +38,13 @@ from pathlib import Path
 # `harness/` makes necessary again).
 REPO = Path(os.environ.get("HJ_REPO") or Path(__file__).resolve().parent.parent).resolve()
 HARNESS = REPO / "harness"
+# Desired state, which is control rather than history and must have one
+# answer for the whole fleet. A worker reads `state/phase.toml` from its own
+# branch otherwise, so pausing the integration checkout does not stop it and
+# the fleet has to be killed instead of asked. `harness/loop` sets this to
+# the integration checkout; alone it is the tree itself, which is what a
+# single-checkout run has always meant.
+CONTROL = Path(os.environ.get("HJ_CONTROL") or REPO).resolve()
 STATE = REPO / "state"
 DESIGN = REPO / "design"
 
@@ -173,7 +180,7 @@ class Phase:
 
 
 def load_phase() -> Phase:
-    path = STATE / "phase.toml"
+    path = CONTROL / "state" / "phase.toml"
     if not path.exists():
         die(f"{path} does not exist; the harness has no desired state to reconcile against")
     raw = tomllib.loads(path.read_text())
@@ -1305,6 +1312,47 @@ def trailing_without_progress(owner: str) -> int:
     return trailing
 
 
+def assignment_block(owner: str, worker: str) -> str:
+    """What a planner gave this worker, for the top of its prompt.
+
+    Empty for a loop that runs one campaign at a time, which is every loop
+    without workers — the gap list below is then the whole of the choice.
+    """
+    table = assignment_for(owner, worker)
+    if not table:
+        return ""
+    targets = table.get("targets") or []
+    if not targets:
+        return (
+            "## Your assignment this round\n\n"
+            "**Nothing was assigned to you.** That is a real answer rather than an\n"
+            "oversight: the planner found no target left that does not overlap\n"
+            f"another worker's files. {table.get('why', '')}\n\n"
+            "Pick the cheapest unjudged section instead, or close `no-movement`\n"
+            "immediately — a session spent inventing work costs the same as one\n"
+            "spent doing it."
+        )
+    lines = [
+        "## Your assignment this round",
+        "",
+        "A planner divided this round between the workers, so that no two of you",
+        "open the same file. **Work these and not the wider gap list below**, which",
+        "is here for context and for the ids:",
+        "",
+    ]
+    lines += [f"- `{target}`" for target in targets]
+    if table.get("why"):
+        lines += ["", f"Why these together: {table['why']}"]
+    if table.get("reading"):
+        lines += [
+            "",
+            f"Expected reading: `{table['reading']}`. If the work takes you well",
+            "outside that, say so at close — the planner believed it was disjoint,",
+            "and a wrong belief there is what makes two workers collide.",
+        ]
+    return "\n".join(lines)
+
+
 def prompt_values(
     phase: Phase,
     config: LoopConfig,
@@ -1486,6 +1534,7 @@ def prompt_values(
             f"{counts['audit_minors']} minor items"
         ),
         "open_gaps": "\n".join(gap_lines),
+        "assignment": assignment_block(config.owner, os.environ.get("HJ_WORKER") or ""),
         # Not a template value: `campaign-open` reads it back to record
         # what this campaign was handed.
         "_claimed": [gap_id(key, gap.claim) for key, gap in detailed],
@@ -1521,6 +1570,99 @@ def cmd_render_prompt(args: argparse.Namespace) -> int:
     else:
         sys.stdout.write(rendered)
     return 0
+
+
+ASSIGNMENT_FENCE = re.compile(r"```toml\s*\n(.*?)\n```", re.DOTALL)
+
+
+def assignments_path(owner: str) -> Path:
+    return STATE / "assignments" / f"{owner}.toml"
+
+
+def cmd_render_planner(args: argparse.Namespace) -> int:
+    """The planner divides one round between the workers.
+
+    It is a session rather than a rule because the split that matters is
+    "which of these share their reading", and that is a judgement about the
+    code (`design/loops.md` §13, "Workers"). A first-come claim gets
+    disjointness and nothing else: it hands out the top-ranked gaps in order
+    and cannot notice that two of them are the same file.
+    """
+    phase, config = loop_config(args.loop)
+    values = prompt_values(phase, config, "(planning)")
+    recent = [
+        f"- {c.get('worker') or config.owner}: {c.get('target') or '(no target)'}"
+        f" -> {c.get('outcome') or 'open'}"
+        for c in campaigns_of(config.owner)[-args.workers * 2 :]
+    ]
+    rendered = render(
+        (HARNESS / "prompts" / "planner.md").read_text(),
+        {
+            "loop": config.owner,
+            "phase": phase.phase,
+            "worker_count": str(args.workers),
+            "open_gaps": values["open_gaps"],
+            "unjudged_sections": values["unjudged_sections"],
+            "recent_campaigns": "\n".join(recent) or "- (this is the first round)",
+        },
+    )
+    if args.out:
+        Path(args.out).write_text(rendered)
+    else:
+        sys.stdout.write(rendered)
+    return 0
+
+
+def cmd_plan_merge(args: argparse.Namespace) -> int:
+    """Take the planner's block and write it where the workers read it."""
+    text = Path(args.answer).read_text()
+    match = ASSIGNMENT_FENCE.search(text)
+    if not match:
+        die("the planner produced no ```toml block")
+    try:
+        parsed = tomllib.loads(match.group(1))
+    except tomllib.TOMLDecodeError as error:
+        die(f"the planner's toml does not parse: {error}")
+    workers = parsed.get("worker") or {}
+    missing = [str(n) for n in range(1, args.workers + 1) if str(n) not in workers]
+    if missing:
+        die(f"the plan names no assignment for worker(s): {', '.join(missing)}")
+    _, config = loop_config(args.loop)
+    path = assignments_path(config.owner)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "# One round's assignments, written by `hj plan-merge` from the planner's",
+        "# answer. Regenerated every round; not history.",
+        f"planned = {toml_string(now())}",
+        "",
+    ]
+    for number in sorted(workers, key=lambda k: int(k)):
+        table = workers[number]
+        targets = table.get("targets") or []
+        lines.append(f"[worker.{number}]")
+        lines.append("targets = [" + ", ".join(toml_string(x) for x in targets) + "]")
+        if table.get("reading"):
+            lines.append(f"reading = {toml_string(str(table['reading']))}")
+        if table.get("why"):
+            lines.append(f"why = {toml_string(str(table['why']))}")
+        lines.append("")
+        print(f"plan: worker {number}: {len(targets)} target(s)")
+    path.write_text("\n".join(lines))
+    commit_harness_state([path], f"plan a round for {config.owner}")
+    return 0
+
+
+def assignment_for(owner: str, worker: str) -> dict:
+    """What this worker was assigned, or an empty assignment."""
+    path = assignments_path(owner)
+    if not path.exists() or not worker:
+        return {}
+    number = worker.rsplit("-", 1)[-1]
+    try:
+        parsed = tomllib.loads(path.read_text())
+    except tomllib.TOMLDecodeError:
+        return {}
+    return (parsed.get("worker") or {}).get(number) or {}
 
 
 def cmd_render_auditor(args: argparse.Namespace) -> int:
@@ -2357,6 +2499,18 @@ def main() -> int:
     p.add_argument("--campaign")
     p.add_argument("--out")
     p.set_defaults(run=cmd_render_prompt)
+
+    p = sub.add_parser("render-planner", help="render the round-planning prompt")
+    p.add_argument("loop")
+    p.add_argument("--workers", type=int, required=True)
+    p.add_argument("--out")
+    p.set_defaults(run=cmd_render_planner)
+
+    p = sub.add_parser("plan-merge", help="write the planner's assignments")
+    p.add_argument("loop")
+    p.add_argument("answer")
+    p.add_argument("--workers", type=int, required=True)
+    p.set_defaults(run=cmd_plan_merge)
 
     p = sub.add_parser("render-auditor", help="render the auditor's prompt for a plan")
     p.add_argument("loop")
