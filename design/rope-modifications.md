@@ -38,7 +38,7 @@ pub struct Unclipped<T>(pub T);                   // unclipped.rs
 
 The *dimensions* are newtyped. What is not newtyped is one level down: the
 plain byte offset is a bare `usize` — including as a `sum_tree::Dimension` and
-a `TextDimension` (`rope.rs:1492`, `rope.rs:1502`) — and the row and column
+a `TextDimension` (`rope.rs:1567`, `rope.rs:1577`) — and the row and column
 inside `Point` and `PointUtf16` are bare `u32`.
 
 Both are reasonable upstream. The byte offset is the default dimension, the one
@@ -310,7 +310,7 @@ it is called out rather than absorbed.
 ### The dimension impls
 
 `Offset` gains the two impls that make it usable as a seek dimension,
-mirroring what `OffsetUtf16` already has (`rope.rs:1516`, `rope.rs:1526`):
+mirroring what `OffsetUtf16` already has (`rope.rs:1624`, `rope.rs:1634`):
 
 ```rust
 impl<'a> sum_tree::Dimension<'a, ChunkSummary> for Offset { … }
@@ -438,7 +438,7 @@ were independent; they are not any more.
 ## 5. What deliberately does not change
 
 * **`OffsetUtf16` and `Unclipped`.** Already newtypes, already right.
-* **The `usize` dimension impls** (`rope.rs:1492`, `:1502`). rope uses `usize`
+* **The `usize` dimension impls** (`rope.rs:1567`, `:1577`). rope uses `usize`
   as a dimension internally in about seven places — `find::<usize, _>`,
   `Dimensions<usize, Point>` — and removing the impls would mean editing those
   bodies. They stay.
@@ -520,12 +520,12 @@ precisely the kind of test nobody would write from scratch.
 What they need turns out to be small. Only three things stand between the test
 modules and a plain `cargo test`:
 
-** `#[gpui::test(iterations = N)]` on nine functions.** Despite the name,
-nothing about gpui is involved for these: rope's randomised tests take
-`mut rng: StdRng` and nothing else —no `TestAppContext`, no async. The macro
-is doing one job, which is to run the body N times with deterministic seeds
-and print the seed on failure. That is replaced by a helper in rope's own test
-module ([above](#folding-vendorutil-in)):
+**`#[gpui::test]` on nine functions, eight of them with `iterations = N`.**
+Despite the name, nothing about gpui is involved for these: rope's randomised
+tests take `mut rng: StdRng` and nothing else —no `TestAppContext`, no async.
+The macro is doing one job, which is to run the body N times with
+deterministic seeds and print the seed on failure. That is replaced by a
+helper in rope's own test module ([above](#folding-vendorutil-in)):
 
 ```rust
 // upstream
@@ -538,11 +538,19 @@ fn test_random_rope() { seeded(100, test_random_rope_inner) }
 fn test_random_rope_inner(mut rng: StdRng) { /* body, untouched */ }
 ```
 
-Two changed lines per test, nine tests, bodies verbatim. `seeded` is
+Two changed lines per test, eight tests, bodies verbatim. `seeded` is
 about twenty lines: derive the seed list, honour `SEED` and `ITERATIONS`
 environment overrides as gpui does, print the seed, and run. **No proc macro
 is needed** — the alternative of writing our own attribute macro would mean a
-whole proc-macro crate to save nine lines.
+whole proc-macro crate to save eight lines.
+
+The ninth is `#[gpui::test]` with no `iterations`, on
+`test_point_utf16_to_offset_clips_to_correct_absolute_offset`
+(`chunk.rs:1235`). It takes no `rng` at all, so the attribute was buying it
+nothing beyond gpui's test harness, and it becomes a plain `#[test]` — one
+changed line, and no `seeded`. It is called out because the two counts are
+otherwise easy to conflate, and conflating them is how a dropped test would
+hide: nine attributes, eight conversions, and 24 test functions either side.
 
 **`#[ctor::ctor]` + `zlog::init_test()`** at `rope.rs:1735` and
 `sum_tree.rs:1399`. These only initialise logging; the tests assert nothing

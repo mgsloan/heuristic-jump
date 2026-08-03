@@ -3,8 +3,9 @@
 //! run the other way and these cannot live in `shared`.
 //!
 //! Ours, not upstream's — this whole file is a patch, recorded in
-//! `vendor/README.md`. Nothing in rope uses these types yet; converting the
-//! signatures is §4's sweep and is a campaign of its own.
+//! `vendor/README.md`. §4's sweep is done: these are what rope's public
+//! signatures speak in, and `tests/newtype_api.rs` is what keeps it that way
+//! through a re-sync.
 
 use std::fmt;
 use std::ops::{Add, AddAssign, Sub, SubAssign};

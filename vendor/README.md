@@ -50,10 +50,16 @@ property (`deps.md` §14).
    `rope-modifications.md` changed nothing. Three substitutions made them run
    under a plain `cargo test`:
 
-   * `#[gpui::test(iterations = N)]` on nine functions → `#[test]` calling
-     `seeded(N, <name>_inner)`, bodies verbatim. `seeded` is in
-     `src/test_support.rs` and honours `SEED`/`ITERATIONS` the way gpui's
-     `calculate_seeds` does. The `gpui` dev-dependency is gone.
+   * `#[gpui::test]` on nine functions → `#[test]`. Eight carry
+     `iterations = N` and become a `#[test]` calling `seeded(N, <name>_inner)`,
+     bodies verbatim; `seeded` is in `src/test_support.rs` and honours
+     `SEED`/`ITERATIONS` the way gpui's `calculate_seeds` does. The ninth,
+     `test_point_utf16_to_offset_clips_to_correct_absolute_offset` in
+     `src/chunk.rs`, has no `iterations` and takes no `rng`, so it is a plain
+     `#[test]` with no `seeded`. Nine attributes, eight conversions — the
+     counts differ and `tests/newtype_api.rs` asserts both, because a dropped
+     test is exactly what a conflated count would hide. The `gpui`
+     dev-dependency is gone.
    * `#[ctor::ctor] fn init_logger` + `zlog::init_test()` deleted — they only
      initialised logging and nothing asserts on it. `ctor` and `zlog` go with
      them.
