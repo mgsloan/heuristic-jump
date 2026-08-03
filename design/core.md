@@ -1844,9 +1844,10 @@ on any language crate.** Wiring happens in `heuristic_jump`.
 
 ```
               shared  <-- rope, tree-sitter, serde, serde_json, url,
-             /  /  |  \      ignore, rayon, thiserror, rustc-hash
+             /  /  |  \      ignore, rayon, thiserror, rustc-hash, tracing
             /  /   |   \
-measure_core  /  similarity  driver  <-- crossbeam-channel, rayon
+measure_core  /  similarity  driver  <-- crossbeam-channel, rayon,
+       |     /     |          |            rustc-hash, tracing
        |     /     |          |
        |    lang_* /          |
        |     /  \ /           |
@@ -1870,8 +1871,12 @@ Every edge, and why:
   `tree-sitter`, `ignore` (for `ProjectView`'s walk), `rayon` (for
   `ProjectView::scan`, which executes on the pool it is handed at
   construction — `resolution.md` §3), `thiserror` (for `Error`'s derives),
-  and `rustc-hash`. This list is the authoritative one; §8.7 refers back to
-  it rather than restating it.
+  `rustc-hash`, and `tracing` — which is in the graph regardless, since `rope`
+  and `sum_tree` depend on it and two logging facades would be silly
+  (`deps.md` §9). This list is the authoritative one; §8.7 refers back to it
+  rather than restating it, and
+  `crates/driver/tests/seam.rs::shared_declares_only_the_dependencies_section_9_lists`
+  fails on a dependency that is not on it.
 
   ** `Error` is one enumerated type covering every failure in the system**,
   not an `anyhow` -style boxed `dyn Error`. It lives here rather than in

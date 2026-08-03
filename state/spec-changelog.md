@@ -376,4 +376,45 @@ taken.
 
 **Campaign:** de2706af-51e1-4f63-828c-7cd3cfcc5195
 
+## CHANGE-conformance-010 — core.md#the-dependency-graph — `tracing` joins the authoritative dependency list it was always in the graph of
+
+**Contradiction:** §9 lists `shared`'s dependencies and says
+
+> "This list is the authoritative one; §8.7 refers back to it rather than
+> restating it."
+
+The list has nine crates and does not have `tracing`, which `crates/shared/Cargo.toml`
+declares and `ProjectView` calls at `project.rs:136` and `:144`. `deps.md` §9
+says of the same crate
+
+> "`tracing` is not really a choice — `rope` and `sum_tree` depend on it, so it
+> is in the graph regardless, and having two logging facades would be silly"
+
+and `shared` depends on `rope`. So one document has it as unavoidable and the
+other, in the sentence claiming to be authoritative, omits it. The graph's
+`driver` annotation reads `crossbeam-channel, rayon` against a manifest of
+`rustc-hash, shared, tracing`, which is the same omission twice.
+
+**Resolution:** `tracing` joins §9's `shared` list, with `deps.md` §9's reason
+attached, and the graph's `driver` annotation gains `rustc-hash` and `tracing`.
+
+This trades nothing because it selects no dependency: `tracing` was chosen in
+`deps.md` §9, arrives transitively through `rope` whatever §9 says, and is
+declared in two manifests already. The opposite reading — that the
+authoritative list forbids it, so `shared` must drop `tracing` — costs the
+`ProjectView` logging and leaves `rope`'s copy in the graph anyway, gaining
+nothing. This is *not* a widening of the dependency set and does not need
+escalating as one; a crate not already sanctioned by `deps.md` would be Class B.
+
+**This campaign edited §9 and touched the code it describes**, though only the
+manifests it *reads*: no dependency was added or removed anywhere.
+`shared_declares_only_the_dependencies_section_9_lists` now fails on any
+declared dependency outside the list, so the next omission is a red build
+rather than four campaigns of nobody rereading the section. It asserts a subset
+and not an equality, because §9 lists `rayon` for `ProjectView::scan` and
+`deps.md` §14 has each dependency arrive with its first user — a listed crate
+not yet declared is the intended state.
+
+**Campaign:** de2706af-51e1-4f63-828c-7cd3cfcc5195
+
 **Campaign:** ff3e1a40-5639-4c57-ac81-66ea1144762f

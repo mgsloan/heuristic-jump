@@ -182,6 +182,40 @@ fn the_language_list_is_enumerated_in_heuristic_jump() {
     }
 }
 
+/// `core.md` §9 gives `shared`'s dependencies and says "this list is the
+/// authoritative one", which is a claim nothing enforces: an added crate is
+/// invisible until someone rereads the section beside the manifest, and
+/// `tracing` sat outside the list for four campaigns that way.
+///
+/// A subset rather than an equality, because §9 lists `rayon` for
+/// `ProjectView::scan` and `deps.md` §14 has each dependency arrive with its
+/// first user — a listed crate not yet declared is the intended state, where a
+/// declared crate not on the list is the thing being caught.
+#[test]
+fn shared_declares_only_the_dependencies_section_9_lists() {
+    const AUTHORITATIVE: &[&str] = &[
+        "ignore",
+        "rayon",
+        "rope",
+        "rustc-hash",
+        "serde",
+        "serde_json",
+        "thiserror",
+        "tracing",
+        "tree-sitter",
+        "url",
+    ];
+
+    for dependency in dependencies_in(&manifest_text("shared")) {
+        assert!(
+            AUTHORITATIVE.contains(&dependency.as_str()),
+            "shared depends on {dependency}, which is not on core.md §9's list — and that \
+             list calls itself the authoritative one, so either the dependency or the \
+             section is wrong and a spec-changelog entry says which"
+        );
+    }
+}
+
 /// The `[dependencies]` table only. A hand-rolled scan rather than
 /// `cargo metadata`, which is a subprocess this suite may not spawn.
 ///
