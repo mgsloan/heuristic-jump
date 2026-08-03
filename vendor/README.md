@@ -79,6 +79,22 @@ property (`deps.md` §14).
    The sweep is `rope-modifications.md` §4 and is a campaign of its own; the
    29 kept tests are what will check it.
 
+6. **`pub use sum_tree::Bias;` added** to `src/rope.rs`, beside the other
+   re-exports. `clip_offset`, `clip_point` and `clip_point_utf16` are public
+   and take a `Bias`, so without it a caller that does not itself depend on
+   `sum_tree` cannot name an argument to a function it can call. Upstream has
+   no reason to notice: inside Zed every caller of `rope` depends on
+   `sum_tree` anyway. `core.md` §9's authoritative dependency list for
+   `shared` does not include `sum_tree`, so the re-export is the alternative
+   to widening that list.
+
+   This matters more than a re-export usually would, because the clip
+   functions are not an optimisation for `shared::proto`, they are the only
+   safe entry: `point_to_offset` and `point_utf16_to_offset` reach
+   `debug_panic!` on an out-of-range or mid-scalar position, which **panics in
+   debug and silently clips in release**. A caller that must not do either has
+   to clip first and compare, which is what `core.md` §3's conversion does.
+
 ## Patches to `sum_tree`
 
 1. **`src/tree_map.rs` deleted** (`TreeMap`, `TreeSet`, `MapSeekTarget`),

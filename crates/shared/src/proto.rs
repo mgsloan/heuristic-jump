@@ -20,7 +20,7 @@
 //! than a nearby position. `state/decisions/conformance-006.md` is where that
 //! diverges from LSP 3.17's clamping rule.
 
-use rope::{ByteLen, ByteOffset, LineIndex, Point, PointUtf16, Rope};
+use rope::{Bias, ByteLen, ByteOffset, LineIndex, Point, PointUtf16, Rope, Unclipped};
 use serde::{Deserialize, Deserializer};
 use std::fmt;
 
@@ -79,43 +79,52 @@ impl WirePosition {
                 last_line,
             });
         }
-        let offset = ByteOffset(match encoding {
-            PositionEncoding::Utf8 => text.point_to_offset(Point::new(self.line.0, self.character)),
+        let out_of_range = || EncodingError::CharacterOutOfRange {
+            line: self.line,
+            character: self.character,
+            encoding,
+        };
+        // DECISION-conformance-006: provisional. Each arm clips and compares
+        // rather than converting: `point_to_offset` and
+        // `point_utf16_to_offset` reach a `debug_panic!` on a position that is
+        // out of range or inside a scalar value, which panics in debug and
+        // clips in release. Neither is wanted, so the clip is made explicit
+        // and a position that moved is refused — where LSP 3.17 says it
+        // "defaults back to the line length".
+        let offset = match encoding {
+            PositionEncoding::Utf8 => {
+                let point = Point::new(self.line.0, self.character);
+                if text.clip_point(point, Bias::Left) != point {
+                    return Err(out_of_range());
+                }
+                text.point_to_offset(point)
+            }
             PositionEncoding::Utf16 => {
-                text.point_utf16_to_offset(PointUtf16::new(self.line.0, self.character))
+                let point = PointUtf16::new(self.line.0, self.character);
+                if text.clip_point_utf16(Unclipped(point), Bias::Left) != point {
+                    return Err(out_of_range());
+                }
+                text.point_utf16_to_offset(point)
             }
             // Scalar values are the one unit `rope` does not carry as a
-            // sum-tree dimension, so this walks the line. It is the encoding
-            // almost nobody negotiates; paying a line scan for it is better
-            // than a fourth dimension in every `TextSummary`.
+            // sum-tree dimension, so this walks the line — and gets its
+            // exactness from the walk rather than from a clip. It is the
+            // encoding almost nobody negotiates; paying a line scan for it is
+            // better than a fourth dimension in every `TextSummary`.
             PositionEncoding::Utf32 => {
                 let line_start = text.point_to_offset(Point::new(self.line.0, 0));
-                let mut characters = text.chars_at(line_start);
+                let mut scalars = text.chars_at(line_start);
                 let mut offset = line_start;
                 for _ in 0..self.character {
-                    match characters.next() {
-                        Some('\n') | None => break,
-                        Some(character) => offset += character.len_utf8(),
+                    match scalars.next() {
+                        Some('\n') | None => return Err(out_of_range()),
+                        Some(scalar) => offset += scalar.len_utf8(),
                     }
                 }
                 offset
             }
-        });
-        // DECISION-conformance-006: provisional. All three arms above stop at
-        // the nearest valid place rather than failing, so this is where a
-        // position that names somewhere this document does not have becomes an
-        // error instead of LSP 3.17's "defaults back to the line length".
-        // `encode` is a total function on an offset `rope` just produced, so
-        // the `?` is discharged by construction rather than being a second
-        // failure path.
-        if Self::encode(offset, encoding, text)? != self {
-            return Err(EncodingError::CharacterOutOfRange {
-                line: self.line,
-                character: self.character,
-                encoding,
-            });
-        }
-        Ok(offset)
+        };
+        Ok(ByteOffset(offset))
     }
 
     /// The only constructor other than deserialization, which is what makes

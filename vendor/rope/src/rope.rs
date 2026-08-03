@@ -30,7 +30,7 @@ use std::{
     ops::{self, AddAssign, Range},
     str,
 };
-use sum_tree::{Bias, Dimension, Dimensions, SumTree};
+use sum_tree::{Dimension, Dimensions, SumTree};
 use tracing::instrument;
 
 pub use byte_offset::{ByteLen, ByteOffset, ByteRange};
@@ -38,6 +38,12 @@ pub use chunk::{Chunk, ChunkSlice};
 pub use offset_utf16::OffsetUtf16;
 pub use point::{ByteColumn, CharCount, LineIndex, Point};
 pub use point_utf16::{PointUtf16, Utf16Column};
+// Ours: `clip_point`, `clip_offset` and `clip_point_utf16` are public and take
+// a `Bias`, so without this a caller cannot name an argument to a function it
+// can call. Upstream does not need it because every caller of rope inside Zed
+// also depends on `sum_tree`; `shared` deliberately does not (`core.md` §9's
+// dependency list). Recorded in `vendor/README.md`.
+pub use sum_tree::Bias;
 pub use unclipped::Unclipped;
 
 use crate::chunk::Bitmap;
