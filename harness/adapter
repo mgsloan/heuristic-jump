@@ -127,13 +127,43 @@ audit)
 	# The tool restriction is what makes "it cannot edit anything" true rather
 	# than instructed, which is why the verdict comes back as text and the
 	# harness writes state/audit/ itself.
+	#
+	# stream-json rather than text, so the session carries a result event and
+	# is therefore measurable. The auditor is a fixed cost of one session per
+	# audit (design/loops.md section 15) and it was previously invisible to
+	# every cost number on the dashboard. The text is extracted afterwards.
 	"$runner" -p \
 		--session-id "$session" \
+		--output-format stream-json \
+		--verbose \
 		--tools "Read,Grep,Glob" \
 		--permission-mode bypassPermissions \
 		"${extra[@]}" \
-		<"$prompt" | tee "$out"
-	exit "${PIPESTATUS[0]}"
+		<"$prompt" >"$out.jsonl"
+	status=$?
+	"$0" text "$out.jsonl" >"$out"
+	exit "$status"
+	;;
+
+text)
+	# Everything the assistant said, in order. What the auditor's verdict is
+	# read out of, now that it runs as a stream.
+	python3 - "${1:?transcript}" <<-'PY'
+		import json, sys
+
+		for line in open(sys.argv[1], errors="replace"):
+		    line = line.strip()
+		    if not line:
+		        continue
+		    try:
+		        event = json.loads(line)
+		    except json.JSONDecodeError:
+		        continue
+		    if event.get("type") == "assistant":
+		        for block in event.get("message", {}).get("content", []):
+		            if block.get("type") == "text":
+		                print(block["text"])
+	PY
 	;;
 
 summary)

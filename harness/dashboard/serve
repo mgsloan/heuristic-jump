@@ -408,9 +408,16 @@ def panel_metrics() -> str:
         rows = hj.read_jsonl(hj.metrics_path(owner))
         clean = [row.get("sections_clean", 0) for row in rows]
         counts = hj.audit_counts(config.docs)
+        ledger = hj.gap_ledger(config.docs)
+        # Gaps closed leads. Sections clean cannot move until every claim in a
+        # section lands, and the sections are large, so early on it reads as
+        # nothing happening while a great deal happens underneath.
         headline = (
-            f'<p class="headline"><strong>{counts["sections_clean"]}</strong> / {counts["sections_total"]} sections clean'
-            f' <span class="note">the number this loop is judged by</span></p>'
+            f'<p class="headline"><strong>{ledger["gaps_closed"]}</strong> gaps closed'
+            f' <span class="note">of {ledger["gaps_found"]} found · {ledger["gaps_open"]} open</span></p>'
+            f'<p class="headline" style="font-size:16px">{counts["sections_clean"]} / {counts["sections_total"]} sections clean'
+            f' <span class="note">the phase-gate number; it lags, because a section goes clean only when'
+            f' every claim in it lands</span></p>'
         )
 
         # The rows that are not clean are the work queue and stay in view; the
@@ -489,10 +496,13 @@ def panel_cost() -> str:
     phase = hj.load_phase()
     blocks = []
     for owner in sorted(phase.loops):
-        rows = hj.read_jsonl(hj.cost_path(owner))
-        if not rows:
+        everything = hj.read_jsonl(hj.cost_path(owner))
+        if not everything:
             continue
-        total = sum(r.get("usd") or 0 for r in rows)
+        rows = [r for r in everything if r.get("kind") != "audit"]
+        audits = [r for r in everything if r.get("kind") == "audit"]
+        audit_usd = sum(r.get("usd") or 0 for r in audits)
+        total = sum(r.get("usd") or 0 for r in everything)
         output = sum(r.get("output_tokens") or 0 for r in rows)
         minutes = sum(r.get("model_seconds") or 0 for r in rows) / 60
         progressed = [r for r in rows if r.get("progress")]
@@ -518,7 +528,8 @@ def panel_cost() -> str:
         <article class="metrics">
           <h3>{esc(owner)}</h3>
           <p class="headline"><strong>{output:,}</strong> output tokens over {len(rows)} campaigns
-            <span class="note">{minutes:.0f} model-minutes · API-equivalent ${total:.2f}</span></p>
+            <span class="note">{minutes:.0f} model-minutes · API-equivalent ${total:.2f},
+            of which ${audit_usd:.2f} in {len(audits)} audit session(s)</span></p>
           <p class="headline" style="font-size:16px">{('%.0f' % per_progress_tokens) if per_progress_tokens else '—'} output tokens
             <span class="note">per campaign that made progress — this is the number that says when to stop,
             and it should rise as the easy wins are exhausted</span></p>

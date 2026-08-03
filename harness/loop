@@ -155,7 +155,11 @@ while :; do
 		git clean -fd -- crates vendor 2>/dev/null
 	fi
 
-	"$here/audit" "$loop" || echo "loop: the audit did not complete; state/audit/ is stale." >&2
+	if "$hj" audit-due "$loop"; then
+		"$here/audit" "$loop" || echo "loop: the audit did not complete; state/audit/ is stale." >&2
+	else
+		echo "loop: audit not due yet; state/audit/ carries over."
+	fi
 	"$hj" campaign-close "$loop" --id "$campaign" --outcome "$outcome" ${target:+--target "$target"}
 
 	"$hj" cost "$loop"

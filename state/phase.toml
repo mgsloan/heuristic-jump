@@ -10,6 +10,14 @@
 
 phase = "1a"
 
+# How many campaigns close between audits. The auditor is a whole session per
+# run (`design/loops.md` section 15 calls it a fixed cost), and running it
+# after every campaign spends that on a picture that has barely moved. A
+# campaign that closes with no audit since it opened is excluded from the
+# stall count unless it made progress — otherwise the cadence itself would
+# stop the loop.
+audit_every = 3
+
 # Phase 1a is one writer, and it runs as a conformance loop. The one carve-out
 # is the seam — `LanguageHandler`, `Query`, `Outcome`, `ProjectView`, the
 # vocabulary newtypes — which is decided and frozen here and is a Class B

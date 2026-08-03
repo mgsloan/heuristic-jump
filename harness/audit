@@ -66,3 +66,9 @@ if [ "$status" -ne 0 ]; then
 fi
 
 "$hj" audit-merge "$loop" "$out"
+merge_status=$?
+
+# The auditor is a fixed cost per audit and was invisible to every cost number
+# on the dashboard until it started running as a stream.
+"$hj" audit-cost "$loop" "$out.jsonl" || true
+exit "$merge_status"

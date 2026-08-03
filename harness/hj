@@ -133,6 +133,7 @@ class LoopConfig:
 @dataclass
 class Phase:
     phase: str
+    audit_every: int = 1
     loops: dict[str, LoopConfig] = field(default_factory=dict)
 
 
@@ -141,7 +142,7 @@ def load_phase() -> Phase:
     if not path.exists():
         die(f"{path} does not exist; the harness has no desired state to reconcile against")
     raw = tomllib.loads(path.read_text())
-    result = Phase(phase=raw["phase"])
+    result = Phase(phase=raw["phase"], audit_every=raw.get("audit_every", 1))
     for owner, table in raw.get("loop", {}).items():
         result.loops[owner] = LoopConfig(
             owner=owner,
@@ -377,6 +378,48 @@ def write_audit(doc: str, verdicts: dict[str, SectionVerdict], order: list[str])
     path = audit_path(doc)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines))
+
+
+def gap_id(section_key: str, claim: str) -> str:
+    """A gap's identity is its section and its claim.
+
+    Not `found` or `where`, which move as the code moves — the same unmet
+    claim reported against a different file is the same gap. `design/loops.md`
+    section 5: comparing successive audits by gap identity rather than by
+    total is what makes the difference visible, because a list that is the
+    previous list minus what was fixed is progress, while a different list of
+    the same length is variance.
+    """
+    normalised = re.sub(r"\s+", " ", claim.strip().lower())
+    return hashlib.sha256(f"{section_key}|{normalised}".encode()).hexdigest()[:10]
+
+
+GAP_LOG = STATE / "audit" / "gap-log.jsonl"
+
+
+def open_gap_ids(docs: list[str]) -> dict[str, tuple[str, str]]:
+    out: dict[str, tuple[str, str]] = {}
+    for doc in docs:
+        known = {s.key for s in sections_of(doc)}
+        for key, verdict in read_audit(doc).items():
+            if key in known:
+                for gap in verdict.gaps:
+                    out[gap_id(key, gap.claim)] = (key, gap.claim)
+    return out
+
+
+def gap_ledger(docs: list[str]) -> dict[str, int]:
+    """Found, closed, still open — cumulative across every audit so far."""
+    found: set[str] = set()
+    closed: set[str] = set()
+    for row in read_jsonl(GAP_LOG):
+        found.update(row.get("opened", []))
+        closed.update(row.get("closed", []))
+        closed.difference_update(row.get("opened", []))  # reopened is not closed
+    still_open = open_gap_ids(docs)
+    found.update(still_open)
+    closed.difference_update(still_open)
+    return {"gaps_found": len(found), "gaps_closed": len(closed), "gaps_open": len(still_open)}
 
 
 def audit_counts(docs: list[str]) -> dict[str, int]:
@@ -828,6 +871,7 @@ def cmd_audit_merge(args: argparse.Namespace) -> int:
 
     index = section_index(config.docs)
     stamp = now()
+    previous_gaps = open_gap_ids(config.docs)
     problems: list[str] = []
     fresh: dict[str, SectionVerdict] = {}
     for key, table in reported.get("section", {}).items():
@@ -865,8 +909,38 @@ def cmd_audit_merge(args: argparse.Namespace) -> int:
         order = [s.key for s in known]
         write_audit(doc, {k: verdicts[k] for k in order}, order)
 
+    # Only sections this run actually looked at can have closed a gap; a gap in
+    # a section the rotation did not reach is neither open nor closed, it is
+    # simply unexamined.
+    audited = set(fresh)
+    before = {
+        identifier: value
+        for identifier, value in previous_gaps.items()
+        if value[0] in audited
+    }
+    after = {
+        identifier: value
+        for identifier, value in open_gap_ids(config.docs).items()
+        if value[0] in audited
+    }
+    append_jsonl(
+        GAP_LOG,
+        {
+            "ts": stamp,
+            "sections_audited": sorted(audited),
+            "opened": sorted(set(after) - set(before)),
+            "closed": sorted(set(before) - set(after)),
+            "persisted": len(set(before) & set(after)),
+        },
+    )
     commit_harness_state(
-        [audit_path(doc) for doc in config.docs], f"audit of {', '.join(config.docs)}"
+        [audit_path(doc) for doc in config.docs] + [GAP_LOG],
+        f"audit of {', '.join(config.docs)}",
+    )
+    ledger = gap_ledger(config.docs)
+    print(
+        f"audit: {ledger['gaps_closed']} gaps closed of {ledger['gaps_found']} found, "
+        f"{ledger['gaps_open']} still open"
     )
     counts = audit_counts(config.docs)
     print(
@@ -1052,7 +1126,18 @@ def judged_campaigns(owner: str) -> list[dict]:
     A loop that keeps crashing still needs to surface, but as its own signal
     rather than folded into this one.
     """
-    return [c for c in campaigns_of(owner) if c.get("outcome") and c.get("outcome") != "crashed"]
+    return [
+        c
+        for c in campaigns_of(owner)
+        if c.get("outcome")
+        and c.get("outcome") != "crashed"
+        # A campaign that closed with no audit since it opened made no
+        # *measured* progress, which is not the same as making none. Counting
+        # it toward the stall threshold would let the audit cadence stop the
+        # loop: with audit_every = stall_n, two unmeasured campaigns and one
+        # flat one is a stall that never happened.
+        and not (c.get("audited") is False and not c.get("progress"))
+    ]
 
 
 def tagged_sites(identifier: str) -> list[str]:
@@ -1374,6 +1459,8 @@ def cmd_campaign_close(args: argparse.Namespace) -> int:
         or (tests_before is not None and tests_after is not None and tests_after > tests_before)
     )
     drift = spec_drift(args.id, args.target)
+    audits = read_jsonl(GAP_LOG)
+    audited = bool(audits) and audits[-1]["ts"] > (opened.get("started") or "")
 
     append_jsonl(
         sessions_path(),
@@ -1387,6 +1474,7 @@ def cmd_campaign_close(args: argparse.Namespace) -> int:
             "commits": len(commits),
             "outcome": args.outcome,
             "progress": progress,
+            "audited": audited,
             "spec_drift": drift,
             **after,
         },
@@ -1524,6 +1612,7 @@ def cmd_cost(args: argparse.Namespace) -> int:
             append_jsonl(
                 cost_path(owner),
                 {
+                    "kind": "campaign",
                     "campaign": campaign_id,
                     "loop": owner,
                     "phase": campaign.get("phase"),
@@ -1545,6 +1634,63 @@ def cmd_cost(args: argparse.Namespace) -> int:
         commit_harness_state([cost_path(owner) for owner in owners], f"cost rows for {written} campaign(s)")
     else:
         print("cost: nothing new to record")
+    return 0
+
+
+def cmd_gaps(args: argparse.Namespace) -> int:
+    _, config = loop_config(args.loop)
+    ledger = gap_ledger(config.docs)
+    print(
+        f"gaps: {ledger['gaps_closed']} closed of {ledger['gaps_found']} found; "
+        f"{ledger['gaps_open']} open"
+    )
+    for row in read_jsonl(GAP_LOG):
+        print(
+            f"  {row['ts']}  +{len(row.get('opened', []))} opened  "
+            f"-{len(row.get('closed', []))} closed  {row.get('persisted', 0)} persisted"
+        )
+    return 0
+
+
+def cmd_audit_due(args: argparse.Namespace) -> int:
+    """Exit 0 when an audit is due. `audit_every` campaigns since the last one.
+
+    The auditor is a whole session per run (`design/loops.md` section 15 calls
+    it a fixed cost), and running it after every campaign spends that on a
+    picture that has barely moved.
+    """
+    phase, config = loop_config(args.loop)
+    every = phase.audit_every
+    rows = read_jsonl(GAP_LOG)
+    since = rows[-1]["ts"] if rows else ""
+    closed_since = [
+        campaign
+        for campaign in campaigns_of(config.owner)
+        if campaign.get("ended", "") > since and campaign.get("outcome") != "crashed"
+    ]
+    due = len(closed_since) >= every
+    print(
+        f"audit: {len(closed_since)} campaign(s) closed since the last audit, every={every}"
+        f" — {'due' if due else 'not due'}"
+    )
+    return 0 if due else 1
+
+
+def cmd_audit_cost(args: argparse.Namespace) -> int:
+    _, config = loop_config(args.loop)
+    measured = subprocess.run(
+        [str(HARNESS / "adapter"), "cost", args.transcript], capture_output=True, text=True, check=False
+    ).stdout.strip()
+    try:
+        numbers = json.loads(measured or "{}")
+    except json.JSONDecodeError:
+        numbers = {}
+    if not numbers:
+        print("cost: the audit transcript carries no result event")
+        return 0
+    append_jsonl(cost_path(config.owner), {"kind": "audit", "loop": config.owner, "ts": now(), **numbers})
+    commit_harness_state([cost_path(config.owner)], f"audit cost ${numbers.get('usd') or 0:.2f}")
+    print(f"cost: audit ${numbers.get('usd') or 0:.2f}, {numbers.get('output_tokens') or 0:,} out")
     return 0
 
 
@@ -1576,10 +1722,17 @@ def cmd_status(args: argparse.Namespace) -> int:
         print()
         print(f"  {owner}  [{config.status}]")
         print(f"    docs        {', '.join(config.docs) or '(none)'}")
+        ledger = gap_ledger(config.docs)
+        # Gaps closed leads, because sections clean cannot move until every
+        # claim in a section lands and the sections are large — so early on it
+        # reads as nothing happening while a great deal happens underneath.
         print(
-            f"    audit       {counts['sections_clean']}/{counts['sections_total']} clean, "
-            f"{counts['sections_unjudged']} unjudged, {counts['open_gaps']} gaps, "
-            f"{counts['audit_minors']} minor"
+            f"    gaps        {ledger['gaps_closed']} closed of {ledger['gaps_found']} found, "
+            f"{ledger['gaps_open']} open"
+        )
+        print(
+            f"    sections    {counts['sections_clean']}/{counts['sections_total']} clean, "
+            f"{counts['sections_unjudged']} unjudged, {counts['audit_minors']} minor"
         )
         print(
             f"    campaigns   {len(campaigns)} opened, {len(closed)} judged, {crashed} crashed, "
@@ -1768,6 +1921,19 @@ def main() -> int:
     p = sub.add_parser("cost", help="join campaign records to what their sessions cost")
     p.add_argument("loop", nargs="?")
     p.set_defaults(run=cmd_cost)
+
+    p = sub.add_parser("audit-cost", help="record what an audit session cost")
+    p.add_argument("loop")
+    p.add_argument("transcript")
+    p.set_defaults(run=cmd_audit_cost)
+
+    p = sub.add_parser("audit-due", help="exit 0 when an audit is due")
+    p.add_argument("loop")
+    p.set_defaults(run=cmd_audit_due)
+
+    p = sub.add_parser("gaps", help="gaps found, closed, and still open")
+    p.add_argument("loop")
+    p.set_defaults(run=cmd_gaps)
 
     p = sub.add_parser("stall", help="exit 1 when the loop has stalled")
     p.add_argument("loop")
