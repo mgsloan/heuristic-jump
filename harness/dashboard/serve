@@ -823,10 +823,11 @@ def panel_audit_table() -> str:
     twice. The number only becomes informative on the second sweep, and the
     `overlap` column is here so it is obvious which regime you are in.
 
-    `since` is the commit the auditor was given a diffstat against. `hj
-    render-auditor` looks for the newest gap-log row carrying one; where this
-    reads "none" the auditor was told nothing had a baseline and re-read
-    everything.
+    `diffed from` is the commit the auditor was handed a diffstat against.
+    That is the *previous* row's `commit`, not this row's: the field records
+    HEAD as each audit ran, and `hj render-auditor` reads the newest one
+    already on disk. Where this reads "none" the auditor was told nothing had
+    a baseline and re-read a tree it had no reason to suspect.
     """
     audits = list(hj.read_jsonl(hj.GAP_LOG))
     if not audits:
@@ -876,13 +877,17 @@ def panel_audit_table() -> str:
         stamp = when(audit.get("ts") or "")
         closed, opened = len(audit.get("closed") or []), len(audit.get("opened") or [])
         persisted = audit.get("persisted")
-        since = audit.get("commit")
+        position = len(audits) - index
+        since = next(
+            (audits[earlier].get("commit") for earlier in range(position - 1, -1, -1) if audits[earlier].get("commit")),
+            None,
+        )
         rows.append(
             "<tr>"
             f'<td class="num">{len(audits) - index + 1}</td>'
             f'<td>{esc(stamp.strftime("%b %d %H:%M") if stamp else audit.get("ts"))}</td>'
             f'<td class="num">{len(audit.get("sections_audited") or [])}</td>'
-            f'<td class="num dim">{overlap[len(audits) - index]}</td>'
+            f'<td class="num dim">{overlap[position]}</td>'
             f'<td class="num up">{closed}</td>'
             f'<td class="num down">{opened}</td>'
             + (
@@ -902,7 +907,7 @@ def panel_audit_table() -> str:
         )
 
     spent = sum(row.get("usd") or 0 for row in cost)
-    blind = sum(1 for audit in audits if not audit.get("commit"))
+    blind = sum(1 for position in range(len(audits)) if not any(audits[e].get("commit") for e in range(position)))
     covered = len(seen)
     note = (
         f"{len(audits)} audits, ${spent:.2f} total, {covered} distinct sections reached. "
@@ -919,7 +924,7 @@ def panel_audit_table() -> str:
         "Audits",
         '<table class="campaigns"><thead><tr><th class="num">#</th><th>when</th>'
         '<th class="num">sections</th><th class="num">overlap</th><th class="num">closed</th>'
-        '<th class="num">opened</th><th class="num">persisted</th><th class="num">since</th>'
+        '<th class="num">opened</th><th class="num">persisted</th><th class="num">diffed from</th>'
         '<th class="num">turns</th><th class="num">output</th><th class="num">API-eq</th></tr></thead>'
         f"<tbody>{''.join(rows)}</tbody></table>",
         note=note,
