@@ -1,0 +1,17 @@
+# Public functions in `vendor/rope` whose signature may still name a bare
+# `usize` or `u32`. `design/rope-modifications.md` §6: the check that reads
+# this file is the one thing a re-sync diff cannot catch — a new upstream
+# `pub fn` arriving with a bare primitive is a hunk that looks entirely
+# normal.
+#
+# One function name per line, as it appears after `pub fn`. Every entry says
+# which unit the primitive is, because "it is a `usize`" is the problem rather
+# than the explanation. Keep this short: an entry is a hole in the change.
+
+# `ChunkSlice::longest_row(&self, total_chars: &mut usize)` — §4 names this
+# one and calls it `Chunk::longest_row`. `total_chars` is a `CharCount`: it
+# counts Unicode scalar values in the chunk. It stays a `&mut usize` because
+# it is an out parameter accumulated into by `text_summary`, which then
+# narrows the total once, at the point where the summary's `CharCount` is
+# built — so the widening lives in one place rather than at every `+=`.
+longest_row

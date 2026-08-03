@@ -79,11 +79,7 @@ property (`deps.md` §14).
    `ByteLen` and `ByteRange` keep their prefix because they have no `Utf16`
    sibling to contrast with. `rope-modifications.md` §2 has the argument.
 
-   **The substantive half of that document is still to do.** These types are
-   inert: not one of rope's ~51 public signatures has been converted, so
-   `Rope::len()` still returns `usize` and `Point.row` is still a bare `u32`.
-   The sweep is `rope-modifications.md` §4 and is a campaign of its own; the
-   29 kept tests are what will check it.
+   **The sweep is done**, and it is patch 7 below.
 
 6. **`pub use sum_tree::Bias;` added** to `src/rope.rs`, beside the other
    re-exports. `clip_offset`, `clip_point` and `clip_point_utf16` are public
@@ -100,6 +96,44 @@ property (`deps.md` §14).
    `debug_panic!` on an out-of-range or mid-scalar position, which **panics in
    debug and silently clips in release**. A caller that must not do either has
    to clip first and compare, which is what `core.md` §3's conversion does.
+
+7. **The public API speaks in newtypes**, which is `rope-modifications.md` §4
+   in full and is recorded here as a **patch class rather than a patch list**,
+   as that document's §6 asks. There is no line-by-line record because there is
+   no useful one: the class is every public signature and the bodies that
+   follow from it.
+
+   What a re-sync needs to know:
+
+   * **Every edit changes representation, never arithmetic.** §3 names the five
+     shapes an edit may take, and a hunk that is not one of them is a bug in
+     the patch. Two mechanisms keep bodies verbatim where they can be:
+     a parameter is shadowed on the first line (`let offset = offset.0;`), and
+     a function whose *return* type moved keeps its body under a `_raw` name
+     with a wrapper in front — `point_to_offset_raw`, `len_raw`,
+     `floor_char_boundary_raw`, `ceil_char_boundary_raw`,
+     `offset_utf16_to_offset_raw`, `point_utf16_to_offset_raw`,
+     `seek_raw`. A `_raw` name in this crate always means exactly that.
+   * **Two edits are more than a rewrapping**, and both are deliberate.
+     `TextSummary.chars` narrows from `usize` to `CharCount`'s `u32`, which is
+     what §4's printed struct asks for and which bounds a summary to 4G scalar
+     values — the bound `Point.row` already imposed. And `Offset`'s
+     `Dimension`/`TextDimension` impls add a `ByteLen` to a position rather
+     than two `usize`s, which is the one place §4's position/quantity split is
+     crossed on purpose: a running seek total *is* a position advanced by a
+     length.
+   * **`usize` survives inside bodies and in the internal fields** of
+     `Chunks`, `Bytes` and `Cursor`, which are private. §5 also keeps the
+     `usize` dimension impls, so `cursor.summary::<usize>()` still compiles —
+     recorded there rather than fixed.
+   * **The enforcement is `tests/newtype_api.rs`**, not the diff. It scans
+     every `pub fn` signature in `src/` for a bare `usize` or `u32` and fails
+     on one that is not in `allowed-primitives.txt` — the case §6 says the
+     diff cannot catch, because a new upstream public function with a bare
+     primitive is a hunk that looks entirely normal. The same file carries §7's
+     four-unit round-trip property test. Both are ours; upstream has neither.
+   * **The verification is upstream's tests**, which is patch 3's whole point.
+     All 24 pass unchanged.
 
 ## Patches to `sum_tree`
 
