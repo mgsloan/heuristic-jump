@@ -42,9 +42,10 @@ implementing four related gaps is the campaign doing its job. If you find
 yourself at forty turns with the target closed, the answer is another target,
 not a slower search for this one.
 
-Below the range, look for more work. Above it, close — a campaign that runs
+Below that, look for more work. Well above it, close — a campaign that runs
 long enough to fill its context is one whose last turns are its most expensive
-and least informed.
+and least informed. It is a target and not a floor: campaigns given a *range*
+closed at its bottom every time, which is why this is one number.
 
 A campaign is one **hypothesis**. That is usually one target — an open gap,
 or an unjudged section — and may be several when they are the same piece of

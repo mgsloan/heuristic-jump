@@ -161,7 +161,7 @@ def load_phase() -> Phase:
             rotation=table.get("rotation", 6),
             splice_sections=table.get("splice_sections", 3),
             detail_gaps=table.get("detail_gaps", 8),
-            turn_target=table.get("turn_target", "100-200"),
+            turn_target=table.get("turn_target", "about 150"),
             budget_usd=table.get("budget_usd"),
             model=table.get("model"),
             language=table.get("language"),
