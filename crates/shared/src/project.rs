@@ -549,7 +549,7 @@ impl ProjectView {
             FileText::Disk(text) => parser.parse(text.as_bytes(), None),
             FileText::Open(text) => {
                 let mut read = |offset: usize, _position: Point| {
-                    text.chunks_in_range(offset..text.len())
+                    text.chunks_in_range(ByteRange::new(Offset(offset), Offset::ZERO + text.len()))
                         .next()
                         .unwrap_or("")
                 };
@@ -673,7 +673,7 @@ impl FileText {
     pub fn len(&self) -> ByteLen {
         match self {
             Self::Disk(text) => ByteLen(text.len()),
-            Self::Open(text) => ByteLen(text.len()),
+            Self::Open(text) => text.len(),
         }
     }
 

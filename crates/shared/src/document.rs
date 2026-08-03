@@ -12,7 +12,7 @@
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
-use rope::{ByteRange, Point as RopePoint, Rope};
+use rope::{ByteRange, Offset, Point as RopePoint, Rope};
 use tree_sitter::{InputEdit, Language, ParseOptions, ParseState, Parser, Point, Tree};
 
 use crate::deadline::Deadline;
@@ -163,7 +163,7 @@ impl SnapshotSeed {
             // is the text *starting at* `offset`, which is what tree-sitter's
             // callback contract asks for. An offset at the end of the
             // document yields no chunk, and the empty slice ends the parse.
-            text.chunks_in_range(offset..text.len())
+            text.chunks_in_range(ByteRange::new(Offset(offset), Offset::ZERO + text.len()))
                 .next()
                 .unwrap_or("")
         };
@@ -236,8 +236,8 @@ impl DocumentSnapshot {
 /// follows is what `inserted` itself contains — and it is what lets an edit be
 /// recorded at the moment the change is applied rather than after.
 pub fn input_edit(before: &Rope, replaced: ByteRange, inserted: &str) -> InputEdit {
-    let start = before.offset_to_point(replaced.start.0);
-    let old_end = before.offset_to_point(replaced.end.0);
+    let start = before.offset_to_point(replaced.start);
+    let old_end = before.offset_to_point(replaced.end);
     InputEdit {
         start_byte: replaced.start.0,
         old_end_byte: replaced.end.0,
@@ -250,8 +250,8 @@ pub fn input_edit(before: &Rope, replaced: ByteRange, inserted: &str) -> InputEd
 
 fn point(point: RopePoint) -> Point {
     Point {
-        row: widen(point.row),
-        column: widen(point.column),
+        row: widen(point.row.0),
+        column: widen(point.column.0),
     }
 }
 
@@ -261,11 +261,11 @@ fn point(point: RopePoint) -> Point {
 fn advanced(start: RopePoint, inserted: &str) -> Point {
     match inserted.rfind('\n') {
         None => Point {
-            row: widen(start.row),
-            column: widen(start.column) + inserted.len(),
+            row: widen(start.row.0),
+            column: widen(start.column.0) + inserted.len(),
         },
         Some(last) => Point {
-            row: widen(start.row) + inserted.matches('\n').count(),
+            row: widen(start.row.0) + inserted.matches('\n').count(),
             column: inserted.len() - last - 1,
         },
     }

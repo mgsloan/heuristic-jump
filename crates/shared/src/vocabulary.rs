@@ -331,7 +331,7 @@ impl Location {
     /// It lives here because `rope::Point` is deliberately not re-exported:
     /// the row conversion belongs beside the type that carries the row.
     pub fn line_in(&self, text: &Rope) -> LineIndex {
-        LineIndex(text.offset_to_point(self.range.start.0).row)
+        text.offset_to_point(self.range.start).row
     }
 }
 

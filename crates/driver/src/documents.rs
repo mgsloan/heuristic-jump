@@ -43,7 +43,8 @@ use shared::proto::{
     DidOpenTextDocumentParams, DidSaveTextDocumentParams, NotifiedDocument, PositionEncoding,
 };
 use shared::{
-    ByteLen, DocumentError, DocumentNotification, DocumentUri, DocumentVersion, LanguageId, Rope,
+    ByteLen, ByteRange, DocumentError, DocumentNotification, DocumentUri, DocumentVersion,
+    LanguageId, Rope,
 };
 
 use crate::dispatch::Registry;
@@ -325,7 +326,7 @@ impl Documents {
         }
         let error = DocumentError::SavedTextDiffers {
             uri: uri.clone(),
-            held: ByteLen(believed.text.len()),
+            held: believed.text.len(),
             found: ByteLen(saved.len()),
         };
         self.stop_trusting(uri, error)
@@ -427,7 +428,7 @@ fn apply(
                         end,
                     });
                 }
-                believed.text.replace(start.0..end.0, text);
+                believed.text.replace(ByteRange::new(start, end), text);
             }
         }
     }
@@ -438,7 +439,7 @@ fn apply(
 /// Whether a rope and a `&str` are the same bytes, without building the
 /// rope's text.
 fn holds(text: &Rope, saved: &str) -> bool {
-    if text.len() != saved.len() {
+    if text.len() != ByteLen(saved.len()) {
         return false;
     }
     let mut rest = saved;

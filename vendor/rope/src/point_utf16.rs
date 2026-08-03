@@ -3,28 +3,30 @@ use std::{
     ops::{Add, AddAssign, Sub},
 };
 
+use crate::point::LineIndex;
+
 #[derive(Clone, Copy, Default, Eq, PartialEq, Debug, Hash)]
 pub struct PointUtf16 {
-    pub row: u32,
-    pub column: u32,
+    pub row: LineIndex,
+    pub column: Utf16Column,
 }
 
 impl PointUtf16 {
     pub const MAX: Self = Self {
-        row: u32::MAX,
-        column: u32::MAX,
+        row: LineIndex::MAX,
+        column: Utf16Column::MAX,
     };
 
-    pub fn new(row: u32, column: u32) -> Self {
+    pub fn new(row: LineIndex, column: Utf16Column) -> Self {
         PointUtf16 { row, column }
     }
 
     pub fn zero() -> Self {
-        PointUtf16::new(0, 0)
+        PointUtf16::new(LineIndex::ZERO, Utf16Column::ZERO)
     }
 
     pub fn is_zero(&self) -> bool {
-        self.row == 0 && self.column == 0
+        self.row == LineIndex::ZERO && self.column == Utf16Column::ZERO
     }
 
     pub fn saturating_sub(self, other: Self) -> Self {
@@ -48,10 +50,10 @@ impl Add for PointUtf16 {
     type Output = PointUtf16;
 
     fn add(self, other: Self) -> Self::Output {
-        if other.row == 0 {
-            PointUtf16::new(self.row, self.column + other.column)
+        if other.row == LineIndex::ZERO {
+            PointUtf16::new(self.row, Utf16Column(self.column.0 + other.column.0))
         } else {
-            PointUtf16::new(self.row + other.row, other.column)
+            PointUtf16::new(LineIndex(self.row.0 + other.row.0), other.column)
         }
     }
 }
@@ -71,9 +73,12 @@ impl Sub for PointUtf16 {
         debug_assert!(other <= self);
 
         if self.row == other.row {
-            PointUtf16::new(0, self.column - other.column)
+            PointUtf16::new(
+                LineIndex::ZERO,
+                Utf16Column(self.column.0 - other.column.0),
+            )
         } else {
-            PointUtf16::new(self.row - other.row, self.column)
+            PointUtf16::new(LineIndex(self.row.0 - other.row.0), self.column)
         }
     }
 }
@@ -86,10 +91,10 @@ impl<'a> AddAssign<&'a Self> for PointUtf16 {
 
 impl AddAssign<Self> for PointUtf16 {
     fn add_assign(&mut self, other: Self) {
-        if other.row == 0 {
-            self.column += other.column;
+        if other.row == LineIndex::ZERO {
+            self.column.0 += other.column.0;
         } else {
-            self.row += other.row;
+            self.row.0 += other.row.0;
             self.column = other.column;
         }
     }
@@ -104,14 +109,14 @@ impl PartialOrd for PointUtf16 {
 impl Ord for PointUtf16 {
     #[cfg(target_pointer_width = "64")]
     fn cmp(&self, other: &PointUtf16) -> Ordering {
-        let a = ((self.row as usize) << 32) | self.column as usize;
-        let b = ((other.row as usize) << 32) | other.column as usize;
+        let a = ((self.row.0 as usize) << 32) | self.column.0 as usize;
+        let b = ((other.row.0 as usize) << 32) | other.column.0 as usize;
         a.cmp(&b)
     }
 
     #[cfg(target_pointer_width = "32")]
     fn cmp(&self, other: &PointUtf16) -> Ordering {
-        match self.row.cmp(&other.row) {
+        match self.row.0.cmp(&other.row.0) {
             Ordering::Equal => self.column.cmp(&other.column),
             comparison @ _ => comparison,
         }

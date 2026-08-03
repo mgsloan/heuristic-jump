@@ -1,4 +1,7 @@
-use crate::{OffsetUtf16, Point, PointUtf16, TextSummary, Unclipped};
+use crate::{
+    ByteColumn, ByteLen, ByteRange, CharCount, LineIndex, Offset, OffsetUtf16, Point, PointUtf16,
+    TextSummary, Unclipped, Utf16Column,
+};
 use heapless::String as ArrayString;
 use std::{cmp, ops::Range};
 use sum_tree::Bias;
@@ -166,7 +169,7 @@ impl Chunk {
     }
 
     #[inline(always)]
-    pub fn slice(&self, range: Range<usize>) -> ChunkSlice<'_> {
+    pub fn slice(&self, range: ByteRange) -> ChunkSlice<'_> {
         self.as_slice().slice(range)
     }
 
@@ -186,11 +189,16 @@ impl Chunk {
     }
 
     #[inline(always)]
-    pub fn is_char_boundary(&self, offset: usize) -> bool {
+    pub fn is_char_boundary(&self, offset: Offset) -> bool {
+        let offset = offset.0;
         (1 as Bitmap).unbounded_shl(offset as u32) & self.chars != 0 || offset == self.text.len()
     }
 
-    pub fn floor_char_boundary(&self, index: usize) -> usize {
+    pub fn floor_char_boundary(&self, index: Offset) -> Offset {
+        Offset(self.floor_char_boundary_raw(index.0))
+    }
+
+    fn floor_char_boundary_raw(&self, index: usize) -> usize {
         if index >= self.text.len() {
             self.text.len()
         } else {
@@ -208,8 +216,9 @@ impl Chunk {
 
     #[track_caller]
     #[inline(always)]
-    pub fn assert_char_boundary<const PANIC: bool>(&self, offset: usize) -> bool {
-        if self.is_char_boundary(offset) {
+    pub fn assert_char_boundary<const PANIC: bool>(&self, offset: Offset) -> bool {
+        let offset = offset.0;
+        if self.is_char_boundary(Offset(offset)) {
             return true;
         }
         if PANIC || cfg!(debug_assertions) {
@@ -249,12 +258,14 @@ impl<'a> ChunkSlice<'a> {
     }
 
     #[inline(always)]
-    pub fn is_char_boundary(&self, offset: usize) -> bool {
+    pub fn is_char_boundary(&self, offset: Offset) -> bool {
+        let offset = offset.0;
         (1 as Bitmap).unbounded_shl(offset as u32) & self.chars != 0 || offset == self.text.len()
     }
 
     #[inline(always)]
-    pub fn split_at(self, mid: usize) -> (ChunkSlice<'a>, ChunkSlice<'a>) {
+    pub fn split_at(self, mid: Offset) -> (ChunkSlice<'a>, ChunkSlice<'a>) {
+        let mid = mid.0;
         if mid == MAX_BASE {
             let left = self;
             let right = ChunkSlice {
@@ -287,7 +298,8 @@ impl<'a> ChunkSlice<'a> {
     }
 
     #[inline(always)]
-    pub fn slice(self, mut range: Range<usize>) -> Self {
+    pub fn slice(self, range: ByteRange) -> Self {
+        let mut range = range.start.0..range.end.0;
         if range.start == MAX_BASE {
             Self {
                 chars: 0,
@@ -297,10 +309,10 @@ impl<'a> ChunkSlice<'a> {
                 text: "",
             }
         } else {
-            if !self.assert_char_boundary::<false>(range.start) {
+            if !self.assert_char_boundary::<false>(Offset(range.start)) {
                 range.start = self.text.ceil_char_boundary(range.start);
             }
-            if !self.assert_char_boundary::<false>(range.end) {
+            if !self.assert_char_boundary::<false>(Offset(range.end)) {
                 range.end = if range.end < range.start {
                     range.start
                 } else {
@@ -326,7 +338,7 @@ impl<'a> ChunkSlice<'a> {
         let (longest_row, longest_row_chars) = self.longest_row(&mut chars);
         TextSummary {
             len: self.len(),
-            chars,
+            chars: CharCount(chars as u32),
             len_utf16: self.len_utf16(),
             lines: self.lines(),
             first_line_chars: self.first_line_chars(),
@@ -339,8 +351,8 @@ impl<'a> ChunkSlice<'a> {
 
     /// Get length in bytes
     #[inline(always)]
-    pub fn len(&self) -> usize {
-        self.text.len()
+    pub fn len(&self) -> ByteLen {
+        ByteLen(self.text.len())
     }
 
     /// Get length in UTF-16 code units
@@ -354,31 +366,38 @@ impl<'a> ChunkSlice<'a> {
     pub fn lines(&self) -> Point {
         let row = self.newlines.count_ones();
         let column = self.newlines.leading_zeros() - (Bitmap::BITS - self.text.len() as u32);
-        Point::new(row, column)
+        Point::new(LineIndex(row), ByteColumn(column))
     }
 
     /// Get number of chars in first line
     #[inline(always)]
-    pub fn first_line_chars(&self) -> u32 {
-        (self.chars & saturating_shl_mask(self.newlines.trailing_zeros())).count_ones()
+    pub fn first_line_chars(&self) -> CharCount {
+        CharCount((self.chars & saturating_shl_mask(self.newlines.trailing_zeros())).count_ones())
     }
 
     /// Get number of chars in last line
     #[inline(always)]
-    pub fn last_line_chars(&self) -> u32 {
-        (self.chars & saturating_shr_mask(self.newlines.leading_zeros())).count_ones()
+    pub fn last_line_chars(&self) -> CharCount {
+        CharCount((self.chars & saturating_shr_mask(self.newlines.leading_zeros())).count_ones())
     }
 
     /// Get number of UTF-16 code units in last line
     #[inline(always)]
-    pub fn last_line_len_utf16(&self) -> u32 {
-        (self.chars_utf16 & saturating_shr_mask(self.newlines.leading_zeros())).count_ones()
+    pub fn last_line_len_utf16(&self) -> Utf16Column {
+        Utf16Column(
+            (self.chars_utf16 & saturating_shr_mask(self.newlines.leading_zeros())).count_ones(),
+        )
     }
 
     /// Get the longest row in the chunk and its length in characters.
     /// Calculate the total number of characters in the chunk along the way.
+    ///
+    /// `total_chars` stays a `&mut usize` and is the one entry in
+    /// `allowed-primitives.txt`: it is a `CharCount`, but it is an out
+    /// parameter accumulated into by a caller that also counts in `usize`,
+    /// and `rope-modifications.md` §6 names it as the exception.
     #[inline(always)]
-    pub fn longest_row(&self, total_chars: &mut usize) -> (u32, u32) {
+    pub fn longest_row(&self, total_chars: &mut usize) -> (LineIndex, CharCount) {
         let mut chars = self.chars;
         let mut newlines = self.newlines;
         *total_chars = 0;
@@ -405,34 +424,40 @@ impl<'a> ChunkSlice<'a> {
         let row_chars = chars.count_ones() as u8;
         *total_chars += usize::from(row_chars);
         if row_chars > longest_row_chars {
-            (row, row_chars as u32)
+            (LineIndex(row), CharCount(row_chars as u32))
         } else {
-            (longest_row, longest_row_chars as u32)
+            (LineIndex(longest_row), CharCount(longest_row_chars as u32))
         }
     }
 
     #[inline(always)]
-    pub fn offset_to_point(&self, offset: usize) -> Point {
+    pub fn offset_to_point(&self, offset: Offset) -> Point {
+        let offset = offset.0;
         let mask = (1 as Bitmap).unbounded_shl(offset as u32).wrapping_sub(1);
         let row = (self.newlines & mask).count_ones();
         let newline_ix = Bitmap::BITS - (self.newlines & mask).leading_zeros();
         let column = (offset - newline_ix as usize) as u32;
-        Point::new(row, column)
+        Point::new(LineIndex(row), ByteColumn(column))
     }
 
     #[inline(always)]
-    pub fn point_to_offset(&self, point: Point) -> usize {
+    pub fn point_to_offset(&self, point: Point) -> Offset {
+        Offset(self.point_to_offset_raw(point))
+    }
+
+    #[inline(always)]
+    fn point_to_offset_raw(&self, point: Point) -> usize {
         if point.row > self.lines().row {
             debug_panic!(
                 "point {:?} extends beyond rows for string {:?}",
                 point,
                 self.text
             );
-            return self.len();
+            return self.text.len();
         }
 
         let row_offset_range = self.offset_range_for_row(point.row);
-        if point.column > row_offset_range.len() as u32 {
+        if point.column.0 > row_offset_range.len() as u32 {
             debug_panic!(
                 "point {:?} extends beyond row for string {:?}",
                 point,
@@ -440,16 +465,17 @@ impl<'a> ChunkSlice<'a> {
             );
             row_offset_range.end
         } else {
-            row_offset_range.start + point.column as usize
+            row_offset_range.start + point.column.0 as usize
         }
     }
 
     #[track_caller]
     #[inline(always)]
-    pub fn assert_char_boundary<const PANIC: bool>(&self, offset: usize) -> bool {
+    pub fn assert_char_boundary<const PANIC: bool>(&self, offset: Offset) -> bool {
         if self.is_char_boundary(offset) {
             return true;
         }
+        let offset = offset.0;
         if PANIC {
             panic_char_boundary(self.text, offset);
         } else {
@@ -458,8 +484,8 @@ impl<'a> ChunkSlice<'a> {
         }
     }
 
-    pub fn floor_char_boundary(&self, index: usize) -> usize {
-        self.text.floor_char_boundary(index)
+    pub fn floor_char_boundary(&self, index: Offset) -> Offset {
+        Offset(self.text.floor_char_boundary(index.0))
     }
 
     #[inline(always)]
@@ -476,13 +502,19 @@ impl<'a> ChunkSlice<'a> {
     }
 
     #[inline(always)]
-    pub fn offset_to_offset_utf16(&self, offset: usize) -> OffsetUtf16 {
+    pub fn offset_to_offset_utf16(&self, offset: Offset) -> OffsetUtf16 {
+        let offset = offset.0;
         let mask = (1 as Bitmap).unbounded_shl(offset as u32).wrapping_sub(1);
         OffsetUtf16((self.chars_utf16 & mask).count_ones() as usize)
     }
 
     #[inline(always)]
-    pub fn offset_utf16_to_offset(&self, target: OffsetUtf16) -> usize {
+    pub fn offset_utf16_to_offset(&self, target: OffsetUtf16) -> Offset {
+        Offset(self.offset_utf16_to_offset_raw(target))
+    }
+
+    #[inline(always)]
+    fn offset_utf16_to_offset_raw(&self, target: OffsetUtf16) -> usize {
         if target.0 == 0 {
             0
         } else {
@@ -504,7 +536,8 @@ impl<'a> ChunkSlice<'a> {
     }
 
     #[inline(always)]
-    pub fn offset_to_point_utf16(&self, offset: usize) -> PointUtf16 {
+    pub fn offset_to_point_utf16(&self, offset: Offset) -> PointUtf16 {
+        let offset = offset.0;
         let mask = saturating_shl_mask(offset as u32);
         let row = (self.newlines & saturating_shl_mask(offset as u32)).count_ones();
         let newline_ix = Bitmap::BITS - (self.newlines & mask).leading_zeros();
@@ -513,7 +546,7 @@ impl<'a> ChunkSlice<'a> {
         } else {
             ((self.chars_utf16 & mask) >> newline_ix).count_ones()
         };
-        PointUtf16::new(row, column)
+        PointUtf16::new(LineIndex(row), Utf16Column(column))
     }
 
     #[inline(always)]
@@ -522,7 +555,12 @@ impl<'a> ChunkSlice<'a> {
     }
 
     #[inline(always)]
-    pub fn point_utf16_to_offset(&self, point: PointUtf16, clip: bool) -> usize {
+    pub fn point_utf16_to_offset(&self, point: PointUtf16, clip: bool) -> Offset {
+        Offset(self.point_utf16_to_offset_raw(point, clip))
+    }
+
+    #[inline(always)]
+    fn point_utf16_to_offset_raw(&self, point: PointUtf16, clip: bool) -> usize {
         let lines = self.lines();
         if point.row > lines.row {
             if !clip {
@@ -532,11 +570,14 @@ impl<'a> ChunkSlice<'a> {
                     self.text
                 );
             }
-            return self.len();
+            return self.text.len();
         }
 
         let row_offset_range = self.offset_range_for_row(point.row);
-        let line = self.slice(row_offset_range.clone());
+        let line = self.slice(ByteRange::new(
+            Offset(row_offset_range.start),
+            Offset(row_offset_range.end),
+        ));
         if point.column > line.last_line_len_utf16() {
             if !clip {
                 debug_panic!(
@@ -549,8 +590,8 @@ impl<'a> ChunkSlice<'a> {
         }
 
         let mut offset = row_offset_range.start;
-        if point.column > 0 {
-            offset += line.offset_utf16_to_offset(OffsetUtf16(point.column as usize));
+        if point.column > Utf16Column::ZERO {
+            offset += line.offset_utf16_to_offset_raw(OffsetUtf16(point.column.0 as usize));
             if !self.text.is_char_boundary(offset) {
                 offset -= 1;
                 while !self.text.is_char_boundary(offset) {
@@ -576,17 +617,20 @@ impl<'a> ChunkSlice<'a> {
         }
 
         let row_offset_range = self.offset_range_for_row(point.0.row);
-        let line = self.slice(row_offset_range);
-        if point.0.column == 0 {
-            Point::new(point.0.row, 0)
-        } else if point.0.column >= line.len_utf16().0 as u32 {
-            Point::new(point.0.row, line.len() as u32)
+        let line = self.slice(ByteRange::new(
+            Offset(row_offset_range.start),
+            Offset(row_offset_range.end),
+        ));
+        if point.0.column == Utf16Column::ZERO {
+            Point::new(point.0.row, ByteColumn::ZERO)
+        } else if point.0.column.0 >= line.len_utf16().0 as u32 {
+            Point::new(point.0.row, ByteColumn(line.text.len() as u32))
         } else {
-            let mut column = line.offset_utf16_to_offset(OffsetUtf16(point.0.column as usize));
+            let mut column = line.offset_utf16_to_offset_raw(OffsetUtf16(point.0.column.0 as usize));
             while !line.text.is_char_boundary(column) {
                 column -= 1;
             }
-            Point::new(point.0.row, column as u32)
+            Point::new(point.0.row, ByteColumn(column as u32))
         }
     }
 
@@ -597,21 +641,25 @@ impl<'a> ChunkSlice<'a> {
             return max_point;
         }
 
-        let line = self.slice(self.offset_range_for_row(point.row));
-        if point.column == 0 {
+        let row_offset_range = self.offset_range_for_row(point.row);
+        let line = self.slice(ByteRange::new(
+            Offset(row_offset_range.start),
+            Offset(row_offset_range.end),
+        ));
+        if point.column == ByteColumn::ZERO {
             point
-        } else if point.column >= line.len() as u32 {
-            Point::new(point.row, line.len() as u32)
+        } else if point.column.0 >= line.text.len() as u32 {
+            Point::new(point.row, ByteColumn(line.text.len() as u32))
         } else {
-            let mut column = point.column as usize;
+            let mut column = point.column.0 as usize;
             let bytes = line.text.as_bytes();
             if bytes[column - 1] < 128 && bytes[column] < 128 {
-                return Point::new(point.row, column as u32);
+                return Point::new(point.row, ByteColumn(column as u32));
             }
 
             let mut grapheme_cursor = GraphemeCursor::new(column, bytes.len(), true);
             loop {
-                if line.is_char_boundary(column)
+                if line.is_char_boundary(Offset(column))
                     && grapheme_cursor.is_boundary(line.text, 0).unwrap_or(false)
                 {
                     break;
@@ -623,7 +671,7 @@ impl<'a> ChunkSlice<'a> {
                 }
                 grapheme_cursor.set_cursor(column);
             }
-            Point::new(point.row, column as u32)
+            Point::new(point.row, ByteColumn(column as u32))
         }
     }
 
@@ -633,9 +681,13 @@ impl<'a> ChunkSlice<'a> {
         if point.0.row > max_point.row {
             PointUtf16::new(max_point.row, self.last_line_len_utf16())
         } else {
-            let line = self.slice(self.offset_range_for_row(point.0.row));
-            let column = line.clip_offset_utf16(OffsetUtf16(point.0.column as usize), bias);
-            PointUtf16::new(point.0.row, column.0 as u32)
+            let row_offset_range = self.offset_range_for_row(point.0.row);
+            let line = self.slice(ByteRange::new(
+                Offset(row_offset_range.start),
+                Offset(row_offset_range.end),
+            ));
+            let column = line.clip_offset_utf16(OffsetUtf16(point.0.column.0 as usize), bias);
+            PointUtf16::new(point.0.row, Utf16Column(column.0 as u32))
         }
     }
 
@@ -646,7 +698,7 @@ impl<'a> ChunkSlice<'a> {
         } else if target >= self.len_utf16() {
             self.len_utf16()
         } else {
-            let mut offset = self.offset_utf16_to_offset(target);
+            let mut offset = self.offset_utf16_to_offset_raw(target);
             while !self.text.is_char_boundary(offset) {
                 if bias == Bias::Left {
                     offset -= 1;
@@ -654,12 +706,13 @@ impl<'a> ChunkSlice<'a> {
                     offset += 1;
                 }
             }
-            self.offset_to_offset_utf16(offset)
+            self.offset_to_offset_utf16(Offset(offset))
         }
     }
 
     #[inline(always)]
-    fn offset_range_for_row(&self, row: u32) -> Range<usize> {
+    fn offset_range_for_row(&self, row: LineIndex) -> Range<usize> {
+        let row = row.0;
         let row_start = if row > 0 {
             #[cfg(not(test))]
             let newlines = self.newlines;
@@ -860,7 +913,7 @@ mod tests {
             let range = start..end;
             log::info!("Range: {:?}", range);
             let text_slice = &text[range.clone()];
-            let chunk_slice = chunk.slice(range);
+            let chunk_slice = chunk.slice(ByteRange::new(Offset(range.start), Offset(range.end)));
             verify_chunk(chunk_slice, text_slice);
         }
     }
@@ -876,7 +929,7 @@ mod tests {
             .into_iter()
             .choose(&mut rng)
             .unwrap();
-        let (a, b) = chunk.as_slice().split_at(offset);
+        let (a, b) = chunk.as_slice().split_at(Offset(offset));
         let (a_str, b_str) = text.split_at(offset);
         verify_chunk(a, a_str);
         verify_chunk(b, b_str);
@@ -936,7 +989,10 @@ mod tests {
         let start_index = rng.random_range(0..char_offsets.len());
         let start_offset = char_offsets[start_index];
         let end_offset = char_offsets[rng.random_range(start_index..char_offsets.len())];
-        chunk1.append(chunk2.slice(start_offset..end_offset));
+        chunk1.append(chunk2.slice(ByteRange::new(
+            Offset(start_offset),
+            Offset(end_offset),
+        )));
         verify_chunk(chunk1.as_slice(), &(str1 + &str2[start_offset..end_offset]));
     }
 
@@ -955,7 +1011,7 @@ mod tests {
         let start_index = rng.random_range(0..char_offsets.len());
         let start_offset = char_offsets[start_index];
         let end_offset = char_offsets[rng.random_range(start_index..char_offsets.len())];
-        let slice = chunk2.slice(start_offset..end_offset);
+        let slice = chunk2.slice(ByteRange::new(Offset(start_offset), Offset(end_offset)));
         let prefix_text = &str2[start_offset..end_offset];
         chunk1.prepend(slice);
         verify_chunk(chunk1.as_slice(), &(prefix_text.to_owned() + &str1));
@@ -983,28 +1039,28 @@ mod tests {
         let mut point_utf16 = PointUtf16::zero();
 
         log::info!("Verifying chunk {:?}", text);
-        assert_eq!(chunk.offset_to_point(0), Point::zero());
+        assert_eq!(chunk.offset_to_point(Offset::ZERO), Point::zero());
 
         let mut expected_tab_positions = Vec::new();
 
         for (char_offset, c) in text.chars().enumerate() {
-            let expected_point = chunk.offset_to_point(offset);
+            let expected_point = chunk.offset_to_point(Offset(offset));
             assert_eq!(point, expected_point, "mismatch at offset {}", offset);
             assert_eq!(
                 chunk.point_to_offset(point),
-                offset,
+                Offset(offset),
                 "mismatch at point {:?}",
                 point
             );
             assert_eq!(
-                chunk.offset_to_offset_utf16(offset),
+                chunk.offset_to_offset_utf16(Offset(offset)),
                 offset_utf16,
                 "mismatch at offset {}",
                 offset
             );
             assert_eq!(
                 chunk.offset_utf16_to_offset(offset_utf16),
-                offset,
+                Offset(offset),
                 "mismatch at offset_utf16 {:?}",
                 offset_utf16
             );
@@ -1016,7 +1072,7 @@ mod tests {
             );
             assert_eq!(
                 chunk.point_utf16_to_offset(point_utf16, false),
-                offset,
+                Offset(offset),
                 "mismatch at point_utf16 {:?}",
                 point_utf16
             );
@@ -1041,7 +1097,7 @@ mod tests {
             );
 
             for i in 1..c.len_utf8() {
-                let test_point = Point::new(point.row, point.column + i as u32);
+                let test_point = Point::new(point.row, ByteColumn(point.column.0 + i as u32));
                 assert_eq!(
                     chunk.clip_point(test_point, Bias::Left),
                     point,
@@ -1050,7 +1106,7 @@ mod tests {
                 );
                 assert_eq!(
                     chunk.clip_point(test_point, Bias::Right),
-                    Point::new(point.row, point.column + c.len_utf8() as u32),
+                    Point::new(point.row, ByteColumn(point.column.0 + c.len_utf8() as u32)),
                     "incorrect right clip within multi-byte char at {:?}",
                     test_point
                 );
@@ -1059,7 +1115,7 @@ mod tests {
             for i in 1..c.len_utf16() {
                 let test_point = Unclipped(PointUtf16::new(
                     point_utf16.row,
-                    point_utf16.column + i as u32,
+                    Utf16Column(point_utf16.column.0 + i as u32),
                 ));
                 assert_eq!(
                     chunk.unclipped_point_utf16_to_point(test_point),
@@ -1075,7 +1131,10 @@ mod tests {
                 );
                 assert_eq!(
                     chunk.clip_point_utf16(test_point, Bias::Right),
-                    PointUtf16::new(point_utf16.row, point_utf16.column + c.len_utf16() as u32),
+                    PointUtf16::new(
+                        point_utf16.row,
+                        Utf16Column(point_utf16.column.0 + c.len_utf16() as u32),
+                    ),
                     "incorrect right clip_point_utf16 within multi-byte char at {:?}",
                     test_point
                 );
@@ -1096,13 +1155,13 @@ mod tests {
             }
 
             if c == '\n' {
-                point.row += 1;
-                point.column = 0;
-                point_utf16.row += 1;
-                point_utf16.column = 0;
+                point.row.0 += 1;
+                point.column = ByteColumn::ZERO;
+                point_utf16.row.0 += 1;
+                point_utf16.column = Utf16Column::ZERO;
             } else {
-                point.column += c.len_utf8() as u32;
-                point_utf16.column += c.len_utf16() as u32;
+                point.column.0 += c.len_utf8() as u32;
+                point_utf16.column.0 += c.len_utf16() as u32;
             }
 
             if c == '\t' {
@@ -1116,23 +1175,23 @@ mod tests {
             offset_utf16.0 += c.len_utf16();
         }
 
-        let final_point = chunk.offset_to_point(offset);
+        let final_point = chunk.offset_to_point(Offset(offset));
         assert_eq!(point, final_point, "mismatch at final offset {}", offset);
         assert_eq!(
             chunk.point_to_offset(point),
-            offset,
+            Offset(offset),
             "mismatch at point {:?}",
             point
         );
         assert_eq!(
-            chunk.offset_to_offset_utf16(offset),
+            chunk.offset_to_offset_utf16(Offset(offset)),
             offset_utf16,
             "mismatch at offset {}",
             offset
         );
         assert_eq!(
             chunk.offset_utf16_to_offset(offset_utf16),
-            offset,
+            Offset(offset),
             "mismatch at offset_utf16 {:?}",
             offset_utf16
         );
@@ -1144,7 +1203,7 @@ mod tests {
         );
         assert_eq!(
             chunk.point_utf16_to_offset(point_utf16, false),
-            offset,
+            Offset(offset),
             "mismatch at final point_utf16 {:?}",
             point_utf16
         );
@@ -1192,7 +1251,7 @@ mod tests {
         );
 
         // Verify length methods
-        assert_eq!(chunk.len(), text.len());
+        assert_eq!(chunk.len(), ByteLen(text.len()));
         assert_eq!(
             chunk.len_utf16().0,
             text.chars().map(|c| c.len_utf16()).sum::<usize>()
@@ -1210,18 +1269,27 @@ mod tests {
                 last_line_len += c.len_utf8() as u32;
             }
         }
-        assert_eq!(lines, Point::new(newline_count, last_line_len));
+        assert_eq!(
+            lines,
+            Point::new(LineIndex(newline_count), ByteColumn(last_line_len))
+        );
 
         // Verify first/last line chars
         if !text.is_empty() {
             let first_line = text.split('\n').next().unwrap();
-            assert_eq!(chunk.first_line_chars(), first_line.chars().count() as u32);
+            assert_eq!(
+                chunk.first_line_chars(),
+                CharCount(first_line.chars().count() as u32)
+            );
 
             let last_line = text.split('\n').next_back().unwrap();
-            assert_eq!(chunk.last_line_chars(), last_line.chars().count() as u32);
+            assert_eq!(
+                chunk.last_line_chars(),
+                CharCount(last_line.chars().count() as u32)
+            );
             assert_eq!(
                 chunk.last_line_len_utf16(),
-                last_line.chars().map(|c| c.len_utf16() as u32).sum::<u32>()
+                Utf16Column(last_line.chars().map(|c| c.len_utf16() as u32).sum::<u32>())
             );
         }
 
@@ -1250,7 +1318,10 @@ mod tests {
             max_row = current_row;
         }
 
-        assert_eq!((max_row, max_chars as u32), (longest_row, longest_chars));
+        assert_eq!(
+            (LineIndex(max_row), CharCount(max_chars as u32)),
+            (longest_row, longest_chars)
+        );
         assert_eq!(chunk.tabs().collect::<Vec<_>>(), expected_tab_positions);
     }
 
@@ -1261,11 +1332,17 @@ mod tests {
         let slice = chunk.as_slice();
 
         // Clipping on row 0 (row_offset_range.start == 0, so relative == absolute)
-        assert_eq!(slice.point_utf16_to_offset(PointUtf16::new(0, 99), true), 3,);
+        assert_eq!(
+            slice.point_utf16_to_offset(PointUtf16::new(LineIndex::ZERO, Utf16Column(99)), true),
+            Offset(3),
+        );
 
         // Clipping on row 1 — this is the case that was buggy.
         // Row 1 starts at byte offset 4 ("de" is bytes 4..6), so the
         // clipped result must be 6, not 2.
-        assert_eq!(slice.point_utf16_to_offset(PointUtf16::new(1, 99), true), 6,);
+        assert_eq!(
+            slice.point_utf16_to_offset(PointUtf16::new(LineIndex(1), Utf16Column(99)), true),
+            Offset(6),
+        );
     }
 }

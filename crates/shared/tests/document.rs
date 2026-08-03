@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use proptest::prelude::{Strategy, prop_assert_eq};
 use proptest::proptest;
 use shared::{
-    ByteRange, Clock, Deadline, DocumentSnapshot, DocumentUri, DocumentVersion, Error,
+    ByteLen, ByteRange, Clock, Deadline, DocumentSnapshot, DocumentUri, DocumentVersion, Error,
     HandlerError, LanguageId, Offset, Rope, SnapshotSeed, SystemClock, input_edit,
 };
 use tree_sitter::{InputEdit, Language, Point};
@@ -54,7 +54,7 @@ fn the_tree_a_handler_gets_spans_the_text_it_was_given() {
     let document = realised(SMALL, &Deadline::none());
 
     assert_eq!(
-        document.tree().root_node().end_byte(),
+        ByteLen(document.tree().root_node().end_byte()),
         document.text.len(),
         "core.md §2: the tree and the text cannot disagree, because the tree was \
          parsed from that text"
@@ -95,7 +95,7 @@ fn an_incremental_reparse_produces_a_tree_for_the_new_text() {
     .expect("reparsing incrementally");
 
     assert_eq!(
-        document.tree().root_node().end_byte(),
+        ByteLen(document.tree().root_node().end_byte()),
         after.len(),
         "the reparse returned a tree that stops where the *old* text stopped, so \
          every offset past the edit is wrong for the text beside it (core.md §2)"
@@ -180,7 +180,7 @@ fn a_parse_too_small_to_report_progress_is_not_abandoned() {
         .expect("a parse below the progress callback's granularity still finishes");
 
     assert_eq!(
-        document.tree().root_node().end_byte(),
+        ByteLen(document.tree().root_node().end_byte()),
         document.text.len(),
         "the tree returned by an unbounded-in-practice parse is still a tree for its text"
     );

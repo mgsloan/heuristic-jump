@@ -18,7 +18,7 @@
 
 use std::fmt;
 
-use rope::{Offset, Rope};
+use rope::{ByteRange, Offset, Rope};
 use tree_sitter::{Node, TreeCursor};
 
 use crate::document::DocumentSnapshot;
@@ -120,7 +120,10 @@ fn is_identifier(node: &Node<'_>, text: &Rope) -> bool {
     }
 
     let mut seen = false;
-    for chunk in text.chunks_in_range(node.start_byte()..node.end_byte()) {
+    for chunk in text.chunks_in_range(ByteRange::new(
+        Offset(node.start_byte()),
+        Offset(node.end_byte()),
+    )) {
         for scalar in chunk.chars() {
             let shaped = if seen {
                 identifier_continue(scalar)

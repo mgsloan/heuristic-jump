@@ -1,4 +1,3 @@
-use std::ops::Range;
 
 use criterion::{
     BatchSize, BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main,
@@ -40,23 +39,27 @@ fn generate_random_rope(rng: &mut StdRng, text_len: usize) -> Rope {
     rope
 }
 
-fn generate_random_rope_ranges(rng: &mut StdRng, rope: &Rope) -> Vec<Range<usize>> {
+fn generate_random_rope_ranges(rng: &mut StdRng, rope: &Rope) -> Vec<rope::ByteRange> {
     let range_max_len = 50;
-    let num_ranges = rope.len() / range_max_len;
+    let num_ranges = rope.len().0 / range_max_len;
 
     let mut ranges = Vec::new();
     let mut start = 0;
     for _ in 0..num_ranges {
-        let range_start = rope.clip_offset(
-            rng.random_range(start..=(start + range_max_len)),
-            sum_tree::Bias::Left,
-        );
-        let range_end = rope.clip_offset(
-            rng.random_range(range_start..(range_start + range_max_len)),
-            sum_tree::Bias::Right,
-        );
+        let range_start = rope
+            .clip_offset(
+                rope::Offset(rng.random_range(start..=(start + range_max_len))),
+                sum_tree::Bias::Left,
+            )
+            .0;
+        let range_end = rope
+            .clip_offset(
+                rope::Offset(rng.random_range(range_start..(range_start + range_max_len))),
+                sum_tree::Bias::Right,
+            )
+            .0;
 
-        let range = range_start..range_end;
+        let range = rope::ByteRange::new(rope::Offset(range_start), rope::Offset(range_end));
         if !range.is_empty() {
             ranges.push(range);
         }
@@ -68,11 +71,11 @@ fn generate_random_rope_ranges(rng: &mut StdRng, rope: &Rope) -> Vec<Range<usize
 }
 
 fn generate_random_rope_points(rng: &mut StdRng, rope: &Rope) -> Vec<Point> {
-    let num_points = rope.len() / 10;
+    let num_points = rope.len().0 / 10;
 
     let mut points = Vec::new();
     for _ in 0..num_points {
-        points.push(rope.offset_to_point(rng.random_range(0..rope.len())));
+        points.push(rope.offset_to_point(rope::Offset(rng.random_range(0..rope.len().0))));
     }
     points
 }
@@ -227,11 +230,11 @@ fn rope_benchmarks(c: &mut Criterion) {
 
             b.iter_batched(
                 || {
-                    let num_points = rope.len() / 10;
+                    let num_points = rope.len().0 / 10;
 
                     let mut points = Vec::new();
                     for _ in 0..num_points {
-                        points.push(rng.random_range(0..rope.len()));
+                        points.push(rope::Offset(rng.random_range(0..rope.len().0)));
                     }
                     points
                 },
@@ -256,7 +259,7 @@ fn rope_benchmarks(c: &mut Criterion) {
             for _ in 0..100_000 {
                 rope.append(small.clone());
             }
-            assert_eq!(rope.len(), 128 * 100_000);
+            assert_eq!(rope.len(), rope::ByteLen(128 * 100_000));
         });
     });
 
@@ -269,7 +272,7 @@ fn rope_benchmarks(c: &mut Criterion) {
                 rope = small.clone();
                 rope.append(large);
             }
-            assert_eq!(rope.len(), 128 * 100_000);
+            assert_eq!(rope.len(), rope::ByteLen(128 * 100_000));
         });
     });
 

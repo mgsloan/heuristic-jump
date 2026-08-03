@@ -7,8 +7,8 @@ use std::{
 /// A zero-indexed point in a text buffer consisting of a row and column.
 #[derive(Clone, Copy, Default, Eq, PartialEq, Hash)]
 pub struct Point {
-    pub row: u32,
-    pub column: u32,
+    pub row: LineIndex,
+    pub column: ByteColumn,
 }
 
 impl Debug for Point {
@@ -19,39 +19,39 @@ impl Debug for Point {
 
 impl Point {
     pub const MAX: Self = Self {
-        row: u32::MAX,
-        column: u32::MAX,
+        row: LineIndex::MAX,
+        column: ByteColumn::MAX,
     };
 
-    pub fn new(row: u32, column: u32) -> Self {
+    pub fn new(row: LineIndex, column: ByteColumn) -> Self {
         Point { row, column }
     }
 
-    pub fn row_range(range: Range<u32>) -> Range<Self> {
+    pub fn row_range(range: Range<LineIndex>) -> Range<Self> {
         Point {
             row: range.start,
-            column: 0,
+            column: ByteColumn::ZERO,
         }..Point {
             row: range.end,
-            column: 0,
+            column: ByteColumn::ZERO,
         }
     }
 
     pub fn zero() -> Self {
-        Point::new(0, 0)
+        Point::new(LineIndex::ZERO, ByteColumn::ZERO)
     }
 
     pub fn parse_str(s: &str) -> Self {
         let mut point = Self::zero();
         for (row, line) in s.split('\n').enumerate() {
-            point.row = row as u32;
-            point.column = line.len() as u32;
+            point.row = LineIndex(row as u32);
+            point.column = ByteColumn(line.len() as u32);
         }
         point
     }
 
     pub fn is_zero(&self) -> bool {
-        self.row == 0 && self.column == 0
+        self.row == LineIndex::ZERO && self.column == ByteColumn::ZERO
     }
 
     pub fn saturating_sub(self, other: Self) -> Self {
@@ -75,10 +75,10 @@ impl Add for Point {
     type Output = Point;
 
     fn add(self, other: Self) -> Self::Output {
-        if other.row == 0 {
-            Point::new(self.row, self.column + other.column)
+        if other.row == LineIndex::ZERO {
+            Point::new(self.row, ByteColumn(self.column.0 + other.column.0))
         } else {
-            Point::new(self.row + other.row, other.column)
+            Point::new(LineIndex(self.row.0 + other.row.0), other.column)
         }
     }
 }
@@ -98,9 +98,9 @@ impl Sub for Point {
         debug_assert!(other <= self);
 
         if self.row == other.row {
-            Point::new(0, self.column - other.column)
+            Point::new(LineIndex::ZERO, ByteColumn(self.column.0 - other.column.0))
         } else {
-            Point::new(self.row - other.row, self.column)
+            Point::new(LineIndex(self.row.0 - other.row.0), self.column)
         }
     }
 }
@@ -113,10 +113,10 @@ impl<'a> AddAssign<&'a Self> for Point {
 
 impl AddAssign<Self> for Point {
     fn add_assign(&mut self, other: Self) {
-        if other.row == 0 {
-            self.column += other.column;
+        if other.row == LineIndex::ZERO {
+            self.column.0 += other.column.0;
         } else {
-            self.row += other.row;
+            self.row.0 += other.row.0;
             self.column = other.column;
         }
     }
@@ -131,14 +131,14 @@ impl PartialOrd for Point {
 impl Ord for Point {
     #[cfg(target_pointer_width = "64")]
     fn cmp(&self, other: &Point) -> Ordering {
-        let a = ((self.row as usize) << 32) | self.column as usize;
-        let b = ((other.row as usize) << 32) | other.column as usize;
+        let a = ((self.row.0 as usize) << 32) | self.column.0 as usize;
+        let b = ((other.row.0 as usize) << 32) | other.column.0 as usize;
         a.cmp(&b)
     }
 
     #[cfg(target_pointer_width = "32")]
     fn cmp(&self, other: &Point) -> Ordering {
-        match self.row.cmp(&other.row) {
+        match self.row.0.cmp(&other.row.0) {
             Ordering::Equal => self.column.cmp(&other.column),
             comparison @ _ => comparison,
         }

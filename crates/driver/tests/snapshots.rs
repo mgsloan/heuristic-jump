@@ -40,9 +40,10 @@ use proptest::test_runner::{FileFailurePersistence, TestCaseError, TestRunner};
 use serde_json::value::RawValue;
 use shared::proto::PositionEncoding;
 use shared::{
-    ByteRange, Clock, CommitPolicy, Confidence, Deadline, DocumentUri, DocumentVersion, Error,
-    FileExtension, InputEdit, LanguageHandler, LanguageId, Offset, Outcome, ParseKind, ProjectView,
-    Query, Rope, ServerProfile, SnapshotSeed, Strata, Stratum, SystemClock, Trace, input_edit,
+    ByteLen, ByteRange, Clock, CommitPolicy, Confidence, Deadline, DocumentUri, DocumentVersion,
+    Error, FileExtension, InputEdit, LanguageHandler, LanguageId, Offset, Outcome, ParseKind,
+    ProjectView, Query, Rope, ServerProfile, SnapshotSeed, Strata, Stratum, SystemClock, Trace,
+    input_edit,
 };
 use tree_sitter::{Language, Parser, Point, Tree};
 
@@ -230,7 +231,7 @@ fn the_tree_a_worker_parsed_is_what_the_next_seed_reparses_from() {
         }
     }
     assert_eq!(
-        handler.spanned.load(Ordering::Relaxed),
+        ByteLen(handler.spanned.load(Ordering::Relaxed)),
         edited.len(),
         "the handler was given a tree that stops somewhere other than the end of its \
          text, which is the disagreement core.md §2 says cannot happen"
@@ -421,7 +422,7 @@ fn edit_and_dispatch(
                     DocumentVersion(version + 1),
                     input_edit(&text, replaced, insert),
                 ));
-                text.replace(start..end, insert);
+                text.replace(replaced, insert);
                 version += 1;
             }
             Step::Dispatch => {
@@ -455,7 +456,7 @@ fn edit_and_dispatch(
                     .parsed
                     .expect("a query whose parse succeeded hands the tree back");
                 prop_assert_eq!(
-                    handler.spanned.load(Ordering::Relaxed),
+                    ByteLen(handler.spanned.load(Ordering::Relaxed)),
                     text.len(),
                     "the handler was given a tree that stops somewhere other than the end \
                      of its text, at version {} with {} outstanding edit(s)",

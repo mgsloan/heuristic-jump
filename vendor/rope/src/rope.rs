@@ -65,19 +65,21 @@ impl Rope {
     /// considered to be boundaries.
     ///
     /// Returns `false` if `index` is greater than `self.len()`.
-    pub fn is_char_boundary(&self, offset: usize) -> bool {
+    pub fn is_char_boundary(&self, offset: Offset) -> bool {
+        let offset = offset.0;
         if self.chunks.is_empty() {
             return offset == 0;
         }
         let (start, _, item) = self.chunks.find::<usize, _>((), &offset, Bias::Left);
         let chunk_offset = offset - start;
-        item.map(|chunk| chunk.is_char_boundary(chunk_offset))
+        item.map(|chunk| chunk.is_char_boundary(Offset(chunk_offset)))
             .unwrap_or(false)
     }
 
     #[track_caller]
     #[inline(always)]
-    pub fn assert_char_boundary<const PANIC: bool>(&self, offset: usize) -> bool {
+    pub fn assert_char_boundary<const PANIC: bool>(&self, offset: Offset) -> bool {
+        let offset = offset.0;
         if self.chunks.is_empty() && offset == 0 {
             return true;
         }
@@ -85,45 +87,53 @@ impl Rope {
         match item {
             Some(chunk) => {
                 let chunk_offset = offset - start;
-                chunk.assert_char_boundary::<PANIC>(chunk_offset)
+                chunk.assert_char_boundary::<PANIC>(Offset(chunk_offset))
             }
             None if PANIC => {
                 panic!(
                     "byte index {} is out of bounds of rope (length: {})",
                     offset,
-                    self.len()
+                    self.len_raw()
                 );
             }
             None => {
                 log::error!(
                     "byte index {} is out of bounds of rope (length: {})",
                     offset,
-                    self.len()
+                    self.len_raw()
                 );
                 false
             }
         }
     }
 
-    pub fn floor_char_boundary(&self, index: usize) -> usize {
-        if index >= self.len() {
-            self.len()
+    pub fn floor_char_boundary(&self, index: Offset) -> Offset {
+        Offset(self.floor_char_boundary_raw(index.0))
+    }
+
+    fn floor_char_boundary_raw(&self, index: usize) -> usize {
+        if index >= self.len_raw() {
+            self.len_raw()
         } else {
             let (start, _, item) = self.chunks.find::<usize, _>((), &index, Bias::Left);
             let chunk_offset = index - start;
             let lower_idx = item.map(|chunk| chunk.text.floor_char_boundary(chunk_offset));
-            lower_idx.map_or_else(|| self.len(), |idx| start + idx)
+            lower_idx.map_or_else(|| self.len_raw(), |idx| start + idx)
         }
     }
 
-    pub fn ceil_char_boundary(&self, index: usize) -> usize {
-        if index > self.len() {
-            self.len()
+    pub fn ceil_char_boundary(&self, index: Offset) -> Offset {
+        Offset(self.ceil_char_boundary_raw(index.0))
+    }
+
+    fn ceil_char_boundary_raw(&self, index: usize) -> usize {
+        if index > self.len_raw() {
+            self.len_raw()
         } else {
             let (start, _, item) = self.chunks.find::<usize, _>((), &index, Bias::Left);
             let chunk_offset = index - start;
             let upper_idx = item.map(|chunk| chunk.text.ceil_char_boundary(chunk_offset));
-            upper_idx.map_or_else(|| self.len(), |idx| start + idx)
+            upper_idx.map_or_else(|| self.len_raw(), |idx| start + idx)
         }
     }
 
@@ -147,9 +157,9 @@ impl Rope {
         self.check_invariants();
     }
 
-    pub fn replace(&mut self, range: Range<usize>, text: &str) {
+    pub fn replace(&mut self, range: ByteRange, text: &str) {
         let mut new_rope = Rope::new();
-        let mut cursor = self.cursor(0);
+        let mut cursor = self.cursor(Offset::ZERO);
         new_rope.append(cursor.slice(range.start));
         cursor.seek_forward(range.end);
         new_rope.push(text);
@@ -157,17 +167,17 @@ impl Rope {
         *self = new_rope;
     }
 
-    pub fn slice(&self, range: Range<usize>) -> Rope {
-        let mut cursor = self.cursor(0);
+    pub fn slice(&self, range: ByteRange) -> Rope {
+        let mut cursor = self.cursor(Offset::ZERO);
         cursor.seek_forward(range.start);
         cursor.slice(range.end)
     }
 
-    pub fn slice_rows(&self, range: Range<u32>) -> Rope {
+    pub fn slice_rows(&self, range: Range<LineIndex>) -> Rope {
         // This would be more efficient with a forward advance after the first, but it's fine.
-        let start = self.point_to_offset(Point::new(range.start, 0));
-        let end = self.point_to_offset(Point::new(range.end, 0));
-        self.slice(start..end)
+        let start = self.point_to_offset(Point::new(range.start, ByteColumn::ZERO));
+        let end = self.point_to_offset(Point::new(range.end, ByteColumn::ZERO));
+        self.slice(ByteRange::new(start, end))
     }
 
     pub fn push(&mut self, mut text: &str) {
@@ -274,20 +284,20 @@ impl Rope {
     fn push_chunk(&mut self, mut chunk: ChunkSlice) {
         self.chunks.update_last(
             |last_chunk| {
-                let split_ix = if last_chunk.text.len() + chunk.len() <= chunk::MAX_BASE {
-                    chunk.len()
+                let split_ix = if last_chunk.text.len() + chunk.len().0 <= chunk::MAX_BASE {
+                    chunk.len().0
                 } else {
                     let mut split_ix = cmp::min(
                         chunk::MIN_BASE.saturating_sub(last_chunk.text.len()),
-                        chunk.len(),
+                        chunk.len().0,
                     );
-                    while !chunk.is_char_boundary(split_ix) {
+                    while !chunk.is_char_boundary(Offset(split_ix)) {
                         split_ix += 1;
                     }
                     split_ix
                 };
 
-                let (suffix, remainder) = chunk.split_at(split_ix);
+                let (suffix, remainder) = chunk.split_at(Offset(split_ix));
                 last_chunk.append(suffix);
                 chunk = remainder;
             },
@@ -339,12 +349,16 @@ impl Rope {
         self.chunks.summary().text
     }
 
-    pub fn len(&self) -> usize {
+    pub fn len(&self) -> ByteLen {
+        ByteLen(self.len_raw())
+    }
+
+    fn len_raw(&self) -> usize {
         self.chunks.extent(())
     }
 
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.len_raw() == 0
     }
 
     pub fn max_point(&self) -> Point {
@@ -355,45 +369,47 @@ impl Rope {
         self.chunks.extent(())
     }
 
-    pub fn cursor(&self, offset: usize) -> Cursor<'_> {
+    pub fn cursor(&self, offset: Offset) -> Cursor<'_> {
         Cursor::new(self, offset)
     }
 
     pub fn chars(&self) -> impl Iterator<Item = char> + '_ {
-        self.chars_at(0)
+        self.chars_at(Offset::ZERO)
     }
 
-    pub fn chars_at(&self, start: usize) -> impl Iterator<Item = char> + '_ {
-        self.chunks_in_range(start..self.len()).flat_map(str::chars)
+    pub fn chars_at(&self, start: Offset) -> impl Iterator<Item = char> + '_ {
+        self.chunks_in_range(ByteRange::new(start, Offset(self.len_raw())))
+            .flat_map(str::chars)
     }
 
-    pub fn reversed_chars_at(&self, start: usize) -> impl Iterator<Item = char> + '_ {
-        self.reversed_chunks_in_range(0..start)
+    pub fn reversed_chars_at(&self, start: Offset) -> impl Iterator<Item = char> + '_ {
+        self.reversed_chunks_in_range(ByteRange::new(Offset::ZERO, start))
             .flat_map(|chunk| chunk.chars().rev())
     }
 
-    pub fn bytes_in_range(&self, range: Range<usize>) -> Bytes<'_> {
+    pub fn bytes_in_range(&self, range: ByteRange) -> Bytes<'_> {
         Bytes::new(self, range, false)
     }
 
-    pub fn reversed_bytes_in_range(&self, range: Range<usize>) -> Bytes<'_> {
+    pub fn reversed_bytes_in_range(&self, range: ByteRange) -> Bytes<'_> {
         Bytes::new(self, range, true)
     }
 
     pub fn chunks(&self) -> Chunks<'_> {
-        self.chunks_in_range(0..self.len())
+        self.chunks_in_range(ByteRange::new(Offset::ZERO, Offset(self.len_raw())))
     }
 
-    pub fn chunks_in_range(&self, range: Range<usize>) -> Chunks<'_> {
+    pub fn chunks_in_range(&self, range: ByteRange) -> Chunks<'_> {
         Chunks::new(self, range, false)
     }
 
-    pub fn reversed_chunks_in_range(&self, range: Range<usize>) -> Chunks<'_> {
+    pub fn reversed_chunks_in_range(&self, range: ByteRange) -> Chunks<'_> {
         Chunks::new(self, range, true)
     }
 
-    pub fn offset_to_offset_utf16(&self, offset: usize) -> OffsetUtf16 {
-        if offset >= self.summary().len {
+    pub fn offset_to_offset_utf16(&self, offset: Offset) -> OffsetUtf16 {
+        let offset = offset.0;
+        if offset >= self.summary().len.0 {
             return self.summary().len_utf16;
         }
         let (start, _, item) =
@@ -402,13 +418,17 @@ impl Rope {
         let overshoot = offset - start.0;
         start.1
             + item.map_or(Default::default(), |chunk| {
-                chunk.as_slice().offset_to_offset_utf16(overshoot)
+                chunk.as_slice().offset_to_offset_utf16(Offset(overshoot))
             })
     }
 
-    pub fn offset_utf16_to_offset(&self, offset: OffsetUtf16) -> usize {
+    pub fn offset_utf16_to_offset(&self, offset: OffsetUtf16) -> Offset {
+        Offset(self.offset_utf16_to_offset_raw(offset))
+    }
+
+    fn offset_utf16_to_offset_raw(&self, offset: OffsetUtf16) -> usize {
         if offset >= self.summary().len_utf16 {
-            return self.summary().len;
+            return self.summary().len.0;
         }
         let (start, _, item) =
             self.chunks
@@ -416,12 +436,13 @@ impl Rope {
         let overshoot = offset - start.0;
         start.1
             + item.map_or(Default::default(), |chunk| {
-                chunk.as_slice().offset_utf16_to_offset(overshoot)
+                chunk.as_slice().offset_utf16_to_offset(overshoot).0
             })
     }
 
-    pub fn offset_to_point(&self, offset: usize) -> Point {
-        if offset >= self.summary().len {
+    pub fn offset_to_point(&self, offset: Offset) -> Point {
+        let offset = offset.0;
+        if offset >= self.summary().len.0 {
             return self.summary().lines;
         }
         let (start, _, item) =
@@ -430,12 +451,13 @@ impl Rope {
         let overshoot = offset - start.0;
         start.1
             + item.map_or(Point::zero(), |chunk| {
-                chunk.as_slice().offset_to_point(overshoot)
+                chunk.as_slice().offset_to_point(Offset(overshoot))
             })
     }
 
-    pub fn offset_to_point_utf16(&self, offset: usize) -> PointUtf16 {
-        if offset >= self.summary().len {
+    pub fn offset_to_point_utf16(&self, offset: Offset) -> PointUtf16 {
+        let offset = offset.0;
+        if offset >= self.summary().len.0 {
             return self.summary().lines_utf16();
         }
         let (start, _, item) =
@@ -444,7 +466,7 @@ impl Rope {
         let overshoot = offset - start.0;
         start.1
             + item.map_or(PointUtf16::zero(), |chunk| {
-                chunk.as_slice().offset_to_point_utf16(overshoot)
+                chunk.as_slice().offset_to_point_utf16(Offset(overshoot))
             })
     }
 
@@ -478,15 +500,19 @@ impl Rope {
     }
 
     #[instrument(skip_all)]
-    pub fn point_to_offset(&self, point: Point) -> usize {
+    pub fn point_to_offset(&self, point: Point) -> Offset {
+        Offset(self.point_to_offset_raw(point))
+    }
+
+    fn point_to_offset_raw(&self, point: Point) -> usize {
         if point >= self.summary().lines {
-            return self.summary().len;
+            return self.summary().len.0;
         }
         let (start, _, item) =
             self.chunks
                 .find::<Dimensions<Point, usize>, _>((), &point, Bias::Left);
         let overshoot = point - start.0;
-        start.1 + item.map_or(0, |chunk| chunk.as_slice().point_to_offset(overshoot))
+        start.1 + item.map_or(0, |chunk| chunk.as_slice().point_to_offset(overshoot).0)
     }
 
     pub fn point_to_offset_utf16(&self, point: Point) -> OffsetUtf16 {
@@ -502,21 +528,21 @@ impl Rope {
             })
     }
 
-    pub fn point_utf16_to_offset(&self, point: PointUtf16) -> usize {
-        self.point_utf16_to_offset_impl(point, false)
+    pub fn point_utf16_to_offset(&self, point: PointUtf16) -> Offset {
+        Offset(self.point_utf16_to_offset_impl(point, false))
     }
 
     pub fn point_utf16_to_offset_utf16(&self, point: PointUtf16) -> OffsetUtf16 {
         self.point_utf16_to_offset_utf16_impl(point, false)
     }
 
-    pub fn unclipped_point_utf16_to_offset(&self, point: Unclipped<PointUtf16>) -> usize {
-        self.point_utf16_to_offset_impl(point.0, true)
+    pub fn unclipped_point_utf16_to_offset(&self, point: Unclipped<PointUtf16>) -> Offset {
+        Offset(self.point_utf16_to_offset_impl(point.0, true))
     }
 
     fn point_utf16_to_offset_impl(&self, point: PointUtf16, clip: bool) -> usize {
         if point >= self.summary().lines_utf16() {
-            return self.summary().len;
+            return self.summary().len.0;
         }
         let (start, _, item) =
             self.chunks
@@ -524,7 +550,7 @@ impl Rope {
         let overshoot = point - start.0;
         start.1
             + item.map_or(0, |chunk| {
-                chunk.as_slice().point_utf16_to_offset(overshoot, clip)
+                chunk.as_slice().point_utf16_to_offset(overshoot, clip).0
             })
     }
 
@@ -559,7 +585,7 @@ impl Rope {
             })
     }
 
-    pub fn clip_offset(&self, offset: usize, bias: Bias) -> usize {
+    pub fn clip_offset(&self, offset: Offset, bias: Bias) -> Offset {
         match bias {
             Bias::Left => self.floor_char_boundary(offset),
             Bias::Right => self.ceil_char_boundary(offset),
@@ -597,11 +623,11 @@ impl Rope {
     }
 
     pub fn starts_with(&self, pattern: &str) -> bool {
-        if pattern.len() > self.len() {
+        if pattern.len() > self.len_raw() {
             return false;
         }
         let mut remaining = pattern;
-        for chunk in self.chunks_in_range(0..self.len()) {
+        for chunk in self.chunks_in_range(ByteRange::new(Offset::ZERO, Offset(self.len_raw()))) {
             let Some(chunk) = chunk.get(..remaining.len().min(chunk.len())) else {
                 return false;
             };
@@ -618,11 +644,13 @@ impl Rope {
     }
 
     pub fn ends_with(&self, pattern: &str) -> bool {
-        if pattern.len() > self.len() {
+        if pattern.len() > self.len_raw() {
             return false;
         }
         let mut remaining = pattern;
-        for chunk in self.reversed_chunks_in_range(0..self.len()) {
+        for chunk in
+            self.reversed_chunks_in_range(ByteRange::new(Offset::ZERO, Offset(self.len_raw())))
+        {
             let Some(chunk) = chunk.get(chunk.len() - remaining.len().min(chunk.len())..) else {
                 return false;
             };
@@ -638,8 +666,8 @@ impl Rope {
         remaining.is_empty()
     }
 
-    pub fn line_len(&self, row: u32) -> u32 {
-        self.clip_point(Point::new(row, u32::MAX), Bias::Left)
+    pub fn line_len(&self, row: LineIndex) -> ByteColumn {
+        self.clip_point(Point::new(row, ByteColumn::MAX), Bias::Left)
             .column
     }
 }
@@ -708,7 +736,8 @@ pub struct Cursor<'a> {
 }
 
 impl<'a> Cursor<'a> {
-    pub fn new(rope: &'a Rope, offset: usize) -> Self {
+    pub fn new(rope: &'a Rope, offset: Offset) -> Self {
+        let offset = offset.0;
         let mut chunks = rope.chunks.cursor(());
         chunks.seek(&offset, Bias::Right);
         Self {
@@ -718,7 +747,8 @@ impl<'a> Cursor<'a> {
         }
     }
 
-    pub fn seek_forward(&mut self, end_offset: usize) {
+    pub fn seek_forward(&mut self, end_offset: Offset) {
+        let end_offset = end_offset.0;
         assert!(
             end_offset >= self.offset,
             "cannot seek backward from {} to {}",
@@ -726,7 +756,7 @@ impl<'a> Cursor<'a> {
             end_offset
         );
         assert!(
-            end_offset <= self.rope.len(),
+            end_offset <= self.rope.len_raw(),
             "cannot summarize past end of rope"
         );
 
@@ -734,7 +764,8 @@ impl<'a> Cursor<'a> {
         self.offset = end_offset;
     }
 
-    pub fn slice(&mut self, end_offset: usize) -> Rope {
+    pub fn slice(&mut self, end_offset: Offset) -> Rope {
+        let end_offset = end_offset.0;
         assert!(
             end_offset >= self.offset,
             "cannot slice backward from {} to {}",
@@ -742,7 +773,7 @@ impl<'a> Cursor<'a> {
             end_offset
         );
         assert!(
-            end_offset <= self.rope.len(),
+            end_offset <= self.rope.len_raw(),
             "cannot summarize past end of rope"
         );
 
@@ -750,7 +781,7 @@ impl<'a> Cursor<'a> {
         if let Some(start_chunk) = self.chunks.item() {
             let start_ix = self.offset - self.chunks.start();
             let end_ix = cmp::min(end_offset, self.chunks.end()) - self.chunks.start();
-            slice.push_chunk(start_chunk.slice(start_ix..end_ix));
+            slice.push_chunk(start_chunk.slice(byte_range(start_ix..end_ix)));
         }
 
         if end_offset > self.chunks.end() {
@@ -760,7 +791,7 @@ impl<'a> Cursor<'a> {
             });
             if let Some(end_chunk) = self.chunks.item() {
                 let end_ix = end_offset - self.chunks.start();
-                slice.push_chunk(end_chunk.slice(0..end_ix));
+                slice.push_chunk(end_chunk.slice(byte_range(0..end_ix)));
             }
         }
 
@@ -768,7 +799,8 @@ impl<'a> Cursor<'a> {
         slice
     }
 
-    pub fn summary<D: TextDimension>(&mut self, end_offset: usize) -> D {
+    pub fn summary<D: TextDimension>(&mut self, end_offset: Offset) -> D {
+        let end_offset = end_offset.0;
         assert!(
             end_offset >= self.offset,
             "cannot summarize backward from {} to {}",
@@ -776,7 +808,7 @@ impl<'a> Cursor<'a> {
             end_offset
         );
         assert!(
-            end_offset <= self.rope.len(),
+            end_offset <= self.rope.len_raw(),
             "cannot summarize past end of rope"
         );
 
@@ -784,7 +816,9 @@ impl<'a> Cursor<'a> {
         if let Some(start_chunk) = self.chunks.item() {
             let start_ix = self.offset - self.chunks.start();
             let end_ix = cmp::min(end_offset, self.chunks.end()) - self.chunks.start();
-            summary.add_assign(&D::from_chunk(start_chunk.slice(start_ix..end_ix)));
+            summary.add_assign(&D::from_chunk(start_chunk.slice(byte_range(
+                start_ix..end_ix,
+            ))));
         }
 
         if end_offset > self.chunks.end() {
@@ -792,7 +826,7 @@ impl<'a> Cursor<'a> {
             summary.add_assign(&self.chunks.summary(&end_offset, Bias::Right));
             if let Some(end_chunk) = self.chunks.item() {
                 let end_ix = end_offset - self.chunks.start();
-                summary.add_assign(&D::from_chunk(end_chunk.slice(0..end_ix)));
+                summary.add_assign(&D::from_chunk(end_chunk.slice(byte_range(0..end_ix))));
             }
         }
 
@@ -801,12 +835,20 @@ impl<'a> Cursor<'a> {
     }
 
     pub fn suffix(mut self) -> Rope {
-        self.slice(self.rope.chunks.extent(()))
+        self.slice(Offset(self.rope.chunks.extent(())))
     }
 
-    pub fn offset(&self) -> usize {
-        self.offset
+    pub fn offset(&self) -> Offset {
+        Offset(self.offset)
     }
+}
+
+/// The bridge from an internal `Range<usize>` to the `ByteRange` the converted
+/// signatures take. Private, and only where a body computes a range out of
+/// cursor arithmetic that stays in `usize` (`rope-modifications.md` §3: the
+/// edits change representation, never arithmetic).
+fn byte_range(range: Range<usize>) -> ByteRange {
+    ByteRange::new(Offset(range.start), Offset(range.end))
 }
 
 pub struct ChunkBitmaps<'a> {
@@ -829,7 +871,8 @@ pub struct Chunks<'a> {
 }
 
 impl<'a> Chunks<'a> {
-    pub fn new(rope: &'a Rope, range: Range<usize>, reversed: bool) -> Self {
+    pub fn new(rope: &'a Rope, range: ByteRange, reversed: bool) -> Self {
+        let range = range.start.0..range.end.0;
         let mut chunks = rope.chunks.cursor(());
         let offset = if reversed {
             chunks.seek(&range.end, Bias::Left);
@@ -840,7 +883,7 @@ impl<'a> Chunks<'a> {
         };
         let chunk_offset = offset - chunks.start();
         if let Some(chunk) = chunks.item() {
-            chunk.assert_char_boundary::<true>(chunk_offset);
+            chunk.assert_char_boundary::<true>(Offset(chunk_offset));
         }
         Self {
             chunks,
@@ -862,11 +905,15 @@ impl<'a> Chunks<'a> {
         true
     }
 
-    pub fn offset(&self) -> usize {
-        self.offset
+    pub fn offset(&self) -> Offset {
+        Offset(self.offset)
     }
 
-    pub fn seek(&mut self, mut offset: usize) {
+    pub fn seek(&mut self, offset: Offset) {
+        self.seek_raw(offset.0);
+    }
+
+    fn seek_raw(&mut self, mut offset: usize) {
         offset = offset.clamp(self.range.start, self.range.end);
 
         if self.reversed {
@@ -886,9 +933,10 @@ impl<'a> Chunks<'a> {
         self.offset = offset;
     }
 
-    pub fn set_range(&mut self, range: Range<usize>) {
+    pub fn set_range(&mut self, range: ByteRange) {
+        let range = range.start.0..range.end.0;
         self.range = range.clone();
-        self.seek(range.start);
+        self.seek_raw(range.start);
     }
 
     /// Moves this cursor to the start of the next line in the rope.
@@ -909,7 +957,7 @@ impl<'a> Chunks<'a> {
                 found = self.offset <= self.range.end;
             } else {
                 self.chunks
-                    .search_forward(|summary| summary.text.lines.row > 0);
+                    .search_forward(|summary| summary.text.lines.row > LineIndex::ZERO);
                 self.offset = *self.chunks.start();
 
                 if let Some(newline_ix) = self.peek().and_then(|chunk| chunk.find('\n')) {
@@ -964,7 +1012,7 @@ impl<'a> Chunks<'a> {
         }
 
         self.chunks
-            .search_backward(|summary| summary.text.lines.row > 0);
+            .search_backward(|summary| summary.text.lines.row > LineIndex::ZERO);
         self.offset = *self.chunks.start();
         if let Some(chunk) = self.chunks.item()
             && let Some(newline_ix) = chunk.text.rfind('\n')
@@ -1137,7 +1185,8 @@ pub struct Bytes<'a> {
 }
 
 impl<'a> Bytes<'a> {
-    pub fn new(rope: &'a Rope, range: Range<usize>, reversed: bool) -> Self {
+    pub fn new(rope: &'a Rope, range: ByteRange, reversed: bool) -> Self {
+        let range = range.start.0..range.end.0;
         let mut chunks = rope.chunks.cursor(());
         if reversed {
             chunks.seek(&range.end, Bias::Left);
@@ -1232,7 +1281,7 @@ impl<'a> Lines<'a> {
                     let done = chunk_lines.peek().is_some();
                     if done {
                         self.chunks
-                            .seek(self.chunks.offset() - chunk_line.len() - "\n".len());
+                            .seek_raw(self.chunks.offset().0 - chunk_line.len() - "\n".len());
                         if self.current_line.is_empty() {
                             return Some(chunk_line);
                         }
@@ -1248,7 +1297,7 @@ impl<'a> Lines<'a> {
                     let done = chunk_lines.peek().is_some();
                     if done {
                         self.chunks
-                            .seek(self.chunks.offset() + chunk_line.len() + "\n".len());
+                            .seek_raw(self.chunks.offset().0 + chunk_line.len() + "\n".len());
                         if self.current_line.is_empty() {
                             return Some(chunk_line);
                         }
@@ -1267,13 +1316,13 @@ impl<'a> Lines<'a> {
         Some(&self.current_line)
     }
 
-    pub fn seek(&mut self, offset: usize) {
+    pub fn seek(&mut self, offset: Offset) {
         self.chunks.seek(offset);
         self.current_line.clear();
         self.done = false;
     }
 
-    pub fn offset(&self) -> usize {
+    pub fn offset(&self) -> Offset {
         self.chunks.offset()
     }
 }
@@ -1307,9 +1356,9 @@ impl sum_tree::ContextLessSummary for ChunkSummary {
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub struct TextSummary {
     /// Length in bytes.
-    pub len: usize,
+    pub len: ByteLen,
     /// Length in UTF-8.
-    pub chars: usize,
+    pub chars: CharCount,
     /// Length in UTF-16 code units
     pub len_utf16: OffsetUtf16,
     /// A point representing the number of lines and the length of the last line.
@@ -1318,15 +1367,15 @@ pub struct TextSummary {
     /// EOF was a character, this would be its position).
     pub lines: Point,
     /// How many `char`s are in the first line
-    pub first_line_chars: u32,
+    pub first_line_chars: CharCount,
     /// How many `char`s are in the last line
-    pub last_line_chars: u32,
+    pub last_line_chars: CharCount,
     /// How many UTF-16 code units are in the last line
-    pub last_line_len_utf16: u32,
+    pub last_line_len_utf16: Utf16Column,
     /// The row idx of the longest row
-    pub longest_row: u32,
+    pub longest_row: LineIndex,
     /// How many `char`s are in the longest row
-    pub longest_row_chars: u32,
+    pub longest_row_chars: CharCount,
 }
 
 impl TextSummary {
@@ -1339,35 +1388,35 @@ impl TextSummary {
 
     pub fn newline() -> Self {
         Self {
-            len: 1,
-            chars: 1,
+            len: ByteLen(1),
+            chars: CharCount(1),
             len_utf16: OffsetUtf16(1),
-            first_line_chars: 0,
-            last_line_chars: 0,
-            last_line_len_utf16: 0,
-            lines: Point::new(1, 0),
-            longest_row: 0,
-            longest_row_chars: 0,
+            first_line_chars: CharCount::ZERO,
+            last_line_chars: CharCount::ZERO,
+            last_line_len_utf16: Utf16Column::ZERO,
+            lines: Point::new(LineIndex(1), ByteColumn::ZERO),
+            longest_row: LineIndex::ZERO,
+            longest_row_chars: CharCount::ZERO,
         }
     }
 
     pub fn add_newline(&mut self) {
-        self.len += 1;
+        self.len += ByteLen(1);
         self.len_utf16 += OffsetUtf16(self.len_utf16.0 + 1);
-        self.last_line_chars = 0;
-        self.last_line_len_utf16 = 0;
-        self.lines += Point::new(1, 0);
+        self.last_line_chars = CharCount::ZERO;
+        self.last_line_len_utf16 = Utf16Column::ZERO;
+        self.lines += Point::new(LineIndex(1), ByteColumn::ZERO);
     }
 }
 
 impl<'a> From<&'a str> for TextSummary {
     fn from(text: &'a str) -> Self {
         let mut len_utf16 = OffsetUtf16(0);
-        let mut lines = Point::new(0, 0);
+        let mut lines = Point::new(LineIndex::ZERO, ByteColumn::ZERO);
         let mut first_line_chars = 0;
         let mut last_line_chars = 0;
         let mut last_line_len_utf16 = 0;
-        let mut longest_row = 0;
+        let mut longest_row = LineIndex::ZERO;
         let mut longest_row_chars = 0;
         let mut chars = 0;
         for c in text.chars() {
@@ -1375,16 +1424,16 @@ impl<'a> From<&'a str> for TextSummary {
             len_utf16.0 += c.len_utf16();
 
             if c == '\n' {
-                lines += Point::new(1, 0);
+                lines += Point::new(LineIndex(1), ByteColumn::ZERO);
                 last_line_len_utf16 = 0;
                 last_line_chars = 0;
             } else {
-                lines.column += c.len_utf8() as u32;
+                lines.column.0 += c.len_utf8() as u32;
                 last_line_len_utf16 += c.len_utf16() as u32;
                 last_line_chars += 1;
             }
 
-            if lines.row == 0 {
+            if lines.row == LineIndex::ZERO {
                 first_line_chars = last_line_chars;
             }
 
@@ -1395,15 +1444,15 @@ impl<'a> From<&'a str> for TextSummary {
         }
 
         TextSummary {
-            len: text.len(),
-            chars,
+            len: ByteLen(text.len()),
+            chars: CharCount(chars),
             len_utf16,
             lines,
-            first_line_chars,
-            last_line_chars,
-            last_line_len_utf16,
+            first_line_chars: CharCount(first_line_chars),
+            last_line_chars: CharCount(last_line_chars),
+            last_line_len_utf16: Utf16Column(last_line_len_utf16),
             longest_row,
-            longest_row_chars,
+            longest_row_chars: CharCount(longest_row_chars),
         }
     }
 }
@@ -1429,29 +1478,29 @@ impl ops::Add<Self> for TextSummary {
 
 impl<'a> ops::AddAssign<&'a Self> for TextSummary {
     fn add_assign(&mut self, other: &'a Self) {
-        let joined_chars = self.last_line_chars + other.first_line_chars;
+        let joined_chars = CharCount(self.last_line_chars.0 + other.first_line_chars.0);
         if joined_chars > self.longest_row_chars {
             self.longest_row = self.lines.row;
             self.longest_row_chars = joined_chars;
         }
         if other.longest_row_chars > self.longest_row_chars {
-            self.longest_row = self.lines.row + other.longest_row;
+            self.longest_row = LineIndex(self.lines.row.0 + other.longest_row.0);
             self.longest_row_chars = other.longest_row_chars;
         }
 
-        if self.lines.row == 0 {
-            self.first_line_chars += other.first_line_chars;
+        if self.lines.row == LineIndex::ZERO {
+            self.first_line_chars.0 += other.first_line_chars.0;
         }
 
-        if other.lines.row == 0 {
-            self.last_line_chars += other.first_line_chars;
-            self.last_line_len_utf16 += other.last_line_len_utf16;
+        if other.lines.row == LineIndex::ZERO {
+            self.last_line_chars.0 += other.first_line_chars.0;
+            self.last_line_len_utf16.0 += other.last_line_len_utf16.0;
         } else {
             self.last_line_chars = other.last_line_chars;
             self.last_line_len_utf16 = other.last_line_len_utf16;
         }
 
-        self.chars += other.chars;
+        self.chars.0 += other.chars.0;
         self.len += other.len;
         self.len_utf16 += other.len_utf16;
         self.lines += other.lines;
@@ -1521,17 +1570,17 @@ impl<'a> sum_tree::Dimension<'a, ChunkSummary> for usize {
     }
 
     fn add_summary(&mut self, summary: &'a ChunkSummary, _: ()) {
-        *self += summary.text.len;
+        *self += summary.text.len.0;
     }
 }
 
 impl TextDimension for usize {
     fn from_text_summary(summary: &TextSummary) -> Self {
-        summary.len
+        summary.len.0
     }
 
     fn from_chunk(chunk: ChunkSlice) -> Self {
-        chunk.len()
+        chunk.len().0
     }
 
     fn add_assign(&mut self, other: &Self) {
@@ -1544,25 +1593,27 @@ impl TextDimension for usize {
 // needs no change for this — `Dimension` is generic over the summary type, so
 // the impls live here and the vendored `sum_tree` stays a pristine copy.
 //
-// The `.0`s go away when §4's sweep gives `TextSummary.len` the type `ByteLen`;
-// until then a summary length is a bare `usize`.
+// A summary's length is a `ByteLen` and a seek dimension is a position, which
+// is the one place §4's split between the two is crossed on purpose: adding a
+// length to a position is `Offset + ByteLen`, and that is exactly what a
+// running seek total is.
 impl<'a> sum_tree::Dimension<'a, ChunkSummary> for Offset {
     fn zero(_cx: ()) -> Self {
         Default::default()
     }
 
     fn add_summary(&mut self, summary: &'a ChunkSummary, _: ()) {
-        self.0 += summary.text.len;
+        *self += summary.text.len;
     }
 }
 
 impl TextDimension for Offset {
     fn from_text_summary(summary: &TextSummary) -> Self {
-        Self(summary.len)
+        Self::ZERO + summary.len
     }
 
     fn from_chunk(chunk: ChunkSlice) -> Self {
-        Self(chunk.len())
+        Self::ZERO + chunk.len()
     }
 
     fn add_assign(&mut self, other: &Self) {
@@ -1789,6 +1840,26 @@ mod tests {
     use std::{cmp::Ordering, env, io::Read};
     use crate::test_support::{RandomCharIter, seeded};
 
+    // Ours, not upstream's. The test bodies keep their `usize` arithmetic and
+    // name the unit where they reach the converted API, which is
+    // `rope-modifications.md` §3's "wrap at a constructor call" shape with the
+    // wrapper given a name so a body stays as close to upstream's as it can.
+    fn at(offset: usize) -> Offset {
+        Offset(offset)
+    }
+
+    fn span(range: Range<usize>) -> ByteRange {
+        ByteRange::new(Offset(range.start), Offset(range.end))
+    }
+
+    fn point(row: u32, column: u32) -> Point {
+        Point::new(LineIndex(row), ByteColumn(column))
+    }
+
+    fn point_utf16(row: u32, column: u32) -> PointUtf16 {
+        PointUtf16::new(LineIndex(row), Utf16Column(column))
+    }
+
     #[test]
     fn test_all_4_byte_chars() {
         let mut rope = Rope::new();
@@ -1801,34 +1872,25 @@ mod tests {
     fn test_clip() {
         let rope = Rope::from("🧘");
 
-        assert_eq!(rope.clip_offset(1, Bias::Left), 0);
-        assert_eq!(rope.clip_offset(1, Bias::Right), 4);
-        assert_eq!(rope.clip_offset(5, Bias::Right), 4);
+        assert_eq!(rope.clip_offset(at(1), Bias::Left), at(0));
+        assert_eq!(rope.clip_offset(at(1), Bias::Right), at(4));
+        assert_eq!(rope.clip_offset(at(5), Bias::Right), at(4));
+
+        assert_eq!(rope.clip_point(point(0, 1), Bias::Left), point(0, 0));
+        assert_eq!(rope.clip_point(point(0, 1), Bias::Right), point(0, 4));
+        assert_eq!(rope.clip_point(point(0, 5), Bias::Right), point(0, 4));
 
         assert_eq!(
-            rope.clip_point(Point::new(0, 1), Bias::Left),
-            Point::new(0, 0)
+            rope.clip_point_utf16(Unclipped(point_utf16(0, 1)), Bias::Left),
+            point_utf16(0, 0)
         );
         assert_eq!(
-            rope.clip_point(Point::new(0, 1), Bias::Right),
-            Point::new(0, 4)
+            rope.clip_point_utf16(Unclipped(point_utf16(0, 1)), Bias::Right),
+            point_utf16(0, 2)
         );
         assert_eq!(
-            rope.clip_point(Point::new(0, 5), Bias::Right),
-            Point::new(0, 4)
-        );
-
-        assert_eq!(
-            rope.clip_point_utf16(Unclipped(PointUtf16::new(0, 1)), Bias::Left),
-            PointUtf16::new(0, 0)
-        );
-        assert_eq!(
-            rope.clip_point_utf16(Unclipped(PointUtf16::new(0, 1)), Bias::Right),
-            PointUtf16::new(0, 2)
-        );
-        assert_eq!(
-            rope.clip_point_utf16(Unclipped(PointUtf16::new(0, 3)), Bias::Right),
-            PointUtf16::new(0, 2)
+            rope.clip_point_utf16(Unclipped(point_utf16(0, 3)), Bias::Right),
+            point_utf16(0, 2)
         );
 
         assert_eq!(
@@ -1880,8 +1942,8 @@ mod tests {
         assert_eq!(chunks.peek().unwrap().chars().next().unwrap(), 'a');
 
         // Only return true when the cursor has moved to the start of a line
-        let mut chunks = rope.chunks_in_range(5..7);
-        chunks.seek(6);
+        let mut chunks = rope.chunks_in_range(span(5..7));
+        chunks.seek(at(6));
         assert!(!chunks.prev_line());
         assert_eq!(chunks.peek().unwrap().chars().next().unwrap(), 'e');
 
@@ -1907,14 +1969,18 @@ mod tests {
         assert_eq!(lines.next(), None);
 
         let rope = Rope::from("abc\ndefg\nhi");
-        let mut lines = rope.reversed_chunks_in_range(0..rope.len()).lines();
+        let mut lines = rope
+            .reversed_chunks_in_range(span(0..rope.len().0))
+            .lines();
         assert_eq!(lines.next(), Some("hi"));
         assert_eq!(lines.next(), Some("defg"));
         assert_eq!(lines.next(), Some("abc"));
         assert_eq!(lines.next(), None);
 
         let rope = Rope::from("abc\ndefg\nhi\n");
-        let mut lines = rope.reversed_chunks_in_range(0..rope.len()).lines();
+        let mut lines = rope
+            .reversed_chunks_in_range(span(0..rope.len().0))
+            .lines();
         assert_eq!(lines.next(), Some(""));
         assert_eq!(lines.next(), Some("hi"));
         assert_eq!(lines.next(), Some("defg"));
@@ -1929,7 +1995,9 @@ mod tests {
         assert_eq!(lines.next(), None);
 
         let rope = Rope::from("abc\nlonger line test\nhi");
-        let mut lines = rope.reversed_chunks_in_range(0..rope.len()).lines();
+        let mut lines = rope
+            .reversed_chunks_in_range(span(0..rope.len().0))
+            .lines();
         assert_eq!(lines.next(), Some("hi"));
         assert_eq!(lines.next(), Some("longer line test"));
         assert_eq!(lines.next(), Some("abc"));
@@ -1954,10 +2022,10 @@ mod tests {
             let new_text: String = RandomCharIter::new(&mut rng).take(len).collect();
 
             let mut new_actual = Rope::new();
-            let mut cursor = actual.cursor(0);
-            new_actual.append(cursor.slice(start_ix));
+            let mut cursor = actual.cursor(Offset::ZERO);
+            new_actual.append(cursor.slice(at(start_ix)));
             new_actual.push(&new_text);
-            cursor.seek_forward(end_ix);
+            cursor.seek_forward(at(end_ix));
             new_actual.append(cursor.suffix());
             actual = new_actual;
 
@@ -1970,19 +2038,21 @@ mod tests {
                 let end_ix = clip_offset(&expected, rng.random_range(0..=expected.len()), Right);
                 let start_ix = clip_offset(&expected, rng.random_range(0..=end_ix), Left);
 
-                let actual_text = actual.chunks_in_range(start_ix..end_ix).collect::<String>();
+                let actual_text = actual
+                    .chunks_in_range(span(start_ix..end_ix))
+                    .collect::<String>();
                 assert_eq!(actual_text, &expected[start_ix..end_ix]);
 
                 let mut actual_text = String::new();
                 actual
-                    .bytes_in_range(start_ix..end_ix)
+                    .bytes_in_range(span(start_ix..end_ix))
                     .read_to_string(&mut actual_text)
                     .unwrap();
                 assert_eq!(actual_text, &expected[start_ix..end_ix]);
 
                 assert_eq!(
                     actual
-                        .reversed_chunks_in_range(start_ix..end_ix)
+                        .reversed_chunks_in_range(span(start_ix..end_ix))
                         .collect::<Vec<&str>>()
                         .into_iter()
                         .rev()
@@ -1995,11 +2065,11 @@ mod tests {
                     .map(|(index, _)| start_ix + index + 1)
                     .collect();
 
-                let mut chunks = actual.chunks_in_range(start_ix..end_ix);
+                let mut chunks = actual.chunks_in_range(span(start_ix..end_ix));
 
                 let mut actual_line_starts = Vec::new();
                 while chunks.next_line() {
-                    actual_line_starts.push(chunks.offset());
+                    actual_line_starts.push(chunks.offset().0);
                 }
                 assert_eq!(
                     actual_line_starts,
@@ -2021,7 +2091,7 @@ mod tests {
 
                 let mut actual_line_starts = Vec::new();
                 while chunks.prev_line() {
-                    actual_line_starts.push(chunks.offset());
+                    actual_line_starts.push(chunks.offset().0);
                 }
                 actual_line_starts.reverse();
                 assert_eq!(
@@ -2037,7 +2107,7 @@ mod tests {
                 while !expected.is_char_boundary(offset) {
                     offset -= 1;
                 }
-                chunks.seek(offset);
+                chunks.seek(at(offset));
 
                 for _ in 0..5 {
                     if rng.random() {
@@ -2057,7 +2127,7 @@ mod tests {
                         if let Some(expected_next_line_start) = expected_next_line_start {
                             assert_eq!(
                                 chunks.offset(),
-                                expected_next_line_start,
+                                at(expected_next_line_start),
                                 "invalid position after seeking to {} in range {:?} ({:?})",
                                 offset,
                                 start_ix..end_ix,
@@ -2066,7 +2136,7 @@ mod tests {
                         } else {
                             assert_eq!(
                                 chunks.offset(),
-                                end_ix,
+                                at(end_ix),
                                 "invalid position after seeking to {} in range {:?} ({:?})",
                                 offset,
                                 start_ix..end_ix,
@@ -2110,7 +2180,7 @@ mod tests {
                         if let Some(expected_prev_line_start) = expected_prev_line_start {
                             assert_eq!(
                                 chunks.offset(),
-                                expected_prev_line_start,
+                                at(expected_prev_line_start),
                                 "invalid position after seeking to {} in range {:?} ({:?})",
                                 offset,
                                 start_ix..end_ix,
@@ -2119,7 +2189,7 @@ mod tests {
                         } else {
                             assert_eq!(
                                 chunks.offset(),
-                                start_ix,
+                                at(start_ix),
                                 "invalid position after seeking to {} in range {:?} ({:?})",
                                 offset,
                                 start_ix..end_ix,
@@ -2128,68 +2198,73 @@ mod tests {
                         }
                     }
 
-                    assert!((start_ix..=end_ix).contains(&chunks.offset()));
+                    assert!((start_ix..=end_ix).contains(&chunks.offset().0));
                     if rng.random() {
                         offset = rng.random_range(start_ix..=end_ix);
                         while !expected.is_char_boundary(offset) {
                             offset -= 1;
                         }
-                        chunks.seek(offset);
+                        chunks.seek(at(offset));
                     } else {
                         chunks.next();
-                        offset = chunks.offset();
-                        assert!((start_ix..=end_ix).contains(&chunks.offset()));
+                        offset = chunks.offset().0;
+                        assert!((start_ix..=end_ix).contains(&chunks.offset().0));
                     }
                 }
             }
 
             let mut offset_utf16 = OffsetUtf16(0);
-            let mut point = Point::new(0, 0);
-            let mut point_utf16 = PointUtf16::new(0, 0);
+            let mut current = point(0, 0);
+            let mut current_utf16 = point_utf16(0, 0);
             for (ix, ch) in expected.char_indices().chain(Some((expected.len(), '\0'))) {
-                assert_eq!(actual.offset_to_point(ix), point, "offset_to_point({})", ix);
                 assert_eq!(
-                    actual.offset_to_point_utf16(ix),
-                    point_utf16,
+                    actual.offset_to_point(at(ix)),
+                    current,
+                    "offset_to_point({})",
+                    ix
+                );
+                assert_eq!(
+                    actual.offset_to_point_utf16(at(ix)),
+                    current_utf16,
                     "offset_to_point_utf16({})",
                     ix
                 );
                 assert_eq!(
-                    actual.point_to_offset(point),
-                    ix,
+                    actual.point_to_offset(current),
+                    at(ix),
                     "point_to_offset({:?})",
-                    point
+                    current
                 );
                 assert_eq!(
-                    actual.point_utf16_to_offset(point_utf16),
-                    ix,
+                    actual.point_utf16_to_offset(current_utf16),
+                    at(ix),
                     "point_utf16_to_offset({:?})",
-                    point_utf16
+                    current_utf16
                 );
                 assert_eq!(
-                    actual.offset_to_offset_utf16(ix),
+                    actual.offset_to_offset_utf16(at(ix)),
                     offset_utf16,
                     "offset_to_offset_utf16({:?})",
                     ix
                 );
                 assert_eq!(
                     actual.offset_utf16_to_offset(offset_utf16),
-                    ix,
+                    at(ix),
                     "offset_utf16_to_offset({:?})",
                     offset_utf16
                 );
                 if ch == '\n' {
-                    point += Point::new(1, 0);
-                    point_utf16 += PointUtf16::new(1, 0);
+                    current += point(1, 0);
+                    current_utf16 += point_utf16(1, 0);
                 } else {
-                    point.column += ch.len_utf8() as u32;
-                    point_utf16.column += ch.len_utf16() as u32;
+                    current.column.0 += ch.len_utf8() as u32;
+                    current_utf16.column.0 += ch.len_utf16() as u32;
                 }
                 offset_utf16.0 += ch.len_utf16();
             }
 
             let mut offset_utf16 = OffsetUtf16(0);
-            let mut point_utf16 = Unclipped(PointUtf16::zero());
+            let mut current_utf16 = Unclipped(PointUtf16::zero());
             for unit in expected.encode_utf16() {
                 let left_offset = actual.clip_offset_utf16(offset_utf16, Bias::Left);
                 let right_offset = actual.clip_offset_utf16(offset_utf16, Bias::Right);
@@ -2198,8 +2273,8 @@ mod tests {
                 actual.offset_utf16_to_offset(left_offset);
                 actual.offset_utf16_to_offset(right_offset);
 
-                let left_point = actual.clip_point_utf16(point_utf16, Bias::Left);
-                let right_point = actual.clip_point_utf16(point_utf16, Bias::Right);
+                let left_point = actual.clip_point_utf16(current_utf16, Bias::Left);
+                let right_point = actual.clip_point_utf16(current_utf16, Bias::Right);
                 assert!(right_point >= left_point);
                 // Ensure translating valid UTF-16 points to offsets doesn't panic.
                 actual.point_utf16_to_offset(left_point);
@@ -2207,9 +2282,9 @@ mod tests {
 
                 offset_utf16.0 += 1;
                 if unit == b'\n' as u16 {
-                    point_utf16.0 += PointUtf16::new(1, 0);
+                    current_utf16.0 += point_utf16(1, 0);
                 } else {
-                    point_utf16.0 += PointUtf16::new(0, 1);
+                    current_utf16.0 += point_utf16(0, 1);
                 }
             }
 
@@ -2217,7 +2292,7 @@ mod tests {
                 let end_ix = clip_offset(&expected, rng.random_range(0..=expected.len()), Right);
                 let start_ix = clip_offset(&expected, rng.random_range(0..=end_ix), Left);
                 assert_eq!(
-                    actual.cursor(start_ix).summary::<TextSummary>(end_ix),
+                    actual.cursor(at(start_ix)).summary::<TextSummary>(at(end_ix)),
                     TextSummary::from(&expected[start_ix..end_ix])
                 );
             }
@@ -2225,10 +2300,10 @@ mod tests {
             let mut expected_longest_rows = Vec::new();
             let mut longest_line_len = -1_isize;
             for (row, line) in expected.split('\n').enumerate() {
-                let row = row as u32;
+                let row = LineIndex(row as u32);
                 assert_eq!(
                     actual.line_len(row),
-                    line.len() as u32,
+                    ByteColumn(line.len() as u32),
                     "invalid line len for row {}",
                     row
                 );
@@ -2267,11 +2342,11 @@ mod tests {
 
                 // Test that correct range returns true
                 assert!(
-                    rope.chunks_in_range(range.clone())
+                    rope.chunks_in_range(span(range.clone()))
                         .equals_str(correct_substring)
                 );
                 assert!(
-                    rope.reversed_chunks_in_range(range.clone())
+                    rope.reversed_chunks_in_range(span(range.clone()))
                         .equals_str(correct_substring)
                 );
 
@@ -2289,12 +2364,12 @@ mod tests {
                         }
                         assert!(
                             !rope
-                                .chunks_in_range(range.clone())
+                                .chunks_in_range(span(range.clone()))
                                 .equals_str(other_substring)
                         );
                         assert!(
                             !rope
-                                .reversed_chunks_in_range(range.clone())
+                                .reversed_chunks_in_range(span(range.clone()))
                                 .equals_str(other_substring)
                         );
                     }
@@ -2303,10 +2378,10 @@ mod tests {
         }
 
         let rope = Rope::from("");
-        assert!(rope.chunks_in_range(0..0).equals_str(""));
-        assert!(rope.reversed_chunks_in_range(0..0).equals_str(""));
-        assert!(!rope.chunks_in_range(0..0).equals_str("foo"));
-        assert!(!rope.reversed_chunks_in_range(0..0).equals_str("foo"));
+        assert!(rope.chunks_in_range(span(0..0)).equals_str(""));
+        assert!(rope.reversed_chunks_in_range(span(0..0)).equals_str(""));
+        assert!(!rope.chunks_in_range(span(0..0)).equals_str("foo"));
+        assert!(!rope.reversed_chunks_in_range(span(0..0)).equals_str("foo"));
     }
 
     #[test]
@@ -2382,17 +2457,17 @@ mod tests {
         let fixture = "地";
         let rope = Rope::from("地");
         for b in 0..=fixture.len() {
-            assert_eq!(rope.is_char_boundary(b), fixture.is_char_boundary(b));
+            assert_eq!(rope.is_char_boundary(at(b)), fixture.is_char_boundary(b));
         }
         let fixture = "";
         let rope = Rope::from("");
         for b in 0..=fixture.len() {
-            assert_eq!(rope.is_char_boundary(b), fixture.is_char_boundary(b));
+            assert_eq!(rope.is_char_boundary(at(b)), fixture.is_char_boundary(b));
         }
         let fixture = "🔴🟠🟡🟢🔵🟣⚫️⚪️🟤\n🏳️‍⚧️🏁🏳️‍🌈🏴‍☠️⛳️📬📭🏴🏳️🚩";
         let rope = Rope::from("🔴🟠🟡🟢🔵🟣⚫️⚪️🟤\n🏳️‍⚧️🏁🏳️‍🌈🏴‍☠️⛳️📬📭🏴🏳️🚩");
         for b in 0..=fixture.len() {
-            assert_eq!(rope.is_char_boundary(b), fixture.is_char_boundary(b));
+            assert_eq!(rope.is_char_boundary(at(b)), fixture.is_char_boundary(b));
         }
     }
 
@@ -2401,19 +2476,28 @@ mod tests {
         let fixture = "地";
         let rope = Rope::from("地");
         for b in 0..=fixture.len() {
-            assert_eq!(rope.floor_char_boundary(b), fixture.floor_char_boundary(b));
+            assert_eq!(
+                rope.floor_char_boundary(at(b)),
+                at(fixture.floor_char_boundary(b))
+            );
         }
 
         let fixture = "";
         let rope = Rope::from("");
         for b in 0..=fixture.len() {
-            assert_eq!(rope.floor_char_boundary(b), fixture.floor_char_boundary(b));
+            assert_eq!(
+                rope.floor_char_boundary(at(b)),
+                at(fixture.floor_char_boundary(b))
+            );
         }
 
         let fixture = "🔴🟠🟡🟢🔵🟣⚫️⚪️🟤\n🏳️‍⚧️🏁🏳️‍🌈🏴‍☠️⛳️📬📭🏴🏳️🚩";
         let rope = Rope::from("🔴🟠🟡🟢🔵🟣⚫️⚪️🟤\n🏳️‍⚧️🏁🏳️‍🌈🏴‍☠️⛳️📬📭🏴🏳️🚩");
         for b in 0..=fixture.len() {
-            assert_eq!(rope.floor_char_boundary(b), fixture.floor_char_boundary(b));
+            assert_eq!(
+                rope.floor_char_boundary(at(b)),
+                at(fixture.floor_char_boundary(b))
+            );
         }
     }
 
@@ -2422,19 +2506,28 @@ mod tests {
         let fixture = "地";
         let rope = Rope::from("地");
         for b in 0..=fixture.len() {
-            assert_eq!(rope.ceil_char_boundary(b), fixture.ceil_char_boundary(b));
+            assert_eq!(
+                rope.ceil_char_boundary(at(b)),
+                at(fixture.ceil_char_boundary(b))
+            );
         }
 
         let fixture = "";
         let rope = Rope::from("");
         for b in 0..=fixture.len() {
-            assert_eq!(rope.ceil_char_boundary(b), fixture.ceil_char_boundary(b));
+            assert_eq!(
+                rope.ceil_char_boundary(at(b)),
+                at(fixture.ceil_char_boundary(b))
+            );
         }
 
         let fixture = "🔴🟠🟡🟢🔵🟣⚫️⚪️🟤\n🏳️‍⚧️🏁🏳️‍🌈🏴‍☠️⛳️📬📭🏴🏳️🚩";
         let rope = Rope::from("🔴🟠🟡🟢🔵🟣⚫️⚪️🟤\n🏳️‍⚧️🏁🏳️‍🌈🏴‍☠️⛳️📬📭🏴🏳️🚩");
         for b in 0..=fixture.len() {
-            assert_eq!(rope.ceil_char_boundary(b), fixture.ceil_char_boundary(b));
+            assert_eq!(
+                rope.ceil_char_boundary(at(b)),
+                at(fixture.ceil_char_boundary(b))
+            );
         }
     }
 
@@ -2443,7 +2536,7 @@ mod tests {
         let mut rope = Rope::new();
         rope.push_front("");
         assert_eq!(rope.text(), "");
-        assert_eq!(rope.len(), 0);
+        assert_eq!(rope.len(), ByteLen(0));
     }
 
     #[test]
@@ -2458,8 +2551,8 @@ mod tests {
         let mut rope = Rope::new();
         rope.push_front("hello");
         assert_eq!(rope.text(), "hello");
-        assert_eq!(rope.len(), 5);
-        assert_eq!(rope.max_point(), Point::new(0, 5));
+        assert_eq!(rope.len(), ByteLen(5));
+        assert_eq!(rope.max_point(), point(0, 5));
     }
 
     #[test]
@@ -2467,7 +2560,7 @@ mod tests {
         let mut rope = Rope::from("hint");
         rope.push_front(" ");
         assert_eq!(rope.text(), " hint");
-        assert_eq!(rope.len(), 5);
+        assert_eq!(rope.len(), ByteLen(5));
     }
 
     #[test]
@@ -2494,7 +2587,7 @@ mod tests {
                 "text mismatch after push_front({:?})",
                 prefix
             );
-            assert_eq!(rope.len(), expected.len());
+            assert_eq!(rope.len(), ByteLen(expected.len()));
 
             let actual_summary = rope.summary();
             let expected_summary = TextSummary::from(expected.as_str());
@@ -2522,8 +2615,8 @@ mod tests {
             // Verify offset-to-point and point-to-offset round-trip at boundaries.
             for (ix, _) in expected.char_indices().chain(Some((expected.len(), '\0'))) {
                 assert_eq!(
-                    rope.point_to_offset(rope.offset_to_point(ix)),
-                    ix,
+                    rope.point_to_offset(rope.offset_to_point(at(ix))),
+                    at(ix),
                     "offset round-trip failed at {} for {:?}",
                     ix,
                     expected
@@ -2548,7 +2641,7 @@ mod tests {
         let expected = format!("{}{}", prefix, initial_text);
 
         assert_eq!(rope.text(), expected);
-        assert_eq!(rope.len(), expected.len());
+        assert_eq!(rope.len(), ByteLen(expected.len()));
 
         let actual_summary = rope.summary();
         let expected_summary = TextSummary::from(expected.as_str());

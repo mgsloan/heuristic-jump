@@ -42,7 +42,9 @@
 //! untagged enum whose `Full` variant would swallow every incremental change
 //! and replace the document with the characters just typed.
 
-use rope::{Bias, ByteLen, LineIndex, Offset, Point, PointUtf16, Rope, Unclipped};
+use rope::{
+    Bias, ByteColumn, ByteLen, LineIndex, Offset, Point, PointUtf16, Rope, Unclipped, Utf16Column,
+};
 use serde::de::{IgnoredAny, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::value::RawValue;
@@ -108,7 +110,7 @@ impl WirePosition {
     /// The only way out. Requires naming the encoding and the document, which
     /// is exactly the information a correct conversion needs.
     pub fn resolve(self, encoding: PositionEncoding, text: &Rope) -> Result<Offset, EncodingError> {
-        let last_line = LineIndex(text.max_point().row);
+        let last_line = text.max_point().row;
         if self.line > last_line {
             return Err(EncodingError::LineOutOfRange {
                 line: self.line,
@@ -129,14 +131,14 @@ impl WirePosition {
         // "defaults back to the line length".
         let offset = match encoding {
             PositionEncoding::Utf8 => {
-                let point = Point::new(self.line.0, self.character);
+                let point = Point::new(self.line, ByteColumn(self.character));
                 if text.clip_point(point, Bias::Left) != point {
                     return Err(out_of_range());
                 }
                 text.point_to_offset(point)
             }
             PositionEncoding::Utf16 => {
-                let point = PointUtf16::new(self.line.0, self.character);
+                let point = PointUtf16::new(self.line, Utf16Column(self.character));
                 if text.clip_point_utf16(Unclipped(point), Bias::Left) != point {
                     return Err(out_of_range());
                 }
@@ -148,19 +150,19 @@ impl WirePosition {
             // encoding almost nobody negotiates; paying a line scan for it is
             // better than a fourth dimension in every `TextSummary`.
             PositionEncoding::Utf32 => {
-                let line_start = text.point_to_offset(Point::new(self.line.0, 0));
+                let line_start = text.point_to_offset(Point::new(self.line, ByteColumn::ZERO));
                 let mut scalars = text.chars_at(line_start);
                 let mut offset = line_start;
                 for _ in 0..self.character {
                     match scalars.next() {
                         Some('\n') | None => return Err(out_of_range()),
-                        Some(scalar) => offset += scalar.len_utf8(),
+                        Some(scalar) => offset += ByteLen(scalar.len_utf8()),
                     }
                 }
                 offset
             }
         };
-        Ok(Offset(offset))
+        Ok(offset)
     }
 
     /// The only constructor other than deserialization, which is what makes
@@ -177,39 +179,39 @@ impl WirePosition {
         // came from somewhere that has already gone wrong. `rope`'s
         // `is_char_boundary` is documented to cover both halves — past the end
         // of the document, and inside a UTF-8 sequence.
-        if !text.is_char_boundary(offset.0) {
+        if !text.is_char_boundary(offset) {
             return Err(EncodingError::OffsetOutOfRange {
                 offset,
-                len: ByteLen(text.len()),
+                len: text.len(),
             });
         }
         let position = match encoding {
             PositionEncoding::Utf8 => {
-                let point = text.offset_to_point(offset.0);
+                let point = text.offset_to_point(offset);
                 Self {
-                    line: LineIndex(point.row),
-                    character: point.column,
+                    line: point.row,
+                    character: point.column.0,
                 }
             }
             PositionEncoding::Utf16 => {
-                let point = text.offset_to_point_utf16(offset.0);
+                let point = text.offset_to_point_utf16(offset);
                 Self {
-                    line: LineIndex(point.row),
-                    character: point.column,
+                    line: point.row,
+                    character: point.column.0,
                 }
             }
             PositionEncoding::Utf32 => {
-                let line = LineIndex(text.offset_to_point(offset.0).row);
-                let line_start = text.point_to_offset(Point::new(line.0, 0));
+                let line = text.offset_to_point(offset).row;
+                let line_start = text.point_to_offset(Point::new(line, ByteColumn::ZERO));
                 // Cannot overflow: a scalar value is at least one byte, and
                 // `Point::column` already bounds a line's byte length to `u32`.
                 let mut character = 0;
                 let mut at = line_start;
                 for scalar in text.chars_at(line_start) {
-                    if at >= offset.0 {
+                    if at >= offset {
                         break;
                     }
-                    at += scalar.len_utf8();
+                    at += ByteLen(scalar.len_utf8());
                     character += 1;
                 }
                 Self { line, character }
