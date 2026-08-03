@@ -577,3 +577,83 @@ read from the trailer, and `--amend` is off the table. Compute it with the
 `loc_per_crate` rule (non-blank, non-`tests/`) rather than from
 `git diff --numstat`, which counts blank lines and test files and will always
 disagree.
+
+## 25be160b — core.md#8.2
+
+Target picked by the same three criteria the last two campaigns used, and the
+first one paid again: the §8 stamps in `state/audit/core.toml` were the oldest
+in the file (`04:41:48`, `05:10:16`), old enough that `#83` and `#87` still
+say "no `proto` module exists" about a module that has held `WirePosition` for
+two campaigns. **Read `last_audited` before believing a gap.** Two sections in
+the list handed to this campaign were probably already clean.
+
+**What the inventory turned out to be.** 31 read projections, 13 constructed
+types, 5 that travel both ways. §8.2 says "roughly thirty small structs" and
+that is the read half; the constructed set is the part that is easy to
+underestimate, because a response envelope drags in an error code, a JSON-RPC
+version and — for standalone — a *second* `InitializeResult`.
+
+**The three-way split is the whole design, and it is not in the document as a
+split.** §8.2 states two properties separately: incoming types are read-only
+projections, and only a small set is ever constructed. Implementing them makes
+a third category unavoidable — a `WirePosition` arrives in a definition
+request and leaves in a response, and so do `WireRange`, `WireLocation`,
+`PositionEncoding` and `TextDocumentSyncKind`. Those five carry both derives.
+The rule that survives is therefore not "no type has both", which is false,
+but "the message projections have exactly one direction, and the value types
+that have two are enumerated". `tests/proto.rs` holds all three lists, which
+is what stops the third one being where an exception goes to hide.
+
+**Approaches considered and dropped:**
+
+* *One `InitializeResult` with both derives.* Tempting — the fields overlap
+  almost entirely. Dropped because a projection that can be written back is
+  the round trip §8.2 removes, and because the two genuinely differ: what we
+  *support* is not optional, where what a child reports is. Standalone's is
+  `StandaloneInitializeResult` and the two lists stay disjoint.
+* *`#[serde(untagged)]` for `contentChanges` with `Incremental` declared
+  first.* This is the reordering §8.5 says is not an acceptable defence, and
+  writing it out made the reason concrete: nothing in the file would say why
+  the order matters, so the next rustfmt-adjacent tidy-up destroys documents.
+  The hand-written `Deserialize` is 40 lines with the visitor boilerplate,
+  not the 15 §8.5 estimates.
+* *Treating `range: null` as the full-document form.* It falls out of
+  `next_value::<Option<WireRange>>` for free and is wrong in the one direction
+  that costs a document. It is refused instead, and there is a test.
+* *`Vec<PositionEncoding>` for `capabilities.general.positionEncodings`.* A
+  strict `Deserialize` there fails `initialize` outright when an editor offers
+  a kind we do not implement. That field is a *menu*, so unknown entries are
+  dropped; failing closed belongs on the negotiated value, which is
+  `ServerCapabilities::position_encoding`. The two are opposite policies on
+  the same enum and the distinction is worth keeping in mind elsewhere.
+* *Deriving `Deserialize` for `LanguageId` on `TextDocumentItem`.* The same
+  conclusion the previous campaign reached from the other side: `language_id`
+  stays a `Box<str>` because interning is a registry lookup that must be able
+  to fail. This is the one field where §8.1's "the newtypes are what
+  deserialization produces" deliberately does not apply, and it now says so in
+  a doc comment so it is not read as an oversight a third time.
+
+**A `Serialize` bound in a turbofish-only generic is a clippy error.**
+`fn is_serializable<T: Serialize>() -> bool` trips `extra_unused_type_parameters`
+under `-D warnings`. Returning `PhantomData<T>` uses the parameter and keeps
+the property: naming a read projection in that position does not compile.
+
+**The pending-tree gate cannot go green while a human is mid-intervention.**
+`crates/similarity/` appeared untracked during this session — the human
+answering `conformance-008` — and `harness/gate conformance` checks staged,
+unstaged *and untracked* paths, so its diff-scope step fails on files the loop
+is forbidden to touch and equally forbidden to delete. There is no move
+available inside the loop's own paths that clears it. What works, and what the
+gate is built for, is `harness/gate conformance --rev HEAD` after committing
+only your own paths: `cmd_check_scope` in forensic mode reads the commit's
+paths rather than the working tree. Do not "fix" this by reverting or
+stashing someone else's port. Steps 1–3 are unaffected either way, so the
+compile-and-test half of the gate is still a real signal while it lasts.
+
+**Handover.** §8.6 is now the only §8 section whose gap is genuinely
+unreachable from `shared` alone: untrusted-document state needs `driver`'s
+document map, which does not exist. §8.5's remaining gap is the golden corpus
+and the `lsp-types` dev-dependency oracle — the corpus is captured traffic
+from real editors and servers, so it is closer to an intervention than to a
+campaign, and a campaign that targets §8.5 should decide that first rather
+than discovering it after writing the differential harness.
