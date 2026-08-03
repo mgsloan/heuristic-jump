@@ -7,8 +7,11 @@ does.*
   routinely, and do not use `--all-features` — it expands the build matrix and
   `target/`.
 
-* Lint: `cargo clippy --workspace --all-targets -- -D warnings`. Should pass for
-  every commit.
+* Lint: `cargo clippy -p <crate> --all-targets -- -D warnings`, on the crates
+  you own. Must pass for every commit. The `--workspace` form is a phase-gate
+  check, not a per-commit one — running it routinely means compiling every
+  grammar to check one handler, which is the coupling `design/core.md` §7
+  splits `measure_core` apart to avoid.
 
 * **Never run bare `cargo fmt` or `cargo fmt --all`** — it formats every
   workspace member including `vendor/`, and rustfmt's `ignore` option is
@@ -169,7 +172,9 @@ These are the ones that cost the most to get wrong.
 This file is read by every agent session. Keep it high-signal.
 
 ## After any agentic session
-If you discover a non-obvious pattern that would help future sessions, include a **"Suggested rules additions"** heading in your PR description with the proposed text. Do **not** edit this file inline during normal feature/fix work. Reviewers decide what gets merged.
+If you discover a non-obvious pattern that would help future sessions, file it as a decision (`state/decisions/`) with the proposed text. Do **not** edit this file inline during normal work.
+
+Changing this file is a bigger deal than it looks: Claude Code loads it into every session, so an edit changes the behaviour of every future campaign, and metrics either side of it are not strictly comparable. It is therefore a human change, logged as an intervention like a prompt revision — `design/loops.md` §16.
 
 ## High bar for new rules
 Editing or clarifying existing rules is always welcome. New rules must meet **all three** criteria:
@@ -184,6 +189,8 @@ Avoid architectural descriptions of a crate (module layout, data flow, key types
 
 ## No drive-by additions
 Rules emerge from validated patterns, not one-off observations. The workflow is:
-1. Agent notes a pattern during a session.
-2. Team validates the pattern in code review.
+1. A campaign notes a pattern and files it as a decision.
+2. It is validated — by recurrence across campaigns, or by a human at a phase gate.
 3. A dedicated commit adds the rule with context on *why* it exists.
+
+Recurrence is the useful signal: the same suggestion arriving from three campaigns is evidence, where one campaign's observation is a hypothesis.

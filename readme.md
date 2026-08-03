@@ -32,10 +32,9 @@ clippy.toml
 design/              the design documents, described below
 harness/             loop runner, gates, ratchets, dashboard. Owned by no
                      agent session; a loop cannot weaken its own gate
-state/audit/         per-section audit state and open gaps - written by the
-                     auditor, never by hand
-state/               loop state: metrics, journals, campaigns, decisions,
-                     interventions, cost. Partitioned by owner
+state/               loop state: audit results and open gaps, metrics,
+                     journals, campaigns, decisions, interventions, cost.
+                     Partitioned by owner; written by loops, never by hand
 vendor/
   rope/              copied from Zed, GPL-3.0-or-later
   sum_tree/          copied from Zed, Apache-2.0

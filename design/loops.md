@@ -496,7 +496,7 @@ contradiction; a section reference that does not resolve; a type name
 that changed; a claim about a dependency's API that is factually false;
 an example that does not compile. The test is: *is there a defensible
 answer that does not trade anything off?* Fix, and append to
-`spec/changelog.md` with the contradiction quoted and the resolution
+`state/spec-changelog.md` with the contradiction quoted and the resolution
 stated. Class A edits are reviewed in batch, after the fact.
 
 **Class B — escalate, and keep going anyway.** Anything that trades
@@ -605,7 +605,7 @@ the metrics can be satisfied without work being done:
 |---|---|
 | Delete or weaken tests | Test count is a ratchet; test *deletions* are flagged for review regardless of count |
 | Rewrite the gate script | `harness/` is owned by nobody and denied to every loop; changes to it are Class B |
-| Rewrite the spec to match the code | Class A/B split, plus `spec/changelog.md` review; any spec edit in the same commit as code touching the same item is flagged |
+| Rewrite the spec to match the code | Class A/B split, plus `state/spec-changelog.md` review; any spec edit in the same commit as code touching the same item is flagged |
 | Tune to the corpus | Held-out repos are in a corpus split the loop is never given ([section 12](#12-held-out-integrity)) |
 | `cargo insta accept` a metric regression | The gate checks metric *direction* itself; insta pins the table's shape, not its values |
 | Split one item into ten to show motion | Ledger additions by the loop are marked `origin = "loop"` and reported separately from the reviewed baseline |
@@ -1328,12 +1328,24 @@ result rather than trusting the actor:
 
   | Loop | May write |
   |---|---|
-  | conformance | `vendor/`, `crates/{shared,driver,heuristic_jump,measure_*}/`, `spec/` |
+  | conformance | `vendor/`, `crates/{shared,driver,heuristic_jump,measure_*}/`, `design/` |
   | lang-rust | `crates/lang_rust/`, `state/{metrics,journal,decisions}/rust*` |
   | lang-python | `crates/lang_python/` *except* `profile/`, `state/…/python*` |
   | python-pyright | `crates/lang_python/src/profile/pyright.rs`, `state/…/python-pyright*` |
   | phase 3 | everything, including `crates/similarity/`. One writer, nothing running alongside |
   | *nobody* | `harness/`, `crates/similarity/` |
+
+`design/` is writable by the conformance loop because Class A spec fixes
+edit the design documents themselves
+([section 6](#6-spec-changes-what-the-loop-may-decide-alone)). Class B
+changes are still escalations — the write access is what makes fixing a
+contradiction possible, not permission to decide one.
+
+`harness/` has one bounded exception, and only one: while the
+conformance loop is building the phase-2 machinery
+([section 18](#the-conformance-loop-builds-the-followup)) it may write
+the parts that will judge *later* loops, and never the gate, the prompts,
+or the auditor that judge it now.
 
 Ownership is by path, not by crate, which is what lets a per-server
 profile loop coexist with the language loop that owns the rest of the
@@ -1585,8 +1597,8 @@ everything below changes.
 **Conformance loop** (phases 1a, 2b):
 
 ```
-{{CLAUDE.md}}
-The constraints above are absolute and override anything below.
+CLAUDE.md is already in your context. Its constraints are absolute and
+override anything here.
 
 You are the {loop} loop, in phase {phase}.
 You may write only: {owned paths}. Anything else fails the gate.
@@ -1605,7 +1617,8 @@ One campaign per session:
   5. On close: write state/journal/{owner}.md — what you tried, what
      failed, and why. Write it for a session that will not remember this one.
 
-Spec changes: fix contradictions and record them in spec/changelog.md.
+Spec changes: fix contradictions in design/, record them in
+state/spec-changelog.md.
 Anything that trades something off is a decision — write
 state/decisions/{owner}-NNN.md, pick the reversible option, tag the
 sites `// DECISION-NNN: provisional`, and keep going. Never wait.
@@ -1620,7 +1633,7 @@ Decisions affecting you: {unresolved}
 close). Not a loop — one session, one question, no edits:
 
 ```
-{{CLAUDE.md}}
+CLAUDE.md is already in your context. Its constraints are absolute.
 
 You are auditing, not implementing. You may not edit anything.
 
@@ -1648,8 +1661,8 @@ are measurements and inflating them destroys what they measure.
 it succeeded:
 
 ```
-{{CLAUDE.md}}
-The constraints above are absolute and override anything below.
+CLAUDE.md is already in your context. Its constraints are absolute and
+override anything here.
 
 You are the {language}/{server} tuning loop, in phase {phase}.
 You may write only: crates/lang_{language}/, state/…/{language}*.
@@ -1688,8 +1701,8 @@ Other languages: {their digests; candidates, not conclusions — test
 **Optimisation loop** (phases 3, 7) has no hypothesis and no spec gap — its target is duplication, and its oracle is exact:
 
 ```
-{{CLAUDE.md}}
-The constraints above are absolute and override anything below.
+CLAUDE.md is already in your context. Its constraints are absolute and
+override anything here.
 
 You are the optimisation loop, in phase {phase}.
 You may write anywhere. Nothing else is running.
@@ -1752,9 +1765,15 @@ Two things keep that from collapsing into "maintain a second copy of
 every rule," which would be worse than pointers:
 
 * **Substitution happens at launch, from the source file.** The template
-  holds `{{CLAUDE.md}}`; the supervisor reads the real file and splices
-  it in. There is one copy of every rule and it is the original, so
-  drift is not merely discouraged, it is unrepresentable.
+  holds `{{trailer-format}}` and the like; the supervisor reads the real
+  file and splices it in. There is one copy of every rule and it is the
+  original, so drift is not merely discouraged, it is unrepresentable.
+* **`CLAUDE.md` needs none of this.** Claude Code loads it into every
+  session's context already, so it satisfies the inline rule for free and
+  splicing it would put it in context twice. The prompts therefore state
+  its *precedence* — its constraints override anything the prompt says —
+  and nothing else. That precedence line is worth keeping: without it,
+  two sets of instructions arrive with no stated ordering.
 * **The boundary is rules versus subject matter.** Constraints,
   procedure, ownership, and stop conditions are inlined. The spec
   sections, code, and corpus tables a campaign works *on* are not rules
@@ -1769,9 +1788,13 @@ cacheable region is unaffected.
 
 One consequence for [section 16](#every-intervention-is-logged): the
 recorded prompt sha must be **the hash of the rendered prompt**, not of
-the template. Otherwise editing `CLAUDE.md` changes every campaign's
-behaviour while the template sha sits unchanged, which is exactly the
-unattributable behaviour change that field exists to prevent.
+the template, or a spliced-in file could change behaviour while the
+template sha sits unchanged. `CLAUDE.md` is the exception and needs no
+help — it is in git, and the campaign records the commit it started
+from, so which version was in context is already recoverable. Editing it
+is still logged as an intervention, for the same
+reason a prompt revision is: it changes every subsequent campaign and
+nothing downstream can tell.
 
 Three things these deliberately do *not* do, because each is a lesson
 already in this document: they do not tell the loop how to resolve
