@@ -41,12 +41,12 @@ last_audited = "2026-08-03T06:13:37+00:00"
 
 [section."core.md#2-document-snapshots"]
 state = "gaps"
-last_audited = "2026-08-03T03:47:22+00:00"
+last_audited = "2026-08-03T06:33:47+00:00"
 
   [[section."core.md#2-document-snapshots".gap]]
-  claim = "driver and measure_core both build the snapshot through the same constructor in `shared`, which is what keeps the corpus scoring the code that ships"
-  found = "no DocumentSnapshot type exists in crates/; shared has no constructor to share; measure_core is not a workspace member (Cargo.toml:3 lists only driver, heuristic_jump, shared), so neither caller the claim is about exists. MECHANICAL CHECK AVAILABLE: keeping the constructor the sole pub fn returning DocumentSnapshot, with private fields, makes 'one constructor, both callers' a grep rather than a judgement"
-  where = "crates/shared/src/shared.rs:1"
+  claim = "driver builds a snapshot at dispatch and measure_core builds one per recorded position, both through the same constructor in shared"
+  found = "the constructor exists (SnapshotSeed::realise) but has no callers: driver constructs no seed \u2014 dispatch receives a Query whose doc is already built \u2014 and measure_core does not exist, so 'the corpus scores the code that ships' rests on nothing. MECHANICAL CHECK AVAILABLE: keeping realise the only public route to a DocumentSnapshot makes a second snapshot path a compile error once both consumers exist"
+  where = "crates/driver/src/dispatch.rs:133"
 
 [section."core.md#snapshots-are-o1-to-take-and-are-parsed-before-a-handler-sees-one"]
 state = "gaps"
@@ -87,45 +87,50 @@ last_audited = "2026-08-03T06:13:37+00:00"
 
 [section."core.md#4-project-file-enumeration"]
 state = "gaps"
-last_audited = "2026-08-03T03:47:22+00:00"
+last_audited = "2026-08-03T06:33:47+00:00"
 
   [[section."core.md#4-project-file-enumeration".gap]]
-  claim = "the driver caches a file list, built with the `ignore` crate in-process, lazily on first need and refreshed in the background, scoped to workspace folders only"
-  found = "crates/driver/src/driver.rs has no items; `ignore` appears in no manifest \u2014 [workspace.dependencies] at Cargo.toml:18-20 contains only the path deps driver and shared"
-  where = "crates/driver/src/driver.rs:1"
+  claim = "the driver caches a file list, built lazily on first need and refreshed in the background"
+  found = "FileList::enumerate is an eager one-shot walk with no caller in the workspace, and ProjectView::new takes an Arc<FileList> from an owner that does not exist; the doc comment says 'refreshed in the background by whoever owns it' and nobody owns it"
+  where = "crates/shared/src/project.rs:123"
 
   [[section."core.md#4-project-file-enumeration".gap]]
-  claim = "invalidation by a debounced rescan triggered by AbstainReason::NoCandidates specifically and never by Deadline, plus a 'mark stale' tee of the editor's watcher events, neither path blocking a query"
-  found = "AbstainReason does not exist in crates/ (grep returns nothing), so there is no reason value to discriminate on, no stale flag, no shared debounce, and no routing of didChangeWatchedFiles. MECHANICAL CHECK AVAILABLE: an exhaustive match on AbstainReason at the trigger site makes 'NoCandidates yes, Deadline no' a compile error when a variant is added, per CLAUDE.md's no-wildcard-arm rule"
-  where = "crates/driver/src/driver.rs:1"
+  claim = "AbstainReason::NoCandidates specifically triggers a debounced background rescan, while the triggering query still abstains"
+  found = "nothing observes the variant: grep for rescan/debounc across crates/ returns only the doc comment on NoCandidates itself and an unrelated line in config.rs"
+  where = "crates/shared/src/handler.rs:120"
+
+  [[section."core.md#4-project-file-enumeration".gap]]
+  claim = "in proxy mode the editor's watcher notifications are teed to core and set a stale flag with O(1) work, never reading the payload"
+  found = "there is no stale flag on FileList and no didChangeWatchedFiles handling anywhere in crates/; blocked on shim.md's routing, but the core-side half is absent too"
+  where = "crates/shared/src/project.rs:113"
+
+  [[section."core.md#4-project-file-enumeration".minor]]
+  claim = "built with the ignore crate so .gitignore is respected for free, implementing high-level.md's decision that gitignored files are out of scope"
+  note = "WalkBuilder's defaults also exclude hidden files and honour .ignore, so a tracked dotfile is silently out of scope \u2014 a scope rule set by a default rather than by a decision"
+  where = "crates/shared/src/project.rs:129"
+
+  [[section."core.md#4-project-file-enumeration".minor]]
+  claim = "in-process gives direct control over cancellation at the deadline"
+  note = "FileList::enumerate takes no Deadline and polls nothing, so a cold walk could not be cut off; harmless until the lazy-build path exists"
+  where = "crates/shared/src/project.rs:123"
 
 [section."core.md#5-deadlines-and-abstention"]
-state = "gaps"
-last_audited = "2026-08-03T03:47:22+00:00"
-
-  [[section."core.md#5-deadlines-and-abstention".gap]]
-  claim = "cooperative cancellation via a Deadline holding `at: Instant` and `cancelled: Arc<AtomicBool>`, with `expired()` checking both, absolute and started at request arrival"
-  found = "no Deadline type exists anywhere in crates/; with no method to poll, the handler contract requiring a check at every loop boundary has nothing to check, and 'starts at request arrival' has nothing to carry it"
-  where = "crates/shared/src/shared.rs:1"
-
-  [[section."core.md#5-deadlines-and-abstention".gap]]
-  claim = "the cap is configurable via --deadline-ms, defaulting to 750ms proxying and 2000ms standalone, and the driver hard-caps by dropping the result of any handler that returns after the deadline"
-  found = "crates/heuristic_jump/src/heuristic_jump.rs:6 is `fn main() {}` \u2014 no argument parsing, no defaults, no mode distinction \u2014 and driver has no dispatch site at which a late result could be dropped"
-  where = "crates/heuristic_jump/src/heuristic_jump.rs:6"
+state = "clean"
+last_audited = "2026-08-03T06:33:47+00:00"
 
   [[section."core.md#5-deadlines-and-abstention".minor]]
-  claim = "the cap is configurable via --deadline-ms (deps.md \u00a711)"
-  note = "the crate doc says this crate is 'argument parsing, log setup, and the one place the language list is enumerated', citing deps.md \u00a711, over an empty main; unlike shared.rs:6 it does not mark itself as aspirational"
-  where = "crates/heuristic_jump/src/heuristic_jump.rs:1"
+  claim = "the cap is configurable via --deadline-ms"
+  note = "the end-to-end assertion greps a log line for deadline_ms=750/2000, because nothing constructs a Deadline from the resolved Config yet"
+  where = "crates/heuristic_jump/tests/deadline_flag.rs:38"
 
 [section."core.md#6-the-agreement-predicate"]
 state = "gaps"
-last_audited = "2026-08-03T04:41:48+00:00"
+last_audited = "2026-08-03T06:33:47+00:00"
 
   [[section."core.md#6-the-agreement-predicate".gap]]
-  claim = "both sides normalize Location/Location[]/LocationLink[]/null into a set of (DocumentUri, ByteRange), the pairwise relation compares (uri, line) and reads nothing, and the five severity rows write the exact strings same_file/near_module/unrelated into the record"
-  found = "no normalization, no predicate and no severity vocabulary exist anywhere in crates/; crates/driver/src/driver.rs is a seven-line module doc comment with no items, and grep finds no Location, Agreement or Severity type. MECHANICAL CHECK AVAILABLE: one Severity enum in shared with a single serde rename mapping, used by both the classifier and the record writer, turns 'the classifier and the metric must not have separate vocabularies' into a compile error instead of a review question"
-  where = "crates/driver/src/driver.rs:1"
+  claim = "both sides normalize to a set of Location, the predicate compares (uri, line) with a 3-line tolerance and reads nothing, and severity is the exact string written to the record"
+  found = "no code exists: grep for agreement/severity/near_module/same_file/unrelated across crates/ returns nothing, and proto.rs models no Location, Location[] or LocationLink[]. Location does carry the line the predicate needs (vocabulary.rs:279). MECHANICAL CHECK AVAILABLE: one enum whose Display is the string written to the record, so the classifier and the metric cannot acquire separate vocabularies"
+  where = "crates/shared/src/proto.rs:36"
 
 [section."core.md#both-sides-are-sets"]
 state = "gaps"
@@ -211,7 +216,13 @@ last_audited = "2026-08-03T06:13:37+00:00"
   where = "crates/driver/src/config.rs:71"
 
 [section."core.md#where-the-corpus-lives"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-03T06:33:47+00:00"
+
+  [[section."core.md#where-the-corpus-lives".gap]]
+  claim = "one corpus root outside the workspace with sibling training/ and test/ splits, each passed by path, and a truth.jsonl per server"
+  found = "no code takes a corpus path or reads a truth file: grep for corpus/truth.jsonl/training across crates/ returns three prose comments only, and measure_core (the corpus scan) is not a workspace member. MECHANICAL CHECK AVAILABLE: a scan given one split's path should be structurally unable to name the other, which is a path check rather than a convention"
+  where = "Cargo.toml:3"
 
 [section."core.md#the-command-line"]
 state = "gaps"
@@ -343,7 +354,13 @@ last_audited = "2026-08-03T05:34:51+00:00"
   where = "crates/driver/tests/seam.rs:39"
 
 [section."core.md#why-shared-is-separate-from-driver"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-03T06:33:47+00:00"
+
+  [[section."core.md#why-shared-is-separate-from-driver".gap]]
+  claim = "measure_core depends on shared only and takes its handler as &dyn LanguageHandler; measure_<lang> is a separate crate rather than a [[bin]], so heuristic_jump never links an LSP client"
+  found = "neither crate exists \u2014 no crates/measure_core or crates/measure_rust, and no workspace member for either. The shared/driver half of the section holds (driver depends on shared, shared has no driver edge). MECHANICAL CHECK AVAILABLE: the manifest scan in crates/driver/tests/seam.rs:29 extends to asserting measure_core names shared and neither driver nor any lang_*"
+  where = "Cargo.toml:3"
 
 [section."core.md#adding-a-language"]
 state = "gaps"
@@ -389,9 +406,19 @@ last_audited = "2026-08-03T05:10:16+00:00"
 
 [section."core.md#10-testing"]
 state = "gaps"
-last_audited = "2026-08-03T03:47:22+00:00"
+last_audited = "2026-08-03T06:33:47+00:00"
 
   [[section."core.md#10-testing".gap]]
-  claim = "phase 1a runs four suites before a shim exists: the snapshot version invariant, position-encoding property tests, protocol-type differential tests against lsp-types, and frame-codec fuzzing"
-  found = "none of the four exist. The only test in the tree is crates/heuristic_jump/tests/binary_name.rs, which asserts a \u00a79 claim (the artifact name); no crate declares proptest, insta or lsp-types, and there is no golden corpus directory"
-  where = "crates/heuristic_jump/tests/binary_name.rs:9"
+  claim = "snapshot version invariant: for a randomised sequence of edits and dispatches, snapshot.tree() parses to a tree whose extent matches snapshot.text"
+  found = "no test constructs a SnapshotSeed; crates/shared/tests holds only position_encoding.rs and vocabulary.rs. Blocked the same way the handler double is: SnapshotSeed::fresh needs a tree_sitter::Language and no grammar crate is in the workspace"
+  where = "crates/shared/src/document.rs:56"
+
+  [[section."core.md#10-testing".gap]]
+  claim = "protocol type differential tests against lsp-types over the golden corpus, plus a dedicated case per untagged union"
+  found = "lsp-types is not a dev-dependency of any crate, there is no golden corpus, and proto.rs declares no #[serde(untagged)] type, so \u00a78.5's risk is unexercised"
+  where = "crates/shared/Cargo.toml:36"
+
+  [[section."core.md#10-testing".gap]]
+  claim = "fuzz the frame codec, including split reads, oversized headers and bogus Content-Length"
+  found = "there is no frame codec: driver declares only the config and dispatch modules, and no test names a codec"
+  where = "crates/driver/src/driver.rs:10"
