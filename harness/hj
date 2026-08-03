@@ -1020,9 +1020,25 @@ def render(template: str, values: dict[str, str]) -> str:
     return out
 
 
+def judged_campaigns(owner: str) -> list[dict]:
+    """Closed campaigns that actually ran.
+
+    A crashed campaign is not evidence that the loop cannot make progress —
+    it is evidence that something killed it, which is a different failure with
+    a different remedy. Counting it toward the stall threshold means an
+    interrupted run silently spends the loop's patience: reaping one orphan
+    here took the count from 2 to 3 and would have made the next campaign
+    write a handoff instead of working.
+
+    A loop that keeps crashing still needs to surface, but as its own signal
+    rather than folded into this one.
+    """
+    return [c for c in campaigns_of(owner) if c.get("outcome") and c.get("outcome") != "crashed"]
+
+
 def trailing_without_progress(owner: str) -> int:
     trailing = 0
-    for campaign in reversed([c for c in campaigns_of(owner) if c.get("outcome")]):
+    for campaign in reversed(judged_campaigns(owner)):
         if campaign.get("progress"):
             break
         trailing += 1
@@ -1411,14 +1427,14 @@ def cmd_stall(args: argparse.Namespace) -> int:
     experiment. N consecutive closed campaigns with no progress stops the
     loop and asks for a human."""
     _, config = loop_config(args.loop)
-    closed = [c for c in campaigns_of(config.owner) if c.get("outcome")]
-    trailing = 0
-    for campaign in reversed(closed):
-        if campaign.get("progress"):
-            break
-        trailing += 1
+    closed = judged_campaigns(config.owner)
+    trailing = trailing_without_progress(config.owner)
     empty = sum(1 for c in closed[-config.stall_n :] if c.get("commits") == 0)
-    print(f"stall: {trailing} campaign(s) without progress (N={config.stall_n}); {empty} of the last {config.stall_n} produced no commit")
+    crashed = sum(1 for c in campaigns_of(config.owner) if c.get("outcome") == "crashed")
+    print(
+        f"stall: {trailing} campaign(s) without progress (N={config.stall_n}); "
+        f"{empty} of the last {config.stall_n} produced no commit; {crashed} crashed (not counted)"
+    )
     return 1 if trailing >= config.stall_n else 0
 
 
@@ -1428,12 +1444,9 @@ def cmd_status(args: argparse.Namespace) -> int:
     for owner, config in sorted(phase.loops.items()):
         counts = audit_counts(config.docs)
         campaigns = campaigns_of(owner)
-        closed = [c for c in campaigns if c.get("outcome")]
-        trailing = 0
-        for campaign in reversed(closed):
-            if campaign.get("progress"):
-                break
-            trailing += 1
+        closed = judged_campaigns(owner)
+        trailing = trailing_without_progress(owner)
+        crashed = sum(1 for c in campaigns if c.get("outcome") == "crashed")
         print()
         print(f"  {owner}  [{config.status}]")
         print(f"    docs        {', '.join(config.docs) or '(none)'}")
@@ -1442,7 +1455,10 @@ def cmd_status(args: argparse.Namespace) -> int:
             f"{counts['sections_unjudged']} unjudged, {counts['open_gaps']} gaps, "
             f"{counts['audit_minors']} minor"
         )
-        print(f"    campaigns   {len(campaigns)} opened, {len(closed)} closed, {trailing} without progress (stall N={config.stall_n})")
+        print(
+            f"    campaigns   {len(campaigns)} opened, {len(closed)} judged, {crashed} crashed, "
+            f"{trailing} without progress (stall N={config.stall_n})"
+        )
         for campaign in campaigns[-5:]:
             flag = "  [spec drift]" if campaign.get("spec_drift") else ""
             print(
