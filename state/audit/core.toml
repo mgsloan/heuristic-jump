@@ -7,10 +7,37 @@ state = "clean"
 last_audited = "2026-08-03T05:34:51+00:00"
 
 [section."core.md#vocabulary-types"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-03T06:13:37+00:00"
+
+  [[section."core.md#vocabulary-types".gap]]
+  claim = "EditorRequestId(Box<str>) \u2014 the editor's request id, stored in normalized text form, distinct from the shim's outgoing ids"
+  found = "the type does not exist: grep for EditorRequestId across all .rs in the workspace returns nothing, and shared's re-export list names Confidence, DocumentUri, DocumentVersion, FileExtension, LanguageId, Location and ServerId only"
+  where = "crates/shared/src/shared.rs:33"
+
+  [[section."core.md#vocabulary-types".gap]]
+  claim = "these are the deserialization targets, not wrappers applied after the fact \u2014 DocumentUri normalizes during deserialization, not afterwards"
+  found = "none of shared's own vocabulary types implement Deserialize; the only two in the workspace are proto::PositionEncoding and proto::WirePosition (proto.rs:36,53). DocumentUri::parse (vocabulary.rs:85) is exactly the after-the-fact wrapper the sentence rules out, and the type's doc concedes the deserialization half arrives later"
+  where = "crates/shared/src/vocabulary.rs:82"
+
+  [[section."core.md#vocabulary-types".minor]]
+  claim = "Location is printed with pub uri, pub range and pub line, while the same paragraph says it is constructed only via Location::at_node"
+  note = "the code takes the prose reading \u2014 private fields, three accessors, tagged DECISION-conformance-004: provisional. Stronger than the printed struct, but a visible divergence from it that its own author flagged for a human ruling"
+  where = "crates/shared/src/vocabulary.rs:135"
 
 [section."core.md#the-trait"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-03T06:13:37+00:00"
+
+  [[section."core.md#the-trait".gap]]
+  claim = "handlers do their own reads, parses and searches through ProjectView \u2014 read, parse and scan are all on it \u2014 and every path a handler holds came from ProjectView::candidates or ::lookup"
+  found = "ProjectView has roots, root_of, lookup and read only; candidates, parse and scan do not exist, so a handler cannot search at all and the parse LRU and bounded pool the claim routes through have no entry point. The module doc states the omission at project.rs:18-23"
+  where = "crates/shared/src/project.rs:173"
+
+  [[section."core.md#the-trait".minor]]
+  claim = "handlers never construct Outcome::Committed; policy.decide is the only way to build an Outcome"
+  note = "Query::policy's doc states this as a property of the type, but Outcome::Committed has public fields and is constructible directly; resolution.md \u00a77.4 settles it as a rule for handler authors, so the behaviour is defensible and the comment overstates it"
+  where = "crates/shared/src/handler.rs:48"
 
 [section."core.md#2-document-snapshots"]
 state = "gaps"
@@ -50,23 +77,13 @@ last_audited = "2026-08-03T05:34:51+00:00"
   where = "crates/shared/src/document.rs:110"
 
 [section."core.md#3-position-encoding"]
-state = "gaps"
-last_audited = "2026-08-03T03:47:22+00:00"
-
-  [[section."core.md#3-position-encoding".gap]]
-  claim = "conversion lives in one module with exhaustive property tests against a reference implementation"
-  found = "no conversion module and no property test exist; the only test file is crates/heuristic_jump/tests/binary_name.rs, no crate depends on proptest, and vendor/ (whose rope OffsetUtf16/PointUtf16 dimensions the section names as the mechanism) does not exist on disk"
-  where = "crates/shared/src/shared.rs:1"
-
-  [[section."core.md#3-position-encoding".gap]]
-  claim = "a settled PositionEncoding set once and never inferred, with the no-UTF-16-past-the-edge rule enforced by the type system: proto::WirePosition has private fields and yields a ByteOffset only when handed the negotiated encoding and the text"
-  found = "no proto module, no WirePosition, no PositionEncoding type anywhere in crates/. The only enforcement present is the cast_* deny block at Cargo.toml:77-82, which the manifest itself (Cargo.toml:74-76) describes as catching computation rather than storage"
-  where = "crates/shared/src/shared.rs:1"
+state = "clean"
+last_audited = "2026-08-03T06:13:37+00:00"
 
   [[section."core.md#3-position-encoding".minor]]
-  claim = "the no-UTF-16 rule is enforced by the type system rather than by discipline"
-  note = "the lint config justifies not denying indexing_slicing/string_slice with 'the protection that holds here is structural: WirePosition has private fields, offsets are newtypes' \u2014 present tense about types that do not exist, which reads as evidence the enforcement is already in place"
-  where = "Cargo.toml:87"
+  claim = "what reaches this document is a settled PositionEncoding, set once and never inferred"
+  note = "the enforceable half holds \u2014 no Default, and resolve/encode plus Deserialize are the only doors \u2014 but nothing in the workspace holds a PositionEncoding: no field, no config value, no caller of resolve. The property is unexercised rather than upheld; \u00a78.4 carries the plumbing gap"
+  where = "crates/shared/src/proto.rs:37"
 
 [section."core.md#4-project-file-enumeration"]
 state = "gaps"
@@ -157,13 +174,41 @@ last_audited = "2026-08-03T05:34:51+00:00"
   where = "Cargo.toml:3"
 
 [section."core.md#two-modes-collect-and-replay"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-03T06:13:37+00:00"
+
+  [[section."core.md#two-modes-collect-and-replay".gap]]
+  claim = "measure has two subcommands, collect and replay; replay reconstructs the DocumentSnapshot and Query from truth.jsonl and runs with no server, and a completed replay row is byte-comparable with a field row"
+  found = "neither subcommand exists in any form: no crates/measure_core or crates/measure_rust directory, no manifest under either path, no truth.jsonl reader or writer anywhere. The provenance header and the refusal to replay against a mismatched repository commit have nothing to live in either"
+  where = "Cargo.toml:3"
+
+  [[section."core.md#two-modes-collect-and-replay".gap]]
+  claim = "replay enforces no deadline at all, so coverage cannot vary with machine load"
+  found = "the seam cannot express it: Deadline::new(clock, arrived_at, budget) is the only constructor and always resolves against a Clock (deadline.rs:51), ProjectView::new requires a Deadline (project.rs:174), ProjectView::read does a live-clock check on every read, and Query.deadline is non-optional \u2014 so a replay written against this API gets a wall-clock deadline. MECHANICAL CHECK AVAILABLE: an explicit unbounded form (Deadline::none, or a Budget enum with an Unbounded variant) makes 'replay has no deadline' a value the replay path can assert on rather than a convention"
+  where = "crates/shared/src/project.rs:212"
 
 [section."core.md#the-table-is-not-enough-a-replay-has-to-show-its-failures"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-03T06:13:37+00:00"
+
+  [[section."core.md#the-table-is-not-enough-a-replay-has-to-show-its-failures".gap]]
+  claim = "replay --records <path> writes the per-query JSONL of the record above, unchanged and unfiltered"
+  found = "no replay, no --records flag and no record type exist; grep across crates/ for replay, truth.jsonl and records returns only unrelated Iterator::collect calls, and measure_core is not a workspace member. The digest half of this section belongs to harness/, which is outside the audited paths, so it is not judged here"
+  where = "Cargo.toml:3"
 
 [section."core.md#the-oracle-is-the-server-being-proxied"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-03T06:13:37+00:00"
+
+  [[section."core.md#the-oracle-is-the-server-being-proxied".gap]]
+  claim = "every metric is per (language, server); there is no aggregate across servers"
+  found = "no metric is emitted anywhere, per server or otherwise: crates/measure_core and crates/measure_rust do not exist on disk, [workspace] members lists only crates/driver, crates/heuristic_jump, crates/shared and the two vendored crates, and driver writes no record"
+  where = "Cargo.toml:3"
+
+  [[section."core.md#the-oracle-is-the-server-being-proxied".gap]]
+  claim = "the behaviour varies through a ServerProfile reaching handlers in Query, keyed by an interned ServerId resolved from the child's command name at startup"
+  found = "the seam half exists (Query.server at handler.rs:47, ServerProfile at handler.rs:61) but neither type has a producer: ServerId::new has no caller in the workspace, nothing constructs a ServerProfile, and Mode::Proxy holds the child's program name without ever mapping it to an identity. ServerProfile.id can only ever be None, so the divergent-set decomposition has no key"
+  where = "crates/driver/src/config.rs:71"
 
 [section."core.md#where-the-corpus-lives"]
 state = "unjudged"
@@ -310,7 +355,18 @@ last_audited = "2026-08-03T05:10:16+00:00"
   where = "Cargo.toml:3"
 
 [section."core.md#what-the-templates-handler-does"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-03T06:13:37+00:00"
+
+  [[section."core.md#what-the-templates-handler-does".gap]]
+  claim = "the template declares its real language_ids, file_extensions and grammar so an instantiated template compiles, runs under measure_<x> replay and produces a complete per-stratum table, abstaining elsewhere as Stratum::Unimplemented"
+  found = "there is no template and no handler: no crates/lang_* directory exists, grep for `impl \u2026 LanguageHandler` returns zero implementors workspace-wide, and Stratum::Unimplemented (handler.rs:103) has no producer \u2014 so the claim that the first measurement of a new language exercises the whole pipeline has neither a pipeline nor a measurement"
+  where = "Cargo.toml:3"
+
+  [[section."core.md#what-the-templates-handler-does".gap]]
+  claim = "deciding whether the cursor is on an identifier is one function in shared, used by both measure_core's position enumeration and a handler's NotAnIdentifier answer"
+  found = "no such function exists: shared exports deadline, document, error, handler, project, proto and vocabulary, and grep for `identifier` under crates/ returns only the doc comment on AbstainReason::NotAnIdentifier. MECHANICAL CHECK AVAILABLE: making it the only pub fn either consumer can reach, in shared \u2014 the same shape the section invokes for ProjectView and the agreement predicate \u2014 keeps 'one function, not two implementations' a compile-time fact"
+  where = "crates/shared/src/handler.rs:113"
 
 [section."core.md#vendoring-the-zed-crates"]
 state = "gaps"
