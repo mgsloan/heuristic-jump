@@ -1036,6 +1036,16 @@ def judged_campaigns(owner: str) -> list[dict]:
     return [c for c in campaigns_of(owner) if c.get("outcome") and c.get("outcome") != "crashed"]
 
 
+def tagged_sites(identifier: str) -> list[str]:
+    result = subprocess.run(
+        ["git", "-C", str(REPO), "grep", "-l", "-F", f"DECISION-{identifier}:", "--", ":!state", ":!design", ":!harness"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return [line for line in result.stdout.splitlines() if line][:20]
+
+
 def trailing_without_progress(owner: str) -> int:
     trailing = 0
     for campaign in reversed(judged_campaigns(owner)):
@@ -1077,13 +1087,29 @@ def prompt_values(phase: Phase, config: LoopConfig, campaign_id: str) -> dict[st
             f"-> {campaign.get('outcome') or 'open'}"
         )
 
+    # Open records, and answered ones whose sites are still tagged. The second
+    # kind matters as much as the first: `design/loops.md` section 6 makes
+    # reconciling a tagged site a normal campaign target, and a campaign that
+    # never learns the answer arrived will never pick it. An answered decision
+    # drops off this list only once nothing in the tree still says
+    # `DECISION-<id>: provisional`.
     decisions = []
     for path in sorted((STATE / "decisions").glob("*.md")):
         text = path.read_text()
         status = re.search(r"^status:\s*(.+)$", text, re.MULTILINE)
         title = re.search(r"^#\s+(.+)$", text, re.MULTILINE)
-        if status and status.group(1).strip() in ("open", "provisional"):
-            decisions.append(f"- {path.stem}: {title.group(1) if title else path.stem} [{status.group(1).strip()}]")
+        if not status:
+            continue
+        state = status.group(1).strip()
+        name = title.group(1) if title else path.stem
+        if state in ("open", "provisional"):
+            decisions.append(f"- {path.stem}: {name} [{state}]")
+        elif tagged_sites(path.stem):
+            sites = ", ".join(tagged_sites(path.stem))
+            decisions.append(
+                f"- {path.stem}: {name} [ANSWERED: {state} — reconcile and remove the tag]\n"
+                f"  still tagged at: {sites}"
+            )
 
     findings = []
     for path in sorted((STATE / "findings").glob("*.md")):
