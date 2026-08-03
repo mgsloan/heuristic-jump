@@ -1,6 +1,6 @@
 ---
 id: conformance-004
-status: open
+status: accepted
 opened: 2026-08-03T05:05:00+00:00
 campaign: e3b8dbf4-56aa-48fc-9a4d-4018d7464f4d
 kind: class-b
@@ -87,3 +87,14 @@ into B. `core.md` §7's record carries `heuristic_locations` for reporting
 rather than for reconstruction, so the likely answer is that replay compares
 recorded rows and never rebuilds a `Location` at all — but that is a claim
 about a program nobody has written yet.
+
+## Answer — 2026-08-03T05:13:34+00:00
+
+**Ruling:** accepted
+
+Option A. Private fields, at_node the only constructor, uri()/range()/line() accessors. core.md sections 1 and 8.4 both print the struct with pub fields and both say in prose that at_node is the only constructor; the code blocks are what is wrong, and removing those three pubs is the Class A follow-up.
+
+**Rationale:** CLAUDE.md line 134 already decides this — prefer enums that enforce an invariant over a comment describing it — and the invariant here is worth the enforcement: a line that disagrees with its range is a confidently wrong jump three lines off, which is this tool value proposition inverted. The record`s one open worry closes on inspection rather than argument: core.md section 7 stores heuristic_locations as strings for reporting and computes agreement at collect time, so replay compares recorded rows and never reconstructs a Location. There is therefore no consumer that needs a field-taking constructor, and the way A decays into B does not arise. Its reversibility argument is also right and is the deciding practical point: B to A later means finding every struct literal accumulated across one lang_* crate per language, which is the same asymmetry resolution.md section 7.4 uses for CommitPolicy.
+
+Reconciling the sites tagged `// DECISION-conformance-004: provisional` is a
+normal campaign target, not an interrupt.
