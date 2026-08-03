@@ -265,16 +265,19 @@ Converted:
 | Length | `Rope::len`, `ChunkSlice::len` — both return `ByteLen` |
 | Cursors and iterators | `Cursor::{new, seek_forward, slice, summary, offset}`, `Chunks::{new, seek, set_range, offset}`, `Bytes::new`, `Lines::{seek, offset}`, `chars_at`, `reversed_chars_at` |
 | Rows | `slice_rows(Range<LineIndex>)`, `line_len(row: LineIndex) -> ByteColumn` |
-| `ChunkSlice` | All 17 of its public functions. It is low-level and handlers have little reason to touch it, but a bare-`usize` island inside an otherwise converted crate is exactly the escape hatch the change is meant to close |
+| `ChunkSlice` | All 27 of its public functions. It is low-level and handlers have little reason to touch it, but a bare-`usize` island inside an otherwise converted crate is exactly the escape hatch the change is meant to close |
 
-Not converted, because these are not byte offsets:
+Not converted, because these are not byte offsets. All four are on
+`ChunkSlice` rather than `Chunk` — `Chunk` holds the storage and `ChunkSlice`
+does the measuring, so every function that answers "how far into a line" is on
+the slice:
 
 | Function | Unit |
 |---|---|
-| `Chunk::first_line_chars() -> u32` | `CharCount` |
-| `Chunk::last_line_chars() -> u32` | `CharCount` |
-| `Chunk::longest_row(&mut total_chars) -> (u32, u32)` | `(LineIndex, CharCount)`; `total_chars` is a `CharCount` |
-| `Chunk::last_line_len_utf16() -> u32` | `Utf16Column` |
+| `ChunkSlice::first_line_chars() -> u32` | `CharCount` |
+| `ChunkSlice::last_line_chars() -> u32` | `CharCount` |
+| `ChunkSlice::longest_row(&mut total_chars) -> (u32, u32)` | `(LineIndex, CharCount)`; `total_chars` is a `CharCount` |
+| `ChunkSlice::last_line_len_utf16() -> u32` | `Utf16Column` |
 
 These get the *correct* newtype rather than being left bare — which is the
 point of auditing rather than grepping. `CharCount` is the fourth member of the
@@ -488,7 +491,7 @@ on:
 > `usize` or `u32`**, outside an explicit allowlist.
 
 The allowlist is `vendor/rope/allowed-primitives.txt` and is short: the
-`total_chars: &mut usize` parameter of `Chunk::longest_row` and anything else
+`total_chars: &mut usize` parameter of `ChunkSlice::longest_row` and anything else
 [section 4](#the-signatures) records as a genuine primitive. Every entry needs
 a comment saying which unit it is, since "it is a `usize`" is the problem
 rather than the explanation.

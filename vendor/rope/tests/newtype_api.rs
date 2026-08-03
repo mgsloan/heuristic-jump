@@ -12,7 +12,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use rand::prelude::*;
-use rope::{ByteLen, LineIndex, Offset, Rope};
+use rope::{
+    ByteColumn, ByteLen, ByteRange, CharCount, Chunk, ChunkSlice, LineIndex, Offset, OffsetUtf16,
+    Point, PointUtf16, Rope, TextSummary, Utf16Column,
+};
 
 // The bench's trick, for the bench's reason: an integration test is its own
 // crate and cannot see rope's `#[cfg(test)] mod test_support`.
@@ -272,6 +275,174 @@ fn the_operator_scan_sees_an_impl_the_table_does_not_have() {
         ],
         "the scan must see an arithmetic or conversion impl however it is \
          spelled, must not see `Display`, and must not see an inherent block"
+    );
+}
+
+/// §4's converted surface, written out as bindings whose types are declared.
+/// Nothing here runs that could not be checked by reading; the point is that
+/// the compiler now does the reading, and a signature that reverts stops the
+/// crate compiling instead of being noticed.
+///
+/// The scans above cannot do this job. They see a bare `usize` or `u32`, so
+/// they catch a signature going back to *no* unit — but `first_line_chars() ->
+/// Utf16Column` names a unit and is wrong, and `len() -> Offset` names a unit
+/// and is the position/quantity confusion §4 exists to end. Only the declared
+/// type catches those, and this is the section's claim about *which* newtype
+/// each thing got rather than that it got one.
+///
+/// The values asserted alongside are the ones that make the units observable:
+/// `aé` is three bytes, two chars and two UTF-16 code units, so a line's
+/// length is a different number in each and only the type says which.
+#[test]
+fn the_public_surface_speaks_in_the_units_it_measures_in() {
+    let rope = Rope::from("aé\nbb\n");
+
+    // Length: §4's table, "`Rope::len`, `ChunkSlice::len` — both return
+    // `ByteLen`". Not `Offset`: that is the split §4 spends a section on.
+    let length: ByteLen = rope.len();
+    assert_eq!(length, ByteLen(7));
+
+    // Rows: §5's `LineIndex` is rope's, so "a row obtained from a `Point` can
+    // be handed straight back to the rope".
+    let last: Point = rope.max_point();
+    let row: LineIndex = last.row;
+    let column: ByteColumn = last.column;
+    assert_eq!((row, column), (LineIndex(2), ByteColumn::ZERO));
+
+    let line_length: ByteColumn = rope.line_len(LineIndex(0));
+    assert_eq!(
+        line_length,
+        ByteColumn(3),
+        "`aé` is three bytes, and `line_len` measures in bytes"
+    );
+
+    let first_row: Rope = rope.slice_rows(LineIndex(0)..LineIndex(1));
+    assert_eq!(
+        first_row.len(),
+        ByteLen(4),
+        "the row range is half-open in *points* -- `LineIndex(1)` is the start \
+         of the second line, so the slice carries the newline that `line_len` \
+         does not count"
+    );
+
+    let utf16: PointUtf16 = rope.max_point_utf16();
+    let utf16_column: Utf16Column = utf16.column;
+    assert_eq!(utf16_column, Utf16Column::ZERO);
+
+    // Slicing takes a `ByteRange`, and `ByteRange::len` is a `ByteLen` --
+    // §4's last operator row, the one that is a method rather than an
+    // operator.
+    let span: ByteRange = ByteRange::new(Offset(0), Offset(3));
+    let span_length: ByteLen = span.len();
+    assert_eq!((span_length, rope.slice(span).len()), (ByteLen(3), ByteLen(3)));
+
+    // §4: `TextSummary` is converted too, all nine fields. A field is not a
+    // signature, so `no_public_field_names_a_bare_primitive` catches only a
+    // field reverting to `usize` -- these say which unit each one is.
+    let summary: TextSummary = rope.summary();
+    let summary_length: ByteLen = summary.len;
+    let characters: CharCount = summary.chars;
+    let utf16_length: OffsetUtf16 = summary.len_utf16;
+    let lines: Point = summary.lines;
+    let first_line: CharCount = summary.first_line_chars;
+    let last_line: CharCount = summary.last_line_chars;
+    let last_line_utf16: Utf16Column = summary.last_line_len_utf16;
+    let longest: LineIndex = summary.longest_row;
+    let longest_characters: CharCount = summary.longest_row_chars;
+    assert_eq!(
+        (summary_length, characters, utf16_length, lines),
+        (ByteLen(7), CharCount(6), OffsetUtf16(6), Point::new(LineIndex(2), ByteColumn::ZERO)),
+        "the three ways of measuring the same text disagree, which is the \
+         point of measuring them in different types"
+    );
+    assert_eq!(
+        (first_line, last_line, last_line_utf16, longest, longest_characters),
+        (CharCount(2), CharCount::ZERO, Utf16Column::ZERO, LineIndex::ZERO, CharCount(2))
+    );
+
+    // §4's second table: the four functions that are *not* byte offsets and
+    // get the correct newtype rather than being left bare. Being left bare is
+    // what the signature scan would have permitted, since `allowed-primitives`
+    // is where a `u32` goes to be forgiven.
+    let chunk = Chunk::new("aé\nbb");
+    let slice: ChunkSlice<'_> = chunk.as_slice();
+    let slice_length: ByteLen = slice.len();
+    let chunk_first_line: CharCount = slice.first_line_chars();
+    let chunk_last_line: CharCount = slice.last_line_chars();
+    let chunk_last_line_utf16: Utf16Column = slice.last_line_len_utf16();
+    let mut total_characters = 0usize;
+    let (chunk_longest, chunk_longest_characters): (LineIndex, CharCount) =
+        slice.longest_row(&mut total_characters);
+    assert_eq!(
+        (slice_length, chunk_first_line, chunk_last_line, chunk_last_line_utf16),
+        (ByteLen(6), CharCount(2), CharCount(2), Utf16Column(2)),
+        "`aé` is two chars and two UTF-16 code units but three bytes, so the \
+         first line's length is a different number in each unit"
+    );
+    assert_eq!((chunk_longest, chunk_longest_characters), (LineIndex::ZERO, CharCount(2)));
+}
+
+/// §4: each newtype gets `ZERO` and `MAX` "so a literal never has to appear",
+/// and a **hand-written `Display`** that "must print the bare number so that
+/// `Point`'s own `write!(f, \"Point({}:{})\", self.row, self.column)` keeps
+/// its output".
+///
+/// That last clause is the whole reason `Display` is written by hand rather
+/// than left off, and it is the one claim in §4 with an observable
+/// consequence: a `Display` that printed `LineIndex(3)`, or a `#[derive(Debug)]`
+/// standing in for it, changes what `{:?}` on a `Point` produces. So the
+/// output is asserted, not just the existence of the impl.
+#[test]
+fn every_newtype_has_its_bounds_and_prints_as_a_bare_number() {
+    assert_eq!(
+        (
+            format!("{}", Offset::ZERO),
+            format!("{}", ByteLen::ZERO),
+            format!("{}", LineIndex::ZERO),
+            format!("{}", ByteColumn::ZERO),
+            format!("{}", Utf16Column::ZERO),
+            format!("{}", CharCount::ZERO),
+            format!("{}", ByteRange::EMPTY),
+        ),
+        (
+            "0".to_owned(),
+            "0".to_owned(),
+            "0".to_owned(),
+            "0".to_owned(),
+            "0".to_owned(),
+            "0".to_owned(),
+            "0..0".to_owned(),
+        ),
+        "a newtype's `Display` prints the bare number, and `ByteRange`'s is the \
+         two of them"
+    );
+
+    assert_eq!(
+        (
+            Offset::MAX,
+            ByteLen::MAX,
+            LineIndex::MAX,
+            ByteColumn::MAX,
+            Utf16Column::MAX,
+            CharCount::MAX,
+        ),
+        (
+            Offset(usize::MAX),
+            ByteLen(usize::MAX),
+            LineIndex(u32::MAX),
+            ByteColumn(u32::MAX),
+            Utf16Column(u32::MAX),
+            CharCount(u32::MAX),
+        ),
+        "the byte pair is `usize`-shaped and the line-shaped four are `u32`, \
+         which is the bound `Point.row` already imposed"
+    );
+
+    // The consequence §4 names, and the reason `Display` could not simply be
+    // derived: `Point`'s `Debug` writes its two fields through `Display`.
+    assert_eq!(
+        format!("{:?}", Point::new(LineIndex(3), ByteColumn(4))),
+        "Point(3:4)"
     );
 }
 

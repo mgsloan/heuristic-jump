@@ -41,6 +41,30 @@ two apart — which is why `tests/newtype_api.rs` now asserts both counts
 
 **Campaign:** 37a6d098-e7c7-4fb3-af7a-5f1562728e56
 
+## CHANGE-core-003 — rope-modifications.md#the-signatures — the four char-unit functions are `ChunkSlice`'s, and there are 27 of them not 17
+
+**Contradiction:** §4's second table names `Chunk::first_line_chars`,
+`Chunk::last_line_chars`, `Chunk::longest_row` and
+`Chunk::last_line_len_utf16`, and §6 names `Chunk::longest_row` again as the
+allowlist's one entry. All four are on **`ChunkSlice`**
+(`vendor/rope/src/chunk.rs:374,380,386,400`, inside `impl<'a> ChunkSlice<'a>`
+at `:254`); `impl Chunk` at `:55` has none of them. `allowed-primitives.txt`
+already carried the discrepancy as a note rather than a fix.
+
+The same table's row above says "`ChunkSlice` | All 17 of its public
+functions". It has **27**, and so does upstream at the pinned revision — so
+this was wrong when written rather than drift.
+
+**Resolution:** the four are named on `ChunkSlice`, with one line on why
+(`Chunk` holds the storage, `ChunkSlice` does the measuring, so every function
+answering "how far into a line" is on the slice); the count is 27; and §6 and
+`allowed-primitives.txt` say `ChunkSlice::longest_row`. Nothing about which
+functions are converted or what unit each is changes — both errors are about
+where a function lives and how many there are, and both are countable rather
+than arguable.
+
+**Campaign:** 37a6d098-e7c7-4fb3-af7a-5f1562728e56
+
 ## CHANGE-core-002 — rope-modifications.md#the-dimension-impls — four line references that the sweep moved
 
 **Contradiction:** §1 cites the bare-`usize` dimension impls at `rope.rs:1492`
