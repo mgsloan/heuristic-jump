@@ -116,6 +116,18 @@ rand = "0.9"
 criterion = { version = "0.5", features = ["html_reports"] }
 proptest = "1"
 
+# The differential oracle for `shared::proto` (`deps.md` §3 and §12,
+# `core.md` §8.5 and §10). **Dev-only, and that is not a preference**: §3's
+# whole argument is that the newtype must be what deserialization produces, and
+# a single runtime `use lsp_types::` defeats it. `driver`'s seam test asserts
+# the distinction against the manifests rather than trusting it.
+#
+# Held at 0.94 deliberately. 0.95 swapped `url::Url` for `fluent-uri`, and the
+# point of the oracle is that it produces the same `Url` we do — an oracle
+# whose URIs are a different type compares nothing where percent-encoding and
+# drive letters live, which is where the bugs actually are.
+lsp-types = "0.94"
+
 [workspace.lints.rust]
 # Edition 2024 made `env::set_var` and friends unsafe; be explicit about scope.
 unsafe_op_in_unsafe_fn = "deny"

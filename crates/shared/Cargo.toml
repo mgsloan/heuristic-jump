@@ -40,6 +40,12 @@ url.workspace = true
 # not an edge §9's graph forbids — the same reading `measure_core`'s manifest
 # takes, and `driver`'s seam test asserts the distinction rather than assuming
 # it.
+#
+# `lsp-types` is the differential oracle of `core.md` §8.5, and `deps.md` §12
+# is explicit that it may appear here and nowhere else: "the whole point of §3
+# is defeated the moment a runtime `use lsp_types::` appears". `driver`'s seam
+# test reads this manifest and asserts exactly that.
 [dev-dependencies]
+lsp-types.workspace = true
 proptest.workspace = true
 tree-sitter-rust.workspace = true

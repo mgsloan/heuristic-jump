@@ -251,6 +251,98 @@ fn no_language_crate_can_name_the_wire_vocabulary() {
     }
 }
 
+/// `deps.md` §12, on the `lsp-types` oracle: "Dev only — it must never appear
+/// in a non-dev dependency table, and that is worth a CI check, since the whole
+/// point of §3 is defeated the moment a runtime `use lsp_types::` appears".
+///
+/// This is that check, and it is here rather than left to review because the
+/// failure is invisible. A runtime `lsp_types::Position` typechecks, runs, and
+/// does not look wrong beside the code around it — §3's whole argument is that
+/// the newtype has to be what deserialization *produces*, and a conversion
+/// layer a few functions inward makes the discipline optional again.
+///
+/// Both halves are asserted, since either alone can be defeated. The manifest
+/// scan would miss a crate that reached the types transitively; the source
+/// scan would miss a dependency declared and not yet used, which is the state
+/// one commit before the first use.
+#[test]
+fn the_lsp_types_oracle_never_leaves_the_dev_dependencies() {
+    let members = crate_members();
+    assert!(
+        !members.is_empty(),
+        "no crates/* workspace member, so this test would pass vacuously"
+    );
+
+    let mut declared_anywhere = false;
+    for member in &members {
+        let text = manifest_text(member);
+        assert!(
+            !text.is_empty(),
+            "no manifest for {member}, so every assertion below is vacuous"
+        );
+        // A declaration, not the word: the manifest comment beside the
+        // dev-dependency names it too, and a check that counted that would
+        // survive the oracle being deleted — which the control run for this
+        // test found it doing.
+        declared_anywhere |= declares(&text, "lsp-types");
+
+        for dependency in dependencies_in(&text) {
+            assert!(
+                dependency != "lsp-types",
+                "{member} depends on lsp-types at runtime: deps.md §3 keeps it as a \
+                 dev-dependency oracle only, because a foreign types crate can only produce \
+                 our newtypes through a conversion layer *after* deserialization — which is \
+                 the discipline §3 exists to make non-optional"
+            );
+        }
+
+        for (file, source) in sources_of(member) {
+            assert!(
+                !source.is_empty(),
+                "{file} is missing or empty, so the scan below would pass vacuously"
+            );
+            assert!(
+                !source.contains("lsp_types"),
+                "{file} names lsp_types: the oracle belongs to the tests, and core.md §8.5 \
+                 makes the differential the condition on which hand-rolled wire types are \
+                 acceptable — not a set of types to reach for when one is inconvenient"
+            );
+        }
+    }
+
+    assert!(
+        declared_anywhere,
+        "no crate declares lsp-types at all, so core.md §10's differential test is not \
+         running and §8.5's second mitigation is absent rather than satisfied"
+    );
+}
+
+/// Whether a manifest declares `name` in any table. Comments are skipped,
+/// which is the whole reason this is not a `contains`.
+fn declares(text: &str, name: &str) -> bool {
+    text.lines().any(|line| {
+        let line = line.trim();
+        !line.starts_with('#')
+            && line
+                .split(['.', ' ', '='])
+                .next()
+                .is_some_and(|declared| declared.trim() == name)
+    })
+}
+
+/// Every `crates/*` workspace member.
+fn crate_members() -> Vec<String> {
+    workspace_file("Cargo.toml")
+        .lines()
+        .filter_map(|line| {
+            line.trim()
+                .trim_matches(['"', ','])
+                .strip_prefix("crates/")
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
 /// The `crates/lang_*` workspace members, which is the list every language
 /// rule below is quantified over — six more of them arrive by copying the
 /// template, and a rule that named `lang_rust` would stop applying the moment
