@@ -1,0 +1,8 @@
+# Pinned so grammar and rope behaviour is reproducible across machines and
+# across the life of the metrics history (`design/deps.md` §14). A toolchain
+# change is an intervention: it can move every latency number and every binary
+# size without any diff in this repository explaining it, so it is logged with
+# `harness/hj intervene --kind toolchain-bumped` and never edited by a loop.
+[toolchain]
+channel = "1.95.0"
+components = ["rustfmt", "clippy"]

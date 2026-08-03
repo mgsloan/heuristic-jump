@@ -18,7 +18,7 @@ phase = "1a"
 # a language loop cannot observe that the seam made its job harder, only that
 # it is slow (`design/loops.md` section 8).
 [loop.conformance]
-status = "running" # running | paused | blocked | done
+status = "paused" # running | paused | blocked | done
 prompt = "conformance.md"
 stall_n = 3        # campaigns without progress before the loop stops and asks
 rotation = 6       # sections per audit beyond the ones the last campaign touched
@@ -51,6 +51,14 @@ crates = [
 #
 # `measure_core` and `measure_rust` belong here rather than to a language
 # loop: a loop must not own the code that scores it.
+# `rust-toolchain.toml` and `LICENSE-MIT`/`LICENSE-GPL`/`LICENSE-APACHE` are
+# deliberately absent from this list, and a human has placed all four
+# (`conformance-002`). The toolchain pin can move every latency number and
+# every binary size with no diff in this repository explaining it, so it is an
+# intervention rather than a commit; the licence texts are verbatim upstream
+# documents and licensing is a standing Class B trigger. The per-crate
+# symlinks that point at them live under `crates/**` and are the loop's to
+# create, which is what unblocks the vendoring campaign.
 write = [
   "Cargo.toml",
   "Cargo.lock",

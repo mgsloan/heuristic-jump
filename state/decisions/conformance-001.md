@@ -1,6 +1,6 @@
 ---
 id: conformance-001
-status: open
+status: accepted
 opened: 2026-08-03T04:10:00+00:00
 campaign: b59733c6-ebff-47a4-bccf-232abc532a07
 kind: harness-request
@@ -83,3 +83,14 @@ The sharp edge worth naming: a loop that hits this and does not read the
 deny list carefully could conclude the obvious fix is to `git add` the two
 files and commit them, which would pass step 4 on the *next* run and would be
 a loop quietly committing the audit trail that exists to watch it.
+
+## Answer — 2026-08-03T03:51:31+00:00
+
+**Ruling:** accepted
+
+Option 3, implemented: the harness now commits its own state as it writes it (campaign-open, campaign-close, record, audit-merge, intervene), path-limited and with no loop:/campaign: trailer.
+
+**Rationale:** The report was correct and the diagnosis was exact — the gate was answering a question about the working tree when the thing being gated is the commit. Option 3 over option 2 because it keeps the deny list absolute: a carve-out would put an exception in the one check whose entire value is that any appearance of a denied path is a violation, and that check is what stops a loop committing the audit trail that watches it. Option 1 was the right provisional choice and the wrong permanent one, since a scope error then costs a history rewrite instead of a git restore. The untrailered commits are invisible to commits_for_campaign, check-metrics and the cost join, so the history stays one commit per experiment as far as anything that counts is concerned. Two follow-on bugs fixed with it: check-metrics now walks back past those commits to the last one carrying this loop`s trailer, and the loop`s reset --hard at close can no longer destroy an uncommitted harness row.
+
+Reconciling the sites tagged `// DECISION-conformance-001: provisional` is a
+normal campaign target, not an interrupt.

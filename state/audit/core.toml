@@ -1,0 +1,166 @@
+# Audit of design/core.md. Written by harness/audit, never by hand.
+# `design/loops.md` section 3. The section list is parsed out of the
+# document, so it follows the document rather than drifting from it.
+
+[section."core.md#1-handler-interface"]
+state = "gaps"
+last_audited = "2026-08-03T03:47:22+00:00"
+
+  [[section."core.md#1-handler-interface".gap]]
+  claim = "the handler seam trait lives in `shared`, deliberately not `driver`, and dispatch is direct"
+  found = "crates/shared/src/shared.rs is a module doc comment with no items; no LanguageHandler, Query or Outcome anywhere in crates/. shared/Cargo.toml declares no dependencies, so tree_sitter::Language and the re-exported rope newtypes are not expressible. crates/driver/src/driver.rs is empty, so there is no dispatch. MECHANICAL CHECK AVAILABLE: 'the trait is in shared, not driver' and 'driver depends on no language crate' are cargo metadata assertions; state/journal/conformance.md:35 notes Command::output is banned in clippy.toml and would need an #[expect]"
+  where = "crates/shared/src/shared.rs:1"
+
+[section."core.md#vocabulary-types"]
+state = "unjudged"
+
+[section."core.md#the-trait"]
+state = "unjudged"
+
+[section."core.md#2-document-snapshots"]
+state = "gaps"
+last_audited = "2026-08-03T03:47:22+00:00"
+
+  [[section."core.md#2-document-snapshots".gap]]
+  claim = "driver and measure_core both build the snapshot through the same constructor in `shared`, which is what keeps the corpus scoring the code that ships"
+  found = "no DocumentSnapshot type exists in crates/; shared has no constructor to share; measure_core is not a workspace member (Cargo.toml:3 lists only driver, heuristic_jump, shared), so neither caller the claim is about exists. MECHANICAL CHECK AVAILABLE: keeping the constructor the sole pub fn returning DocumentSnapshot, with private fields, makes 'one constructor, both callers' a grep rather than a judgement"
+  where = "crates/shared/src/shared.rs:1"
+
+[section."core.md#snapshots-are-o1-to-take-and-are-parsed-before-a-handler-sees-one"]
+state = "unjudged"
+
+[section."core.md#text-and-tree-can-never-disagree"]
+state = "unjudged"
+
+[section."core.md#3-position-encoding"]
+state = "gaps"
+last_audited = "2026-08-03T03:47:22+00:00"
+
+  [[section."core.md#3-position-encoding".gap]]
+  claim = "conversion lives in one module with exhaustive property tests against a reference implementation"
+  found = "no conversion module and no property test exist; the only test file is crates/heuristic_jump/tests/binary_name.rs, no crate depends on proptest, and vendor/ (whose rope OffsetUtf16/PointUtf16 dimensions the section names as the mechanism) does not exist on disk"
+  where = "crates/shared/src/shared.rs:1"
+
+  [[section."core.md#3-position-encoding".gap]]
+  claim = "a settled PositionEncoding set once and never inferred, with the no-UTF-16-past-the-edge rule enforced by the type system: proto::WirePosition has private fields and yields a ByteOffset only when handed the negotiated encoding and the text"
+  found = "no proto module, no WirePosition, no PositionEncoding type anywhere in crates/. The only enforcement present is the cast_* deny block at Cargo.toml:77-82, which the manifest itself (Cargo.toml:74-76) describes as catching computation rather than storage"
+  where = "crates/shared/src/shared.rs:1"
+
+  [[section."core.md#3-position-encoding".minor]]
+  claim = "the no-UTF-16 rule is enforced by the type system rather than by discipline"
+  note = "the lint config justifies not denying indexing_slicing/string_slice with 'the protection that holds here is structural: WirePosition has private fields, offsets are newtypes' \u2014 present tense about types that do not exist, which reads as evidence the enforcement is already in place"
+  where = "Cargo.toml:87"
+
+[section."core.md#4-project-file-enumeration"]
+state = "gaps"
+last_audited = "2026-08-03T03:47:22+00:00"
+
+  [[section."core.md#4-project-file-enumeration".gap]]
+  claim = "the driver caches a file list, built with the `ignore` crate in-process, lazily on first need and refreshed in the background, scoped to workspace folders only"
+  found = "crates/driver/src/driver.rs has no items; `ignore` appears in no manifest \u2014 [workspace.dependencies] at Cargo.toml:18-20 contains only the path deps driver and shared"
+  where = "crates/driver/src/driver.rs:1"
+
+  [[section."core.md#4-project-file-enumeration".gap]]
+  claim = "invalidation by a debounced rescan triggered by AbstainReason::NoCandidates specifically and never by Deadline, plus a 'mark stale' tee of the editor's watcher events, neither path blocking a query"
+  found = "AbstainReason does not exist in crates/ (grep returns nothing), so there is no reason value to discriminate on, no stale flag, no shared debounce, and no routing of didChangeWatchedFiles. MECHANICAL CHECK AVAILABLE: an exhaustive match on AbstainReason at the trigger site makes 'NoCandidates yes, Deadline no' a compile error when a variant is added, per CLAUDE.md's no-wildcard-arm rule"
+  where = "crates/driver/src/driver.rs:1"
+
+[section."core.md#5-deadlines-and-abstention"]
+state = "gaps"
+last_audited = "2026-08-03T03:47:22+00:00"
+
+  [[section."core.md#5-deadlines-and-abstention".gap]]
+  claim = "cooperative cancellation via a Deadline holding `at: Instant` and `cancelled: Arc<AtomicBool>`, with `expired()` checking both, absolute and started at request arrival"
+  found = "no Deadline type exists anywhere in crates/; with no method to poll, the handler contract requiring a check at every loop boundary has nothing to check, and 'starts at request arrival' has nothing to carry it"
+  where = "crates/shared/src/shared.rs:1"
+
+  [[section."core.md#5-deadlines-and-abstention".gap]]
+  claim = "the cap is configurable via --deadline-ms, defaulting to 750ms proxying and 2000ms standalone, and the driver hard-caps by dropping the result of any handler that returns after the deadline"
+  found = "crates/heuristic_jump/src/heuristic_jump.rs:6 is `fn main() {}` \u2014 no argument parsing, no defaults, no mode distinction \u2014 and driver has no dispatch site at which a late result could be dropped"
+  where = "crates/heuristic_jump/src/heuristic_jump.rs:6"
+
+  [[section."core.md#5-deadlines-and-abstention".minor]]
+  claim = "the cap is configurable via --deadline-ms (deps.md \u00a711)"
+  note = "the crate doc says this crate is 'argument parsing, log setup, and the one place the language list is enumerated', citing deps.md \u00a711, over an empty main; unlike shared.rs:6 it does not mark itself as aspirational"
+  where = "crates/heuristic_jump/src/heuristic_jump.rs:1"
+
+[section."core.md#6-the-agreement-predicate"]
+state = "unjudged"
+
+[section."core.md#both-sides-are-sets"]
+state = "unjudged"
+
+[section."core.md#7-observability-and-the-corpus-scan"]
+state = "unjudged"
+
+[section."core.md#the-corpus-scan-is-a-separate-program"]
+state = "unjudged"
+
+[section."core.md#one-measurement-library-one-tiny-binary-per-language"]
+state = "unjudged"
+
+[section."core.md#two-modes-collect-and-replay"]
+state = "unjudged"
+
+[section."core.md#the-table-is-not-enough-a-replay-has-to-show-its-failures"]
+state = "unjudged"
+
+[section."core.md#the-oracle-is-the-server-being-proxied"]
+state = "unjudged"
+
+[section."core.md#where-the-corpus-lives"]
+state = "unjudged"
+
+[section."core.md#the-command-line"]
+state = "unjudged"
+
+[section."core.md#8-protocol-types"]
+state = "unjudged"
+
+[section."core.md#81-why-not-lsp-types"]
+state = "unjudged"
+
+[section."core.md#82-what-replaces-it-and-why-it-is-smaller-than-it-sounds"]
+state = "unjudged"
+
+[section."core.md#83-the-wire-position-type-is-inert"]
+state = "unjudged"
+
+[section."core.md#84-location-is-byte-based-and-this-fixes-a-real-inconsistency"]
+state = "unjudged"
+
+[section."core.md#85-the-untagged-unions-are-the-actual-risk"]
+state = "unjudged"
+
+[section."core.md#86-modelling-errors-must-fail-closed"]
+state = "unjudged"
+
+[section."core.md#87-where-it-lives"]
+state = "unjudged"
+
+[section."core.md#9-workspace-layout"]
+state = "unjudged"
+
+[section."core.md#the-dependency-graph"]
+state = "unjudged"
+
+[section."core.md#why-shared-is-separate-from-driver"]
+state = "unjudged"
+
+[section."core.md#adding-a-language"]
+state = "unjudged"
+
+[section."core.md#what-the-templates-handler-does"]
+state = "unjudged"
+
+[section."core.md#vendoring-the-zed-crates"]
+state = "unjudged"
+
+[section."core.md#10-testing"]
+state = "gaps"
+last_audited = "2026-08-03T03:47:22+00:00"
+
+  [[section."core.md#10-testing".gap]]
+  claim = "phase 1a runs four suites before a shim exists: the snapshot version invariant, position-encoding property tests, protocol-type differential tests against lsp-types, and frame-codec fuzzing"
+  found = "none of the four exist. The only test in the tree is crates/heuristic_jump/tests/binary_name.rs, which asserts a \u00a79 claim (the artifact name); no crate declares proptest, insta or lsp-types, and there is no golden corpus directory"
+  where = "crates/heuristic_jump/tests/binary_name.rs:9"

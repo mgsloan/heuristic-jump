@@ -1,6 +1,6 @@
 ---
 id: conformance-002
-status: open
+status: accepted
 opened: 2026-08-03T04:10:00+00:00
 campaign: b59733c6-ebff-47a4-bccf-232abc532a07
 kind: harness-request
@@ -102,3 +102,14 @@ mode `deps.md` §14 spends a paragraph warning about (`cp -r` instead of
 `cp -a`). A campaign that hits this without reading here will most likely
 reach for the plain copy, which passes every check and silently loses the
 property on the first re-sync.
+
+## Answer — 2026-08-03T03:51:31+00:00
+
+**Ruling:** accepted
+
+Option 3: a human has placed all four root files. They stay out of the write list. The per-crate symlinks under crates/** are the loop`s to create.
+
+**Rationale:** Option 3 without the cost the record attributes to it — the objection was that the loop would idle, and it does not, because the files are placed before the next campaign rather than after a wait. The toolchain pin stays a human`s because it can move every latency number and every binary size with no diff in this repository explaining it, which is the definition of an intervention here. The licence texts are verbatim upstream documents and licensing is already a standing Class B trigger. Granting LICENSE-* only (option 2) would have been defensible, but there is no campaign that needs to author a licence text, so the grant would buy nothing. Vendoring is unblocked: the root targets exist, so the symlink crates/*/LICENSE-GPL -> ../../LICENSE-GPL resolves and cp -a preserves it. Separately, the record was right that a root-scoped tag read as zero — provisional_decisions now greps the whole tree except state/, design/ and harness/, and the count reads 1.
+
+Reconciling the sites tagged `// DECISION-conformance-002: provisional` is a
+normal campaign target, not an interrupt.

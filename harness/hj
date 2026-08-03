@@ -505,6 +505,44 @@ def append_jsonl(path: Path, row: dict) -> None:
         handle.write(json.dumps(row, sort_keys=True) + "\n")
 
 
+def commit_harness_state(paths: list[Path], message: str) -> None:
+    """The harness commits the rows it writes, as it writes them.
+
+    Reported by the first campaign as `conformance-001`, and it was right: the
+    harness appends to `state/sessions.jsonl` when it opens a campaign, that
+    file is denied to every loop, and the pre-commit scope check inspects the
+    working tree — so the gate was red before the loop wrote a byte, and
+    nothing the loop was permitted to do could make it green.
+
+    Of the three options it laid out, this is the one that keeps the deny list
+    absolute. Excluding harness files from the pre-commit check would have put
+    a carve-out in the one check whose value is that any appearance of a denied
+    path is a violation; taking the verdict only post-hoc would mean a scope
+    error costs a history rewrite instead of a `git restore`.
+
+    The commits carry no `loop:` or `campaign:` trailer, so they are invisible
+    to `commits_for_campaign`, to `check-metrics`, and to the cost join — the
+    history stays one commit per experiment as far as anything that counts is
+    concerned. Path-limited, so a campaign's uncommitted work is never swept
+    in.
+    """
+    relative = [str(path.relative_to(REPO)) for path in paths if path.exists()]
+    if not relative:
+        return
+    status = git("status", "--porcelain", "--", *relative).strip()
+    if not status:
+        return
+    git("add", "--", *relative)
+    result = subprocess.run(
+        ["git", "-C", str(REPO), "commit", "-m", f"harness: {message}", "--", *relative],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        print(f"hj: could not commit harness state: {result.stdout.strip()} {result.stderr.strip()}", file=sys.stderr)
+
+
 def read_jsonl(path: Path) -> list[dict]:
     if not path.exists():
         return []
@@ -628,8 +666,9 @@ def provisional_decisions() -> int:
             "-E",
             r"DECISION-[A-Za-z0-9_-]+: provisional",
             "--",
-            "crates",
-            "vendor",
+            ":!state",
+            ":!design",
+            ":!harness",
         ],
         capture_output=True,
         text=True,
@@ -803,6 +842,9 @@ def cmd_audit_merge(args: argparse.Namespace) -> int:
         order = [s.key for s in known]
         write_audit(doc, {k: verdicts[k] for k in order}, order)
 
+    commit_harness_state(
+        [audit_path(doc) for doc in config.docs], f"audit of {', '.join(config.docs)}"
+    )
     counts = audit_counts(config.docs)
     print(
         f"audit: {counts['sections_clean']}/{counts['sections_total']} sections clean, "
@@ -898,16 +940,25 @@ def cmd_check_metrics(args: argparse.Namespace) -> int:
     `harness/hj record` was skipped, and the history has a hole in it.
     """
     _, config = loop_config(args.loop)
-    head = head_sha()
-    trailers = trailers_of(head)
-    if trailers.get("loop") != args.loop:
-        print("metrics: HEAD is not this loop's commit; nothing to check")
+    # Walk back past the harness's own untrailered commits — its metrics rows
+    # and audit verdicts land between a loop's commits, so HEAD is often not
+    # the last thing the loop wrote.
+    last_loop_commit = None
+    for sha in git("log", "--format=%H", "-20", "HEAD").split():
+        if trailers_of(sha).get("loop") == args.loop:
+            last_loop_commit = sha
+            break
+    if last_loop_commit is None:
+        print("metrics: this loop has no commit in recent history; nothing to check")
         return 0
     recorded = {row.get("commit") for row in read_jsonl(metrics_path(config.owner))}
-    if head in recorded:
-        print("metrics: HEAD is recorded")
+    if last_loop_commit in recorded:
+        print(f"metrics: {last_loop_commit[:12]} is recorded")
         return 0
-    print(f"metrics: no row for HEAD ({head[:12]}); run `harness/hj record {args.loop}`", file=sys.stderr)
+    print(
+        f"metrics: no row for {last_loop_commit[:12]}; run `harness/hj record {args.loop}`",
+        file=sys.stderr,
+    )
     return 1
 
 
@@ -926,6 +977,7 @@ def cmd_record(args: argparse.Namespace) -> int:
         "provisional_decisions": provisional_decisions(),
     }
     append_jsonl(metrics_path(config.owner), row)
+    commit_harness_state([metrics_path(config.owner)], f"metrics row for {row['commit'][:8]}")
     print(json.dumps(row, sort_keys=True))
     return 0
 
@@ -1163,9 +1215,12 @@ def cmd_campaign_open(args: argparse.Namespace) -> int:
             "started": now(),
             "start_commit": head_sha(),
             "record": str(record.relative_to(REPO)),
+            "tests": (read_jsonl(metrics_path(config.owner)) or [{}])[-1].get("tests"),
             **audit_counts(config.docs),
         },
     )
+
+    commit_harness_state([record, sessions_path()], f"open campaign {campaign_id[:8]} ({config.owner})")
 
     if args.prompt_out:
         Path(args.prompt_out).write_text(rendered)
@@ -1217,10 +1272,8 @@ def cmd_campaign_close(args: argparse.Namespace) -> int:
     before = {k: opened.get(k, 0) for k in ("sections_clean", "open_gaps")}
     after = audit_counts(config.docs)
     commits = commits_for_campaign(args.id)
-    tests_before = None
     metrics = read_jsonl(metrics_path(config.owner))
-    if metrics:
-        tests_before = metrics[0].get("tests")
+    tests_before = opened.get("tests")
     tests_after = metrics[-1].get("tests") if metrics else None
 
     progress = (
@@ -1246,6 +1299,7 @@ def cmd_campaign_close(args: argparse.Namespace) -> int:
             **after,
         },
     )
+    commit_harness_state([sessions_path()], f"close campaign {args.id[:8]} ({args.outcome})")
     print(f"campaign {args.id[:8]} closed: {args.outcome}, {len(commits)} commit(s), progress={progress}")
     if drift:
         print(
@@ -1381,6 +1435,7 @@ def cmd_intervene(args: argparse.Namespace) -> int:
             "commit": head_sha(),
         },
     )
+    commit_harness_state([STATE / "interventions.jsonl"], f"{args.kind} on {args.target}")
     print(f"logged: {args.kind} on {args.target}")
     return 0
 
