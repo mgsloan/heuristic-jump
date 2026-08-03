@@ -30,6 +30,9 @@
 #       downstream reads this and not the vendor's records.
 #   cost <transcript>
 #       What the session cost: usd, tokens, model seconds, turns.
+#   progress <transcript>
+#       The same numbers for a session still running, which `cost` cannot
+#       give because it reads the terminal `result` event.
 #   transcript-path <owner> <campaign>
 #   hook-path        (reads a PreToolUse payload on stdin)
 #   version          the CLI version, recorded per campaign
@@ -239,6 +242,59 @@ cost)
 		    "api_seconds": round((last.get("duration_api_ms") or 0) / 1000, 1),
 		    "turns": last.get("num_turns"),
 		    "terminal": last.get("subtype"),
+		}, sort_keys=True))
+	PY
+	;;
+
+progress)
+	# What a *running* session has spent so far. `cost` reads the terminal
+	# `result` event, which does not exist until the campaign exits, so a live
+	# campaign has no numbers at all without this.
+	#
+	# Two things about the stream make the naive sum wrong, and both were
+	# measured against finished campaigns whose recorded totals are known:
+	#
+	#   * assistant events repeat a `message.id` as the message streams, so
+	#     summing every event double-counts. Last write per id wins.
+	#   * even then the per-message `output_tokens` do not add up to what the
+	#     `result` event reports (2,510 against 106,414 on campaign 0a979e94),
+	#     so output is *not* reported here. Cache reads do agree exactly
+	#     (17,358,119 on the same campaign), and cache reads are what a
+	#     campaign actually costs — about 141:1 against output.
+	#
+	# `num_turns` likewise only exists at the end, but the count of `user`
+	# events is exactly one less than it on every campaign checked, so turns
+	# are reported as that plus one rather than left blank.
+	python3 - "${1:?transcript}" <<-'PY'
+		import json, sys
+
+		usage_by_message = {}
+		user_events = 0
+		for line in open(sys.argv[1], errors="replace"):
+		    line = line.strip()
+		    if not line:
+		        continue
+		    try:
+		        event = json.loads(line)
+		    except json.JSONDecodeError:
+		        continue
+		    kind = event.get("type")
+		    if kind == "user":
+		        user_events += 1
+		    elif kind == "assistant":
+		        message = event.get("message") or {}
+		        if message.get("id"):
+		            usage_by_message[message["id"]] = message.get("usage") or {}
+
+		def total(key):
+		    return sum(usage.get(key) or 0 for usage in usage_by_message.values())
+
+		print(json.dumps({
+		    "turns": user_events + 1 if user_events else 0,
+		    "cache_read_tokens": total("cache_read_input_tokens"),
+		    "cache_creation_tokens": total("cache_creation_input_tokens"),
+		    "input_tokens": total("input_tokens"),
+		    "messages": len(usage_by_message),
 		}, sort_keys=True))
 	PY
 	;;

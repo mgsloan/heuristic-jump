@@ -25,6 +25,7 @@ regenerating per request is cheaper than owning a cache.
 from __future__ import annotations
 
 import argparse
+import datetime
 import html
 import importlib.machinery
 import importlib.util
@@ -644,6 +645,94 @@ def campaign_diffstat() -> dict[str, tuple[int, int]]:
     return stats
 
 
+RECORD_TARGET = re.compile(r"^##\s+Target\s*$(.*?)^##\s", re.MULTILINE | re.DOTALL)
+
+
+def open_campaign_target(owner: str, identifier: str) -> str:
+    """The anchors a running campaign said it took.
+
+    `sessions.jsonl` only learns the target at close, from the campaign's
+    `TARGET:` line, so for a running one the record it wrote at the start is
+    the only place the target exists.
+    """
+    path = STATE / "campaigns" / owner / f"{identifier}.md"
+    if not path.is_file():
+        return ""
+    section = RECORD_TARGET.search(path.read_text())
+    if not section:
+        return ""
+    anchors = re.findall(r"`([A-Za-z0-9_.-]+\.md#[^`]+)`", section.group(1))
+    seen: list[str] = []
+    for anchor in anchors:
+        if anchor not in seen:
+            seen.append(anchor)
+    return ", ".join(seen)
+
+
+def elapsed(since: str) -> str:
+    try:
+        started = datetime.datetime.fromisoformat(since)
+    except ValueError:
+        return "—"
+    delta = datetime.datetime.now(started.tzinfo) - started
+    minutes = int(delta.total_seconds() // 60)
+    return f"{minutes // 60}h{minutes % 60:02d}m" if minutes >= 60 else f"{minutes}m"
+
+
+def live_campaign_row(opened: dict, closed: dict, diffs: dict) -> str:
+    """The campaign running right now, as the first row of the ledger.
+
+    Without it the page looks idle for the twenty-odd minutes a campaign
+    takes, which is exactly the window in which someone is most likely to be
+    watching it.
+
+    Cost is deliberately absent rather than estimated: the numbers that make
+    it up only exist in the terminal `result` event. Turns and cache reads
+    are real — `harness/adapter progress` says why they can be trusted and
+    output tokens cannot.
+    """
+    running = [key for key in opened if key not in closed]
+    if not running:
+        return ""
+    identifier = running[-1]
+    row = opened[identifier]
+    owner = row.get("loop") or "conformance"
+    alive = campaign_is_running(identifier)
+    progress = {}
+    path = Path(adapter("transcript-path", owner, identifier).strip() or "/nonexistent")
+    if path.exists():
+        try:
+            progress = json.loads(adapter("progress", str(path)) or "{}")
+        except json.JSONDecodeError:
+            progress = {}
+    added, deleted = diffs.get(identifier, (0, 0))
+    commits = len(campaign_commits(identifier))
+    target = open_campaign_target(owner, identifier)
+    shown = target_links(target) if target else '<span class="dim">still choosing</span>'
+    state = "running" if alive else "no process"
+    quoted = urllib.parse.quote(identifier)
+    def diff_cell(text: str, css: str) -> str:
+        if not commits:
+            return f'<td class="num dim">{text}</td>'
+        return f'<td class="num {css}"><a href="/diff/conformance/{quoted}">{text}</a></td>'
+    return (
+        '<tr class="live">'
+        f'<td><a href="/record/conformance/{quoted}"><code>{esc(identifier[:8])}</code></a></td>'
+        f"<td>{shown}</td>"
+        f'<td class="num"><span class="{"good" if alive else "warn"}">{esc(state)}</span> '
+        f'<span class="dim">{esc(elapsed(row.get("started") or ""))}</span></td>'
+        f'<td class="num">{commits}</td>'
+        + diff_cell(f"+{added:,}", "add")
+        + diff_cell(f"-{deleted:,}", "del")
+        + '<td class="num dim">—</td>'
+        '<td class="num dim">—</td>'
+        f'<td class="num dim">{(progress.get("cache_read_tokens") or 0):,} cr</td>'
+        f'<td class="num">{esc(progress.get("turns") or "—")}</td>'
+        '<td class="num dim">—</td>'
+        "</tr>"
+    )
+
+
 def panel_campaign_table() -> str:
     """What each campaign cost and what it moved, on one line each."""
     phase = hj.load_phase()
@@ -660,6 +749,9 @@ def panel_campaign_table() -> str:
         (closed if row.get("outcome") else opened).setdefault(row["campaign"], {}).update(row)
 
     rows = []
+    live = live_campaign_row(opened, closed, diffs)
+    if live:
+        rows.append(live)
     for identifier, close in reversed(list(closed.items())):
         open_row = opened.get(identifier, {})
         money = cost.get(identifier, {})
@@ -692,7 +784,7 @@ def panel_campaign_table() -> str:
             "</tr>"
         )
     if not rows:
-        return panel("Campaigns", empty("No campaign has closed yet."))
+        return panel("Campaigns", empty("No campaign has run yet."))
     return panel(
         "Campaigns",
         '<table class="campaigns"><thead><tr><th>id</th><th>target</th><th class="num">outcome</th>'
@@ -700,7 +792,9 @@ def panel_campaign_table() -> str:
         '<th class="num">Δclean</th><th class="num">Δgaps</th><th class="num">output</th>'
         '<th class="num">turns</th><th class="num">API-eq</th></tr></thead>'
         f"<tbody>{''.join(rows)}</tbody></table>",
-        note="Δgaps rises when an audit finds more than the campaign closed — discovery, not regression",
+        note="Δgaps rises when an audit finds more than the campaign closed — discovery, not "
+        "regression. The running campaign is the first row; its cost is blank rather than "
+        "guessed, since the numbers behind it only exist once the session ends",
     )
 
 
@@ -1110,7 +1204,19 @@ def adapter(*args: str) -> str:
     return result.stdout if result.returncode == 0 else ""
 
 
-def render_transcript(owner: str, campaign: str, limit: int) -> str:
+# Land at the newest event rather than the oldest. `scrollRestoration` is
+# turned off first because otherwise the browser puts back the offset from
+# last visit on a reload, which on a transcript that has grown since is a
+# position part-way up rather than either end.
+TAIL_SCRIPT = """
+history.scrollRestoration = 'manual';
+const bottom = () => window.scrollTo(0, document.body.scrollHeight);
+bottom();
+addEventListener('load', bottom);
+"""
+
+
+def render_transcript(owner: str, campaign: str) -> str:
     path = Path(adapter("transcript-path", owner, campaign).strip() or "/nonexistent")
     if not path.exists():
         return page("Transcript", empty(f"No transcript at {esc(path)}."))
@@ -1120,23 +1226,17 @@ def render_transcript(owner: str, campaign: str, limit: int) -> str:
         if line.strip():
             events.append(json.loads(line))
 
-    parts = []
-    for event in events[:limit]:
-        parts.append(render_event(event))
-
-    more = ""
-    if len(events) > limit:
-        more = (
-            f'<p><a href="/transcript/{urllib.parse.quote(owner)}/{urllib.parse.quote(campaign)}'
-            f'?limit={limit * 4}">show more</a> · '
-            f'<a href="/raw/{urllib.parse.quote(owner)}/{urllib.parse.quote(campaign)}">raw</a></p>'
-        )
+    parts = [render_event(event) for event in events]
 
     header = (
         f'<p class="meta"><a href="/">&larr; dashboard</a> · {esc(owner)} · <code>{esc(campaign)}</code> · '
         f'{len(events)} events · <a href="/raw/{urllib.parse.quote(owner)}/{urllib.parse.quote(campaign)}">raw</a></p>'
     )
-    return page("Transcript", header + "".join(parts) + more, poll=False)
+    return page(
+        "Transcript",
+        header + "".join(parts) + f"<script>{TAIL_SCRIPT}</script>",
+        poll=False,
+    )
 
 
 GATE_LINE = re.compile(r"^(GATE (?:PASSED|FAILED).*|--- \d+\..*|scope: .*|audit: .*|metrics: .*)$", re.MULTILINE)
@@ -1314,6 +1414,10 @@ tr.hunk td { background:var(--card); color:var(--dim); font-size:11px; padding:2
 .up { color:var(--good); }
 .down { color:var(--bad); }
 .dim { color:var(--dim); }
+.good { color:var(--good); }
+.warn { color:var(--warn); }
+tr.live { background:color-mix(in oklab, var(--accent) 8%, transparent); }
+tr.live td { border-bottom:1px solid var(--accent); }
 .sections { margin-top:10px; }
 .gaps li, .minors li { font-size:12px; margin-bottom:6px; }
 .paths code { display:inline-block; }
@@ -1548,8 +1652,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send(200, page("Campaign record", body, poll=False))
             elif route.startswith("/transcript/"):
                 _, _, owner, campaign = route.split("/", 3)
-                limit = int(query.get("limit", ["120"])[0])
-                self.send(200, render_transcript(owner, campaign, limit))
+                self.send(200, render_transcript(owner, campaign))
             elif route.startswith("/raw/"):
                 _, _, owner, campaign = route.split("/", 3)
                 path = Path(adapter("transcript-path", owner, campaign).strip() or "/nonexistent")
