@@ -137,6 +137,51 @@ fn the_measurement_crates_have_the_edges_section_9_gives_them() {
     );
 }
 
+/// `core.md` §9: `heuristic_jump` "is also the single place where the language
+/// list is enumerated", and `#adding-a-language` prices a new language at two
+/// crate directories "plus one line in `heuristic_jump`".
+///
+/// The compiler checks half of this and cannot check the other half. A
+/// `heuristic_jump` that names `lang_rust::Handler::new()` obviously needs the
+/// dependency — but a `crates/lang_python/` added to the workspace and never
+/// named builds perfectly, ships nothing, and reports no error anywhere: the
+/// binary simply has no Python handler, and the first sign of it is a metrics
+/// table with no Python rows. So the enumeration is checked against the
+/// workspace members rather than against itself.
+///
+/// The source scan is deliberately for `Handler::new()` rather than for the
+/// crate name alone, because a `lang_python` that reached the manifest and a
+/// doc comment but not the registry is exactly the failure being caught.
+#[test]
+fn the_language_list_is_enumerated_in_heuristic_jump() {
+    let root = workspace_file("Cargo.toml");
+    let languages: Vec<&str> = root
+        .lines()
+        .filter_map(|line| line.trim().trim_matches(['"', ',']).strip_prefix("crates/"))
+        .filter(|member| member.starts_with("lang_"))
+        .collect();
+    assert!(
+        !languages.is_empty(),
+        "no crates/lang_* workspace member, so this test would pass vacuously"
+    );
+
+    let wiring = workspace_file("crates/heuristic_jump/src/heuristic_jump.rs");
+    let declared = dependencies_in(&manifest_text("heuristic_jump"));
+    for language in languages {
+        assert!(
+            declared.iter().any(|name| name == language),
+            "{language} is a workspace member and heuristic_jump does not depend on it: \
+             core.md §9 has an edge from heuristic_jump to every lang_*"
+        );
+        assert!(
+            wiring.contains(&format!("{language}::Handler::new()")),
+            "heuristic_jump does not register {language}::Handler::new(): core.md §9 makes \
+             this the single place the language list is enumerated, so a language missing \
+             from it is a language the shipped binary does not have"
+        );
+    }
+}
+
 /// The `[dependencies]` table only. A hand-rolled scan rather than
 /// `cargo metadata`, which is a subprocess this suite may not spawn.
 ///
@@ -163,11 +208,18 @@ fn dependencies_in(text: &str) -> Vec<String> {
 }
 
 fn manifest_text(crate_name: &str) -> String {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"))
+    workspace_file(&format!("crates/{crate_name}/Cargo.toml"))
+}
+
+/// Relative to the workspace root, which is two levels up from `crates/driver`.
+///
+/// `unwrap_or_default` rather than a panic, because `panic` is denied outside a
+/// `#[test]` — and it is not a silent pass: every caller asserts that something
+/// is *present* in what comes back, so an empty string fails them all.
+fn workspace_file(relative: &str) -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
-        .join(crate_name)
-        .join("Cargo.toml");
-    // `unwrap_or_default` would be a silent pass; the emptiness is asserted by
-    // every caller, which all require a dependency to be present.
-    std::fs::read_to_string(&manifest).unwrap_or_default()
+        .join("..")
+        .join(relative);
+    std::fs::read_to_string(&path).unwrap_or_default()
 }

@@ -16,8 +16,19 @@ workspace = true
 name = "heuristic-jump"
 path = "src/heuristic_jump.rs"
 
+# `core.md` §9's edge list: `driver` and every `lang_*`, plus `clap` and
+# `tracing-subscriber`. The language crates are here and nowhere else — this is
+# the single place the list is enumerated, and `driver` depending on one is the
+# rule the whole graph is built around.
+#
+# `shared` is the fourth thing §9's own printed `main` requires and its prose
+# omits: `main` returns `Result<(), shared::Error>`, and there is no route to
+# that name except the crate that defines it (CHANGE-conformance-009).
+# `measure_rust` carries it for the same reason.
 [dependencies]
 clap.workspace = true
 driver.workspace = true
+lang_rust.workspace = true
+shared.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

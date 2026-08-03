@@ -3,15 +3,18 @@
 //! that `driver` stays a library with no opinion about how it was invoked
 //! (`design/core.md` §9, `design/deps.md` §11).
 //!
-//! There is no run loop yet — `shim.md` §13's `driver::run` arrives with the
-//! transport — so what this resolves, it logs and exits. The two things it
-//! resolves are already load-bearing: `core.md` §5's cap, and the mode, which
-//! is what decides which of the cap's two defaults applies.
+//! Three things resolved and handed over, and no fourth: the handler set, the
+//! mode, and `core.md` §5's cap. `driver::run` has no transport behind it yet,
+//! so the process still exits immediately — but the registry it is given is the
+//! shipped binary's, which is what makes `lang_rust` a linked artifact rather
+//! than a workspace member nothing builds.
 
 use std::ffi::OsString;
+use std::sync::Arc;
 
 use clap::{CommandFactory, Parser, error::ErrorKind};
-use driver::{Config, DeadlineMs, DeadlineOverride, Heuristics, Mode};
+use driver::{Config, DeadlineMs, DeadlineOverride, Heuristics, Mode, Registry};
+use shared::LanguageHandler;
 use tracing_subscriber::EnvFilter;
 
 /// `deps.md` §11. The usage form is what makes a parser viable here at all:
@@ -54,7 +57,7 @@ struct Cli {
     server: Vec<OsString>,
 }
 
-fn main() {
+fn main() -> Result<(), shared::Error> {
     let cli = Cli::parse();
 
     // The one check clap will not do, and the reason it matters is `core.md`
@@ -101,14 +104,17 @@ fn main() {
         },
     );
 
-    tracing::info!(
-        mode = config.mode().name(),
-        deadline_ms = config.deadline().get(),
-        "resolved configuration"
-    );
-    tracing::warn!(
-        "no run loop yet: this build resolves its configuration and exits, and proxies nothing"
-    );
+    // `core.md` §9's `main`, and the one line adding a language costs. Every
+    // other crate takes its handler as a `&dyn LanguageHandler` precisely so
+    // that this vector is the only enumeration of the list in the workspace;
+    // `crates/driver/tests/seam.rs` fails if a `lang_*` member is missing from
+    // it, which is the half the compiler cannot catch — a language nothing
+    // names simply never fails to build.
+    let registry = Registry::new(vec![
+        Arc::new(lang_rust::Handler::new()) as Arc<dyn LanguageHandler>
+    ]);
+
+    driver::run(registry, config)
 }
 
 /// The single sanctioned `stderr` handle. `clippy.toml` bans the rest because

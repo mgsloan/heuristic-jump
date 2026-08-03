@@ -332,4 +332,48 @@ that test was not touched except to list the new names. The alternative
 considered and rejected was keeping the outgoing types in `measure_core`,
 which needs no spec edit and violates §8.7 instead.
 
+## CHANGE-conformance-009 — core.md#the-dependency-graph — the printed `main` names a type that does not exist and passes one `driver` may not see
+
+**Contradiction:** §9 prints the binary's `main` as
+
+> ```rust
+> let registry = HandlerRegistry::new(vec![ … ]);
+> driver::run(registry, Cli::parse())
+> ```
+
+against two things it says elsewhere. The registry type is `Registry`
+(`core.md` §1: "the registry resolves a `languageId` or a file extension to a
+handler"; there is no `HandlerRegistry` in any document but this snippet). And
+`Cli` is `clap`'s output, where the same bullet says "argument parsing and log
+setup live here rather than in `driver`", `deps.md` §11 puts `clap` in
+`heuristic_jump` alone, and `shim.md` §13 annotates `driver`'s `config.rs` with
+"(clap lives in `heuristic_jump`)" — so `driver::run` cannot name the type its
+own printed signature takes.
+
+**Resolution:** the snippet builds a `Registry`, resolves `cli` into
+`driver::Config` in `heuristic_jump`, and calls `driver::run(registry,
+config)`. The bullet's edge list gains `shared`, which its own printed
+`-> Result<(), shared::Error>` has always required and which `measure_rust`
+already carries for the identical reason.
+
+Nothing is traded: `Config` is the type §9's sibling section and `shim.md` §13
+already designate for exactly this crossing ("what the binary resolved from its
+argv, in the vocabulary `driver` thinks in"), and every other reading either
+puts `clap` in `driver` — contradicting three sections — or leaves `main`
+uncompilable, which is the state that produced the gap.
+
+**This campaign edited §9 and wrote the code it describes, and says so here
+because that is the shape being watched for.** What limits it: the claim the
+gap is about — `heuristic_jump` depends on every `lang_*` and is the single
+place the language list is enumerated — is not touched by the edit and is
+*harder* to satisfy after it, since
+`crates/driver/tests/seam.rs::the_language_list_is_enumerated_in_heuristic_jump`
+now fails if a `crates/lang_*` member is missing from either the manifest or
+the registry literal. The edit corrects a name and an argument in a snippet;
+the loosening reading — dropping the snippet, or dropping the claim that
+`heuristic_jump` is the single enumeration point — was available and was not
+taken.
+
+**Campaign:** de2706af-51e1-4f63-828c-7cd3cfcc5195
+
 **Campaign:** ff3e1a40-5639-4c57-ac81-66ea1144762f

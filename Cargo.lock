@@ -439,6 +439,8 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "driver",
+ "lang_rust",
+ "shared",
  "tracing",
  "tracing-subscriber",
 ]

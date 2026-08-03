@@ -1902,20 +1902,26 @@ Every edge, and why:
   `heuristic_jump` and their own `measure_<lang>`.
 *  ** `driver` depends on `shared` only.** Everything `shim.md` describes lives
   here. It is generic over the handler set.
-*  ** `heuristic_jump` depends on `driver` and every `lang_*`, plus `clap` and
-  `tracing-subscriber`. ** Argument parsing and log setup live here rather than
-  in `driver` (`deps.md` §11, `shim.md` §13), so `driver` stays a library with
-  no opinion about how it was invoked. It is also the single place where the
-  language list is enumerated:
+*  ** `heuristic_jump` depends on `driver` and every `lang_*`, plus `clap`,
+  `tracing-subscriber`, and `shared` for the error type its `main` returns. **
+  Argument parsing and log setup live here rather than in `driver`
+  (`deps.md` §11, `shim.md` §13), so `driver` stays a library with no opinion
+  about how it was invoked. It is also the single place where the language list
+  is enumerated:
 
 ```rust
 fn main() -> Result<(), shared::Error> {
-    let registry = HandlerRegistry::new(vec![
+    let cli = Cli::parse();
+    // `Cli` is this crate's type and `driver` has no `clap` dependency, so
+    // what crosses is `Config`: the same argv in `driver`'s vocabulary.
+    let config = Config::new(/* mode and deadline, resolved from `cli` */);
+
+    let registry = Registry::new(vec![
         Arc::new(lang_rust::Handler::new()),
         Arc::new(lang_python::Handler::new()),
         Arc::new(lang_typescript::Handler::new()),
     ]);
-    driver::run(registry, Cli::parse())
+    driver::run(registry, config)
 }
 ```
 
