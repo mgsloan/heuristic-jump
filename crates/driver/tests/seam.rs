@@ -420,6 +420,67 @@ fn the_licence_text_is_symlinked_into_every_member() {
     }
 }
 
+/// `deps.md` §4's two feature decisions, which are the whole of what a
+/// manifest can carry about JSON and are both invisible when wrong.
+///
+/// > `raw_value` is not optional here. Frame classification needs `method` and
+/// > `id` out of a frame we are otherwise forwarding untouched … which borrows
+/// > from the frame buffer and allocates nothing. Deserializing to
+/// > `serde_json::Value` instead would allocate a whole tree per frame, which
+/// > `shim.md` §1 budgets at "one message-copy."
+///
+/// `Cargo.toml`'s comment beside the dependency names the failure mode as "a
+/// `serde_json` without it silently compiles", and **that has stopped being
+/// true**, which the control run for this test is how we know: dropping the
+/// feature now fails to build, because `shared` and `measure_core` already
+/// `use serde_json::value::RawValue`. The claim was accurate when §4 was
+/// written and there were no users; a feature is only silent until something
+/// imports what it gates.
+///
+/// The assertion is kept rather than deleted, for the reason the vendored half
+/// of `the_workspace_lints_reach_our_crates_and_not_the_vendored_ones` is
+/// kept: the compiler's enforcement here is incidental. It holds while those
+/// imports exist, and `RawValue` is exactly the kind of thing a refactor
+/// moves.
+///
+/// The other half is a feature that must stay *off*:
+///
+/// > Deliberately **not** enabling `preserve_order` (Zed does). We never
+/// > re-serialize a forwarded frame, so map order cannot leak, and
+/// > `preserve_order` swaps in `indexmap` for no benefit.
+///
+/// That one is worth asserting because features unify across the graph: any
+/// crate anywhere enabling it turns it on for everyone, and the only visible
+/// consequence is `indexmap` in the lockfile — which is already there through
+/// `toml` and `criterion`, so its presence proves nothing either way.
+#[test]
+fn serde_json_carries_raw_value_and_not_preserve_order() {
+    let declared = table_of(&workspace_file("Cargo.toml"), "workspace.dependencies")
+        .into_iter()
+        .find(|line| line.starts_with("serde_json"))
+        .unwrap_or_default();
+    assert!(
+        !declared.is_empty(),
+        "serde_json is not declared in [workspace.dependencies], so both assertions below \
+         would be vacuous"
+    );
+
+    assert!(
+        declared.contains("\"raw_value\""),
+        "serde_json is declared as `{declared}` without the raw_value feature: deps.md §4 \
+         calls it not optional, because frame classification borrows `method` and `id` out of \
+         a frame being forwarded untouched — and the failure is silent, since a serde_json \
+         without it compiles and RawValue is simply never in scope"
+    );
+    assert!(
+        !declared.contains("preserve_order"),
+        "serde_json is declared as `{declared}` with preserve_order: deps.md §4 declines it \
+         deliberately — we never re-serialize a forwarded frame, so map order cannot leak, and \
+         it swaps in indexmap for no benefit. Features unify across the graph, so one crate \
+         enabling it turns it on for every crate"
+    );
+}
+
 /// `deps.md` §12's table, which places each testing crate, plus the two pins
 /// its rows argue for and the four crates it declines.
 ///
