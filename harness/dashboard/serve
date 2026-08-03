@@ -1172,6 +1172,47 @@ def panel_sections(loop: str = "") -> str:
     return panel("Sections and gaps", "".join(blocks), note="gap ids are what a campaign names in its target")
 
 
+def budget_block(phase, loop: str = "") -> str:
+    """Spend against budget, which `design/loops.md` section 16 asks the cost
+    panel for and section 15 defines at three scopes.
+
+    A scope with no ceiling is shown rather than hidden. An unset budget is a
+    decision nobody has made yet, and the page exists to put those in front of
+    someone."""
+    rows = []
+    for entry in hj.budget_scopes(phase, loop or None):
+        ceiling, spent = entry["ceiling"], entry["spent"]
+        if ceiling is None:
+            state = '<span class="empty">no ceiling set</span>'
+        elif spent is None:
+            state = f"${ceiling:,.2f} per session"
+        else:
+            share = spent / ceiling * 100
+            label = "exhausted" if spent >= ceiling else f"{share:.0f}%"
+            state = (
+                f'<span class="meter"><span style="width:{min(share, 100):.0f}%"></span></span> {label}'
+            )
+        rows.append(
+            "<tr>"
+            f"<td>{esc(entry['scope'])}</td>"
+            f"<td class='num'>{f'${spent:,.2f}' if spent is not None else '—'}</td>"
+            f"<td class='num'>{f'${ceiling:,.2f}' if ceiling is not None else '—'}</td>"
+            f"<td>{state}</td>"
+            f"<td class='note'>{esc(entry['enforced_by'])}</td>"
+            "</tr>"
+        )
+    return f"""
+    <article class="metrics">
+      <h3>Spend against budget</h3>
+      <table><thead><tr><th>scope</th><th class="num">spent</th><th class="num">ceiling</th>
+        <th>state</th><th>enforced by</th></tr></thead><tbody>{''.join(rows)}</tbody></table>
+      <p class="note">Ceilings live in <code>state/phase.toml</code> under <code>[budget]</code>.
+        The harness checks the outer two between campaigns and stops rather than continuing quietly;
+        the per-campaign one is the runner's, and a campaign it stops closes with outcome
+        <code>budget</code>.</p>
+    </article>"""
+
+
 def mix(row: dict) -> str:
     """`design/loops.md` section 15's health signal, in the shape it names it:
     a campaign that is mostly empty experiments is stalling regardless of what
@@ -1194,7 +1235,7 @@ def panel_cost(loop: str = "") -> str:
     form of the frontier flattening, and it usually turns up before the
     frontier visibly stalls."""
     phase = hj.load_phase()
-    blocks = []
+    blocks = [budget_block(phase, loop)]
     for owner in sorted(phase.loops):
         if loop and owner != loop:
             continue
@@ -1674,6 +1715,9 @@ tr.unjudged td.state { color:var(--dim); }
 .sections td:first-child { white-space:nowrap; width:1%; }
 .sections td:nth-child(2) { width:26%; }
 .sections td.state { width:1%; white-space:nowrap; }\n.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.meter { display:inline-block; width:90px; height:8px; border-radius:4px; background:var(--line);
+  vertical-align:middle; overflow:hidden; }
+.meter > span { display:block; height:100%; background:var(--series-1); }
 .campaigns { font-size:12px; }
 .campaigns td, .campaigns th { padding:4px 7px; }
 .campaigns td:nth-child(2) { line-height:1.45; }

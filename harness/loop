@@ -222,6 +222,18 @@ while :; do
 		exit 0
 	fi
 
+	# The two budget scopes above the campaign (design/loops.md section 15).
+	# Checked here rather than at close, because between campaigns is the only
+	# place a stop leaves a committed tree — and because a ceiling that is
+	# already exceeded should not buy one more campaign to find that out.
+	if ! "$hj" budget "$loop"; then
+		echo
+		echo "loop: a spending ceiling is reached; stopping rather than continuing quietly." >&2
+		echo "      Raise it in state/phase.toml under [budget], and log the change as an" >&2
+		echo "      intervention (kind: budget raised)." >&2
+		exit 1
+	fi
+
 	if ! git diff --quiet || ! git diff --cached --quiet; then
 		echo "loop: the working tree is dirty. Green-or-revert means a campaign starts" >&2
 		echo "      from a committed tree; the next session cannot tell deliberate" >&2

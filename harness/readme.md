@@ -214,18 +214,50 @@ out of the fold, large results truncated with the raw JSONL one link away.
 
 Nothing it produces is committed; it is all derived from state that is.
 
+## Cost, and the three budget scopes
+
+One row per campaign in `state/cost/<loop>.jsonl`, joined on the session id
+after the fact — the harness recorded which loop and target it launched and
+the teed stream carries the numbers, so nothing inside the model is
+instrumented. `hj cost <loop>` writes the rows the loop runner has not
+written yet; `hj cost <loop> --refresh` re-measures rows that predate a field
+the row spec has since grown, which is how a backfill happens.
+
+Two of the row's fields are measured off tool calls rather than off the
+session's `result` event, and both live in `harness/adapter` because a tool
+call is a vendor shape. **Gate seconds** is the `tool_use` → `tool_result`
+timestamp delta, there being no duration field on either. The **experiment
+mix** — committed / reverted / empty — takes one gate run as one experiment,
+since section 4's contract makes the gate the boundary: `committed` is the
+campaign's commits from git, `reverted` is revert commands seen in the
+stream, and `empty` is the residual. A campaign that is mostly empty is
+thrashing regardless of what it spent, which is the signal the mix is for.
+
+Budgets are three scopes, per `design/loops.md` section 15, and each stops
+and reports rather than continuing quietly:
+
+```toml
+[budget]
+global_usd = 900.0        # the backstop, across every phase and loop
+
+[budget.language]
+rust = 120.0              # this phase, this language, independent of the rest
+```
+
+Both are optional and both default to absent. The per-campaign ceiling is
+`budget_usd` on the loop's own table, and it is the runner's to enforce
+(`--max-budget-usd`) because only the runner can stop a session mid-turn; a
+campaign it stops closes with outcome `budget`. The outer two are the
+harness's: `hj budget [<loop>]` reports spend against each and exits 1 when
+one is reached, and `harness/loop` consults it before opening a campaign, so
+a stop lands between campaigns where the tree is committed.
+
 ## What is not built
 
-The supervisor, the frontier tool, held-out selection, cost accounting,
-worktree parallelism, and the tuning and optimisation prompts.
-`design/loops.md` section 18 is the argument: they exist to serve tuning
-loops, and there are none until phase 2a. With one loop, one bash loop is not
-a fleet.
-
-The cost panel is therefore empty and says so, rather than showing a zero.
-It fills in when `state/cost/<loop>.jsonl` exists — the join is `ccusage`
-against the session ids the harness already records, after the fact, with
-nothing inside the model instrumented.
+The supervisor, the frontier tool, held-out selection, worktree parallelism,
+and the tuning and optimisation prompts. `design/loops.md` section 18 is the
+argument: they exist to serve tuning loops, and there are none until phase
+2a. With one loop, one bash loop is not a fleet.
 
 `design/loops.md` section 18 also says who builds them — this same
 conformance loop, pointed at `loops.md`, during the ~100 machine-hours of

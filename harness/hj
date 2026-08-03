@@ -173,9 +173,28 @@ class LoopConfig:
 
 
 @dataclass
+class Budget:
+    """The two scopes above the campaign. `design/loops.md` section 15.
+
+    The per-campaign ceiling is `LoopConfig.budget_usd`, and it is the runner's
+    to enforce (`--max-budget-usd`) because only the runner can stop a session
+    mid-turn. These two are the harness's, checked between campaigns, which is
+    the granularity available to something outside the session.
+
+    Both are optional and both default to absent rather than to a number: an
+    invented ceiling would stop a fleet on an arbitrary Tuesday, and the
+    section asks for budgets that "stop and report", not for a guess.
+    """
+
+    global_usd: float | None = None
+    language_usd: dict[str, float] = field(default_factory=dict)
+
+
+@dataclass
 class Phase:
     phase: str
     audit_every: int = 1
+    budget: Budget = field(default_factory=Budget)
     loops: dict[str, LoopConfig] = field(default_factory=dict)
 
 
@@ -184,7 +203,18 @@ def load_phase() -> Phase:
     if not path.exists():
         die(f"{path} does not exist; the harness has no desired state to reconcile against")
     raw = tomllib.loads(path.read_text())
-    result = Phase(phase=raw["phase"], audit_every=raw.get("audit_every", 1))
+    budget_table = raw.get("budget", {})
+    result = Phase(
+        phase=raw["phase"],
+        audit_every=raw.get("audit_every", 1),
+        budget=Budget(
+            global_usd=budget_table.get("global_usd"),
+            language_usd={
+                language: float(ceiling)
+                for language, ceiling in (budget_table.get("language") or {}).items()
+            },
+        ),
+    )
     for owner, table in raw.get("loop", {}).items():
         result.loops[owner] = LoopConfig(
             owner=owner,
@@ -2352,6 +2382,128 @@ def cmd_cost(args: argparse.Namespace) -> int:
     return 0
 
 
+def cost_owners() -> list[str]:
+    """Every loop that has ever spent anything, which is not the same set as
+    the loops running now: a retired loop's spend still counts against the
+    global ceiling."""
+    directory = STATE / "cost"
+    return sorted(path.stem for path in directory.glob("*.jsonl")) if directory.exists() else []
+
+
+def spend(phase: Phase) -> tuple[float, dict[str, float]]:
+    """API-equivalent spend: the global total, and this phase's by language.
+
+    Global is every row of every cost file — every phase, every loop — because
+    it is the backstop and a backstop that forgets last phase is not one.
+    The language figure is scoped to the current phase, which is what
+    `design/loops.md` section 15 means by "per phase, per language": Python's
+    tuning budget is exhausted independently of Rust's *and* independently of
+    what Python cost in an earlier phase.
+
+    A campaign row carries its own language and phase. An audit row carries
+    neither, so it is attributed to its loop's configured language and, absent
+    a recorded phase, to the current one — audits are appended as they run, so
+    the only rows this misplaces are ones written before a phase change.
+    """
+    total = 0.0
+    by_language: dict[str, float] = {}
+    for owner in cost_owners():
+        config = phase.loops.get(owner)
+        for row in cost_rows(owner):
+            usd = row.get("usd") or 0
+            total += usd
+            if row.get("kind") == "audit":
+                language = config.language if config else None
+                row_phase = row.get("phase") or phase.phase
+            else:
+                language = row.get("language")
+                row_phase = row.get("phase")
+            if language and row_phase == phase.phase:
+                by_language[language] = by_language.get(language, 0.0) + usd
+    return total, by_language
+
+
+def budget_scopes(phase: Phase, owner: str | None = None) -> list[dict]:
+    """One entry per ceiling that applies, innermost first.
+
+    The per-campaign scope is reported and never enforced here: it is passed to
+    the runner as `--max-budget-usd`, and a campaign stopped by it comes back
+    with outcome `budget` rather than with a closing line.
+    """
+    total, by_language = spend(phase)
+    scopes: list[dict] = []
+    config = phase.loops.get(owner) if owner else None
+    if config:
+        scopes.append(
+            {
+                "scope": "campaign",
+                "of": config.owner,
+                "ceiling": config.budget_usd,
+                "spent": None,
+                "enforced_by": "the runner, per session",
+            }
+        )
+    languages = [config.language] if config else sorted(set(by_language) | set(phase.budget.language_usd))
+    for language in languages:
+        if not language:
+            continue
+        scopes.append(
+            {
+                "scope": f"phase {phase.phase}, {language}",
+                "of": language,
+                "ceiling": phase.budget.language_usd.get(language),
+                "spent": by_language.get(language, 0.0),
+                "enforced_by": "the harness, between campaigns",
+            }
+        )
+    scopes.append(
+        {
+            "scope": "global",
+            "of": None,
+            "ceiling": phase.budget.global_usd,
+            "spent": total,
+            "enforced_by": "the harness, between campaigns",
+        }
+    )
+    return scopes
+
+
+def cmd_budget(args: argparse.Namespace) -> int:
+    """`design/loops.md` section 15: three scopes, each of which "stops and
+    reports rather than continuing quietly".
+
+    Exit 1 means a ceiling is reached. `harness/loop` consults this before
+    opening a campaign, so the stop lands between campaigns rather than inside
+    one — which is also the only place a stop leaves a committed tree.
+    """
+    phase = load_phase()
+    if args.loop:
+        loop_config(args.loop)
+    exhausted = []
+    for entry in budget_scopes(phase, args.loop):
+        ceiling, spent = entry["ceiling"], entry["spent"]
+        if ceiling is None:
+            state = "no ceiling set"
+        elif spent is None:
+            state = f"${ceiling:.2f} per campaign"
+        else:
+            state = f"${spent:.2f} of ${ceiling:.2f} ({spent / ceiling * 100:.0f}%)"
+            if spent >= ceiling:
+                state += "  — EXHAUSTED"
+                exhausted.append(entry["scope"])
+        spent_text = "" if spent is None or ceiling is not None else f"${spent:.2f} spent, "
+        print(f"budget: {entry['scope']:<24} {spent_text}{state}   [{entry['enforced_by']}]")
+    if exhausted:
+        print(
+            "budget: exhausted at "
+            + ", ".join(exhausted)
+            + ". Raise it in state/phase.toml under [budget], and log the change as an"
+            " intervention (kind: budget raised).",
+            file=sys.stderr,
+        )
+    return 1 if exhausted else 0
+
+
 def cmd_gaps(args: argparse.Namespace) -> int:
     _, config = loop_config(args.loop)
     ledger = gap_ledger(config.docs)
@@ -2399,7 +2551,7 @@ def cmd_audit_due(args: argparse.Namespace) -> int:
 
 
 def cmd_audit_cost(args: argparse.Namespace) -> int:
-    _, config = loop_config(args.loop)
+    phase, config = loop_config(args.loop)
     measured = subprocess.run(
         [str(HARNESS / "adapter"), "cost", args.transcript], capture_output=True, text=True, check=False
     ).stdout.strip()
@@ -2410,7 +2562,10 @@ def cmd_audit_cost(args: argparse.Namespace) -> int:
     if not numbers:
         print("cost: the audit transcript carries no result event")
         return 0
-    append_jsonl(cost_path(config.owner), {"kind": "audit", "loop": config.owner, "ts": now(), **numbers})
+    append_jsonl(
+        cost_path(config.owner),
+        {"kind": "audit", "loop": config.owner, "phase": phase.phase, "ts": now(), **numbers},
+    )
     commit_harness_state([cost_path(config.owner)], f"audit cost ${numbers.get('usd') or 0:.2f}")
     print(f"cost: audit ${numbers.get('usd') or 0:.2f}, {numbers.get('output_tokens') or 0:,} out")
     return 0
@@ -2683,6 +2838,10 @@ def main() -> int:
         help="re-measure closed campaigns whose row predates a field the row spec now carries",
     )
     p.set_defaults(run=cmd_cost)
+
+    p = sub.add_parser("budget", help="spend against each ceiling; exit 1 when one is reached")
+    p.add_argument("loop", nargs="?")
+    p.set_defaults(run=cmd_budget)
 
     p = sub.add_parser("audit-cost", help="record what an audit session cost")
     p.add_argument("loop")
