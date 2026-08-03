@@ -303,7 +303,7 @@ fn view(root: &Path) -> ProjectView {
     ProjectView::new(Arc::new(file_list(root)), Deadline::none(), grammar())
 }
 
-/// DECISION-conformance-012: provisional. The grammar reaches `parse` through
+/// `conformance-012` (answered). The grammar reaches `parse` through
 /// the constructor.
 fn grammar() -> Language {
     tree_sitter_rust::LANGUAGE.into()

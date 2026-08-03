@@ -413,7 +413,7 @@ pub struct ScanOutcome {
 pub struct ProjectView {
     files: Arc<FileList>,
     deadline: Deadline,
-    /// DECISION-conformance-012: provisional. `resolution.md` §3's `parse`
+    /// `conformance-012` (answered). `resolution.md` §3's `parse`
     /// takes a path and text and no grammar, so there is no route to one
     /// except this. Handed over at construction the same way §3 hands over
     /// the worker pool; the view is per query and a query is dispatched to
@@ -422,7 +422,7 @@ pub struct ProjectView {
 }
 
 impl ProjectView {
-    // DECISION-conformance-012: provisional. The third parameter.
+    // `conformance-012` (answered). The third parameter.
     pub fn new(files: Arc<FileList>, deadline: Deadline, grammar: Language) -> Self {
         Self {
             files,

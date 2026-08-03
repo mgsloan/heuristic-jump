@@ -747,10 +747,14 @@ pub struct Tabs {
     chars: Bitmap,
 }
 
+/// The two units this crate confuses most easily, side by side in one struct,
+/// which is why they are typed even though `rope-modifications.md` §4's table
+/// predates this type: a tab's position into the chunk in bytes, and how many
+/// scalar values precede it.
 #[derive(Debug, PartialEq, Eq)]
 pub struct TabPosition {
-    pub byte_offset: usize,
-    pub char_offset: usize,
+    pub byte_offset: Offset,
+    pub char_offset: CharCount,
 }
 
 impl Iterator for Tabs {
@@ -763,12 +767,12 @@ impl Iterator for Tabs {
 
         let tab_offset = self.tabs.trailing_zeros() as usize;
         let chars_mask = (1 << tab_offset) - 1;
-        let char_offset = (self.chars & chars_mask).count_ones() as usize;
+        let char_offset = (self.chars & chars_mask).count_ones();
 
         // Since tabs are 1 byte the tab offset is the same as the byte offset
         let position = TabPosition {
-            byte_offset: tab_offset,
-            char_offset,
+            byte_offset: Offset(tab_offset),
+            char_offset: CharCount(char_offset),
         };
         // Remove the tab we've just seen
         self.tabs ^= 1 << tab_offset;
@@ -1166,8 +1170,8 @@ mod tests {
 
             if c == '\t' {
                 expected_tab_positions.push(TabPosition {
-                    byte_offset: offset,
-                    char_offset,
+                    byte_offset: Offset(offset),
+                    char_offset: CharCount(char_offset as u32),
                 });
             }
 

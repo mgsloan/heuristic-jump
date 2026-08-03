@@ -122,7 +122,7 @@ impl WirePosition {
             character: self.character,
             encoding,
         };
-        // DECISION-conformance-006: provisional. Each arm clips and compares
+        // `conformance-006` (answered). Each arm clips and compares
         // rather than converting: `point_to_offset` and
         // `point_utf16_to_offset` reach a `debug_panic!` on a position that is
         // out of range or inside a scalar value, which panics in debug and
@@ -173,7 +173,7 @@ impl WirePosition {
         encoding: PositionEncoding,
         text: &Rope,
     ) -> Result<Self, EncodingError> {
-        // DECISION-conformance-006: provisional. Refusing rather than
+        // `conformance-006` (answered). Refusing rather than
         // clamping, in the direction that has no LSP rule to conform to: an
         // offset this crate produced is always a boundary, so one that is not
         // came from somewhere that has already gone wrong. `rope`'s

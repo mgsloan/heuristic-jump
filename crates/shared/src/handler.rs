@@ -114,7 +114,7 @@ impl ServerProfile {
 /// They are on both arms, because a stratum with no coverage and a stratum
 /// whose searches all cost 40ms before abstaining are different findings and
 /// the abstaining one is the more interesting.
-// DECISION-conformance-013: provisional. The reporting channel is the value a
+// `conformance-013` (answered). The reporting channel is the value a
 // handler already returns, rather than an out-parameter on `goto_definition`.
 #[derive(Debug)]
 pub enum Outcome {
@@ -141,7 +141,7 @@ pub enum Outcome {
 /// judged against the class it turned out to be. Collapsing them makes
 /// `high-level.md`'s central table non-comparable across versions, which is
 /// the one property it needs.
-// DECISION-conformance-013: provisional.
+// `conformance-013` (answered).
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Strata {
     prior: Stratum,
@@ -289,7 +289,7 @@ pub struct CandidateCount(pub u32);
 /// case is not only an optimisation: the commonest abstention on the query
 /// path is `NotAnIdentifier`, decided from the tree before any work happens,
 /// and it should not pay for a reporting channel it never writes to.
-// DECISION-conformance-013: provisional.
+// `conformance-013` (answered).
 #[derive(Debug)]
 pub struct Trace(Option<Box<TraceParts>>);
 

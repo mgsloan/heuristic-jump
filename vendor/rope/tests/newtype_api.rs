@@ -89,6 +89,39 @@ fn the_signature_scan_finds_what_it_is_looking_for() {
     );
 }
 
+/// §4 converts `TextSummary` too — all nine fields — and the argument it gives
+/// is that "leaving the crate's central summary type as bare integers while
+/// everything around it is typed would be the worst of both".
+///
+/// A field is not a signature, so the scan above does not see one: `pub len:
+/// usize` reappearing on `TextSummary` would leave every `pub fn` converted
+/// and put the bare integer back in the type the whole crate accumulates into.
+/// Named fields only — `Offset(pub usize)` is the newtype's own contents and
+/// is where the primitive is supposed to be.
+#[test]
+fn no_public_field_names_a_bare_primitive() {
+    let mut offenders = Vec::new();
+
+    for source in sources() {
+        let text = fs::read_to_string(&source).expect("reading a source file of this crate");
+        for field in public_fields(&text) {
+            if mentions_bare_primitive(&field) {
+                offenders.push(format!(
+                    "{}: pub {field}",
+                    source.file_name().unwrap_or_default().to_string_lossy()
+                ));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "a public field names a bare `usize` or `u32` rather than the newtype \
+         for its unit (`design/rope-modifications.md` §4):\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// §4: **the newtypes are opaque.** The tempting shortcut is `Add<u32>`,
 /// `AddAssign<u32>`, `PartialEq<u32>` and `PartialOrd<u32>`, so that
 /// `p.row += 1` and `p.column == 0` keep compiling and no body needs editing —
@@ -249,6 +282,27 @@ fn public_signatures(text: &str) -> Vec<(&str, String)> {
         signatures.push((name, body));
     }
     signatures
+}
+
+/// Every named `pub` field declaration in `text`, as `name: type`. A tuple
+/// field — `pub struct Offset(pub usize)` — has no name and no colon, and is
+/// deliberately not one of these.
+fn public_fields(text: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix("pub ") else {
+            continue;
+        };
+        let Some((name, kind)) = rest.split_once(':') else {
+            continue;
+        };
+        if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            continue;
+        }
+        fields.push(format!("{name}:{}", kind.trim_end_matches(',')));
+    }
+    fields
 }
 
 /// Every `impl` header in `text`, from `impl` to the opening brace. The

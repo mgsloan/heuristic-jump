@@ -15,7 +15,7 @@ members = [
 [workspace.package]
 edition = "2024"
 publish = false
-# DECISION-conformance-002: provisional. `deps.md` §14 puts the toolchain pin
+# `conformance-002` (answered). `deps.md` §14 puts the toolchain pin
 # in `rust-toolchain.toml`, which no loop owns, so it does not exist. This is a
 # floor rather than a selection: an older toolchain is refused, a newer one is
 # not, which is weaker than the reproducibility the pin was for.

@@ -170,7 +170,7 @@ impl Agreement {
         // LSP expressing ambiguity, and §6 already refuses to call picking one
         // of its own candidates an error; the same reasoning refuses to charge
         // the shim for the child's least convenient one.
-        // DECISION-conformance-009: provisional.
+        // `conformance-009` (answered).
         let severity = theirs
             .iter()
             .map(|theirs| severity_of(*top, *theirs))
@@ -206,7 +206,7 @@ fn severity_of(shim: DefinitionSite<'_>, child: DefinitionSite<'_>) -> Severity 
     }
 }
 
-/// DECISION-conformance-009: provisional. "Same module tree" is read as "same
+/// `conformance-009` (answered). "Same module tree" is read as "same
 /// containing directory", which is the strongest test available to something
 /// that may not read the disk and does not know the language.
 ///
