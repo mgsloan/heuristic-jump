@@ -1506,6 +1506,14 @@ def cmd_campaign_open(args: argparse.Namespace) -> int:
             "language": config.language,
             "prompt": config.prompt,
             "prompt_sha": prompt_sha,
+            # The rendered sha changes every campaign, because the tail does —
+            # which is what `design/loops.md` section 16 asks for, so a spliced
+            # file cannot change behaviour invisibly. It is useless for asking
+            # which *template* a campaign ran under, though, and that is the
+            # question a prompt revision needs answered. So both.
+            "template_sha": hashlib.sha256(
+                (HARNESS / "prompts" / config.prompt).read_bytes()
+            ).hexdigest(),
             "cli_version": cli_version(),
             "started": now(),
             "start_commit": head_sha(),

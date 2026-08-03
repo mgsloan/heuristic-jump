@@ -838,7 +838,7 @@ def panel_sessions() -> str:
                 f"<td>{target_cell}</td>"
                 f"<td>{esc(campaign.get('outcome') or 'open')}</td>"
                 f"<td>{esc(campaign.get('commits', 0))}</td>"
-                f"<td><code>{esc((campaign.get('prompt_sha') or '')[:12])}</code></td>"
+                f"<td><code>{esc((campaign.get('template_sha') or campaign.get('prompt_sha') or '')[:8])}</code></td>"
                 f"<td><code>{esc(campaign.get('cli_version') or '—')}</code></td>"
                 f"<td>{esc(campaign.get('started', ''))}</td>"
                 f"<td>{record_link}{link}</td></tr>"
@@ -848,7 +848,7 @@ def panel_sessions() -> str:
     return panel(
         "Campaigns",
         "<table><thead><tr><th>id</th><th>loop</th><th>target</th><th>outcome</th><th>commits</th>"
-        "<th>prompt sha</th><th>cli</th><th>started</th><th></th></tr></thead>"
+        "<th>prompt</th><th>cli</th><th>started</th><th></th></tr></thead>"
         f"<tbody>{''.join(rows)}</tbody></table>",
         note="one campaign is one session — the campaign id is the session id, so there is nothing to correlate",
     )
