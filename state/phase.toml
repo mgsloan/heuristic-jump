@@ -18,7 +18,7 @@ phase = "1a"
 # a language loop cannot observe that the seam made its job harder, only that
 # it is slow (`design/loops.md` section 8).
 [loop.conformance]
-status = "paused" # running | paused | blocked | done
+status = "running" # running | paused | blocked | done
 prompt = "conformance.md"
 stall_n = 3        # campaigns without progress before the loop stops and asks
 rotation = 6       # sections per audit beyond the ones the last campaign touched
