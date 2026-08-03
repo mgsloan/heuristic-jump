@@ -4,7 +4,7 @@
 
 [section."core.md#1-handler-interface"]
 state = "clean"
-last_audited = "2026-08-03T05:34:51+00:00"
+last_audited = "2026-08-03T09:16:14+00:00"
 
 [section."core.md#vocabulary-types"]
 state = "gaps"
@@ -44,32 +44,22 @@ last_audited = "2026-08-03T06:33:47+00:00"
   where = "crates/driver/src/dispatch.rs:133"
 
 [section."core.md#snapshots-are-o1-to-take-and-are-parsed-before-a-handler-sees-one"]
-state = "gaps"
-last_audited = "2026-08-03T05:34:51+00:00"
-
-  [[section."core.md#snapshots-are-o1-to-take-and-are-parsed-before-a-handler-sees-one".gap]]
-  claim = "the two-step split keeps core doing O(1) work while the parse still happens inside the worker and inside the deadline; realise is called by the worker, never by core"
-  found = "SnapshotSeed::realise takes no Deadline and cannot observe one, and passes None where tree-sitter's ParseOptions progress callback would go (document.rs:133, whose comment says 'Nothing measures that yet'), so a long parse cannot be bounded or cancelled without changing the signature. There is also no caller anywhere: grep for `realise` across the workspace finds only the definition and doc prose, and driver::dispatch never builds or realises a seed, so no worker pays the parse at all"
-  where = "crates/shared/src/document.rs:100"
+state = "clean"
+last_audited = "2026-08-03T09:16:14+00:00"
 
   [[section."core.md#snapshots-are-o1-to-take-and-are-parsed-before-a-handler-sees-one".minor]]
-  claim = "DocumentSnapshot contains no synchronisation primitive, and &Query \u2014 therefore &DocumentSnapshot \u2014 crosses threads and must be Sync"
-  note = "the property holds but nothing checks it: no Sync bound or assertion on DocumentSnapshot or Query exists, and there is no fan-out caller that would fail to compile. `fn _assert_sync<T: Sync>() {}` instantiated for both would make the section's load-bearing claim a compile error the day a field with interior mutability is added"
-  where = "crates/shared/src/document.rs:44"
+  claim = "an abandoned parse reports HandlerError::DeadlineExpired, which the dispatch wrapper maps back to Abstain { reason: Deadline }"
+  note = "the wrapper produces a third state, Dispatched::DeadlineExpired; AbstainReason::Deadline is constructed nowhere in the workspace, only labelled in record.rs"
+  where = "crates/driver/src/dispatch.rs:126"
 
 [section."core.md#text-and-tree-can-never-disagree"]
-state = "gaps"
-last_audited = "2026-08-03T05:34:51+00:00"
-
-  [[section."core.md#text-and-tree-can-never-disagree".gap]]
-  claim = "getting the result back to core is explicit: the dispatch wrapper \u2014 not the handler \u2014 sends `Parsed { uri, version, tree }` to core after realise succeeds, and core caches it so the next query starts warm"
-  found = "no Parsed type exists anywhere; driver is `mod dispatch;` alone (driver.rs:10) with no channel to core and no tree cache, and dispatch() receives an already-built Query and calls handler.goto_definition \u2014 it never realises a seed, so there is no point at which a realised tree could be handed back and nothing ever fills SnapshotSeed::incremental's `base`. MECHANICAL CHECK AVAILABLE: make the driver's tree-cache write reachable only by consuming a `Parsed` value that only the dispatch wrapper can mint, so 'the handler cannot forget' is a type property rather than a rule"
-  where = "crates/driver/src/dispatch.rs:131"
+state = "clean"
+last_audited = "2026-08-03T09:16:14+00:00"
 
   [[section."core.md#text-and-tree-can-never-disagree".minor]]
-  claim = "realise applies the edits to a private clone of the base tree via Tree::edit"
-  note = "the comment asserts 'A private clone \u2026 not ours to mutate in place', but no clone() appears \u2014 realise(self) moves the seed's own Tree out of base and edits it. The property still holds because each Tree handle owns its own TSTree, but it holds by virtue of the (not yet existing) caller passing a clone, not by anything realise does"
-  where = "crates/shared/src/document.rs:110"
+  claim = "the dispatch wrapper sends Parsed { uri, version, tree } to core after realise succeeds, and core caches it"
+  note = "Parsed travels by return value; there is no channel and no core actor, and TreeCache::insert has no caller outside driver/tests/snapshots.rs \u2014 stated in the module doc rather than hidden"
+  where = "crates/driver/src/trees.rs:10"
 
 [section."core.md#3-position-encoding"]
 state = "clean"
@@ -170,13 +160,13 @@ last_audited = "2026-08-03T05:34:51+00:00"
   where = "crates/shared/src/shared.rs:25"
 
 [section."core.md#one-measurement-library-one-tiny-binary-per-language"]
-state = "gaps"
-last_audited = "2026-08-03T05:34:51+00:00"
+state = "clean"
+last_audited = "2026-08-03T09:16:14+00:00"
 
-  [[section."core.md#one-measurement-library-one-tiny-binary-per-language".gap]]
-  claim = "measure_core is a library holding the LSP client, truth.jsonl I/O, snapshot and Query construction, the replay driver, agreement classification and the per-stratum table, taking the handler as `&dyn LanguageHandler`, plus a four-line measure_<lang> binary per language"
-  found = "neither crate exists: no crates/measure_core/ or crates/measure_rust/ directory, no manifest under either path, and [workspace] members lists only crates/driver, crates/heuristic_jump, crates/shared and the two vendored crates. Nothing outside driver::dispatch takes a handler as &dyn LanguageHandler. Both paths are in this loop's write list (state/phase.toml:72-74), so this is not blocked by ownership"
-  where = "Cargo.toml:3"
+  [[section."core.md#one-measurement-library-one-tiny-binary-per-language".minor]]
+  claim = "it takes the handler as &dyn LanguageHandler, so it is compiled once and is generic over the language"
+  note = "the language is recovered from the handler two ways: run() returns HandlerError::DeadlineExpired when language_ids() is empty, while positions.rs falls back to LanguageId::new(\"unknown\")"
+  where = "crates/measure_core/src/measure_core.rs:56"
 
 [section."core.md#two-modes-collect-and-replay"]
 state = "gaps"
@@ -226,12 +216,17 @@ last_audited = "2026-08-03T06:33:47+00:00"
 
 [section."core.md#the-command-line"]
 state = "gaps"
-last_audited = "2026-08-03T05:34:51+00:00"
+last_audited = "2026-08-03T09:16:14+00:00"
 
   [[section."core.md#the-command-line".gap]]
-  claim = "measure-<lang> offers enumerate/collect/replay with --corpus required and undefaulted, --limit/--seed, --server resolved through servers.toml, --restart, --format table|json, --records, no --held-out flag, and a deterministic replay whose exit status is independent of the numbers"
-  found = "no measure-<lang> binary target exists in any manifest, no argument parser exists in the workspace \u2014 clap is declared nowhere, including the root [workspace.dependencies] at Cargo.toml:24-71 \u2014 and the only binary in the tree is heuristic-jump, whose `fn main() {}` parses nothing (crates/heuristic_jump/src/heuristic_jump.rs:6)"
-  where = "Cargo.toml:3"
+  claim = "replay is deterministic: same corpus, same commit, same table, byte for byte"
+  found = "the table and the JSON report both carry wall-clock p50/p99 latency measured around each handler call, so two runs differ; the determinism test compares the --records JSONL with heuristic_latency_us masked, not the printed table"
+  where = "crates/measure_core/src/table.rs:162"
+
+  [[section."core.md#the-command-line".minor]]
+  claim = "--restart discards a partial truth file, which is the destructive option and therefore the explicit one"
+  note = "the removal's error is swallowed with .ok(); the effect is right because Writer::create truncates, but a fallible operation on the destructive path is silently discarded"
+  where = "crates/measure_core/src/collect.rs:50"
 
 [section."core.md#8-protocol-types"]
 state = "clean"
@@ -266,21 +261,16 @@ last_audited = "2026-08-03T06:54:58+00:00"
 
 [section."core.md#84-location-is-byte-based-and-this-fixes-a-real-inconsistency"]
 state = "gaps"
-last_audited = "2026-08-03T07:56:16+00:00"
+last_audited = "2026-08-03T09:16:14+00:00"
 
   [[section."core.md#84-location-is-byte-based-and-this-fixes-a-real-inconsistency".gap]]
-  claim = "the dispatch wrapper converts Location to WireLocation on the worker thread, the dispatch result carries both forms, and PositionEncoding is handed to the wrapper alongside the query and stops there"
-  found = "`dispatch` takes only (handler, query) and `Dispatched::Decided` carries a bare `Outcome`; no encoding reaches the wrapper and no `Location -> WireLocation` conversion exists in the workspace \u2014 the only `WireLocation::new` call site is crates/shared/tests/proto.rs:522. Mechanizable: seam.rs already scans manifests and type names, so `WireLocation` being named only in driver/shared, and `Dispatched::Decided` carrying both forms, are exact checks rather than judgement"
-  where = "crates/driver/src/dispatch.rs:133"
-
-  [[section."core.md#84-location-is-byte-based-and-this-fixes-a-real-inconsistency".gap]]
-  claim = "measure_core puts nothing on a wire and does none of this, which is why the conversion lives in driver rather than shared"
-  found = "measure_core is a JSON-RPC client that settles a negotiated encoding and applies it to build the wire position it sends; the conclusion about driver survives but the premise is false against the code"
-  where = "crates/measure_core/src/collect.rs:271"
+  claim = "the conversion is nearly free because every target file's text is already in the view's cache, and the carried line means only that one line's text is needed"
+  found = "there is no per-query read cache (conformance-005, accepted), so encode does a whole-file read and UTF-8 validation per location, and Location::line() is never read by the driver \u2014 WirePosition::encode takes a whole Rope and has no line-only constructor"
+  where = "crates/driver/src/dispatch.rs:439"
 
   [[section."core.md#84-location-is-byte-based-and-this-fixes-a-real-inconsistency".minor]]
   claim = "handlers never see a WireLocation and cannot construct one"
-  note = "`WireLocation::new` is public; what blocks a handler is the unavailability of a `WirePosition`, not visibility. Disclosed in the doc comment, but the sentence reads as a visibility property"
+  note = "WireLocation::new is pub and PositionEncoding's variants are public unit variants, so the property is held by a source-text scan in driver/tests/seam.rs, not by the types; proto.rs's stated type-level reason does not hold"
   where = "crates/shared/src/proto.rs:274"
 
 [section."core.md#85-the-untagged-unions-are-the-actual-risk"]
@@ -392,22 +382,17 @@ last_audited = "2026-08-03T06:13:37+00:00"
 
 [section."core.md#vendoring-the-zed-crates"]
 state = "gaps"
-last_audited = "2026-08-03T05:10:16+00:00"
+last_audited = "2026-08-03T09:16:14+00:00"
 
   [[section."core.md#vendoring-the-zed-crates".gap]]
-  claim = "vendor/rope's public API speaks in newtypes: ByteOffset/ByteLen/ByteRange instead of usize and Range<usize>, and LineIndex/ByteColumn/Utf16Column/CharCount instead of the bare u32s in Point, PointUtf16 and TextSummary"
-  found = "not one public signature is converted. Rope::len -> usize (rope.rs:336), Rope::point_to_offset -> usize (rope.rs:475), Point { row: u32, column: u32 } (point.rs:10), PointUtf16 the same (point_utf16.rs:8), TextSummary.len: usize (rope.rs:1304). The newtypes exist only as an added unused file, which says so itself (byte_offset.rs:1-7), as does vendor/README.md:76-80"
-  where = "vendor/rope/src/rope.rs:336"
+  claim = "vendor/rope's public API speaks in newtypes \u2014 ByteOffset/ByteLen/ByteRange instead of usize and Range<usize>, LineIndex/ByteColumn/Utf16Column/CharCount instead of the bare u32s in Point, PointUtf16 and TextSummary"
+  found = "the seven types are defined and re-exported, but no signature was converted: Point is still `pub row: u32, pub column: u32`, Rope::len() returns usize, and byte_offset.rs:6 plus vendor/README.md:76-80 both record the sweep as not done"
+  where = "vendor/rope/src/point.rs:10"
 
-  [[section."core.md#vendoring-the-zed-crates".gap]]
-  claim = "ByteOffset, ByteLen, ByteRange, LineIndex, ByteColumn, Utf16Column and CharCount are defined in rope and re-exported by shared"
-  found = "rope defines and exports all seven (rope.rs:36-40) but shared re-exports four \u2014 ByteLen, ByteOffset, ByteRange, LineIndex \u2014 so ByteColumn, Utf16Column and CharCount are not nameable as shared::\u2026 by a crate that may not depend on rope. MECHANICAL CHECK AVAILABLE: one `use shared::{\u2026}` naming all seven in an existing test makes the re-export list a compile error rather than a reading"
-  where = "crates/shared/src/shared.rs:26"
-
-  [[section."core.md#vendoring-the-zed-crates".gap]]
-  claim = "sum_tree needs no patching; the ztracing redirect is a single-line patch to rope"
-  found = "sum_tree is patched three ways \u2014 `use tracing::instrument` replacing ztracing at sum_tree.rs:11 and again in src/cursor.rs, tree_map.rs deleted, and the #[ctor] logger deleted (vendor/README.md:84-90). The section accounts only for the tree_map deletion and places the ztracing redirect solely in rope, but sum_tree has its own ztracing import sites"
-  where = "vendor/sum_tree/src/sum_tree.rs:11"
+  [[section."core.md#vendoring-the-zed-crates".minor]]
+  claim = "vendoring rope makes the shipped binary GPL-3.0-or-later, while crates/* stay MIT"
+  note = "similarity, lang_rust and measure_rust all declare GPL-3.0-or-later, for a reason unrelated to rope; deps.md \u00a75 owns the per-crate table and this section only summarises it"
+  where = "crates/similarity/Cargo.toml:13"
 
 [section."core.md#10-testing"]
 state = "gaps"
