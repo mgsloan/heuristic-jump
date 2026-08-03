@@ -392,6 +392,7 @@ happens inside the worker and inside the deadline:
 ```rust
 /// What `core` builds at dispatch. Three refcount bumps and a struct move.
 pub struct SnapshotSeed {
+    pub uri: DocumentUri,            // which document this is
     pub text: Rope,                  // structural sharing; O(1)
     pub version: DocumentVersion,    // the version above
     pub language_id: LanguageId,
@@ -403,6 +404,7 @@ pub struct SnapshotSeed {
 
 /// What a handler is given. The tree is already correct for the text.
 pub struct DocumentSnapshot {
+    pub uri: DocumentUri,
     pub text: Rope,
     pub version: DocumentVersion,
     pub language_id: LanguageId,
@@ -420,6 +422,13 @@ impl DocumentSnapshot {
 }
 ```
 
+* `uri` is on both because a handler that resolves a local binding returns a
+  `Location` *in the document it was given*, and `Location::at_node` takes a
+  `DocumentUri`. [Section 1](#the-trait)'s `Query` carries no other route to
+  one — and `ProjectView::root_of` wants the same value — so without it the
+  seam cannot express its own commonest answer. It is the document's identity
+  rather than its content: one short string clone at dispatch, not a copy of
+  anything that scales with the file.
 * `Rope::clone` shares structure through the sum tree.
 * `Tree::clone` is `ts_tree_copy`, which is `ts_subtree_retain` plus a small
   wrapper allocation (`tree-sitter/src/tree.c:22`) — a refcount increment, not

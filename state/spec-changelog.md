@@ -109,3 +109,41 @@ The document's table is updated in the same edit, since "`#[cfg(test)]` module
 at the crate root" is what made the file-versus-inline choice look free.
 
 **Campaign:** 4ba19af5-b041-4f2f-9d85-e5553eb14c57
+
+## CHANGE-conformance-003 — core.md#snapshots-are-o1-to-take-and-are-parsed-before-a-handler-sees-one — the snapshot has to carry the document's URI
+
+**Contradiction:** §2 prints `DocumentSnapshot` with the fields `text`,
+`version`, `language_id` and a private `tree`, and §1 prints `Query` with
+`doc`, `position`, `project`, `deadline`, `server` and `policy`. §1 also has a
+handler return `Outcome::Committed { locations: Vec<Location> }`, and §8.4
+settles that a `Location` is "constructed only through
+`Location::at_node(uri, node)`". Nothing in either struct is a `DocumentUri`,
+so a handler that resolves a local binding — the commonest answer there is,
+and the whole of `resolution.md` §2's stage 1 — cannot name the file the
+answer is in. The same gap shows up a second time in `resolution.md` §3, whose
+`ProjectView::root_of(&self, uri: &DocumentUri)` is documented as "the root
+containing a document, for scoping searches" and has no argument to be called
+with.
+
+**Resolution:** `SnapshotSeed` and `DocumentSnapshot` both carry
+`pub uri: DocumentUri`, and §2 says why in a bullet beside the block. This
+trades nothing off. The alternatives are all worse in a way that is easy to
+check rather than to argue about: putting the URI on `Query` instead splits a
+document's identity from the document, so `measure_core` — which builds a
+snapshot per recorded position and no `Query` at all — would carry it
+separately; giving handlers a second `Location` constructor that takes no URI
+would give away §8.4's single-constructor property, which is the thing making
+row and range unable to drift apart; and deriving it from `ProjectView` needs
+a `ProjectPath`, which a handler only has for files it looked *up*, never for
+the one it was handed. It is also not an encoding leak or a scope widening: a
+URI is not a position, and the document was already in scope by construction.
+
+**Stated plainly, because it is the shape being watched for:** this campaign
+edited a design document and wrote the code it describes, in the same commit.
+What makes it Class A is that the correction is forced by the document's own
+other claims rather than by anything convenient about the implementation — the
+seam as printed cannot return the answer §1 says handlers return — and that
+the fix adds an obligation to the driver (it must know the URI at dispatch)
+rather than removing one.
+
+**Campaign:** e3b8dbf4-56aa-48fc-9a4d-4018d7464f4d

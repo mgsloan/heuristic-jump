@@ -9,9 +9,13 @@
 //! `shared::ByteOffset` and never has to know which side of that edge it came
 //! from.
 
+mod deadline;
+mod document;
 mod error;
 mod vocabulary;
 
+pub use deadline::{Clock, Deadline, SystemClock};
+pub use document::{DocumentSnapshot, SnapshotSeed};
 pub use error::{Error, HandlerError, ParseError, ProjectError, ProtocolError};
 pub use rope::{ByteLen, ByteOffset, ByteRange, LineIndex, Rope};
 pub use vocabulary::{
