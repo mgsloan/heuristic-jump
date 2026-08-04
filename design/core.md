@@ -1674,7 +1674,10 @@ This is the design's payoff and the reason the change is worth making.
 /// A position exactly as it appeared on the wire. `character` is in the
 /// negotiated encoding, which this type does not know — so it exposes no
 /// way to be used as an offset.
-#[derive(Deserialize)]
+/// Both derives, because `encode` below means the type an answer is built
+/// from is the type a request arrives in -- section 8.2's third list, and
+/// the reason that list exists.
+#[derive(Deserialize, Serialize)]
 pub struct WirePosition { line: LineIndex, character: u32 }
 
 impl WirePosition {
@@ -1682,6 +1685,11 @@ impl WirePosition {
     /// which is exactly the information a correct conversion needs.
     pub fn resolve(self, enc: PositionEncoding, text: &Rope)
         -> Result<Offset, EncodingError>;
+
+    /// The only way in other than deserialization, and it requires the same
+    /// two things `resolve` does.
+    pub fn encode(offset: Offset, enc: PositionEncoding, text: &Rope)
+        -> Result<Self, EncodingError>;
 
     /// The row, which is the one part of a wire position that is not in the
     /// negotiated encoding: every encoding LSP offers counts *columns*.

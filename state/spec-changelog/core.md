@@ -610,3 +610,51 @@ strengthenings of what the block claimed rather than departures from it:
 `handler.rs` has carried this shape since `conformance-013` was reconciled.
 
 **Campaign:** 9110a409-f685-4569-ba82-fbf938928727
+
+## CHANGE-core-020 — core.md#83-the-wire-position-type-is-inert — the printed derive is one of the two §8.2 requires
+
+**Contradiction:** §8.3 prints
+
+```rust
+#[derive(Deserialize)]
+pub struct WirePosition { line: LineIndex, character: u32 }
+```
+
+and, eighteen lines below it, "The same applies outbound:
+`WirePosition::encode(Offset, enc, &Rope)` is the only constructor."
+
+[`#82-what-replaces-it-and-why-it-is-smaller-than-it-sounds`](../../design/core.md#82-what-replaces-it-and-why-it-is-smaller-than-it-sounds)
+puts `WirePosition` in its third list — the types that travel twice — with the
+reason given as "**Section 8.3 requires `WirePosition::encode`**, so the type
+that arrives in a request is the type an answer is built from". A type an
+answer is built from is written, and a type that is written derives
+`Serialize`.
+
+So §8.3's own closing paragraph requires the derive its own code block omits,
+and §8.2 names §8.3 as the requirement's source. The derive list is not
+decoration in this document: the same section says "what the rule does forbid
+is a *projection* carrying both derives", and
+`crates/shared/tests/proto.rs`'s `read_projections_are_never_serialized` fails
+a type that carries a derive its list does not allow — so a reader who took
+§8.3's block for the whole truth and filed `WirePosition` under `READ` would
+get a red suite, not a quiet divergence.
+
+**Resolution:** the block prints `#[derive(Deserialize, Serialize)]`, with the
+one-line reason and a pointer to §8.2's third list, and prints `encode`'s
+signature in the `impl` beside `resolve` and `line` — where the claim "the only
+constructor" can be checked against what is on the page rather than against a
+paragraph further down.
+
+This trades nothing off. Both readings cannot stand, only one of them has a
+rule attached, and it is the one §8.2 wrote down deliberately when the third
+list was added (CHANGE-core-008, same document, same anchor cited).
+`crates/shared/src/proto.rs:80` has carried both derives since it was written.
+
+**Why it survived the section's own audit:** the open gap on §8.3 was about
+`line()` being a public accessor (CHANGE-core-007), and the block was read for
+what it *exposes* rather than for what it derives. Two claims, one code block,
+and closing the first did not make anybody re-read the first line of it.
+
+**No code moved with it.**
+
+**Campaign:** 9110a409-f685-4569-ba82-fbf938928727
