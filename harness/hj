@@ -1240,14 +1240,36 @@ def cli_version() -> str:
     return result.stdout.strip() or "unknown"
 
 
+# Where a `DECISION-` tag is a *mention* rather than a site. The records and
+# the design are talk about the mechanism; so are the prompt that tells a loop
+# to write the tag and the template that shows its shape. Everything else is a
+# site, `harness/` included — excluding the whole of it, as this list used to,
+# made the count structurally zero for the one loop whose implementation is
+# `harness/`, and a health metric that cannot move is not one
+# (`design/loops.md` section 6).
+DECISION_TAG_NOT_A_SITE = [
+    ":!state",
+    ":!design",
+    ":!harness/prompts",
+    ":!harness/decision-template.md",
+]
+
+
+def count_tagged_lines(grep_output: str) -> int:
+    """Sum `git grep -c`'s per-file counts. Split from the right: a path can
+    contain a colon, the count cannot."""
+    total = 0
+    for line in grep_output.splitlines():
+        _, _, count = line.rpartition(":")
+        if count.isdigit():
+            total += int(count)
+    return total
+
+
 def provisional_decisions() -> int:
     """Sites still running on a provisional choice. Its count is a health
     metric — rising steadily means the loop is running ahead of its decisions
     and the work is getting speculative (`design/loops.md` section 6).
-
-    Scoped to code rather than the whole tree: the decision records and the
-    prompts talk *about* the tag, and counting those would make the number
-    start at thirty and never mean anything.
     """
     result = subprocess.run(
         [
@@ -1259,20 +1281,13 @@ def provisional_decisions() -> int:
             "-E",
             r"DECISION-[A-Za-z0-9_-]+: provisional",
             "--",
-            ":!state",
-            ":!design",
-            ":!harness",
+            *DECISION_TAG_NOT_A_SITE,
         ],
         capture_output=True,
         text=True,
         check=False,
     )
-    total = 0
-    for line in result.stdout.splitlines():
-        _, _, count = line.rpartition(":")
-        if count.isdigit():
-            total += int(count)
-    return total
+    return count_tagged_lines(result.stdout)
 
 
 # --------------------------------------------------------------------------
@@ -1707,8 +1722,12 @@ def judged_campaigns(owner: str) -> list[dict]:
 
 
 def tagged_sites(identifier: str) -> list[str]:
+    """The files an answered decision has to be reconciled in, spliced into the
+    next prompt. Same scope as `provisional_decisions`, and for the same
+    reason: with `harness/` excluded, an answered harness decision reached its
+    own loop's prompt carrying no sites at all."""
     result = subprocess.run(
-        ["git", "-C", str(REPO), "grep", "-l", "-F", f"DECISION-{identifier}:", "--", ":!state", ":!design", ":!harness"],
+        ["git", "-C", str(REPO), "grep", "-l", "-F", f"DECISION-{identifier}:", "--", *DECISION_TAG_NOT_A_SITE],
         capture_output=True,
         text=True,
         check=False,
@@ -3679,6 +3698,18 @@ def selftest_cases() -> list[tuple[str, object]]:
         assert numbers["reverts"] == 1, numbers
         assert numbers["gate_seconds"] == 16.5, numbers
         assert numbers["usd"] == 1.5 and numbers["turns"] == 4
+
+    def a_provisional_tag_in_the_harness_counts():
+        assert ":!harness" not in DECISION_TAG_NOT_A_SITE, (
+            "excluding the whole of harness/ makes the count structurally zero "
+            "for the loop whose implementation is harness/"
+        )
+        assert ":!design" in DECISION_TAG_NOT_A_SITE and ":!state" in DECISION_TAG_NOT_A_SITE
+
+    def tag_counts_are_summed_per_file():
+        output = "harness/hj:2\ncrates/shared/src/proto:types.rs:1\n"
+        assert count_tagged_lines(output) == 3, "a colon in the path is not the count"
+        assert count_tagged_lines("") == 0
 
     def the_harness_is_code_for_drift_purposes():
         assert is_code_path("harness/hj"), "the loop building the detector is not exempt from it"
