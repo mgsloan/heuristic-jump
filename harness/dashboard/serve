@@ -112,6 +112,8 @@ def parse_decision(path: Path, answers: dict[str, dict] | None = None) -> dict:
         # intervention behind it does not count as an answer.
         "status": hj.decision_status(identifier, meta.get("status"), answers),
         "recorded_status": meta.get("status", "unknown"),
+        # Ruled on in the file, with no rationale in the log behind it.
+        "unlogged": hj.decision_unlogged(identifier, meta.get("status"), answers),
         "kind": meta.get("kind", "class-b"),
         "opened": meta.get("opened", ""),
         "campaign": meta.get("campaign", ""),
@@ -258,15 +260,19 @@ def decision_card(decision: dict) -> str:
     else:
         parts.append('<div class="field"><h4>sites running on the provisional choice</h4><p class="empty">No <code>DECISION-</code> tag found in the tree.</p></div>')
 
-    # A record whose frontmatter has been answered by hand shows up here
-    # anyway, because the log is what counts. Saying so is the whole value: it
-    # is the difference between "nobody has ruled" and "somebody ruled and the
-    # reasoning went nowhere".
-    drifted = (
-        f"frontmatter says {decision['recorded_status']}, and nothing in the intervention log does"
-        if decision["recorded_status"] != decision["status"]
-        else ""
-    )
+    # Two ways the record and the log come apart, and they are different
+    # problems: a stale frontmatter is cosmetic, a ruling with no logged
+    # reasoning is the one section 16 says you will re-litigate in three weeks.
+    if decision["unlogged"]:
+        drifted = (
+            f"ruled {decision['recorded_status']} in the record, with nothing in the "
+            "intervention log — the ruling stands; the reasoning a later campaign would "
+            "read is missing. Give it below and it is logged."
+        )
+    elif decision["recorded_status"] != decision["status"]:
+        drifted = f"frontmatter says {decision['recorded_status']}; the log says {decision['status']}, and the log is what counts"
+    else:
+        drifted = ""
     meta = " · ".join(
         filter(None, [decision["kind"], decision["opened"], f"campaign {decision['campaign'][:8]}" if decision["campaign"] else "", decision["path"], drifted])
     )
@@ -429,7 +435,9 @@ def reviewed_targets(kind: str) -> set[str]:
 
 
 def panel_decisions() -> str:
-    waiting = [d for d in decisions() if d["status"] in ("open", "provisional")]
+    waiting = [
+        d for d in decisions() if d["status"] in ("open", "provisional") or d["unlogged"]
+    ]
     unread = [entry for entry in hj.spec_changes() if not entry["reviewed"]]
     seen = reviewed_targets("spec-drift-reviewed")
     flagged = [

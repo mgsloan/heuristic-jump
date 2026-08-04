@@ -929,6 +929,26 @@ def decision_status(identifier: str, recorded: str | None, answers: dict[str, di
     return str(recorded or "unknown").strip()
 
 
+def decision_unlogged(identifier: str, recorded: str | None, answers: dict[str, dict] | None = None) -> bool:
+    """A record that claims a ruling with nothing in the log behind it.
+
+    The ruling still stands — overruling a human because they edited a file
+    instead of clicking a button would be absurd, and it would put a settled
+    question back in the queue. What is missing is the half section 16 says
+    matters: "`rationale` is the field that matters and the one that will get
+    skipped ... the loop cannot use it: half the point of a decision record is
+    that a later campaign reads *why* and applies it to a case nobody
+    anticipated."
+
+    So this is a third state rather than a fourth ruling, and it is the one
+    the page and the prompt both need to say out loud. `harness-001` was
+    answered exactly this way while this was being written.
+    """
+    if answers is None:
+        answers = decision_answers()
+    return identifier not in answers and str(recorded or "").strip() in DECISION_RULINGS
+
+
 def when(stamp: str | None) -> datetime | None:
     try:
         return datetime.fromisoformat(str(stamp))
@@ -1819,6 +1839,16 @@ def prompt_values(
             continue
         if state in ("open", "provisional"):
             decisions.append(f"- {path.stem}: {name} [{state}]")
+        elif decision_unlogged(path.stem, status.group(1), answers):
+            # Answered by editing the record rather than through the page, so
+            # the ruling is there and the reasoning is not. Listed because the
+            # alternative is that it vanishes: an answered record with no
+            # tagged site drops off this list entirely, and the loop that
+            # raised it never learns the answer arrived.
+            decisions.append(
+                f"- {path.stem}: {name} [ANSWERED: {state} — read the record; the"
+                " ruling was not logged, so the reasoning is only in the file]"
+            )
         elif tagged_sites(path.stem):
             sites = ", ".join(tagged_sites(path.stem))
             decisions.append(
@@ -3508,6 +3538,17 @@ def selftest_cases() -> list[tuple[str, object]]:
         assert decision_status("harness-001", "accepted", answers) == "accepted", (
             "a record with no log row keeps what it says, so this cannot lose an "
             "answer given before the derivation existed"
+        )
+
+    def a_ruling_with_no_logged_reason_is_its_own_state():
+        answers = {"conformance-007": {"answer": "accepted: Option 1"}}
+        assert not decision_unlogged("conformance-007", "accepted", answers), "the log has it"
+        assert decision_unlogged("harness-001", "accepted", answers), (
+            "ruled in the record, nothing in the log — this is the case that happened"
+        )
+        assert not decision_unlogged("harness-002", "open", answers), "open is not a ruling"
+        assert decision_status("harness-001", "accepted", answers) == "accepted", (
+            "the ruling still stands; what is missing is the reason"
         )
 
     def an_unreadable_answer_is_still_an_answer():
