@@ -3214,14 +3214,22 @@ def _selftest_adapter_cost(events: list[dict]) -> dict:
     Through the adapter rather than around it: the point of the check is that
     the file which owns the vendor's shapes still reads them the way the row
     spec needs, and a reimplementation here would agree with itself forever.
+
+    The adapter beside *this* file, not `HARNESS / "adapter"`. `HARNESS` is
+    derived from `HJ_REPO`, which is the tree being checked — so a pinned `hj`
+    running the gate for another loop would test that loop's adapter instead
+    of its own. Found by running this against the core worktrees before
+    merging: two checks failed with `KeyError: 'gate_runs'`, which is what
+    three workers' gates would have done on their next run.
     """
+    adapter = Path(__file__).resolve().parent / "adapter"
     with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as handle:
         for event in events:
             handle.write(json.dumps(event) + "\n")
         path = handle.name
     try:
         result = subprocess.run(
-            [str(HARNESS / "adapter"), "cost", path], capture_output=True, text=True, check=False
+            [str(adapter), "cost", path], capture_output=True, text=True, check=False
         )
         return json.loads(result.stdout.strip() or "{}")
     finally:

@@ -214,6 +214,28 @@ out of the fold, large results truncated with the raw JSONL one link away.
 
 Nothing it produces is committed; it is all derived from state that is.
 
+## Changing `hj` breaks every loop at once, so check it against every tree
+
+`hj selftest` is gate step 3 for every loop, and the gate runs from the
+reviewed harness with `HJ_REPO` pointing at the tree being checked. A check
+that reaches through `HJ_REPO` therefore tests *that* tree's copy of a
+harness file rather than its own, and passes in the worktree you are working
+in while failing in everyone else's. That is not hypothetical: the adapter
+check did exactly this, and would have failed three core workers' gates on
+their next run with `KeyError: 'gate_runs'`.
+
+Before merging a change to `harness/`, run it everywhere:
+
+```sh
+for t in $(git worktree list --porcelain | awk '/^worktree /{print $2}'); do
+  HJ_REPO="$t" harness/hj selftest
+done
+```
+
+A check belongs in `selftest` only if it is hermetic — in-memory fixtures, or
+files resolved relative to `hj` itself. Nothing that reads repository state:
+a campaign is usually mid-flight in one of those trees.
+
 ## Cost, and the three budget scopes
 
 One row per campaign in `state/cost/<loop>.jsonl`, joined on the session id
