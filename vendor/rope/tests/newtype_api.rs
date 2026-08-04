@@ -8,7 +8,9 @@
 //! at the level where a conversion bug originates rather than one layer up in
 //! `shared::proto`.
 
+use std::fmt::{Debug, Display};
 use std::fs;
+use std::hash::Hash;
 use std::path::{Path, PathBuf};
 
 use rand::prelude::*;
@@ -690,6 +692,77 @@ gpui = { path = \"../gpui\" }
         vec!["ctor", "gpui"],
         "a dependency is how the attribute above gets to compile, so it is \
          half of the same check"
+    );
+}
+
+/// §4: "What each newtype gets: `#[derive(Copy, Clone, Default, PartialEq, Eq,
+/// PartialOrd, Ord, Hash, Debug)]`", plus the hand-written `Display`.
+///
+/// A bound is the whole test: the list is a list of traits, and a trait that
+/// stops being derived is a compile error at the call below rather than at the
+/// use site three crates away that actually needed it.
+#[test]
+fn every_newtype_derives_the_whole_list() {
+    fn derived<T: Copy + Clone + Default + Eq + Ord + Hash + Debug + Display>() {}
+
+    derived::<Offset>();
+    derived::<ByteLen>();
+    derived::<ByteRange>();
+    derived::<LineIndex>();
+    derived::<ByteColumn>();
+    derived::<Utf16Column>();
+    derived::<CharCount>();
+}
+
+/// §2 names the vocabulary types, and §8 leaves one asymmetry open and
+/// explains it: `OffsetUtf16` is used as both a position and a length, so the
+/// same argument that splits `Offset` from `ByteLen` would give it a
+/// `Utf16Len`. "It does not get one, because UTF-16 quantities exist only at
+/// the wire edge and never accumulate anywhere in our code, so the split would
+/// buy nothing but would still cost the edits. That is a judgement about where
+/// the value is, not a principle, and it should be revisited if UTF-16
+/// arithmetic ever appears outside the conversion functions."
+///
+/// An open judgement is exactly the thing that gets quietly settled by someone
+/// adding the type, so the inventory is exact: four units and no fifth, and
+/// the eighth type here would be the one that reopened the question.
+#[test]
+fn the_newtype_modules_define_these_types_and_no_others() {
+    let mut defined: Vec<String> = NEWTYPE_MODULES
+        .into_iter()
+        .flat_map(|file| {
+            let text = fs::read_to_string(source(file)).expect("reading a newtype module");
+            text.lines()
+                .filter_map(|line| {
+                    let rest = line.trim().strip_prefix("pub struct ")?;
+                    let end = rest.find(|character: char| {
+                        !character.is_ascii_alphanumeric() && character != '_'
+                    })?;
+                    Some(rest[..end].to_owned())
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    defined.sort();
+
+    assert_eq!(
+        defined,
+        [
+            "ByteColumn",
+            "ByteLen",
+            "ByteRange",
+            "CharCount",
+            "LineIndex",
+            "Offset",
+            "Point",
+            "PointUtf16",
+            "Utf16Column"
+        ],
+        "the vocabulary is four units -- bytes, UTF-16 code units, lines and \
+         chars -- in the seven newtypes §2 lists, beside the two point types \
+         whose fields they are. A `Utf16Len` here is §8's open asymmetry being \
+         settled by whoever added it rather than by the measurement it is \
+         waiting on"
     );
 }
 
