@@ -8,11 +8,11 @@ last_audited = "2026-08-04T21:12:07+00:00"
 
 [section."core.md#vocabulary-types"]
 state = "clean"
-last_audited = "2026-08-04T04:57:16+00:00"
+last_audited = "2026-08-04T23:43:10+00:00"
 
   [[section."core.md#vocabulary-types".minor]]
-  claim = "LanguageId: only ids some registered handler declared exist, so an unknown language cannot be constructed at all"
-  note = "`new` is a public const fn over &'static str, so LanguageId::new(\"klingon\") compiles anywhere and String::leak produces a &'static str at runtime \u2014 the vocabulary test uses exactly that. The operative property (nothing off a wire becomes a LanguageId) holds, and the doc comment is candid that visibility is not the mechanism"
+  claim = "only ids some registered handler declared exist, so an unknown language cannot be constructed at all"
+  note = "LanguageId::new is a public const fn over any &'static str; what is prevented is an id built from wire text. measure_core's own comment records the removed fallback that minted LanguageId::new(\"unknown\")"
   where = "crates/shared/src/vocabulary.rs:58"
 
 [section."core.md#the-trait"]
@@ -40,17 +40,29 @@ state = "clean"
 last_audited = "2026-08-04T05:37:37+00:00"
 
 [section."core.md#snapshots-are-o1-to-take-and-are-parsed-before-a-handler-sees-one"]
-state = "clean"
-last_audited = "2026-08-04T04:57:16+00:00"
+state = "gaps"
+last_audited = "2026-08-04T23:43:10+00:00"
 
-  [[section."core.md#snapshots-are-o1-to-take-and-are-parsed-before-a-handler-sees-one".minor]]
-  claim = "eager parsing costs nothing real, in part because the parse is usually incremental from a cached base"
-  note = "the driver's edit log is documented as always empty and TreeCache::forget runs on every change, so every post-edit query is a full parse; SnapshotSeed::incremental and realise's edit-then-reparse path are implemented as specified, but the premise the argument leans on does not hold in the shipped actor yet"
-  where = "crates/driver/src/actor.rs:153"
+  [[section."core.md#snapshots-are-o1-to-take-and-are-parsed-before-a-handler-sees-one".gap]]
+  claim = "the split keeps `core` doing O(1) work while the parse happens inside the worker; realise is called by the worker, never by `core`"
+  found = "dispatch calls SnapshotSeed::realise, and the only caller of dispatch is the single-threaded actor, so the parse and the whole query are paid on core's thread"
+  where = "crates/driver/src/dispatch.rs:351"
+  found_at = "4266031455e91fde2c3f8d08f91909260ab9a81f"
 
 [section."core.md#text-and-tree-can-never-disagree"]
-state = "clean"
-last_audited = "2026-08-04T04:57:16+00:00"
+state = "gaps"
+last_audited = "2026-08-04T23:43:10+00:00"
+
+  [[section."core.md#text-and-tree-can-never-disagree".gap]]
+  claim = "the parse is paid inside the worker and inside the deadline, never in `core`; `core` builds seeds and never realises one"
+  found = "Actor::requested realises the seed on the core thread by calling dispatch synchronously; core is not free of parsing"
+  where = "crates/driver/src/actor.rs:499"
+  found_at = "4266031455e91fde2c3f8d08f91909260ab9a81f"
+
+  [[section."core.md#text-and-tree-can-never-disagree".minor]]
+  claim = "the dispatch wrapper sends Parsed to `core`; the handler is not involved and cannot forget"
+  note = "the wrapper returns Completed { parsed: Option<Parsed> }, a public field a caller may drop; the actor happens to insert it, so the property is discipline at one call site rather than a type"
+  where = "crates/driver/src/dispatch.rs:409"
 
 [section."core.md#3-position-encoding"]
 state = "clean"
@@ -75,8 +87,14 @@ state = "clean"
 last_audited = "2026-08-04T21:12:07+00:00"
 
 [section."core.md#both-sides-are-sets"]
-state = "clean"
-last_audited = "2026-08-04T04:57:16+00:00"
+state = "gaps"
+last_audited = "2026-08-04T23:43:10+00:00"
+
+  [[section."core.md#both-sides-are-sets".gap]]
+  claim = "`contained` is any of the shim's locations matching, and match_top1 implies match_contained; it is reported only alongside the result count"
+  found = "the replay table's `contained` column prints the MatchContained counter alone, so a run of all top-1 matches reports contained = 0, and the table carries no result count. Mechanisable: a fixture where every committed row is match_top1 must print contained == committed"
+  where = "crates/measure_core/src/table.rs:216"
+  found_at = "4266031455e91fde2c3f8d08f91909260ab9a81f"
 
 [section."core.md#7-observability-and-the-corpus-scan"]
 state = "clean"
@@ -89,11 +107,16 @@ last_audited = "2026-08-04T20:33:33+00:00"
 
 [section."core.md#the-corpus-scan-is-a-separate-program"]
 state = "clean"
-last_audited = "2026-08-04T04:57:16+00:00"
+last_audited = "2026-08-04T23:43:10+00:00"
+
+  [[section."core.md#the-corpus-scan-is-a-separate-program".minor]]
+  claim = "`measure collect` enumerates identifiers with the handler's grammar, asks both sides, and writes the records"
+  note = "the work is split across enumerate/collect/replay: collect asks only the oracle and freezes truth.jsonl, replay asks the handler and writes the records. That follows core.md#the-command-line, so the code obeys one section against another"
+  where = "crates/measure_core/src/collect.rs:45"
 
 [section."core.md#one-measurement-library-one-tiny-binary-per-language"]
 state = "clean"
-last_audited = "2026-08-04T04:57:16+00:00"
+last_audited = "2026-08-04T23:43:10+00:00"
 
 [section."core.md#two-modes-collect-and-replay"]
 state = "gaps"
@@ -129,7 +152,7 @@ last_audited = "2026-08-04T05:37:37+00:00"
 
 [section."core.md#the-command-line"]
 state = "clean"
-last_audited = "2026-08-04T04:57:16+00:00"
+last_audited = "2026-08-04T23:43:10+00:00"
 
 [section."core.md#8-protocol-types"]
 state = "clean"
@@ -158,8 +181,14 @@ state = "clean"
 last_audited = "2026-08-04T21:12:07+00:00"
 
 [section."core.md#84-location-is-byte-based-and-this-fixes-a-real-inconsistency"]
-state = "clean"
-last_audited = "2026-08-04T04:57:16+00:00"
+state = "gaps"
+last_audited = "2026-08-04T23:43:10+00:00"
+
+  [[section."core.md#84-location-is-byte-based-and-this-fixes-a-real-inconsistency".gap]]
+  claim = "the Location -> WireLocation conversion happens in the worker, not in `core`, because it reads the target file and `core` never touches the filesystem"
+  found = "there is no worker pool: Actor::requested calls dispatch in line, so encode's per-location re-read runs on the core thread. dispatch.rs:334 asserts the opposite. Mechanisable: assert the thread calling dispatch is not the one running Actor::run"
+  where = "crates/driver/src/actor.rs:499"
+  found_at = "4266031455e91fde2c3f8d08f91909260ab9a81f"
 
 [section."core.md#85-the-untagged-unions-are-the-actual-risk"]
 state = "clean"
@@ -176,7 +205,7 @@ last_audited = "2026-08-04T05:37:37+00:00"
 
 [section."core.md#87-where-it-lives"]
 state = "clean"
-last_audited = "2026-08-04T04:57:16+00:00"
+last_audited = "2026-08-04T23:43:10+00:00"
 
 [section."core.md#9-workspace-layout"]
 state = "clean"
@@ -205,8 +234,8 @@ last_audited = "2026-08-04T05:37:37+00:00"
 
 [section."core.md#vendoring-the-zed-crates"]
 state = "clean"
-last_audited = "2026-08-04T04:57:16+00:00"
+last_audited = "2026-08-04T23:43:10+00:00"
 
 [section."core.md#10-testing"]
 state = "clean"
-last_audited = "2026-08-04T05:37:37+00:00"
+last_audited = "2026-08-04T23:43:10+00:00"

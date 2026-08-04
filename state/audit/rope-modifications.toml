@@ -4,12 +4,7 @@
 
 [section."rope-modifications.md#1-rope-already-works-this-way-byte-offsets-are-the-omission"]
 state = "clean"
-last_audited = "2026-08-04T05:37:37+00:00"
-
-  [[section."rope-modifications.md#1-rope-already-works-this-way-byte-offsets-are-the-omission".minor]]
-  claim = "the change is completing rope's existing newtype family, the omission being the byte offset as a bare usize \u2014 including as a sum_tree::Dimension and a TextDimension (rope.rs:1567, rope.rs:1577)"
-  note = "Offset gained both impls (rope.rs:1600/:1610) but the two bare-usize impls remain at exactly the cited lines, so a usize-dimensioned seek still compiles; tests/newtype_api.rs scans signatures and fields, not trait impls"
-  where = "vendor/rope/src/rope.rs:1567"
+last_audited = "2026-08-04T23:43:10+00:00"
 
 [section."rope-modifications.md#2-where-the-types-live-is-forced"]
 state = "clean"
@@ -36,8 +31,14 @@ state = "clean"
 last_audited = "2026-08-04T20:33:33+00:00"
 
 [section."rope-modifications.md#textsummary-is-converted-too"]
-state = "clean"
-last_audited = "2026-08-04T04:57:16+00:00"
+state = "gaps"
+last_audited = "2026-08-04T23:43:10+00:00"
+
+  [[section."rope-modifications.md#textsummary-is-converted-too".gap]]
+  claim = "TextSummary.chars becomes CharCount, `usize` before and after"
+  found = "CharCount is a u32 newtype, so chars narrows from upstream's usize and all accumulation is u32 \u2014 recorded in vendor/README.md as deliberate and attributed to \u00a74, which contradicts this section"
+  where = "vendor/rope/src/point.rs:174"
+  found_at = "4266031455e91fde2c3f8d08f91909260ab9a81f"
 
 [section."rope-modifications.md#the-dimension-impls"]
 state = "clean"
