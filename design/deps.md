@@ -489,9 +489,27 @@ Alternatives:
   If the `lru` API fights the byte accounting, dropping to `HashMap` + a
   `VecDeque` of keys is not a large loss.
 
-Note the cache is keyed by `(uri, version)` for open docs and `(path, mtime,
-len)` for disk files, so it is a map keyed by our own types, not by
-attacker-controlled strings.
+Note the keys are our own types rather than attacker-controlled strings, which
+is the reason to write them down here. `shim.md` §5 names two, and **only the
+first of them is a cache anything has today**:
+
+* Open documents: `(uri, version)`. This is `driver::TreeCache`, and it is the
+  cache the `lru` wrapper above is for.
+* Disk files: `(path, mtime, len)`, with `didSave` letting the disk entry take
+  over. **No such cache exists, and adding one is not this phase's to do.** The
+  only route to a disk-file parse is `ProjectView::parse`, reached through a
+  `Sync` `&Query` several fan-out threads hold at once — so a cache on it is
+  shared mutable state behind `&self`, which is a lock in a design that has
+  none. `conformance-005` asked and was answered **no**: `CLAUDE.md` withholds
+  caching and indexing until the corpus harness shows the change is worth it
+  and there is a benchmark, and there is no corpus. A repeat parse is a fresh
+  parse, and `crates/shared/tests/project.rs` asserts it.
+
+  The key stays written down because it is the one that would be used, and
+  because `open-questions.md` question 5 is about whether it is sound —
+  second-granularity `mtime` serves a stale tree for a same-second rewrite of
+  the same length. Nothing here answers that; deferring the cache defers the
+  question with it.
 
 ### `FxHashMap` and `FxHashSet` are the default
 

@@ -30,13 +30,34 @@ phase = "1a"
 # three campaigns planned against what was true two rounds ago.
 audit_every = 1
 
-# Phase 1a is one writer, and it runs as a conformance loop. The one carve-out
-# is the seam — `LanguageHandler`, `Query`, `Outcome`, `ProjectView`, the
-# vocabulary newtypes — which is decided and frozen here and is a Class B
-# escalation *even during 1a*, when `crates/shared/` is otherwise the loop's
-# own. Getting it wrong is expensive downstream in a way no loop will notice:
-# a language loop cannot observe that the seam made its job harder, only that
-# it is slow (`design/loops.md` section 8).
+# Records waiting on a human before `hj escalations` calls a batch due. It
+# counts *records*, not tagged sites: a record can be waiting with nowhere to
+# put `// DECISION-<id>: provisional`, because the choice is about a file the
+# raising loop may not write, and those are the escalations that most need a
+# person — `harness-002` (.claude/settings.json), `harness-003` (this file),
+# `harness-007` (another loop's crate). A site-driven trigger would never have
+# fired for any of them. `design/loops.md` §6, CHANGE-harness-008.
+#
+# 3 rather than 5. Round 1 raised six in one round and they were three
+# questions, so the number the trigger sees runs ahead of the number of
+# decisions actually wanted; a lower threshold reaches a person while the
+# campaign that raised each record is still recent, which is what §6 means by
+# reconciliation getting more expensive with age. Raise it if batches start
+# arriving faster than they can be sat with.
+escalation_batch = 3
+
+# The seam — `LanguageHandler`, `Query`, `Outcome`, `ProjectView`, the
+# vocabulary newtypes — is decided and frozen here and is a Class B escalation
+# *even during 1a*, when `crates/shared/` is otherwise the loop's own. Getting
+# it wrong is expensive downstream in a way no loop will notice: a language
+# loop cannot observe that the seam made its job harder, only that it is slow
+# (`design/loops.md` section 8).
+#
+# This comment used to open "Phase 1a is one writer", twelve lines above
+# `workers = 3`. That is the same stale sentence CHANGE-harness-004 corrected
+# in `loops.md` §2's table, and the campaign that found it could not fix it
+# here, because this file is denied to every loop — which is the point of the
+# denial and also how it went stale.
 [loop.core]
 status = "running" # running | paused | blocked | done
 prompt = "conformance.md"

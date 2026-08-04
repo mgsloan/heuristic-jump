@@ -1,6 +1,6 @@
 ---
 id: core-023
-status: open
+status: accepted
 opened: 2026-08-04T20:04:16+00:00
 campaign: 20bbc1bf-03c5-4d3c-afda-a5c5791d47ce
 kind: class-b
@@ -68,7 +68,41 @@ sentence, and the day it stops being true is the day the check was for.
 
 ## Decision
 
-Undecided — waiting on a human.
+**accepted: A — adopt `cargo-deny`**, answered 2026-08-04 and logged as a
+`decision-answered` intervention, which is what makes it answered —
+`design/loops.md` §16 derives the status from the log rather than from this
+line.
+
+The record makes its own case: a manifest scan cannot see a GPL crate arriving
+transitively through a permissive direct dependency, and that is precisely the
+case §14's bullet describes as happening "without anyone deciding". Option B's
+cost is not that the check is weaker but that it is absent exactly when it
+matters. Every GPL input in the graph is a workspace member today and both
+scans agree — and "today" is the whole of that argument.
+
+The objection worth answering is the real one: a policy written in two places
+drifts. The resolution is that they are not two statements of one policy.
+`the_permissive_surface_is_exactly_what_does_not_reach_similarity` is a claim
+about *our* crates and their direct manifests, which is a design property the
+tests should keep asserting. `deny.toml` is a claim about the resolved graph,
+which no test can reach. Keep both, and say in `deny.toml` which half it holds.
+
+### What is left, and who does it
+
+A human writes `deny.toml` and wires it into the check path: it is a root file
+no loop owns, and `harness/gate` is denied to every loop, which is why
+`core-021` was filed as a `harness-request`. `loops.md` §17's adopt/steal/reject
+note should record the adoption and what it bought.
+
+Where it runs matters, since a config nothing invokes is decoration. It belongs
+in the gate rather than in a test, because it needs the network on a cold
+registry and the tests must not.
+
+Nothing written by campaign `20bbc1bf` has to be undone; the work is additive.
+The tag at `crates/driver/tests/seam.rs` comes off when `deny.toml` lands, and
+§14's bullet is then satisfied as written rather than amended.
+
+`core-021` is the same question and is closed as a duplicate of this record.
 
 ## Provisional choice in force
 

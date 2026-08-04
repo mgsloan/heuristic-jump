@@ -379,3 +379,103 @@ record says which. Do not close it by editing §8 first.
   tree's copy as well as the pinned one ("harness/hj differs from the reviewed
   copy; checking this tree's own too"), so the step my last journal entry said
   had never run does now.
+
+## 78bbbbc4 — the two numbers, the two splits, and a red gate that was not mine
+
+Target: `loops.md#11-size-and-loc-as-objectives[ee06332d52]` and
+`loops.md#12-held-out-integrity[5a507ed134]`, plus §10's two subsections that
+describe their machinery. Nine commits, no reverts.
+
+### The method held, but the targets were found a different way
+
+The nouns-and-grep method from the last three campaigns did not pick these.
+They came from reading the audit's *one-line* gap list and asking which
+sections were one gap from clean — §11 and §12 had exactly one each, and both
+turned out to be the same machinery seen from two sides: a number computed at
+an iteration versus one computed at a phase gate. That is the shape worth
+looking for next: **not a wrong word, a whole mechanism that was deferred as
+"phase 2a work" and took its cheap half with it.**
+
+### The red gate, which cost twenty minutes and could cost a campaign
+
+Mid-campaign the gate went red on `the_reaper_is_the_only_caller_that_asks_the_process_table`
+— a check I had not touched, in code my branch did not contain. A human commit
+had landed on `main` (`c047b4c`) adding `campaign_process_is_running` plus a
+selftest that reads `(HARNESS / "hj").read_text()`. `HARNESS` resolves through
+`HJ_REPO`, so the *pinned* copy's check inspects **the worktree's** `hj`, and
+every branch that predates the new function fails it.
+
+`harness/readme.md` already warns about exactly this ("A check that reaches
+through `HJ_REPO` therefore tests *that* tree's copy"), and it happened anyway,
+from a hand-authored commit rather than from a loop.
+
+Two things to know if it happens again:
+
+* **You cannot fix it in your tree.** The pinned copy runs first and fails
+  before the tree's own copy is consulted. Editing your `hj` is a dead end.
+* **The fix is to merge `main`.** `git stash push -u -- <your files>`, `git
+  merge --no-edit main`, `git stash pop`. It was clean here — main had touched
+  100 lines of `hj` in regions I had not. `git merge-tree --write-tree main
+  HEAD` measures it first without touching the branch.
+
+This is a *merge*, not the rebase `harness-004` warns against: the audit and
+gap list in the prompt are already fixed text, and a merge does not swap them.
+
+### Approaches considered and not taken
+
+* **Recording binary size in every loop's row.** §11 says "every iteration",
+  and it was tempting to measure it for any loop owning a `measure_*` crate —
+  the core loop owns `measure_rust`. Rejected: a release build with `lto =
+  "thin"` and `codegen-units = 1` is minutes per row, `hj record` runs after
+  every commit, and nothing reads the series for a loop with no frontier.
+  §11's bullet sits under **Per-language billing**, so it is gated on
+  `config.language`. `hj size` covers the on-demand case. If a future campaign
+  finds this dead in phase 1a and is tempted to widen it, the cost is the
+  reason and it is in the docstring.
+* **Guessing `cargo bloat`'s text table.** Its sizes render as `1.1MiB`, which
+  has already lost the precision a delta needs, and the tool is not installed
+  here so nothing I wrote could be run against it. `--message-format json`
+  parsed defensively — a list of `{name,size}` under `crates`, anything else
+  returns None — is the same discipline `parse_tokei_rust` uses and for the
+  same reason. **Do not "fix" it by parsing the human table.**
+* **Reusing `highest_recorded` for the size ratchet.** The direction is
+  inverted: size may not *increase*, so the baseline is the lowest recorded,
+  not the highest. Reusing the helper would have ratcheted the loop into
+  growing. There is a selftest whose only job is to say that out loud.
+* **Putting the size ratchet in `harness/gate` step 5.** That step exists for
+  it and hard-fails in phases 3 and 7 with "the ratchets are not implemented".
+  `harness/gate` is in `DENIED_ALWAYS`, so the check went into `check-metrics`
+  (step 7) as the test ratchet did last campaign, and `hj check-ratchets` is
+  written to be step 5's body verbatim. `harness-008`.
+* **Building the frontier.** `#selecting-a-version-at-a-phase-gate` needs it,
+  and §18 names it as deliberately not built. Left alone. The held-out row
+  carries a `commit` so selection is expressible when it exists.
+* **Denying the harness loop its own prompt.** §18 says `harness/prompts/`
+  stays denied to it; the code denies only `auditor.md`. Two gaps — §13's
+  digest asymmetry and part of §4 — were closed by editing
+  `harness/prompts/conformance.md`, so denying it is a real trade rather than
+  a tightening. `harness-009`, provisional choice: flag it and log it, the way
+  `spec_drift` handles the same shape. **Do not close it by editing §18** —
+  this loop is the beneficiary of the grant.
+* **Backfilling `prompt_drift` onto closed campaigns.** It would show
+  `3e637dcd` and `bb1e501a`, which really did edit prompts, but the rows live
+  in `state/sessions.jsonl` and that is denied to every loop. The detector
+  starts from this campaign forward, so the dashboard's count reads low. Worth
+  knowing before concluding "this never happens".
+
+### Things worth knowing about the machinery
+
+* **`cargo metadata` was being run twice per `hj record`.** `workspace_members`
+  and `vendored_members` each shelled out. Now one cached call, four callers.
+* **Stripping is not cosmetic.** `measure-rust` is 26.3 MB on disk and 5.4 MB
+  stripped, because the workspace release profile sets `debug = "limited"`.
+  A series that mixed the two would be a 5× step. No `strip` on PATH records
+  nothing rather than the large number.
+* **`lang_rust` already depends on `tree-sitter-rust`,** so the grammar *is* in
+  the dependency graph — the workspace `Cargo.toml` comment saying "no grammar
+  crate is in the graph yet" is stale. That is `deps.md`, which is the core
+  loop's document, so it is theirs to fix; it is in my findings digest.
+* **A selftest that reads `HARNESS / "hj"` is not hermetic** in the sense the
+  readme means, even though it reads no repository *state*. `HARNESS` goes
+  through `HJ_REPO`. Any new check of that shape should assert something every
+  branch already satisfies, or it fails everyone else first.

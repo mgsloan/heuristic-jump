@@ -68,6 +68,12 @@ DENIED_ALWAYS = [
     "state/audit/**",
     "state/interventions.jsonl",
     "state/sessions.jsonl",
+    # The held-out results. `design/loops.md` §12 shows the loop a verdict and
+    # not the numbers; a loop that could write the file the verdict is computed
+    # from would be shown whatever it wrote. It is denied here rather than
+    # merely absent from every ownership table, for `harness/`'s reason — the
+    # table is data and a loop that could widen it could widen its own reach.
+    "state/heldout/**",
     "CLAUDE.md",
     "clippy.toml",
     ".claude/**",
@@ -241,6 +247,25 @@ class Phase:
     # no number. Absent means the phase gate is the only trigger, which is the
     # degenerate case the section already describes rather than a broken one.
     escalation_batch: int | None = None
+    # `design/loops.md` section 11's standing ceiling: "an order of magnitude
+    # above where anything reasonable sits, on `measure_<lang>` size and on
+    # per-query work. It is a guardrail and emphatically not a ratchet:
+    # crossing it does not mean the last change was wrong, it means the loop
+    # has wandered somewhere no legitimate experiment goes, and it stops and
+    # escalates rather than failing the gate."
+    #
+    # Empty rather than defaulted, for `Budget`'s and `escalation_batch`'s
+    # reason, and here the section supplies the argument itself: the number is
+    # only harmless because it sits an order of magnitude clear of anything
+    # legitimate, and nobody knows where that is until a handler exists. A
+    # guessed one either never fires or suppresses the expensive experiments
+    # §11 spends its first three paragraphs protecting.
+    guardrail: dict[str, int] = field(default_factory=dict)
+    # §12's "held-out gap within threshold". Absent by default, and the section
+    # names no number — it is the *widening* that stops the loop, and that
+    # comparison needs no threshold at all. A ceiling on the absolute gap is
+    # the weaker of the two signals and the one that needs a human's number.
+    heldout_threshold: float | None = None
     budget: Budget = field(default_factory=Budget)
     loops: dict[str, LoopConfig] = field(default_factory=dict)
 
@@ -255,6 +280,12 @@ def load_phase() -> Phase:
         phase=raw["phase"],
         audit_every=raw.get("audit_every", 1),
         escalation_batch=raw.get("escalation_batch"),
+        heldout_threshold=(raw.get("heldout") or {}).get("gap_threshold"),
+        guardrail={
+            name: int(value)
+            for name, value in (raw.get("guardrail") or {}).items()
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+        },
         budget=Budget(
             global_usd=budget_table.get("global_usd"),
             language_usd={
@@ -1304,36 +1335,46 @@ def intervention_stats() -> dict:
 # Cheap measurements that go in every metrics row
 
 
+_METADATA: dict | None = None
+
+
+def cargo_metadata() -> dict:
+    """`cargo metadata --no-deps`, once per process.
+
+    Four callers want different slices of the same answer — the member names,
+    which of them are vendored, a package's binary targets, and whether
+    `heuristic_jump` declares a per-language feature — and the subprocess costs
+    about a tenth of a second, which `record` was paying twice per row before
+    any of them existed. An empty table stands for "there is no workspace
+    here", which is the state the gate has to be usable in.
+    """
+    global _METADATA
+    if _METADATA is None:
+        _METADATA = {}
+        if (REPO / "Cargo.toml").exists():
+            result = subprocess.run(
+                ["cargo", "metadata", "--no-deps", "--format-version", "1"],
+                cwd=REPO,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode == 0:
+                try:
+                    _METADATA = json.loads(result.stdout)
+                except json.JSONDecodeError:
+                    _METADATA = {}
+    return _METADATA
+
+
 def workspace_members() -> set[str]:
-    if not (REPO / "Cargo.toml").exists():
-        return set()
-    result = subprocess.run(
-        ["cargo", "metadata", "--no-deps", "--format-version", "1"],
-        cwd=REPO,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        return set()
-    return {package["name"] for package in json.loads(result.stdout)["packages"]}
+    return {package["name"] for package in cargo_metadata().get("packages", [])}
 
 
 def vendored_members() -> set[str]:
-    if not (REPO / "Cargo.toml").exists():
-        return set()
-    result = subprocess.run(
-        ["cargo", "metadata", "--no-deps", "--format-version", "1"],
-        cwd=REPO,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        return set()
     return {
         package["name"]
-        for package in json.loads(result.stdout)["packages"]
+        for package in cargo_metadata().get("packages", [])
         if f"{os.sep}vendor{os.sep}" in package["manifest_path"]
     }
 
@@ -1439,6 +1480,377 @@ def test_count(members: list[str]) -> int | None:
     except json.JSONDecodeError:
         return None
     return sum(len(suite.get("testcases", {})) for suite in listing.get("rust-suites", {}).values())
+
+
+# --------------------------------------------------------------------------
+# Binary size: a proxy in every row, the link delta at phase gates
+#
+# `design/loops.md` §11 makes it two numbers and they are not interchangeable.
+# The proxy is the stripped release size of `measure_<lang>`, which a loop can
+# compute in isolation — that is what `core.md` §7's crate split is for — and
+# which therefore goes in every row. The authoritative number is the
+# per-language link delta against `heuristic_jump`, which needs the whole
+# workspace built twice and belongs at a gate.
+#
+# §10's "`measure_<lang>` size covers the size gap" adds the three caveats that
+# shape the code below: the constant moves when `shared` or `measure_core`
+# does, so the ratchet re-baselines at those commits rather than blaming
+# whoever iterated next; the grammar dominates and has to be reported
+# separately, which `cargo bloat --crates` does approximately; and the link
+# delta stays authoritative when the two disagree.
+
+
+def binary_targets(package: str) -> list[str]:
+    """The `[[bin]]` names, which are not the package name here: `core.md` §9
+    renames every artifact to its hyphenated form, so `measure_rust` builds
+    `measure-rust`. Reading them out of the manifest rather than transliterating
+    the package name means a crate that renames its binary again is followed
+    rather than silently unmeasured."""
+    for entry in cargo_metadata().get("packages", []):
+        if entry.get("name") == package:
+            return [
+                target["name"]
+                for target in entry.get("targets", [])
+                if "bin" in target.get("kind", [])
+            ]
+    return []
+
+
+def stripped_size(binary: Path) -> int | None:
+    """The stripped size, measured on a copy.
+
+    §11 says *stripped* and the word is load-bearing: the workspace release
+    profile sets `debug = "limited"`, so the artifact on disk is about five
+    times the number the section means — 26.3 MB against 5.4 MB for
+    `measure-rust` when this was written. Stripping in place would also make
+    the next `cargo build` relink, so the copy is not a nicety.
+
+    No `strip` on PATH records nothing rather than the unstripped number. This
+    metric is ratcheted in phase 3 and a series that silently mixed the two
+    measurements would compare a stripped row against an unstripped one and
+    stop the loop over a missing tool. `loc` can afford `loc_counter` because
+    it is never gated; this cannot.
+    """
+    tool = shutil.which("strip") or shutil.which("llvm-strip")
+    if tool is None or not binary.exists():
+        return None
+    with tempfile.TemporaryDirectory() as directory:
+        copy = Path(directory) / binary.name
+        shutil.copy2(binary, copy)
+        result = subprocess.run([tool, str(copy)], capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            return None
+        return copy.stat().st_size
+
+
+def parse_bloat_crates(output: str) -> dict[str, int] | None:
+    """Per-crate byte attribution out of `cargo bloat --crates --message-format json`.
+
+    JSON rather than the text table, whose sizes are rendered as `1.1MiB` and
+    have already lost the precision a delta needs.
+
+    The shape is read defensively — a list of `{name, size}` under `crates` —
+    and anything else returns None, for `parse_tokei_rust`'s reason. cargo-bloat
+    is not a pinned dependency; it is an optional tool that may not be installed
+    and whose output nobody here controls, so a shape we do not recognise
+    records nothing rather than a number that is wrong invisibly. The attribution
+    is approximate even when it parses — symbols blur across inlining and
+    generics — which is why §10 keeps it beside the exact whole-binary number
+    instead of replacing it.
+    """
+    try:
+        table = json.loads(output)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(table, dict):
+        return None
+    crates = table.get("crates")
+    if not isinstance(crates, list):
+        return None
+    attributed: dict[str, int] = {}
+    for entry in crates:
+        if not isinstance(entry, dict):
+            continue
+        name, size = entry.get("name"), entry.get("size")
+        if isinstance(name, str) and isinstance(size, int) and not isinstance(size, bool):
+            attributed[name] = size
+    return attributed or None
+
+
+def bloat_crates(package: str, binary: str) -> dict[str, int] | None:
+    if shutil.which("cargo-bloat") is None:
+        return None
+    result = subprocess.run(
+        [
+            "cargo",
+            "bloat",
+            "--release",
+            "--crates",
+            "--message-format",
+            "json",
+            "-p",
+            package,
+            "--bin",
+            binary,
+        ],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return parse_bloat_crates(result.stdout) if result.returncode == 0 else None
+
+
+def binary_size(package: str) -> dict | None:
+    """§11's per-iteration proxy for one `measure_<lang>` package.
+
+    Both numbers §10 asks for: `stripped` is the whole binary, exact and
+    coarse; `crates` is the per-crate attribution, fuzzy and the only thing
+    that separates the handler from the grammar sitting next to it. A missing
+    `crates` key means cargo-bloat was unavailable, not that the handler
+    contributed nothing.
+    """
+    if package not in workspace_members():
+        return None
+    targets = binary_targets(package)
+    if not targets:
+        return None
+    binary = targets[0]
+    result = subprocess.run(
+        ["cargo", "build", "--release", "-p", package, "--bin", binary],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    size = stripped_size(REPO / "target" / "release" / binary)
+    if size is None:
+        return None
+    row: dict = {"package": package, "binary": binary, "stripped": size}
+    attributed = bloat_crates(package, binary)
+    if attributed:
+        row["crates"] = attributed
+    return row
+
+
+def measure_packages(config: LoopConfig) -> list[str]:
+    """The `measure_<lang>` packages whose size this loop's rows carry.
+
+    Gated on the loop declaring a `language` rather than on it owning the
+    crate, and the distinction costs the conformance loop its number
+    deliberately. §11's bullet says "the stripped release size of
+    `measure_<lang>`" under the heading **Per-language billing**, and the
+    number exists so a tuning loop can watch its own handler grow. A release
+    build with `lto = "thin"` and `codegen-units = 1` is minutes of machine
+    time per row; spending it on a loop that has no language, no frontier and
+    nothing that reads the series buys nothing. `hj size <loop>` measures on
+    demand for anyone who wants it anyway.
+    """
+    if not config.language:
+        return []
+    package = f"measure_{config.language}"
+    return [package] if package in workspace_members() else []
+
+
+# The crates whose size sits inside `measure_<lang>` as a constant the language
+# loop did not choose: `measure_core`'s LSP client, JSON handling and CLI, and
+# everything `shared` carries. §10 — "the constant moves when the conformance
+# loop changes `shared` or `measure_core`" — makes a commit to either the point
+# at which the ratchet starts over, so that a language loop is not failed for a
+# step somebody else's diff put in its series.
+SIZE_CONSTANT_PATHS = ["crates/shared", "crates/measure_core"]
+
+
+def size_rebaseline_commit() -> str | None:
+    return git("log", "-1", "--format=%H", "--", *SIZE_CONSTANT_PATHS, check=False).strip() or None
+
+
+def rows_since(rows: list[dict], commit: str | None) -> list[dict]:
+    """The rows recorded at or after `commit`, by reachability rather than by
+    position in the file. The metrics file is append-ordered, but a worker's
+    branch merges out of order often enough that "everything after the line
+    mentioning this sha" is not the same set."""
+    if commit is None:
+        return rows
+    reachable = set(git("rev-list", f"{commit}..HEAD", check=False).split())
+    reachable.add(commit)
+    return [row for row in rows if row.get("commit") in reachable]
+
+
+def size_baseline(owner: str, package: str) -> int | None:
+    """The size this loop may not exceed, out of its own history.
+
+    Lowest rather than highest, which inverts `highest_recorded`: the direction
+    is the other way round, since §11's phase-3 ratchet says neither number may
+    increase at all. Re-baselined at `size_rebaseline_commit`, and there is no
+    floor file for it — `harness/ratchets.toml` holds floors under metrics that
+    should rise, and a ceiling written by hand under one that should fall would
+    be a licence to grow rather than a guard against shrinking dishonestly.
+    """
+    sizes = [
+        row["binary"]["stripped"]
+        for row in rows_since(read_jsonl(metrics_path(owner)), size_rebaseline_commit())
+        if isinstance(row.get("binary"), dict)
+        and isinstance(row["binary"].get("stripped"), int)
+        and row["binary"].get("package") == package
+    ]
+    return min(sizes) if sizes else None
+
+
+# §11's second number, and the authoritative one: "Binary size is measured as a
+# delta: build with and without each `lang_*` linked. Each language then has its
+# own line item rather than a workspace aggregate nobody can influence."
+#
+# Building `heuristic_jump` *without* a language is only possible if the
+# dependency is optional and a feature gates it, so the convention has to be
+# named somewhere and this is it. `lang-rust` rather than `rust`, because a
+# bare feature called `rust` on a Rust crate reads as something about the
+# toolchain.
+SHIPPED_PACKAGE = "heuristic_jump"
+
+
+def language_feature(language: str) -> str:
+    return f"lang-{language}"
+
+
+def language_packages() -> list[str]:
+    return sorted(name for name in workspace_members() if name.startswith("lang_"))
+
+
+def declared_features(package: str) -> dict[str, list[str]]:
+    for entry in cargo_metadata().get("packages", []):
+        if entry.get("name") == package:
+            features = entry.get("features")
+            return features if isinstance(features, dict) else {}
+    return {}
+
+
+def build_shipped(features: list[str] | None) -> int | None:
+    """The stripped size of `heuristic-jump`, built with `features` in place of
+    its defaults. `None` means the default set, which is the whole of it."""
+    targets = binary_targets(SHIPPED_PACKAGE)
+    if not targets:
+        return None
+    arguments = ["cargo", "build", "--release", "-p", SHIPPED_PACKAGE, "--bin", targets[0]]
+    if features is not None:
+        arguments += ["--no-default-features"]
+        if features:
+            arguments += ["--features", ",".join(features)]
+    result = subprocess.run(arguments, cwd=REPO, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        return None
+    return stripped_size(REPO / "target" / "release" / targets[0])
+
+
+def link_deltas() -> list[dict]:
+    """One line item per language: what linking it costs the shipped binary.
+
+    A row with `delta: None` carries `reason`, and the reason is the point. The
+    measurement needs `heuristic_jump` to be buildable without the language,
+    which means an optional dependency behind `lang-<x>`; today the dependency
+    is unconditional, so the number cannot be taken. Saying which feature is
+    missing turns "this is not measured" into a one-line manifest change for
+    whoever owns that crate — where a silent zero would read as a language that
+    costs nothing.
+    """
+    languages = [name[len("lang_") :] for name in language_packages()]
+    if SHIPPED_PACKAGE not in workspace_members() or not languages:
+        return []
+    features = declared_features(SHIPPED_PACKAGE)
+    missing = [
+        language for language in languages if language_feature(language) not in features
+    ]
+    if missing:
+        return [
+            {
+                "language": language,
+                "feature": language_feature(language),
+                "delta": None,
+                "reason": (
+                    f"{SHIPPED_PACKAGE} declares no `{language_feature(language)}` feature, "
+                    f"so it cannot be built without lang_{language}"
+                ),
+            }
+            for language in languages
+        ]
+    whole = build_shipped(None)
+    if whole is None:
+        return [
+            {"language": language, "feature": language_feature(language), "delta": None,
+             "reason": f"{SHIPPED_PACKAGE} did not build with its default features"}
+            for language in languages
+        ]
+    rows = []
+    for language in languages:
+        others = [language_feature(other) for other in languages if other != language]
+        without = build_shipped(others)
+        rows.append(
+            {
+                "language": language,
+                "feature": language_feature(language),
+                "whole": whole,
+                "without": without,
+                "delta": None if without is None else whole - without,
+                "reason": None if without is not None else "the build without it failed",
+            }
+        )
+    # Leave the tree holding the artifact a reader would expect, rather than
+    # whichever partial link the last iteration of the loop produced.
+    build_shipped(None)
+    return rows
+
+
+# The phases in which size is gated. §11: "Gated only in phase 3, where the
+# ratchet is hard: neither may increase at all, since phase 3 may not buy size
+# with quality in the first place." Phase 7 is the second cost phase and
+# `harness/gate`'s own step already pairs the two.
+SIZE_RATCHET_PHASES = ("3", "7")
+
+
+def check_size_ratchet(config: LoopConfig, phase: Phase) -> int:
+    """§11's hard ratchet on the size proxy.
+
+    Silent outside a cost phase, and that is the design rather than a
+    convenience: §11 argues at length that a standing ratchet "would have
+    applied the pressure during exactly the iterations that should be free to
+    be wasteful", and that phase 3 existing to delete is most of the answer.
+
+    The failure wording is not the test ratchet's. A test count that falls is a
+    decision record the loop writes and then continues past; a size increase in
+    a cost phase "requires an approved escalation, not a self-written
+    justification", so the gate stays red until a human has answered.
+    """
+    if phase.phase not in SIZE_RATCHET_PHASES:
+        return 0
+    for package in measure_packages(config):
+        measured = binary_size(package)
+        if measured is None:
+            print(f"size: {package} could not be measured; the ratchet has nothing to hold")
+            continue
+        baseline = size_baseline(config.owner, package)
+        if baseline is None:
+            print(f"size: {measured['binary']} {measured['stripped']}; no baseline yet")
+            continue
+        if measured["stripped"] <= baseline:
+            print(f"size: {measured['binary']} {measured['stripped']}, ratchet at {baseline}")
+            continue
+        print(
+            f"size: {measured['binary']} is {measured['stripped']} bytes stripped against a "
+            f"ratchet of {baseline}. Phase {phase.phase} may not buy size with quality "
+            "(design/loops.md section 11), so this may not increase at all.\n"
+            "         An increase requires an *approved* escalation, not a "
+            "self-written justification: open a class-b decision record and wait "
+            "for it. This is the one gate failure a provisional choice does not "
+            "clear.\n"
+            f"         The baseline is the lowest this loop has recorded since "
+            f"{(size_rebaseline_commit() or 'the start of the history')[:12]}, which is "
+            "the last commit to crates/shared or crates/measure_core.",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
 
 
 # The ratchet baselines. `design/loops.md` §17 builds these rather than
@@ -1562,8 +1974,9 @@ def check_test_ratchet(config: LoopConfig) -> int:
     ratcheting it would make the loop's number unable to correct itself.
     `provisional_decisions` rises when the loop escalates, which is the
     behaviour §6 wants. `loc` is reported and never gated (§11). Binary size is
-    the phase-3 ratchet and belongs to the gate's own step, which stays
-    unimplemented until there is a `measure_<lang>` to weigh.
+    ratcheted too, by `check_size_ratchet`, but only in a cost phase and with a
+    harder failure — the two are kept apart because their directions and their
+    escape hatches differ.
     """
     for name in removed_tests_in(None, crate_paths(config)):
         print(f"metrics: FLAGGED — this diff deletes a test: {name}")
@@ -2052,7 +2465,7 @@ def cmd_check_metrics(args: argparse.Namespace) -> int:
     metric regression can be snapshot-accepted; without it, the gate read the
     metrics file only to ask whether a line existed.
     """
-    _, config = loop_config(args.loop)
+    phase, config = loop_config(args.loop)
     target = last_loop_commit(config.owner)
     if target is None:
         print("metrics: this loop has no commit in recent history; nothing to check")
@@ -2065,7 +2478,33 @@ def cmd_check_metrics(args: argparse.Namespace) -> int:
             )
             return 1
         print(f"metrics: {target[:12]} is recorded")
-    return check_test_ratchet(config)
+    # `harness/gate`'s own step 5 hard-fails in a cost phase with "the phase
+    # ratchets are not implemented", and it is denied to every loop, so the
+    # size ratchet is run from here — where §7's "the gate checks metric
+    # direction itself" already puts a metric check, and where the test ratchet
+    # went for the same reason. `harness-008` asks for step 5 to call
+    # `hj check-ratchets` instead of failing.
+    # Both, rather than short-circuiting: a loop that has deleted a test and
+    # grown the binary should be told about both in one gate run, or it fixes
+    # one and discovers the other on the next.
+    return 1 if check_test_ratchet(config) + check_size_ratchet(config, phase) else 0
+
+
+def cmd_check_ratchets(args: argparse.Namespace) -> int:
+    """`harness/gate` step 5, for whenever it is allowed to call this.
+
+    The step currently hard-fails in a cost phase — "the phase ratchets are not
+    implemented" — and `harness/gate` is denied to every loop, so this command
+    exists unreferenced by it and is run from `check-metrics` meanwhile.
+    `harness-008` is the request to swap the step's body for a call to this.
+    Having both routes is not duplication: the ratchet runs today either way,
+    and the day step 5 changes it stops being two places.
+    """
+    phase, config = loop_config(args.loop)
+    if phase.phase not in SIZE_RATCHET_PHASES:
+        print(f"size: not gated in phase {phase.phase} (design/loops.md section 11)")
+        return 0
+    return check_size_ratchet(config, phase)
 
 
 def cmd_record(args: argparse.Namespace) -> int:
@@ -2093,10 +2532,103 @@ def cmd_record(args: argparse.Namespace) -> int:
         "tests_removed": removed_tests_in(target, crate_paths(config))[:20],
         "provisional_decisions": provisional_decisions(),
     }
+    # §11's first of two numbers, and the only one a loop can compute in
+    # isolation. Absent for a loop with no language rather than null, so that a
+    # row from before this existed and a row that could not measure are not the
+    # same shape as one that measured nothing.
+    for package in measure_packages(config):
+        measured = binary_size(package)
+        if measured is not None:
+            row["binary"] = measured
+            # §11: being an order of magnitude out is "worth knowing within a
+            # campaign rather than at a gate". Said here, where the number is
+            # taken, and again by `harness/loop` between campaigns — which is
+            # where the stop actually happens.
+            ceiling = phase.guardrail.get("measure_binary_bytes")
+            if ceiling is not None and measured["stripped"] > ceiling:
+                print(
+                    f"guardrail: {measured['binary']} is {measured['stripped']} bytes "
+                    f"against a standing ceiling of {ceiling}. This is not a verdict on "
+                    "the last change (design/loops.md section 11); it means the loop has "
+                    "wandered somewhere no legitimate experiment goes. It stops the loop "
+                    "between campaigns, not this gate.",
+                    file=sys.stderr,
+                )
     append_jsonl(metrics_path(config.owner), row)
     commit_harness_state([metrics_path(config.owner)], f"metrics row for {target[:8]}")
     print(json.dumps(row, sort_keys=True))
     return 0
+
+
+def measurable_packages() -> list[str]:
+    return sorted(
+        name for name in workspace_members() if name.startswith("measure_") and binary_targets(name)
+    )
+
+
+def cmd_size(args: argparse.Namespace) -> int:
+    """§11's proxy, on demand.
+
+    `record` carries it for a loop that declares a language; this measures any
+    `measure_<lang>` in the workspace, which is what makes the number reachable
+    during a phase that has no tuning loop in it yet — and what lets a
+    conformance campaign see what its change to `shared` did to the constant
+    every language loop will later carry.
+    """
+    packages = [args.package] if args.package else measurable_packages()
+    if not packages:
+        print("size: no measure_<lang> package with a binary target in this workspace")
+        return 0
+    for package in packages:
+        measured = binary_size(package)
+        if measured is None:
+            print(f"size: {package} could not be measured (no strip, or the build failed)")
+            continue
+        line = f"size: {measured['binary']} {measured['stripped']} bytes stripped"
+        crates = measured.get("crates") or {}
+        if crates:
+            top = sorted(crates.items(), key=lambda item: -item[1])[:8]
+            line += "; " + ", ".join(f"{name} {size}" for name, size in top)
+        else:
+            line += "; no per-crate attribution (cargo-bloat is not installed)"
+        print(line)
+    return 0
+
+
+def cmd_link_delta(args: argparse.Namespace) -> int:
+    """§11's authoritative size number, which belongs at a phase gate.
+
+    Non-zero when a language's line item cannot be taken, because the whole
+    point of per-language billing is that "each language then has its own line
+    item rather than a workspace aggregate nobody can influence" — and an
+    unmeasurable language is an aggregate again. It is not wired into
+    `harness/gate`: that file is denied to every loop, and the number is a
+    gate's rather than an iteration's, so a human runs it or `harness-008`
+    settles where it goes.
+    """
+    rows = link_deltas()
+    if not rows:
+        print(f"link-delta: no lang_* crate, or no {SHIPPED_PACKAGE}, in this workspace")
+        return 0
+    unmeasured = 0
+    for row in rows:
+        if row["delta"] is None:
+            unmeasured += 1
+            print(f"link-delta: {row['language']}: unmeasured — {row['reason']}", file=sys.stderr)
+        else:
+            print(
+                f"link-delta: {row['language']}: {row['delta']} bytes "
+                f"({row['whole']} with, {row['without']} without)"
+            )
+    if unmeasured:
+        print(
+            "         design/loops.md section 11 measures binary size as a delta, built "
+            f"with and without each lang_* linked. That needs {SHIPPED_PACKAGE} to carry "
+            "one optional dependency per language behind a `lang-<x>` feature, all of "
+            "them in `default`.",
+            file=sys.stderr,
+        )
+    return 1 if unmeasured else 0
 
 
 def fragment(name: str) -> str:
@@ -3178,6 +3710,45 @@ def spec_drift(campaign_id: str, target: str | None) -> dict | None:
     }
 
 
+def prompt_drift(campaign_id: str, config: LoopConfig) -> dict | None:
+    """Did this campaign edit the prompt that generates it?
+
+    Only reachable for a loop with `writes_harness`, and only because
+    `DENIED_ALWAYS` stops at `harness/prompts/auditor.md` — so today the
+    harness loop may rewrite `harness/prompts/conformance.md`, which is both
+    its own instructions and the core loop's.
+
+    That is not obviously wrong: two gaps have been closed exactly that way,
+    §13's digest asymmetry and §4's journal tail, and `design/loops.md` §18
+    gives this loop the job of writing the tuning and optimisation prompts.
+    But a loop editing the text that generates it is the strongest form
+    available of the thing `harness/readme.md` is about, and §16 calls a prompt
+    revision the one intervention that cannot be replayed — the metrics either
+    side of it are not comparable, and nothing was recording it as an
+    intervention at all.
+
+    So it is made visible rather than impossible, which is the same answer
+    `spec_drift` gives to the same shape of problem for the same stated reason,
+    and `harness-009` asks a human whether visible is enough here.
+    """
+    own = f"harness/prompts/{config.prompt}"
+    edits = {
+        path
+        for commit in commits_for_campaign(campaign_id)
+        for path in commit_paths(commit)
+        if path.startswith("harness/prompts/")
+    }
+    if not edits:
+        return None
+    return {
+        "prompts": sorted(edits),
+        # The sharper case, and the one §16 is about: the file edited is the
+        # template this campaign's own prompt was rendered from.
+        "touches_own_prompt": own in edits,
+        "own": own,
+    }
+
+
 PYTHON_SHEBANG = re.compile(rb"^#!.*python")
 
 # `design/loops.md` section 7's better ralph heuristic, and its constant.
@@ -3732,6 +4303,7 @@ def cmd_campaign_close(args: argparse.Namespace) -> int:
         or bool(reconciled)
     )
     drift = spec_drift(args.id, args.target)
+    prompts = prompt_drift(args.id, config)
     audits = read_jsonl(GAP_LOG)
     audited = bool(audits) and audits[-1]["ts"] > (opened.get("started") or "")
 
@@ -3759,6 +4331,7 @@ def cmd_campaign_close(args: argparse.Namespace) -> int:
             "decisions_reconciled": reconciled,
             "audited": audited,
             "spec_drift": drift,
+            "prompt_drift": prompts,
             "lines": line_counts(),
             # This campaign's own diff, split by kind. `lines` above is a
             # whole-tree snapshot and under workers carries whatever the
@@ -3785,6 +4358,19 @@ def cmd_campaign_close(args: argparse.Namespace) -> int:
             "campaign: flagged — this campaign edited design/ and code in the same run"
             + (", in the document its own target names" if drift["touches_target_document"] else "")
             + ". Not a failure; it goes to the dashboard for a human to read."
+        )
+    if prompts:
+        print(
+            "campaign: flagged — this campaign edited "
+            + ", ".join(prompts["prompts"])
+            + (
+                ", which is the template its own prompt was rendered from"
+                if prompts["touches_own_prompt"]
+                else ""
+            )
+            + ". design/loops.md section 16 calls a prompt revision the one "
+            "intervention that cannot be replayed, so the metrics either side of "
+            "it are not comparable. Not a failure; see harness-009."
         )
     return 0
 
@@ -4485,6 +5071,284 @@ def cmd_budget(args: argparse.Namespace) -> int:
     return 1 if exhausted else 0
 
 
+# --------------------------------------------------------------------------
+# Held-out integrity. `design/loops.md` §12.
+#
+# The section's first two bullets are a single mechanism stated twice, and the
+# second states why the first is not a convention: "the loop is given
+# `--corpus` pointing at one and never the other, and a rule it is never told
+# about is a rule it cannot weigh against making the number go up", then "the
+# separation must be physical, not rule-based ... the boundary is that the data
+# is outside the checkout entirely and the held-out path is never passed in."
+#
+# Both halves are exactly checkable and neither needs a corpus run, which is
+# what makes this worth doing during a phase that has no tuning loop in it. The
+# mistake they guard against is made once, in whichever campaign first writes a
+# tuning prompt, and it is invisible afterwards: a leaked split does not fail,
+# it just makes every number afterwards mean less than it says.
+
+HELD_OUT_SPLIT = "test"
+TUNING_SPLIT = "training"
+
+
+def corpus_root() -> Path | None:
+    selection = HARNESS / "corpus-selection.toml"
+    if not selection.exists():
+        return None
+    root = tomllib.loads(selection.read_text()).get("corpus_root")
+    return (REPO / root).resolve() if isinstance(root, str) else None
+
+
+def held_out_exposure(root: Path, texts: dict[str, str]) -> list[str]:
+    """Every place a text names the held-out split, as `<where>: <why>`.
+
+    Matched on the corpus root's own directory name joined to the split — a
+    bare `test` appears in every one of these files for unrelated reasons, and
+    a check with that false-positive rate gets suppressed rather than fixed.
+    """
+    held_out = f"{root.name}/{HELD_OUT_SPLIT}"
+    problems = []
+    for where, text in texts.items():
+        if held_out in text:
+            problems.append(f"{where}: names {held_out}, which the loop must never be told about")
+        elif re.search(rf"--corpus[= ]\S*/{HELD_OUT_SPLIT}\b", text):
+            problems.append(f"{where}: passes --corpus at the held-out split")
+    return problems
+
+
+def cmd_check_heldout(args: argparse.Namespace) -> int:
+    """§12's two structural claims, checked without a corpus run.
+
+    Not a gate step. It is about the *configuration* a campaign is launched
+    with rather than about a diff, so it belongs where `harness/loop` decides
+    what to launch — and running it per commit would say nothing new, since
+    nothing in a commit can move the corpus root.
+    """
+    root = corpus_root()
+    if root is None:
+        print("heldout: no corpus selection yet; nothing to separate")
+        return 0
+    problems = []
+    if REPO == root or REPO in root.parents:
+        problems.append(
+            f"the corpus root {root} is inside the checkout {REPO}. §12: the boundary "
+            "is that the data is outside the checkout entirely, because a denyRead rule "
+            "does not stop `cat` in a bash subprocess"
+        )
+    held_out, tuning = root / HELD_OUT_SPLIT, root / TUNING_SPLIT
+    if held_out.parent != tuning.parent:
+        problems.append(
+            f"{held_out} is not a sibling of {tuning}. §12 puts the held-out split "
+            "beside the tuning one rather than inside it, so that a path handed to a "
+            "loop cannot reach it by descending"
+        )
+    texts = {str(path.relative_to(REPO)): path.read_text() for path in sorted(
+        list((HARNESS / "prompts").rglob("*.md")) + [HARNESS / "loop"]
+    ) if path.exists()}
+    phase_file = CONTROL / "state" / "phase.toml"
+    if phase_file.exists():
+        texts["state/phase.toml"] = phase_file.read_text()
+    problems += held_out_exposure(root, texts)
+    if problems:
+        for problem in problems:
+            print(f"heldout: {problem}", file=sys.stderr)
+        return 1
+    print(
+        f"heldout: {held_out.name} is a sibling of {tuning.name} outside the checkout, "
+        f"and nothing a campaign is shown names it ({len(texts)} file(s) checked)"
+    )
+    return 0
+
+
+# The rest of §12: what the loop is shown, and what stops it.
+#
+# One row per phase gate, per language, in `state/heldout/<language>.jsonl`:
+#
+#   {"ts": ..., "phase": "2a", "language": "rust", "commit": "<candidate>",
+#    "strata": {"ExplicitImport": {"tuning": 0.91, "heldout": 0.84}, ...}}
+#
+# Nothing here evaluates anything, and that is the third bullet rather than an
+# omission: "held-out evaluation runs at phase gates, not at iterations. A
+# number reported every iteration is a number that gets optimised against,
+# whatever it is labelled." So the evaluation is a gate's to run and this reads
+# what it left — which also means the file only grows at gates, and a loop
+# consulting it between campaigns learns nothing new until one happens.
+#
+# `state/heldout/**` is in `DENIED_ALWAYS`. The commit is in the row because
+# §10's "selecting a version at a phase gate" evaluates the surviving frontier
+# points rather than HEAD; computing that frontier is §18-deferred, and this
+# half does not depend on it.
+HELDOUT = STATE / "heldout"
+
+
+def heldout_rows(language: str) -> list[dict]:
+    return read_jsonl(HELDOUT / f"{language}.jsonl")
+
+
+def stratum_gaps(row: dict) -> dict[str, float]:
+    """Tuning minus held-out, per stratum. `high-level.md`'s overfitting signal
+    is this difference rather than either number on its own."""
+    gaps = {}
+    for stratum, numbers in (row.get("strata") or {}).items():
+        if not isinstance(numbers, dict):
+            continue
+        tuning, held_out = numbers.get("tuning"), numbers.get("heldout")
+        if isinstance(tuning, (int, float)) and isinstance(held_out, (int, float)):
+            gaps[stratum] = float(tuning) - float(held_out)
+    return gaps
+
+
+def heldout_verdict(rows: list[dict], threshold: float | None) -> tuple[str, list[str]]:
+    """§12's fourth bullet: "The loop is shown a verdict, not the numbers.
+    'Held-out gap within threshold' / 'gap widened on `ExplicitImport`'. Enough
+    to know something went wrong and where; not enough to hill-climb."
+
+    So the return carries stratum *names* and never a value, and the tests
+    assert that rather than trusting it. Widening is measured against the
+    previous gate rather than against the threshold, because the two say
+    different things: a gap over threshold has been wrong for a while, and a
+    gap that widened is the signal §12 calls "the last several iterations were
+    probably net negative".
+    """
+    if not rows:
+        return "no held-out evaluation has run yet", []
+    current = stratum_gaps(rows[-1])
+    if not current:
+        return "the last held-out evaluation recorded no stratum", []
+    previous = stratum_gaps(rows[-2]) if len(rows) > 1 else {}
+    widened = sorted(name for name, gap in current.items() if gap > previous.get(name, gap))
+    over = sorted(
+        name for name, gap in current.items() if threshold is not None and gap > threshold
+    )
+    if widened:
+        return f"gap widened on {', '.join(widened)}", widened
+    if over:
+        return f"gap over threshold on {', '.join(over)}", []
+    return "held-out gap within threshold", []
+
+
+def cmd_heldout(args: argparse.Namespace) -> int:
+    """The verdict, and nothing else. Exit 1 when a gap widened.
+
+    `harness/loop` treats that the way it treats a budget: stop between
+    campaigns and escalate, because §12 says a widening gap "needs a human to
+    look at the diff" — which is not something the loop that produced the diff
+    can do for itself.
+    """
+    phase = load_phase()
+    languages = (
+        [args.language]
+        if args.language
+        else sorted({path.stem for path in HELDOUT.glob("*.jsonl")})
+    )
+    if not languages:
+        print("heldout: no held-out evaluation has run yet")
+        return 0
+    widened = []
+    for language in languages:
+        verdict, strata = heldout_verdict(heldout_rows(language), phase.heldout_threshold)
+        print(f"heldout: {language}: {verdict}")
+        widened += [f"{language}/{name}" for name in strata]
+    if widened:
+        print(
+            "heldout: " + ", ".join(widened) + " widened against the previous gate. "
+            "design/loops.md section 12 stops the loop here: it is the one signal that "
+            "means the last several iterations were probably net negative, and it needs "
+            "a human to look at the diff. The numbers are deliberately not shown — "
+            "enough to know something went wrong and where, not enough to hill-climb.",
+            file=sys.stderr,
+        )
+    return 1 if widened else 0
+
+
+# §11's guardrail is on two things and only one of them is measurable today.
+# Naming the second anyway is what stops it being forgotten: a guardrail table
+# that silently covers half of what the section asks for reads, from the
+# outside, exactly like one that covers all of it.
+GUARDRAILS = {
+    "measure_binary_bytes": "the stripped size of measure_<lang>",
+    "query_micros": "per-query work",
+}
+
+
+def last_recorded_size(owner: str) -> int | None:
+    for row in reversed(read_jsonl(metrics_path(owner))):
+        binary = row.get("binary")
+        if isinstance(binary, dict) and isinstance(binary.get("stripped"), int):
+            return binary["stripped"]
+    return None
+
+
+def guardrail_scopes(phase: Phase, owner: str | None = None) -> list[dict]:
+    """One entry per standing ceiling, with what has been observed against it.
+
+    Read out of the metrics history rather than measured here. The guardrail is
+    consulted between campaigns and again from `record`, and a fresh release
+    build at either point would put minutes on both — where the number it would
+    produce is the one the last row already carries.
+    """
+    scopes = []
+    for name, description in GUARDRAILS.items():
+        observed: int | None = None
+        reason: str | None = None
+        if name == "measure_binary_bytes":
+            observed = last_recorded_size(owner) if owner else None
+            if observed is None:
+                reason = "no row of this loop's carries a binary size yet"
+        else:
+            reason = "nothing measures per-query work until there is a corpus run"
+        scopes.append(
+            {
+                "scope": name,
+                "of": description,
+                "ceiling": phase.guardrail.get(name),
+                "observed": observed,
+                "reason": reason,
+            }
+        )
+    return scopes
+
+
+def cmd_guardrail(args: argparse.Namespace) -> int:
+    """§11's phase-2a ceiling, which is not the phase-3 ratchet and must not
+    behave like one.
+
+    Exit 1 means one is crossed, and `harness/loop` treats that the way it
+    treats an exhausted budget: stop between campaigns, where the tree is
+    committed, and escalate. It is emphatically not a gate step — §11 says
+    crossing it "does not mean the last change was wrong", and failing the gate
+    would say exactly that to the campaign that happened to be running.
+    """
+    phase = load_phase()
+    if args.loop:
+        loop_config(args.loop)
+    crossed = []
+    for entry in guardrail_scopes(phase, args.loop):
+        ceiling, observed = entry["ceiling"], entry["observed"]
+        if ceiling is None:
+            state = "no ceiling set"
+        elif observed is None:
+            state = f"ceiling {ceiling}, nothing observed — {entry['reason']}"
+        else:
+            state = f"{observed} of {ceiling} ({observed / ceiling * 100:.0f}%)"
+            if observed > ceiling:
+                state += "  — CROSSED"
+                crossed.append(entry["scope"])
+        print(f"guardrail: {entry['scope']:<22} {entry['of']:<34} {state}")
+    if crossed:
+        print(
+            "guardrail: crossed at "
+            + ", ".join(crossed)
+            + ". design/loops.md section 11 sets these an order of magnitude above "
+            "anything legitimate, so this is not a verdict on the last change — it "
+            "means the loop has wandered somewhere no experiment goes. Stop, look, "
+            "and either raise the ceiling in state/phase.toml under [guardrail] as a "
+            "logged intervention or answer why the loop went there.",
+            file=sys.stderr,
+        )
+    return 1 if crossed else 0
+
+
 def waiting_decisions(answers: dict[str, dict] | None = None) -> list[tuple[str, str]]:
     """Records a batch review would consume, as (id, opened), oldest first.
 
@@ -4717,6 +5581,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         )
         for campaign in campaigns[-5:]:
             flag = "  [spec drift]" if campaign.get("spec_drift") else ""
+            flag += "  [prompt drift]" if campaign.get("prompt_drift") else ""
             print(
                 f"      {campaign.get('campaign', '?')[:8]}  "
                 f"{(campaign.get('target') or '-'):<48.48}  {campaign.get('outcome') or 'open'}{flag}"
@@ -4755,6 +5620,25 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(
             f"  campaigns that edited design/ and code together: {len(flagged)} recorded, "
             f"{len(unread)} not yet read by a human"
+        )
+    prompt_flagged = [
+        campaign
+        for owner in phase.loops
+        for campaign in campaigns_of(owner)
+        if campaign.get("prompt_drift")
+    ]
+    prompt_reviewed = {
+        row.get("target")
+        for row in read_jsonl(INTERVENTIONS)
+        if row.get("kind") == "prompt-drift-reviewed"
+    }
+    prompt_unread = [
+        campaign for campaign in prompt_flagged if campaign.get("campaign") not in prompt_reviewed
+    ]
+    if prompt_flagged:
+        print(
+            f"  campaigns that edited a prompt: {len(prompt_flagged)} recorded, "
+            f"{len(prompt_unread)} not yet read by a human (harness-009)"
         )
     return 0
 
@@ -5214,6 +6098,185 @@ def selftest_cases() -> list[tuple[str, object]]:
         assert parse_tokei_rust('{"Rust":{"code":"413"}}') is None, "a string is not a count"
         assert parse_tokei_rust("[]") is None
 
+    def bloat_json_attributes_by_crate():
+        output = json.dumps(
+            {
+                "file-size": 5417048,
+                "text-section-size": 2100000,
+                "crates": [
+                    {"name": "std", "size": 900000},
+                    {"name": "lang_rust", "size": 41000},
+                    {"name": "tree_sitter_rust", "size": 380000},
+                ],
+            }
+        )
+        assert parse_bloat_crates(output) == {
+            "std": 900000,
+            "lang_rust": 41000,
+            "tree_sitter_rust": 380000,
+        }, "the grammar has to come out separately or the handler's signal drowns"
+
+    def an_unrecognised_bloat_shape_records_nothing():
+        assert parse_bloat_crates("error: no such subcommand: `bloat`") is None
+        assert parse_bloat_crates('{"crates":"1.1MiB"}') is None, "the text table is not a count"
+        assert parse_bloat_crates('{"crates":[{"name":"std","size":"900KiB"}]}') is None
+        assert parse_bloat_crates('{"crates":[]}') is None, "an empty table is unavailable, not zero"
+        assert parse_bloat_crates("[]") is None
+
+    def the_size_ratchet_reads_the_lowest_and_not_the_highest():
+        # The direction is the opposite of the test count's, and reusing
+        # `highest_recorded` here would ratchet the loop into growing.
+        assert highest_recorded([5, 9, 7], None) == 9
+        assert min([5, 9, 7]) == 5, "size may not increase, so the floor is the smallest seen"
+
+    def rows_since_reads_reachability_and_not_file_order():
+        rows = [{"commit": "aaa"}, {"commit": "bbb"}, {"commit": "ccc"}]
+        assert rows_since(rows, None) == rows, "no re-baseline commit means the whole history"
+
+    def the_verdict_carries_no_number_a_loop_could_climb():
+        rows = [
+            {"strata": {"ExplicitImport": {"tuning": 0.9137, "heldout": 0.8942}}},
+            {"strata": {"ExplicitImport": {"tuning": 0.9481, "heldout": 0.7113}}},
+        ]
+        verdict, widened = heldout_verdict(rows, None)
+        assert widened == ["ExplicitImport"], widened
+        assert "ExplicitImport" in verdict, "enough to know something went wrong and where"
+        for value in ("0.9137", "0.8942", "0.9481", "0.7113", "0.23", "0.019"):
+            assert value not in verdict, f"{value} is enough to hill-climb against"
+
+    def a_narrowing_gap_is_not_a_widening_one():
+        rows = [
+            {"strata": {"Reexport": {"tuning": 0.9, "heldout": 0.5}}},
+            {"strata": {"Reexport": {"tuning": 0.9, "heldout": 0.8}}},
+        ]
+        verdict, widened = heldout_verdict(rows, None)
+        assert widened == [] and verdict == "held-out gap within threshold", verdict
+
+    def a_first_gate_cannot_have_widened():
+        rows = [{"strata": {"Wildcard": {"tuning": 0.9, "heldout": 0.1}}}]
+        _, widened = heldout_verdict(rows, None)
+        assert widened == [], "there is nothing to have widened against"
+        verdict, _ = heldout_verdict(rows, 0.5)
+        assert verdict == "gap over threshold on Wildcard", verdict
+
+    def widening_outranks_the_threshold():
+        # The two say different things: over threshold has been wrong for a
+        # while, widened is §12's "the last several iterations were probably
+        # net negative". Only the second stops the loop, so it is the one
+        # reported when both hold.
+        rows = [
+            {"strata": {"A": {"tuning": 1.0, "heldout": 0.4}}},
+            {"strata": {"A": {"tuning": 1.0, "heldout": 0.2}}},
+        ]
+        verdict, widened = heldout_verdict(rows, 0.1)
+        assert widened == ["A"] and verdict.startswith("gap widened"), verdict
+
+    def a_stratum_that_only_appears_now_has_not_widened():
+        rows = [
+            {"strata": {"A": {"tuning": 1.0, "heldout": 0.9}}},
+            {"strata": {"A": {"tuning": 1.0, "heldout": 0.9}}, "B": None},
+        ]
+        rows[1]["strata"]["B"] = {"tuning": 1.0, "heldout": 0.2}
+        _, widened = heldout_verdict(rows, None)
+        assert widened == [], "a new stratum has no previous gate to be worse than"
+
+    def half_a_stratum_is_no_gap():
+        assert stratum_gaps({"strata": {"A": {"tuning": 0.9}}}) == {}
+        assert stratum_gaps({"strata": {"A": "0.9"}}) == {}
+        assert stratum_gaps({}) == {}, "no evaluation is not a gap of zero"
+
+    def the_auditors_prompt_is_denied_and_the_rest_is_only_flagged():
+        # The asymmetry harness-009 is about. If a later campaign denies the
+        # loop's own prompt, this is the assertion that has to change, which
+        # is where the record should be re-read.
+        assert "harness/prompts/auditor.md" in DENIED_ALWAYS
+        assert not any(p.startswith("harness/prompts/") and p.endswith("**") for p in DENIED_ALWAYS)
+
+    def the_held_out_results_are_denied_to_every_loop():
+        assert "state/heldout/**" in DENIED_ALWAYS, (
+            "a loop that could write the file the verdict is computed from "
+            "would be shown whatever it wrote"
+        )
+
+    def the_held_out_split_is_caught_wherever_it_is_named():
+        root = Path("/elsewhere/heuristic-jump-corpus")
+        found = held_out_exposure(
+            root,
+            {
+                "prompt": "measure against /elsewhere/heuristic-jump-corpus/test/rust",
+                "runner": "--corpus ../heuristic-jump-corpus/test",
+                "equals": "--corpus=/srv/corpora/test",
+            },
+        )
+        assert len(found) == 3, found
+        assert all("heldout" not in problem for problem in found)
+
+    def a_bare_test_is_not_an_exposure():
+        # Every file this scans says "test" for unrelated reasons — `cargo
+        # nextest`, `#[test]`, `selftest`. A check that fired on those would be
+        # suppressed rather than fixed, so it matches the corpus root's own
+        # directory name joined to the split.
+        root = Path("/elsewhere/heuristic-jump-corpus")
+        assert held_out_exposure(root, {"gate": "cargo nextest run; hj selftest"}) == []
+        assert held_out_exposure(root, {"prompt": "run the test suite"}) == []
+        assert held_out_exposure(root, {"ok": "--corpus ../heuristic-jump-corpus/training"}) == []
+
+    def the_tuning_split_is_never_the_one_flagged():
+        root = Path("/c/corpus")
+        assert held_out_exposure(root, {"p": "/c/corpus/training/rust"}) == [], (
+            "the loop is given one and never the other; naming the one it is "
+            "given is the mechanism working"
+        )
+
+    def a_guardrail_is_not_a_ratchet():
+        phase = Phase(phase="2a", guardrail={"measure_binary_bytes": 60_000_000})
+        scopes = {entry["scope"]: entry for entry in guardrail_scopes(phase, None)}
+        assert scopes["measure_binary_bytes"]["ceiling"] == 60_000_000
+        assert scopes["query_micros"]["ceiling"] is None, "an unset ceiling is not a zero one"
+        assert scopes["query_micros"]["reason"], (
+            "§11 guards two things and only one is measurable; a table that "
+            "silently covers half of it reads like one that covers all of it"
+        )
+
+    def guardrails_are_absent_by_default():
+        assert Phase(phase="2a").guardrail == {}, (
+            "a guessed ceiling either never fires or suppresses the expensive "
+            "experiments §11 spends three paragraphs protecting"
+        )
+
+    def a_guardrail_table_takes_only_numbers():
+        raw = '\n[guardrail]\nmeasure_binary_bytes = 60_000_000\nquery_micros = true\n'
+        table = tomllib.loads(raw)["guardrail"]
+        kept = {
+            name: int(value)
+            for name, value in table.items()
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+        }
+        assert kept == {"measure_binary_bytes": 60_000_000}, "a bool is not a ceiling"
+
+    def the_language_feature_convention_is_one_string():
+        assert language_feature("rust") == "lang-rust"
+        assert language_feature("typescript") == "lang-typescript", (
+            "the delta is unmeasurable without it, so the name has to be written "
+            "down in exactly one place rather than agreed twice"
+        )
+
+    def the_size_ratchet_is_silent_outside_a_cost_phase():
+        # It has to be silent rather than merely lenient: §11 argues that a
+        # standing ratchet applies pressure during the iterations that should
+        # be free to be wasteful, so the exploration phases must not even
+        # build the binary to find out.
+        assert "1a" not in SIZE_RATCHET_PHASES and "2a" not in SIZE_RATCHET_PHASES
+        assert set(SIZE_RATCHET_PHASES) == {"3", "7"}, "the two cost phases, and no others"
+        phase = Phase(phase="2a", loops={"lang-rust": _selftest_loop("lang-rust", "rust")})
+        assert check_size_ratchet(phase.loops["lang-rust"], phase) == 0
+
+    def a_loop_without_a_language_measures_no_binary():
+        assert measure_packages(_selftest_loop("core", None)) == [], (
+            "a release build with lto per row costs minutes, and §11's bullet "
+            "is under Per-language billing"
+        )
+
     def a_provisional_tag_in_the_harness_counts():
         assert ":!harness" not in DECISION_TAG_NOT_A_SITE, (
             "excluding the whole of harness/ makes the count structurally zero "
@@ -5627,6 +6690,28 @@ def main() -> int:
     p = sub.add_parser("record", help="append the metrics row for HEAD")
     p.add_argument("loop")
     p.set_defaults(run=cmd_record)
+
+    p = sub.add_parser("check-heldout", help="the held-out split is separate, and unnamed")
+    p.set_defaults(run=cmd_check_heldout)
+
+    p = sub.add_parser("heldout", help="the held-out verdict, and never the numbers")
+    p.add_argument("language", nargs="?")
+    p.set_defaults(run=cmd_heldout)
+
+    p = sub.add_parser("guardrail", help="the standing ceilings of loops.md §11")
+    p.add_argument("loop", nargs="?")
+    p.set_defaults(run=cmd_guardrail)
+
+    p = sub.add_parser("link-delta", help="per-language binary size against the shipped binary")
+    p.set_defaults(run=cmd_link_delta)
+
+    p = sub.add_parser("check-ratchets", help="the cost-phase size ratchet (loops.md §11)")
+    p.add_argument("loop")
+    p.set_defaults(run=cmd_check_ratchets)
+
+    p = sub.add_parser("size", help="the stripped release size of measure_<lang> (loops.md §11)")
+    p.add_argument("package", nargs="?", help="default: every measure_* in the workspace")
+    p.set_defaults(run=cmd_size)
 
     p = sub.add_parser("render-prompt", help="render a loop's prompt")
     p.add_argument("loop")

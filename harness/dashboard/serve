@@ -426,6 +426,33 @@ def drift_card(campaign: dict) -> str:
     </article>"""
 
 
+def prompt_drift_card(campaign: dict) -> str:
+    """`design/loops.md` §16: a prompt revision is the one intervention that
+    cannot be replayed, because it changes the generator of campaigns rather
+    than a campaign. `harness-009` asks whether visibility is enough here; this
+    is the visibility."""
+    drift = campaign["prompt_drift"]
+    sharp = (
+        "<p><strong>The file edited is the template this campaign's own prompt was "
+        f"rendered from ({esc(drift.get('own') or '')}).</strong></p>"
+        if drift.get("touches_own_prompt")
+        else ""
+    )
+    prompts = "".join(f"<li><code>{esc(path)}</code></li>" for path in drift.get("prompts", []))
+    identifier = campaign.get("campaign", "")
+    return f"""
+    <article class="decision drift" id="prompt-{esc(identifier)}">
+      <h3>Campaign {esc(identifier[:8])} edited a prompt</h3>
+      <p class="meta">target {esc(campaign.get('target') or '—')} · {esc(campaign.get('outcome') or 'open')} · harness-009</p>
+      {sharp}
+      <p>Flagged, not failed. A prompt revision changes the <em>generator</em> of
+      campaigns, so the metrics either side of it are not strictly comparable and the
+      change cannot be replayed. Read it as an intervention that arrived as a commit.</p>
+      <div class="field"><h4>prompts</h4><ul class="sites">{prompts}</ul></div>
+      {review_form('prompt-drift-reviewed', identifier, 'Mark read')}
+    </article>"""
+
+
 def deletion_card(owner: str, row: dict) -> str:
     """`design/loops.md` §7: "test *deletions* are flagged for review
     regardless of count". Regardless of count is the whole of it — the ratchet
@@ -468,6 +495,14 @@ def panel_decisions() -> str:
         if campaign.get("spec_drift") and campaign.get("campaign") not in seen
     ]
 
+    read_prompts = reviewed_targets("prompt-drift-reviewed")
+    prompt_flagged = [
+        campaign
+        for owner in hj.load_phase().loops
+        for campaign in hj.campaigns_of(owner)
+        if campaign.get("prompt_drift") and campaign.get("campaign") not in read_prompts
+    ]
+
     read_deletions = reviewed_targets("test-deletion-reviewed")
     deletions = [
         (owner, row)
@@ -480,6 +515,7 @@ def panel_decisions() -> str:
         handoff_card()
         + "".join(decision_card(d) for d in waiting)
         + "".join(drift_card(c) for c in flagged)
+        + "".join(prompt_drift_card(c) for c in prompt_flagged)
         + "".join(deletion_card(owner, row) for owner, row in deletions)
         + "".join(spec_change_card(e) for e in unread)
     )
@@ -2454,7 +2490,12 @@ def answer_decision(fields: dict[str, str]) -> tuple[int, str]:
     return 303, "/"
 
 
-REVIEW_KINDS = ("spec-change-reviewed", "spec-drift-reviewed", "test-deletion-reviewed")
+REVIEW_KINDS = (
+    "spec-change-reviewed",
+    "spec-drift-reviewed",
+    "prompt-drift-reviewed",
+    "test-deletion-reviewed",
+)
 
 
 def record_review(fields: dict[str, str]) -> tuple[int, str]:

@@ -304,6 +304,66 @@ fn the_scan_finds_and_the_parse_decides() {
     );
 }
 
+/// `deps.md` §8, as CHANGE-core-017 corrected it: the disk-file half of the
+/// parse cache key names no cache, because `conformance-005` was answered no
+/// to one reached through the `Sync` `&Query`. So a second parse of a path is
+/// a fresh parse and a second read is a fresh read.
+///
+/// The rewrite is a *different text of the same length*, which is the one edit
+/// `(path, mtime, len)` — the key §8 named — cannot see on a filesystem whose
+/// mtime is second-granular (`open-questions.md` question 5, which the
+/// deferral leaves open). A cache under that key serves the first tree for the
+/// second text, so this is the assertion that discriminates against it rather
+/// than against caching in general.
+#[test]
+fn a_second_parse_of_the_same_path_is_a_fresh_parse() {
+    let root = fixture("freshness");
+    let view = view(&root);
+    let document = path(&view, &root, "src/util.rs");
+
+    let before = view.read(&document).expect("reading a candidate");
+    let first = view
+        .parse(&document, &before)
+        .expect("a tree for a candidate the view itself handed out");
+    assert_eq!(
+        first.root_node().named_child(0).map(|node| node.kind()),
+        Some("function_item"),
+        "the fixture's src/util.rs is a function, and the rest of this test \
+         means nothing if the first parse did not see one"
+    );
+
+    // Same byte length, different shape: `fn beta() {}` and `struct Beta;`.
+    let rewritten = "struct Beta;\n";
+    fs::write(document.to_absolute(), rewritten).expect("rewriting a fixture file");
+    let after = view.read(&document).expect("re-reading the rewritten file");
+    assert_eq!(
+        after.len(),
+        before.len(),
+        "the rewrite changed the file's length, so a (path, mtime, len) key \
+         would notice it and this test no longer discriminates against one"
+    );
+
+    assert_eq!(
+        after.chunks().collect::<String>(),
+        rewritten,
+        "the second read returned the first read's text. There is no per-query \
+         read cache (conformance-005, accepted), and bytes_scanned counts bytes \
+         actually read on the strength of that"
+    );
+    assert_eq!(
+        view.parse(&document, &after)
+            .expect("a tree for the rewritten file")
+            .root_node()
+            .named_child(0)
+            .map(|node| node.kind()),
+        Some("struct_item"),
+        "the second parse returned the first parse's tree. deps.md §8's \
+         disk-file key names a cache that does not exist and may not be added \
+         here: ProjectView is reached through the Sync &Query several fan-out \
+         threads hold, so a cache on it is a lock in a design that has none"
+    );
+}
+
 fn view(root: &Path) -> ProjectView {
     ProjectView::new(Arc::new(file_list(root)), Deadline::none(), grammar())
 }
