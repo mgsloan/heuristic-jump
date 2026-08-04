@@ -332,6 +332,8 @@ fresh context most lacks and would otherwise spend a whole campaign
 rebuilding — and it is only as good as the last close made it, so if it is
 thin or wrong, fixing it is part of your own close.
 
+{{summary_note}}
+
 {{self_summary}}
 
 ## What the other loops have concluded

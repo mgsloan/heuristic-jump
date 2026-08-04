@@ -2916,6 +2916,36 @@ def assignment_block(owner: str, worker: str, campaign: str = "<your id>") -> st
     return "\n".join(lines)
 
 
+# `design/loops.md` §13 and §14: the digest is "capped like the findings
+# digest", and the cap is the mechanism rather than a style note — to add
+# something you have to decide what no longer earns its place, which is
+# synthesis rather than accumulation. Instructed since the first campaign and
+# measured by nothing until now, at which point three of five digests were
+# over it and the largest was 632 words.
+DIGEST_WORD_CAP = 512
+
+
+def digest_note(words: int) -> str:
+    """What the prompt says above a worker's own digest.
+
+    Reported to the loop rather than gated. A campaign writes its digest at
+    close, after its last gate run, so a gate check would fail the *next*
+    campaign for its predecessor's overrun — and the fix is a trim only the
+    author's context makes well.
+    """
+    if words == 0:
+        return "You have not written one yet. Writing it is part of your close."
+    if words <= DIGEST_WORD_CAP:
+        return f"It is {words} words against a cap of {DIGEST_WORD_CAP}."
+    return (
+        f"**It is {words} words, over the {DIGEST_WORD_CAP}-word cap by "
+        f"{words - DIGEST_WORD_CAP}.** Bringing it back under is part of this close, and "
+        "the cap is the mechanism rather than a formatting rule: what has to be decided "
+        "to get back under it is which conclusion no longer earns its place, and nothing "
+        "else in this loop forces that decision."
+    )
+
+
 def worker_findings(owner: str, worker: str) -> str:
     """This worker's digest, followed by its siblings'.
 
@@ -3173,6 +3203,9 @@ def prompt_values(
     journal_path = STATE / "journal" / f"{worker_name}.md"
     if not journal_path.exists():
         journal_path = STATE / "journal" / f"{config.owner}.md"
+    # This worker's own digest, not the spliced block below it: the cap is per
+    # file, and a worker cannot trim a sibling's.
+    digest = STATE / "findings" / f"{worker_name}.md"
 
     stalled = trailing_without_progress(config.owner)
     stall_notice = stall_notice_for(stalled, config.stall_n)
@@ -3245,7 +3278,8 @@ def prompt_values(
             else ""
         ),
         "other_findings": "\n\n".join(findings) or "(no other loop has published a digest)",
-        "findings_path": f"state/findings/{os.environ.get('HJ_WORKER') or config.owner}.md",
+        "findings_path": f"state/findings/{worker_name}.md",
+        "summary_note": digest_note(len(digest.read_text().split()) if digest.exists() else 0),
         # The two most volatile things in the prompt, and they go last for that
         # reason (§15's token lever orders it stable-to-volatile). §4 opens an
         # iteration with "read `state/journal/<owner>.md` and the last N commit
@@ -3257,11 +3291,7 @@ def prompt_values(
             format_commit_lines(git("log", f"-n{RECENT_COMMITS * 6}", f"--format={COMMIT_FORMAT}", check=False))
         )
         or "- (no loop commits yet)",
-        "self_summary": (
-            worker_findings(config.owner, os.environ.get("HJ_WORKER") or config.owner)
-            if worker_findings(config.owner, os.environ.get("HJ_WORKER") or config.owner)
-            else "(none yet)"
-        ),
+        "self_summary": worker_findings(config.owner, worker_name) or "(none yet)",
     }
 
 
@@ -6645,6 +6675,13 @@ def selftest_cases() -> list[tuple[str, object]]:
         cut = hypothesis_of(record)
         assert len(cut) <= HYPOTHESIS_CAP + 1 and cut.endswith("…"), cut
         assert not cut.endswith(" …"), "cutting mid-word would misquote it"
+
+    def the_digest_cap_is_reported_with_the_amount_over():
+        assert digest_note(0).startswith("You have not written one yet")
+        assert digest_note(DIGEST_WORD_CAP) == f"It is {DIGEST_WORD_CAP} words against a cap of {DIGEST_WORD_CAP}."
+        over = digest_note(DIGEST_WORD_CAP + 120)
+        assert "over the 512-word cap by 120" in over, over
+        assert "part of this close" in over, "an overrun with no instruction is a statistic"
 
     def the_estimate_table_parses():
         rows = parse_estimate_table([
