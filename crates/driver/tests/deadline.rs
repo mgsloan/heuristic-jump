@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use driver::{
-    Answer, Config, DeadlineMs, DeadlineOverride, Dispatched, Heuristics, Mode, hard_cap,
+    Answer, Config, DeadlineMs, DeadlineOverride, Dispatched, Heuristics, Mode, Tracing, hard_cap,
 };
 use shared::{
     Clock, Confidence, Deadline, Error, HandlerError, Outcome, ParseError, Strata, Stratum,
@@ -148,6 +148,7 @@ fn the_default_cap_follows_the_mode() {
     let proxying = Config::new(
         Mode::from_server_argv(vec![OsString::from("rust-analyzer")], Heuristics::Enabled),
         DeadlineOverride::ModeDefault,
+        Tracing::Off,
     );
     assert_eq!(proxying.mode().name(), "proxy");
     assert_eq!(
@@ -159,6 +160,7 @@ fn the_default_cap_follows_the_mode() {
     let standalone = Config::new(
         Mode::from_server_argv(Vec::new(), Heuristics::Enabled),
         DeadlineOverride::ModeDefault,
+        Tracing::Off,
     );
     assert_eq!(standalone.mode(), &Mode::Standalone);
     assert_eq!(
@@ -174,6 +176,7 @@ fn deadline_ms_overrides_either_default() {
         let config = Config::new(
             Mode::from_server_argv(argv, Heuristics::Enabled),
             DeadlineOverride::Explicit(DeadlineMs::new(37)),
+            Tracing::Off,
         );
         assert_eq!(config.deadline().get(), 37, "in {}", config.mode().name());
         assert_eq!(config.deadline().budget(), Duration::from_millis(37));

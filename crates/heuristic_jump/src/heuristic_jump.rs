@@ -10,12 +10,13 @@
 //! than a workspace member nothing builds.
 
 use std::ffi::OsString;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::{CommandFactory, Parser, error::ErrorKind};
 use driver::{
     Config, DEFAULT_LOG_FILTER, DeadlineMs, DeadlineOverride, Heuristics, Mode, PrefixedWriter,
-    Registry,
+    Registry, Tracing,
 };
 use shared::LanguageHandler;
 use tracing_subscriber::EnvFilter;
@@ -43,6 +44,13 @@ struct Cli {
     /// Overrides the hard cap. Defaults to 750 proxying, 2000 standalone.
     #[arg(long, value_name = "MS")]
     deadline_ms: Option<u64>,
+
+    /// Where `core.md` §7's per-query JSONL records are written. Absent means
+    /// none are, which is the shipped default: the records are what a corpus
+    /// run and a field measurement are made of, and neither is a thing an
+    /// editor session should pay for unasked.
+    #[arg(long, value_name = "PATH")]
+    trace: Option<PathBuf>,
 
     /// `tracing-subscriber` env-filter string. Defaults to `warn`, so we are
     /// quiet unless asked: our lines interleave with the proper server's in
@@ -105,6 +113,14 @@ fn main() -> Result<(), shared::Error> {
         match cli.deadline_ms {
             Some(milliseconds) => DeadlineOverride::Explicit(DeadlineMs::new(milliseconds)),
             None => DeadlineOverride::ModeDefault,
+        },
+        // The `Option` clap produces becomes an enum here rather than being
+        // carried inward, for the reason `DeadlineOverride` is one: absent is
+        // a decision — "write no records" — and `Config::new(mode, deadline,
+        // None)` would be a call site that reads as an omission.
+        match cli.trace {
+            Some(path) => Tracing::To(path),
+            None => Tracing::Off,
         },
     );
 

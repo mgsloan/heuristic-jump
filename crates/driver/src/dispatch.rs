@@ -188,6 +188,18 @@ impl Answer {
     pub fn wire(&self) -> &[WireLocation] {
         &self.wire
     }
+
+    /// Consuming, because `core` needs both halves and neither of them twice:
+    /// the wire form goes to the editor and the outcome goes into §7's record,
+    /// which takes the `Trace` apart and so cannot borrow it.
+    ///
+    /// Taking an `Answer` apart is safe where building one from parts is not.
+    /// What the private fields prevent is an `Answer` whose two halves describe
+    /// different answers; after this there is no `Answer` left to disagree with
+    /// itself.
+    pub fn into_parts(self) -> (Outcome, Vec<WireLocation>) {
+        (self.outcome, self.wire)
+    }
 }
 
 /// What `core` puts on the work channel, and the reason it can do so in O(1):

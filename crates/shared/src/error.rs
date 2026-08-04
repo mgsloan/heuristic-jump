@@ -131,6 +131,16 @@ pub enum ConfigError {
     GrammarNotLocked { package: Box<str> },
     #[error("the workspace lockfile locks {package} with neither a checksum nor a source revision")]
     GrammarUnidentified { package: Box<str> },
+    /// `--trace=<path>` (`deps.md` §11). Refused at startup rather than
+    /// reported per query: a run whose observability was asked for and is
+    /// silently absent is the one failure mode §7's records exist to prevent,
+    /// and the moment the flag is resolved is the only cheap place to say so.
+    #[error("opening the trace at {path}")]
+    TraceUnwritable {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
 }
 
 /// Framing, in both directions. The shim's codec and `measure_core`'s client
