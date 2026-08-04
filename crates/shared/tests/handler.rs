@@ -147,6 +147,115 @@ fn the_printed_trait_has_the_methods_a_language_implements() {
     );
 }
 
+/// §1's "handlers never construct `Outcome::Committed`; every path ends
+/// through `policy.decide(..)`", which is the one claim in the section that the
+/// types deliberately do not hold.
+///
+/// The section says so itself, and says what does: "what holds this is review
+/// and not the type system … the check available before then is mechanical
+/// rather than architectural: a source scan over `crates/lang_*` for the
+/// construction, in the shape `driver/tests/seam.rs` already uses for the wire
+/// vocabulary". This is that scan. Until it existed the sentence described a
+/// check nobody had written, which is the weaker of the two things it could
+/// have meant.
+///
+/// Why it matters only later is the section's own argument, and is why the
+/// answer is a scan rather than a private variant: in v1 `decide` returns
+/// `Committed` for every input, so a handler that skips the funnel is
+/// indistinguishable from one that does not. It becomes distinguishable the
+/// moment a precision floor arrives — and that is the moment there are the most
+/// `lang_*` crates to audit by hand, which is exactly the audit
+/// `resolution.md` §7.4 refuses to schedule.
+#[test]
+fn no_language_crate_constructs_the_committed_arm_itself() {
+    let sources = language_crate_sources();
+    assert!(
+        !sources.is_empty(),
+        "no crates/lang_* workspace member, so this scan would pass vacuously"
+    );
+
+    assert!(
+        sources
+            .iter()
+            .any(|(_, text)| text.contains("impl LanguageHandler")),
+        "none of {:?} implements the seam, so this walked the wrong files and \
+         would pass against a handler that commits on every line",
+        sources.iter().map(|(file, _)| file).collect::<Vec<_>>()
+    );
+
+    let mut constructing = Vec::new();
+    for (file, text) in &sources {
+        for line in text.lines() {
+            let code = line.trim_start();
+            // A `lang_*` that explains in a comment why it does not build one
+            // must not be what fails this. `driver/tests/file_list.rs`'s
+            // channel scan skips comments for the same reason, and there the
+            // trap had already been set.
+            if code.starts_with("//") {
+                continue;
+            }
+            if code.contains("Outcome::Committed") {
+                constructing.push(format!("{file}: {code}"));
+            }
+        }
+    }
+
+    assert!(
+        constructing.is_empty(),
+        "a language crate names `Outcome::Committed` in code: {constructing:?}. §1 \
+         routes every committed answer through `CommitPolicy::decide`, so that a \
+         per-mode precision floor is a data change rather than an audit of every \
+         commit site in every `lang_*` crate at the moment when there are the most \
+         of them"
+    );
+}
+
+/// Every source file of every `crates/lang_*` member, as `(crate/src/name.rs,
+/// text)`.
+///
+/// Reached by following each crate root's `mod` declarations, which is
+/// `clippy.toml`'s rule — `std::fs::read_dir` bypasses gitignore semantics —
+/// and `core.md` §9's convention that the library root is named for the crate.
+fn language_crate_sources() -> Vec<(String, String)> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("crates/shared is two levels below the workspace root")
+        .to_owned();
+    let manifest =
+        std::fs::read_to_string(root.join("Cargo.toml")).expect("the workspace manifest");
+
+    let mut sources = Vec::new();
+    for line in manifest.lines() {
+        let quoted = line.trim().trim_end_matches(',');
+        let Some(member) = quoted
+            .strip_prefix('"')
+            .and_then(|rest| rest.strip_suffix('"'))
+            .and_then(|member| member.strip_prefix("crates/"))
+            .filter(|member| member.starts_with("lang_"))
+        else {
+            continue;
+        };
+        let entry = format!("crates/{member}/src/{member}.rs");
+        let text = std::fs::read_to_string(root.join(&entry))
+            .unwrap_or_else(|_| panic!("{entry}, which §9 names the library root"));
+        for declared in text.lines().filter_map(module_of) {
+            let path = format!("crates/{member}/src/{declared}.rs");
+            let source = std::fs::read_to_string(root.join(&path)).expect("a declared module");
+            sources.push((path, source));
+        }
+        sources.push((entry, text));
+    }
+    sources
+}
+
+fn module_of(line: &str) -> Option<&str> {
+    line.trim()
+        .strip_prefix("mod ")
+        .or_else(|| line.trim().strip_prefix("pub mod "))
+        .and_then(|rest| rest.strip_suffix(';'))
+}
+
 /// The trait's method names, which are the part of it a language crate has to
 /// write. Bodies and signatures are left alone: `Query<'_>`'s parameter is
 /// spelled `q` in the document and `query` in the source, and neither spelling
