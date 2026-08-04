@@ -137,6 +137,11 @@ struct Negotiated {
     encoding: PositionEncoding,
 }
 
+/// How far behind `core` is: the events still queued at the moment one was
+/// taken off the inbox, which is zero for a shim that is keeping up.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
+struct InboxDepth(usize);
+
 /// `shim.md` §2's single-threaded actor.
 #[derive(Debug)]
 pub struct Actor {
@@ -164,6 +169,8 @@ pub struct Actor {
     /// changes `Documents` has already consumed, would hand tree-sitter edits
     /// that do not describe the text it is given.
     edits: Arc<Vec<InputEdit>>,
+    /// The deepest the inbox has been. See [`Actor::observed`].
+    backlog: InboxDepth,
     outgoing: Sender<Outbound>,
 }
 
@@ -190,6 +197,7 @@ impl Actor {
             negotiated: None,
             debounce: DebounceMs::RESCAN,
             edits: Arc::new(Vec::new()),
+            backlog: InboxDepth::default(),
             outgoing,
         })
     }
@@ -239,7 +247,47 @@ impl Actor {
                 );
                 return Ok(());
             };
+            // Read here rather than before the `select!`, because the number
+            // that means anything is the backlog *behind* the event being
+            // handled: the depth before a receive counts the event itself, so
+            // a shim keeping up perfectly would report one forever.
+            self.observed(InboxDepth(events.len()));
             self.handle(event)?;
+        }
+    }
+
+    /// `deps.md` §2's one surviving mechanism, and the only caller of
+    /// `Receiver::len` in the workspace.
+    ///
+    /// §2 makes every channel `unbounded()` because a bounded one does not
+    /// apply backpressure in the transport — it deadlocks, since the sender is
+    /// a pipe-reader thread that `shim.md` §1 forbids stalling. What that
+    /// costs is stated in the same paragraph: "memory is bounded only by the
+    /// shed-load rule in `shim.md` §10, so the `core` inbox length is a number
+    /// we should log and watch, not just assert about". §1 gives the same
+    /// number as a reason to take `crossbeam-channel` over std's channel at
+    /// all — "crossbeam gives `Receiver::len()`, which `shim.md` §10's 'no
+    /// heuristic work while `core` is behind' rule needs to be able to read" —
+    /// and until this nothing read it. (Spelled that way round because
+    /// `seam.rs` bans the module path from `driver`'s sources, and a comment
+    /// explaining why we do not use it reads the same to a substring scan as
+    /// the import would.)
+    ///
+    /// **The high-water mark, not a line per event**, and the difference is
+    /// whether the number can be watched. A depth logged every time round the
+    /// loop puts a line between every pair of interesting ones, so it would
+    /// have to sit at `trace`, where nobody looks; logged when it *rises*, a
+    /// shim that keeps up is silent and one that falls behind writes a line
+    /// per new worst case — at `debug`, which is what a user turns on when the
+    /// shim feels slow.
+    ///
+    /// It is deliberately never reset. The worst case is the number §10's
+    /// shed-load rule would be calibrated from, and a mark that decayed would
+    /// report the last quiet second instead of the burst that matters.
+    fn observed(&mut self, depth: InboxDepth) {
+        if depth > self.backlog {
+            self.backlog = depth;
+            tracing::debug!(depth = depth.0, "`core` is further behind than it has been");
         }
     }
 

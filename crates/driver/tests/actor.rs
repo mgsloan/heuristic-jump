@@ -348,6 +348,83 @@ fn the_loop_drains_its_channel_and_ends_when_the_wire_closes() {
     assert_eq!(field(row, "agreement"), "\"match_top1\"", "{row}");
 }
 
+/// `deps.md` §2, whose conclusion is a log line and not an assertion:
+///
+/// > memory is bounded only by the shed-load rule in `shim.md` §10, so the
+/// > `core` inbox length is a number we should log and watch, not just assert
+/// > about
+///
+/// It had no reader. `crossbeam-channel` is taken over `std::sync::mpsc`
+/// partly for `Receiver::len` (§1), and nothing in the workspace called it, so
+/// the one mechanism §2 has left after the unbounded lint was withdrawn did
+/// not exist.
+///
+/// Both halves are the claim. Five events queued before the loop starts means
+/// the first receive leaves four behind, and four is the mark — measured after
+/// the receive, so it is the backlog rather than the queue including the event
+/// in hand. One event leaves nothing behind and must be silent: a depth logged
+/// unconditionally would report `0` here, which is the version that makes the
+/// line unreadable in a real log and the version an implementation drifts
+/// into.
+///
+/// It asserts the *whole* sequence and not "at least one report", because the
+/// high-water rule is the other half of what makes it watchable — five events
+/// draining produce depths 4, 3, 2, 1, 0, and a line for each is the noise the
+/// mark exists to avoid.
+#[test]
+fn the_inbox_depth_is_logged_when_core_falls_further_behind() {
+    let fixture = Fixture::new("actor_backlog", Proxying::No);
+
+    let observed = depths_reported_while(
+        fixture.actor(Arc::new(Committing {
+            locations: Vec::new(),
+        })),
+        5,
+    );
+    assert_eq!(
+        observed,
+        vec![4],
+        "five queued events reported {observed:?} as the `core` inbox depth, where deps.md §2 \
+         wants the backlog behind the event being handled, logged once per new worst case"
+    );
+
+    let quiet = depths_reported_while(
+        fixture.actor(Arc::new(Committing {
+            locations: Vec::new(),
+        })),
+        1,
+    );
+    assert!(
+        quiet.is_empty(),
+        "a shim that never fell behind reported {quiet:?}: a depth logged whatever it is puts \
+         a line between every pair of interesting ones, which is how the number stops being \
+         one anybody watches"
+    );
+}
+
+/// Runs `actor` to completion over `queued` events sent before it starts, and
+/// returns every `depth` field it logged, in order.
+///
+/// The events are `WatchedFilesChanged` because it is the cheapest one that
+/// reaches the loop: it needs no negotiation, no document and no handler, so
+/// what is being measured is the loop's own arithmetic and nothing else.
+fn depths_reported_while(actor: Actor, queued: usize) -> Vec<u64> {
+    let (events, incoming) = crossbeam_channel::unbounded();
+    for _ in 0..queued {
+        events
+            .send(Event::WatchedFilesChanged)
+            .expect("a queued event");
+    }
+    // The transport going away, which is the only thing that ends the loop.
+    drop(events);
+
+    let (reported, depths) = crossbeam_channel::unbounded();
+    tracing::subscriber::with_default(DepthReports { reported }, || {
+        actor.run(&incoming).expect("the actor loop");
+    });
+    depths.try_iter().collect()
+}
+
 /// §6: "divergence is reported to the user on `mismatch` only", through the
 /// path that produces the report rather than through `Divergence` in isolation.
 ///
@@ -894,4 +971,67 @@ impl LanguageHandler for Checking {
             trace: Trace::new(),
         })
     }
+}
+
+/// A `tracing::Subscriber` that forwards one field of one event, so that a log
+/// line can be asserted on.
+///
+/// Hand-rolled rather than `tracing-subscriber`, which `driver` does not have
+/// and must not gain: `deps.md` §9 gives the subscriber to the crates that own
+/// a program's command line and to nothing else, and `seam.rs` asserts the
+/// list of manifests naming it — in *both* directions, so a dev-dependency
+/// here would fail it. Forty lines of trait impl is the cheaper side of that
+/// trade, and the trait is only this large because `Subscriber` is the span
+/// interface too.
+///
+/// The captured values leave over a channel rather than through a `Mutex`.
+/// `Subscriber::event` takes `&self` and must be `Sync`, which is exactly the
+/// shape that asks for a lock, and `CLAUDE.md` has none anywhere — a test is
+/// not the place to make the first exception.
+struct DepthReports {
+    reported: crossbeam_channel::Sender<u64>,
+}
+
+impl tracing::Subscriber for DepthReports {
+    fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+
+    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+
+    fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+    fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+
+    fn event(&self, event: &tracing::Event<'_>) {
+        event.record(&mut Depth {
+            reported: &self.reported,
+        });
+    }
+
+    fn enter(&self, _span: &tracing::span::Id) {}
+
+    fn exit(&self, _span: &tracing::span::Id) {}
+}
+
+struct Depth<'a> {
+    reported: &'a crossbeam_channel::Sender<u64>,
+}
+
+impl tracing::field::Visit for Depth<'_> {
+    fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+        if field.name() == "depth" {
+            self.reported
+                .send(value)
+                .expect("the test is still listening");
+        }
+    }
+
+    /// The one required method, and every other field lands here. Nothing is
+    /// captured from it on purpose: a `depth` that arrived as a `Debug` would
+    /// mean the field stopped being an integer, and a visitor that parsed the
+    /// formatting back out would hide that.
+    fn record_debug(&mut self, _field: &tracing::field::Field, _value: &dyn std::fmt::Debug) {}
 }
