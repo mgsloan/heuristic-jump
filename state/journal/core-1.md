@@ -188,3 +188,105 @@ exist; it is not a hole in the record.
 `Traces::outstanding` holds a row per proxied query until the child answers. A
 child that dies mid-session leaks them. `PendingQueries` has the same shape and
 the same bound, which is `shim.md` §10's shed-load rule — not built either.
+
+## Campaign 18835da5 — measure_core's replay half (the command line, the two
+## modes, the failure listing)
+
+Eight commits, no reverts. The assignment was three gaps and one unjudged
+section; the first hour was spent discovering that the gaps described code
+that no longer exists.
+
+### The tree was red when I opened it, and the previous campaign closed `confirmed`
+
+`harness/gate core` fails at `9190b44`. `driver::seam`'s §9 check asserts that
+`heuristic_jump` is the only crate naming `tracing_subscriber`, and `087fa45`
+(campaign 7aa74ea9, "measure had no log subscriber") gave `measure_core` one,
+manifest edge and all, without touching the test. So a campaign that closed
+`confirmed` left every subsequent session a broken build to diagnose first.
+
+**Run `harness/gate core` before you believe the tree.** Do not infer it from
+`cargo test -p <your crate>`: the crate under work was green throughout — the
+failing assertion lives in another crate's test, about a *third* crate's
+source, which is exactly the shape a per-crate test run cannot see.
+
+The resolution was the test's, not the code's: `deps.md` §9 never says "the
+binary and nowhere else" — that is the seam test's gloss — and what it is
+about is a library having an opinion about where logs go. Two crates own a
+command line (`heuristic_jump`, `measure_core`), and the check now reads one
+list for both halves.
+
+### The audit's gap text goes stale in hours, not weeks
+
+Three of my four targets were closed by commits made *after* the audit read
+them. The stamps are in `state/audit/core.toml` as `last_audited`, in UTC; the
+commits are in local time (-06:00), which is what made the comparison look
+wrong at first glance. Compare them before reading a gap as a statement about
+the code:
+
+* `the-command-line[d2a209c7a8]` (p50/p99 in the table) — gone in `a96ffb2`,
+  four hours after the stamp.
+* `two-modes[f2e74dce26]` (grammar literal) and `[eb424449b6]`
+  (`check_resumable` compares one field) — both gone in `55de8a2`, twenty
+  minutes after the stamp.
+
+That does not make the campaign empty; it makes the *target* the section
+rather than the sentence. What a re-audit would still have found was three
+different things, and none of them was in the list.
+
+### What was actually wrong, and how it was found
+
+All three came from reading a whole file rather than the sites the gaps named.
+
+* **`collect` checkpointed one row in two hundred.** `writer.append` was
+  inside `if rows.len() % CHECKPOINT_EVERY == 0`, so the file on disk held
+  every two-hundredth answer while the vector held all of them. A completed
+  run rewrites the file and is fine; a *crash* leaves a file whose five rows
+  are positions 200, 400, 600, 800 and 1000 — and `done` is read as
+  `existing.rows.len()`, so the resume asks positions 5 onward and the corpus
+  reports itself complete with 995 positions never asked. The fix is
+  ownership: `Writer` holds the rows, `append` is the only way in and does
+  both, so "in memory and not on disk" is unspellable.
+* **`replay` skipped a row whose file it could not read**, with a `warn!`.
+  Those positions leave the table entirely — not as abstentions, not as
+  `uncollected` — so the denominator shrinks and coverage *rises*. It is now
+  refused, which is the rule §7 already states for the commit.
+* **`stage_us` is a second wall clock in the record**, and §7 said
+  `heuristic_latency_us` was "the one field" a replay does not reproduce.
+  Nothing failed because every fixture handler reports a constant; the first
+  real handler with a timed stage would have made the determinism test flaky,
+  and the cheap repair for that is one more mask. CHANGE-core-005, and the
+  mask is now a list with `the_mask_is_not_the_whole_record` holding its size.
+
+### Approaches considered and not taken
+
+* **Moving `install_logging` into `measure_rust`'s `main`.** It is the
+  literal reading of "the subscriber goes in the binary", and it is wrong
+  here: §7 makes a `measure_<lang>` four lines *because* `clap`, the flag set
+  and `run` are `measure_core`'s, so the log setup would be the one thing
+  copied per language — seven chances for one binary to be quiet where the
+  others are not. It would also have cost `a_replay_reports_its_own_wall_clock`
+  its `has_been_set()` assertion, replacing a behavioural check with a source
+  scan.
+* **Adding `line` and `identifier` to `QueryRecord`** so the failure digest's
+  sample could be read off one line. Rejected twice over: §7 gives the record
+  a byte offset deliberately ("a line/column pair here would need a conversion
+  in the one place the two halves of the metric have to line up exactly"), and
+  the field list is asserted against §7's order by
+  `a_replay_row_carries_section_7s_field_set_in_section_7s_order`. The join is
+  the answer — `positions/<repo>.jsonl` already carries the token text, so the
+  identifier is a lookup on `(file, offset)` and not a second definition of
+  what an identifier is.
+* **A determinism test over a two-repository corpus.** It would not hold the
+  claim: `read_dir` order is stable enough on one machine that two runs agree
+  whether or not `repositories()` sorts. The order itself is what is
+  asserted — `alpha` before `one`, created second.
+
+### What `measure_core` still has no test for, and why
+
+Everything `collect` does with a live server. `Collection::run` takes a
+`Client`, which spawns a process, and the suite has no server to spawn: so
+`--restart`, the probe loop, the resume arithmetic and the checkpoint fix
+above are held by construction and by reading. A fixture server speaking
+enough LSP to answer `initialize` and `textDocument/definition` would close
+all of them at once, and it is the one piece of test infrastructure this crate
+is missing. It is a campaign, not a corner of one.
