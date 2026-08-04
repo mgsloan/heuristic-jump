@@ -272,6 +272,27 @@ append-ordered file, because a worker's branch merges out of order. And unlike
 the test ratchet, an increase here needs an *approved* escalation: it is the
 one gate failure a provisional choice does not clear.
 
+**The phase-2a guardrail is a different instrument from the ratchet**, and
+§11 is emphatic about it: crossing a standing ceiling "does not mean the last
+change was wrong, it means the loop has wandered somewhere no legitimate
+experiment goes". So it never fails a gate — that would blame whichever
+campaign happened to be running — and `harness/loop` stops between campaigns
+instead, the way it does for a budget. `hj record` says it too, because being
+an order of magnitude out is worth knowing inside a campaign.
+
+```toml
+[guardrail]
+measure_binary_bytes = 60000000   # both optional, both absent by default
+query_micros = 5000
+```
+
+Absent by default, and the section supplies the argument: the ceiling is only
+harmless because it sits an order of magnitude clear of anything legitimate,
+and nobody knows where that is until a handler exists. `query_micros` is
+listed with nothing measuring it yet, on purpose — a guardrail table that
+silently covers half of what §11 asks for looks, from outside, exactly like
+one that covers all of it.
+
 **`link-delta` exits non-zero until the manifests allow it.** Measuring what a
 language costs the shipped binary means building `heuristic_jump` with and
 without it, which needs one optional dependency per language behind a

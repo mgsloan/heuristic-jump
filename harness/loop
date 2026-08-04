@@ -379,6 +379,20 @@ while :; do
 		exit 1
 	fi
 
+	# §11's standing ceilings, which are not the phase-3 ratchet: crossing one
+	# does not mean the last change was wrong, it means the loop has wandered
+	# somewhere no legitimate experiment goes. So it stops here rather than
+	# failing a gate — the gate would blame whichever campaign was running.
+	if ! "$hj" guardrail "$loop"; then
+		echo
+		echo "loop: a standing guardrail is crossed; stopping rather than continuing quietly." >&2
+		echo "      design/loops.md section 11 puts these an order of magnitude above" >&2
+		echo "      anything legitimate, so this needs looking at rather than raising." >&2
+		log_stop "a standing guardrail was crossed" \
+			"design/loops.md section 11 sets the guardrails an order of magnitude above anything legitimate, so crossing one means the loop wandered rather than that the last change was wrong."
+		exit 1
+	fi
+
 	if ! git diff --quiet || ! git diff --cached --quiet; then
 		echo "loop: the working tree is dirty. Green-or-revert means a campaign starts" >&2
 		echo "      from a committed tree; the next session cannot tell deliberate" >&2

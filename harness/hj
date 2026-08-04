@@ -241,6 +241,20 @@ class Phase:
     # no number. Absent means the phase gate is the only trigger, which is the
     # degenerate case the section already describes rather than a broken one.
     escalation_batch: int | None = None
+    # `design/loops.md` section 11's standing ceiling: "an order of magnitude
+    # above where anything reasonable sits, on `measure_<lang>` size and on
+    # per-query work. It is a guardrail and emphatically not a ratchet:
+    # crossing it does not mean the last change was wrong, it means the loop
+    # has wandered somewhere no legitimate experiment goes, and it stops and
+    # escalates rather than failing the gate."
+    #
+    # Empty rather than defaulted, for `Budget`'s and `escalation_batch`'s
+    # reason, and here the section supplies the argument itself: the number is
+    # only harmless because it sits an order of magnitude clear of anything
+    # legitimate, and nobody knows where that is until a handler exists. A
+    # guessed one either never fires or suppresses the expensive experiments
+    # §11 spends its first three paragraphs protecting.
+    guardrail: dict[str, int] = field(default_factory=dict)
     budget: Budget = field(default_factory=Budget)
     loops: dict[str, LoopConfig] = field(default_factory=dict)
 
@@ -255,6 +269,11 @@ def load_phase() -> Phase:
         phase=raw["phase"],
         audit_every=raw.get("audit_every", 1),
         escalation_batch=raw.get("escalation_batch"),
+        guardrail={
+            name: int(value)
+            for name, value in (raw.get("guardrail") or {}).items()
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+        },
         budget=Budget(
             global_usd=budget_table.get("global_usd"),
             language_usd={
@@ -2509,6 +2528,20 @@ def cmd_record(args: argparse.Namespace) -> int:
         measured = binary_size(package)
         if measured is not None:
             row["binary"] = measured
+            # §11: being an order of magnitude out is "worth knowing within a
+            # campaign rather than at a gate". Said here, where the number is
+            # taken, and again by `harness/loop` between campaigns — which is
+            # where the stop actually happens.
+            ceiling = phase.guardrail.get("measure_binary_bytes")
+            if ceiling is not None and measured["stripped"] > ceiling:
+                print(
+                    f"guardrail: {measured['binary']} is {measured['stripped']} bytes "
+                    f"against a standing ceiling of {ceiling}. This is not a verdict on "
+                    "the last change (design/loops.md section 11); it means the loop has "
+                    "wandered somewhere no legitimate experiment goes. It stops the loop "
+                    "between campaigns, not this gate.",
+                    file=sys.stderr,
+                )
     append_jsonl(metrics_path(config.owner), row)
     commit_harness_state([metrics_path(config.owner)], f"metrics row for {target[:8]}")
     print(json.dumps(row, sort_keys=True))
@@ -4972,6 +5005,94 @@ def cmd_budget(args: argparse.Namespace) -> int:
     return 1 if exhausted else 0
 
 
+# §11's guardrail is on two things and only one of them is measurable today.
+# Naming the second anyway is what stops it being forgotten: a guardrail table
+# that silently covers half of what the section asks for reads, from the
+# outside, exactly like one that covers all of it.
+GUARDRAILS = {
+    "measure_binary_bytes": "the stripped size of measure_<lang>",
+    "query_micros": "per-query work",
+}
+
+
+def last_recorded_size(owner: str) -> int | None:
+    for row in reversed(read_jsonl(metrics_path(owner))):
+        binary = row.get("binary")
+        if isinstance(binary, dict) and isinstance(binary.get("stripped"), int):
+            return binary["stripped"]
+    return None
+
+
+def guardrail_scopes(phase: Phase, owner: str | None = None) -> list[dict]:
+    """One entry per standing ceiling, with what has been observed against it.
+
+    Read out of the metrics history rather than measured here. The guardrail is
+    consulted between campaigns and again from `record`, and a fresh release
+    build at either point would put minutes on both — where the number it would
+    produce is the one the last row already carries.
+    """
+    scopes = []
+    for name, description in GUARDRAILS.items():
+        observed: int | None = None
+        reason: str | None = None
+        if name == "measure_binary_bytes":
+            observed = last_recorded_size(owner) if owner else None
+            if observed is None:
+                reason = "no row of this loop's carries a binary size yet"
+        else:
+            reason = "nothing measures per-query work until there is a corpus run"
+        scopes.append(
+            {
+                "scope": name,
+                "of": description,
+                "ceiling": phase.guardrail.get(name),
+                "observed": observed,
+                "reason": reason,
+            }
+        )
+    return scopes
+
+
+def cmd_guardrail(args: argparse.Namespace) -> int:
+    """§11's phase-2a ceiling, which is not the phase-3 ratchet and must not
+    behave like one.
+
+    Exit 1 means one is crossed, and `harness/loop` treats that the way it
+    treats an exhausted budget: stop between campaigns, where the tree is
+    committed, and escalate. It is emphatically not a gate step — §11 says
+    crossing it "does not mean the last change was wrong", and failing the gate
+    would say exactly that to the campaign that happened to be running.
+    """
+    phase = load_phase()
+    if args.loop:
+        loop_config(args.loop)
+    crossed = []
+    for entry in guardrail_scopes(phase, args.loop):
+        ceiling, observed = entry["ceiling"], entry["observed"]
+        if ceiling is None:
+            state = "no ceiling set"
+        elif observed is None:
+            state = f"ceiling {ceiling}, nothing observed — {entry['reason']}"
+        else:
+            state = f"{observed} of {ceiling} ({observed / ceiling * 100:.0f}%)"
+            if observed > ceiling:
+                state += "  — CROSSED"
+                crossed.append(entry["scope"])
+        print(f"guardrail: {entry['scope']:<22} {entry['of']:<34} {state}")
+    if crossed:
+        print(
+            "guardrail: crossed at "
+            + ", ".join(crossed)
+            + ". design/loops.md section 11 sets these an order of magnitude above "
+            "anything legitimate, so this is not a verdict on the last change — it "
+            "means the loop has wandered somewhere no experiment goes. Stop, look, "
+            "and either raise the ceiling in state/phase.toml under [guardrail] as a "
+            "logged intervention or answer why the loop went there.",
+            file=sys.stderr,
+        )
+    return 1 if crossed else 0
+
+
 def waiting_decisions(answers: dict[str, dict] | None = None) -> list[tuple[str, str]]:
     """Records a batch review would consume, as (id, opened), oldest first.
 
@@ -5736,6 +5857,32 @@ def selftest_cases() -> list[tuple[str, object]]:
         rows = [{"commit": "aaa"}, {"commit": "bbb"}, {"commit": "ccc"}]
         assert rows_since(rows, None) == rows, "no re-baseline commit means the whole history"
 
+    def a_guardrail_is_not_a_ratchet():
+        phase = Phase(phase="2a", guardrail={"measure_binary_bytes": 60_000_000})
+        scopes = {entry["scope"]: entry for entry in guardrail_scopes(phase, None)}
+        assert scopes["measure_binary_bytes"]["ceiling"] == 60_000_000
+        assert scopes["query_micros"]["ceiling"] is None, "an unset ceiling is not a zero one"
+        assert scopes["query_micros"]["reason"], (
+            "§11 guards two things and only one is measurable; a table that "
+            "silently covers half of it reads like one that covers all of it"
+        )
+
+    def guardrails_are_absent_by_default():
+        assert Phase(phase="2a").guardrail == {}, (
+            "a guessed ceiling either never fires or suppresses the expensive "
+            "experiments §11 spends three paragraphs protecting"
+        )
+
+    def a_guardrail_table_takes_only_numbers():
+        raw = '\n[guardrail]\nmeasure_binary_bytes = 60_000_000\nquery_micros = true\n'
+        table = tomllib.loads(raw)["guardrail"]
+        kept = {
+            name: int(value)
+            for name, value in table.items()
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+        }
+        assert kept == {"measure_binary_bytes": 60_000_000}, "a bool is not a ceiling"
+
     def the_language_feature_convention_is_one_string():
         assert language_feature("rust") == "lang-rust"
         assert language_feature("typescript") == "lang-typescript", (
@@ -6172,6 +6319,10 @@ def main() -> int:
     p = sub.add_parser("record", help="append the metrics row for HEAD")
     p.add_argument("loop")
     p.set_defaults(run=cmd_record)
+
+    p = sub.add_parser("guardrail", help="the standing ceilings of loops.md §11")
+    p.add_argument("loop", nargs="?")
+    p.set_defaults(run=cmd_guardrail)
 
     p = sub.add_parser("link-delta", help="per-language binary size against the shipped binary")
     p.set_defaults(run=cmd_link_delta)
