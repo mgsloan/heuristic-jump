@@ -1,18 +1,18 @@
 # One round's assignments, written by `hj plan-merge` from the planner's
 # answer. Regenerated every round; not history.
-planned = "2026-08-04T21:14:39+00:00"
+planned = "2026-08-04T23:44:27+00:00"
 
 [worker.1]
-targets = ["core.md#4-project-file-enumeration[d41389f7fe]", "core.md#the-trait[218a36571e]", "core.md#two-modes-collect-and-replay[a6251d1926]"]
-reading = "design/core.md, state/spec-changelog/core.md, crates/driver/src/files.rs, crates/driver/src/project.rs, crates/driver/src/dispatch.rs, crates/driver/tests/file_list.rs, crates/shared/src/handler.rs, crates/measure_core/src/cli.rs"
-why = "sole owner of design/core.md: all three open core.md claims in one hand so no second worker rewrites that doc or its changelog; its test lands in tests/file_list.rs, not seam.rs"
+targets = ["core.md#84-location-is-byte-based-and-this-fixes-a-real-inconsistency[9807aee0b3]", "core.md#snapshots-are-o1-to-take-and-are-parsed-before-a-handler-sees-one[02c4cde612]", "core.md#text-and-tree-can-never-disagree[a0661e4b63]", "deps.md#10-errors-one-enumerated-type-no-anyhow[d50e2285d0]"]
+reading = "crates/driver/src/actor.rs, crates/driver/src/dispatch.rs, crates/driver/tests/, crates/driver/tests/seam.rs"
+why = "three gaps are one claim -- core parses/encodes on its own thread because there is no worker pool -- and all four land in actor.rs+dispatch.rs, so deps.md#10 must ride along rather than collide; this worker alone holds seam.rs"
 
 [worker.2]
-targets = ["deps.md#14-workspace-cargotoml-shape[d822e97954]", "deps.md#14-workspace-cargotoml-shape[7d21b547b7]"]
-reading = "Cargo.toml, Cargo.lock, deny.toml (absent), design/deps.md \u00a714, crates/driver/tests/seam.rs"
-why = "both \u00a714 anchors close in seam.rs + root Cargo.toml, so this is the only worker holding seam.rs and it can take the section clean"
+targets = ["core.md#both-sides-are-sets[c22993d037]", "core.md#two-modes-collect-and-replay[a6251d1926]"]
+reading = "crates/measure_core/src/table.rs, crates/measure_core/src/cli.rs, crates/measure_core/"
+why = "the only two measure_core gaps, one crate, no driver or shared files in reach"
 
 [worker.3]
-targets = ["deps.md#2-channels[8e707386b4]", "deps.md#10-errors-one-enumerated-type-no-anyhow[d50e2285d0]"]
-reading = "crates/driver/src/actor.rs, crates/driver/src/dispatch.rs (classify), crates/driver/tests/actor.rs, crates/driver/tests/deadline.rs, design/deps.md \u00a72 and \u00a710"
-why = "both code fixes already landed (actor.rs:256 depth, dispatch.rs:548 log) so the work is the mechanising test in tests/actor.rs \u2014 deps.md prose and seam.rs stay worker 2's"
+targets = ["core.md#the-trait[218a36571e]", "rope-modifications.md#textsummary-is-converted-too[22926927ef]"]
+reading = "crates/shared/src/handler.rs, design/core.md \u00a77, vendor/rope/src/point.rs, vendor/rope/src/rope.rs, vendor/rope/tests/newtype_api.rs, vendor/README.md"
+why = "both are stale-printed-block fixes in files nobody else opens, and the rope gap is the last one in rope-modifications so that section can go clean; core.md#4-project-file-enumeration is left for next round because files.rs closes through Dispatched classification, which worker 1 is rewriting"
