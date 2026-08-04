@@ -502,3 +502,50 @@ wrong sentence is absent: the members that depend on `similarity` are exactly
 `measure_core` and watched it fail.
 
 **Campaign:** 20bbc1bf-03c5-4d3c-afda-a5c5791d47ce
+
+## CHANGE-core-017 — deps.md#8-parse-cache — one of the two keys is a cache that `conformance-005` refused
+
+**Contradiction:** §8's last paragraph said, in the present tense, "the cache
+is keyed by `(uri, version)` for open docs and `(path, mtime, len)` for disk
+files, so it is a map keyed by our own types, not by attacker-controlled
+strings."
+
+`state/decisions/conformance-005.md` is answered, by a human, the other way for
+the second half: "**Ruling:** accepted. Option A stands: no read cache", on the
+grounds that a cache reached through the `Sync` `&Query` "is not implementable
+behind a Sync &Query without a primitive this project does not have", and that
+"`CLAUDE.md` line 112 decides it: no new caching or indexing until the corpus
+harness shows the change is worth it and there is a benchmark ... There is no
+corpus."
+
+The only route to a disk-file parse is `ProjectView::parse`, which is behind
+that same `&Query`. So the disk-file half of §8's key is the key of a cache the
+ruling says this phase does not get, and `crates/shared/src/project.rs`'s
+module doc and `crates/driver/src/trees.rs`'s `ParseKey` doc both already say
+so — "the disk-file half ... has no cache to be a key of yet".
+
+**Resolution:** the paragraph now separates the two keys, says which one is a
+cache today (`driver::TreeCache`, `(uri, version)`, which is what the `lru`
+wrapper the rest of §8 chooses is for), and says the disk-file half has no
+cache and why, citing the ruling.
+
+This trades nothing off in either direction. It does not weaken the point the
+sentence was making — both keys are still our own types, and that is now the
+paragraph's opening claim rather than its trailing one. It does not settle
+`open-questions.md` question 5, which asks whether second-granularity `mtime`
+makes `(path, mtime, len)` unsound: the key is kept written down as the one
+that would be used, and the section says explicitly that deferring the cache
+defers the question with it. Answering it here would have been the Class B
+edit, and is not what this is.
+
+The one thing to be plain about, since the spec and the code are both touched
+in this campaign: **§8 moved toward the code, and it moved toward an answered
+decision record rather than toward a convenience.** Nothing in
+`crates/shared/` changed except a test. That test —
+`a_second_parse_of_the_same_path_is_a_fresh_parse` — asserts the corrected
+claim positively, by rewriting a fixture file to a different text *of the same
+length* and requiring both the read and the parse to follow it. That is
+precisely the rewrite a `(path, mtime, len)` key cannot notice, so the test
+fails against the cache the old sentence described.
+
+**Campaign:** 636bbd45-e572-46de-9078-ab09897c68da
