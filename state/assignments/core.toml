@@ -1,18 +1,18 @@
 # One round's assignments, written by `hj plan-merge` from the planner's
 # answer. Regenerated every round; not history.
-planned = "2026-08-04T04:18:22+00:00"
+planned = "2026-08-04T04:59:55+00:00"
 
 [worker.1]
-targets = ["core.md#the-command-line[d2a209c7a8]", "core.md#two-modes-collect-and-replay[f2e74dce26]", "core.md#two-modes-collect-and-replay[eb424449b6]", "core.md#the-table-is-not-enough-a-replay-has-to-show-its-failures"]
-reading = "crates/measure_core/src/{table,replay,truth,collect,cli}.rs, crates/measure_core/tests/, crates/measure_core/src/snapshots/"
-why = "every target is measure_core's replay half \u2014 table determinism, truth.jsonl provenance, and the unjudged failure-listing section share table.rs and replay.rs, and two-modes can go clean"
+targets = ["core.md#83-the-wire-position-type-is-inert[f9ad1766b7]", "core.md#85-the-untagged-unions-are-the-actual-risk[cfd3a3fbdc]"]
+reading = "crates/shared/src/proto.rs, crates/shared/src/agreement.rs, crates/shared/tests/proto.rs, crates/shared/tests/differential.rs, crates/shared/tests/golden-traffic.jsonl, design/core.md \u00a78"
+why = "both are \u00a78 protocol-type gaps living in proto.rs and its golden/differential tests; \u00a78.3 is a fresh audit and WirePosition::line is still public at proto.rs:106"
 
 [worker.2]
-targets = ["rope-modifications.md#textsummary-is-converted-too[017e996a2d]", "rope-modifications.md#the-signatures[ba8ba1bb9a]", "core.md#vendoring-the-zed-crates[dcb3592e02]"]
-reading = "vendor/rope/src/{rope,point,point_utf16,chunk,offset,offset_utf16}.rs, vendor/rope/tests/newtype_api.rs, vendor/rope/allowed-primitives.txt, vendor/README.md, design/rope-modifications.md"
-why = "all three are inside vendor/ \u2014 TextSummary and the four signatures are the last two rope-modifications gaps, so that doc can go clean; must not edit crates/shared (worker 3 owns proto.rs)"
+targets = ["core.md#adding-a-language[68be1693b1]", "deps.md#14-workspace-cargotoml-shape[cda6a3e9e2]", "deps.md#14-workspace-cargotoml-shape[4e5b9e1cfa]", "deps.md#licensing-our-crates-are-mit-the-binary-is-gpl[3723863fd7]"]
+reading = "crates/driver/tests/seam.rs, Cargo.toml, deny.toml (new), crates/lang_rust/Cargo.toml, crates/lang_rust/src/lang_rust.rs, design/high-level.md, design/deps.md \u00a75/\u00a714"
+why = "every one of these mechanizes as a manifest scan in seam.rs, and the two GPL gaps share deny.toml and high-level.md's superseded licence prose; \u00a714 can go clean"
 
 [worker.3]
-targets = ["core.md#84-location-is-byte-based-and-this-fixes-a-real-inconsistency[f2b9c0b7e5]", "core.md#85-the-untagged-unions-are-the-actual-risk[cfd3a3fbdc]"]
-reading = "crates/shared/src/proto.rs, crates/shared/tests/ (golden-traffic.jsonl, untagged/oracle tests), crates/driver/src/dispatch.rs"
-why = "both are the wire types: WirePosition's missing line-only encode path and the corpus that exercises the untagged unions, both centred on proto.rs; the golden-corpus half may only be closeable as a decision if real pyright/gopls capture is unavailable"
+targets = ["core.md#the-table-is-not-enough-a-replay-has-to-show-its-failures", "core.md#what-the-templates-handler-does[9adb0be268]"]
+reading = "crates/measure_core/src/table.rs, crates/measure_core/src/replay.rs, crates/measure_core/tests/pipeline.rs"
+why = "the unjudged section and the Unimplemented-vs-Failed gate are the same two files and the same question \u2014 a replay table that shows its failures; core-2 left this partial"
