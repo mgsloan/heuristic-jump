@@ -1496,6 +1496,84 @@ fn awaits(source: &str) -> bool {
     })
 }
 
+/// `deps.md` §2, and what the withdrawn lint left behind:
+///
+/// > So the bound is a per-channel judgement rather than a repository-wide
+/// > rule, and the only mechanism left is the one this section already named —
+/// > log the `core` inbox depth and watch it.
+///
+/// `driver/tests/actor.rs` holds the depth half. This holds the judgement,
+/// which has been made once: `driver/src/files.rs` "uses `bounded(1)` and
+/// states why, and that remains correct". Everywhere else is `unbounded()`, and
+/// not out of taste — §2 is explicit that in the transport a full channel does
+/// not apply backpressure but *deadlocks*, because the sender is a pipe-reader
+/// thread, so blocking it stops the fd being drained, which blocks the child's
+/// write, and `shim.md` §1 forbids a stalled reader outright.
+///
+/// So it guards code that does not exist yet, which is the reason to write it
+/// now rather than with the transport: that is both the subsystem where the
+/// mistake is unrecoverable and the one where a bound reads as prudence.
+/// `conformance-016` withdrew the lint that would have caught it, on the
+/// grounds that a lint cannot be right per-channel — which leaves this, because
+/// it names the one channel the judgement went the other way on instead of
+/// ruling on all of them.
+///
+/// Comment lines are skipped, and that is not tidiness. A scan that reads
+/// source *text* makes naming the thing it bans a way to fail the build from a
+/// comment: `actor.rs` already explains at length why its inbox is not bounded,
+/// and a scan that fired on that sentence would be one nobody could write the
+/// explanation under.
+#[test]
+fn the_only_bounded_channel_is_the_one_section_2_argues_for() {
+    const ARGUED: &str = "crates/driver/src/files.rs";
+
+    let members = crate_members();
+    assert!(
+        !members.is_empty(),
+        "no crates/* workspace member, so this test would pass vacuously"
+    );
+
+    let mut found = 0;
+    for member in &members {
+        for (file, source) in sources_of(member) {
+            for line in source.lines() {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                for (at, _) in line.match_indices("bounded(") {
+                    if line[..at].ends_with("un") {
+                        continue;
+                    }
+                    found += 1;
+                    assert_eq!(
+                        file, ARGUED,
+                        "{file} builds a bounded channel. deps.md §2 makes the bound a \
+                         per-channel judgement and records exactly one — files.rs's, where at \
+                         most one walk is ever in flight — because everywhere else a full \
+                         channel does not apply backpressure but deadlocks: the sender is a \
+                         pipe-reader thread, so blocking it stops the fd being drained, and \
+                         shim.md §1 forbids a stalled reader outright"
+                    );
+                }
+            }
+        }
+    }
+    assert_eq!(
+        found, 2,
+        "the scan found {found} bounded channels, where files.rs builds the two §2 argues for \
+         — so it is reading something other than the sources, and would pass against a \
+         workspace whose transport was bounded throughout"
+    );
+
+    assert!(
+        workspace_file(ARGUED).contains("at most one walk is ever"),
+        "files.rs no longer says why its channels are bounded. §2 lets the bound be a \
+         per-channel judgement precisely because the one site that took it states its \
+         reasoning; an unexplained bound is the repository-wide rule the section refuses, \
+         arrived at one channel at a time"
+    );
+}
+
 /// `deps.md` §15 is not prose about the lint configuration — it *is* the lint
 /// configuration, printed as a `toml` block that `Cargo.toml`'s
 /// `[workspace.lints]` tables are meant to be. So the document is the fixture
