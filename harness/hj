@@ -2586,7 +2586,16 @@ def cmd_check_metrics(args: argparse.Namespace) -> int:
     # gate's ratchets step to §11's *size* ratchets in phase 3, and §7's test
     # count is a per-commit check that belongs with the metrics row it is
     # computed from.
-    return 1 if check_test_ratchet(config) else 0
+    #
+    # The prompt check is here for the reason the size ratchet was: `harness/gate`
+    # is denied to every loop, so a check with no step of its own goes in the
+    # step whose subject it shares. §15's token lever is a cost measurement,
+    # and this is the step that asserts a measurement is going the right way.
+    # Both, never short-circuited: two failures reported at once cost one gate
+    # run instead of two.
+    failed = check_test_ratchet(config)
+    failed = check_prompt_prefix(config, phase) or failed
+    return 1 if failed else 0
 
 
 def cmd_check_ratchets(args: argparse.Namespace) -> int:
@@ -3240,6 +3249,98 @@ def assignments_path(owner: str) -> Path:
 # accidental shared prefix between two real uuids.
 PREFIX_PROBE = ("aaaaaaaa-0000-0000-0000-000000000000", "bbbbbbbb-1111-1111-1111-111111111111")
 
+# The two template values that carry the campaign uuid. Every other value in a
+# prompt is per loop, per phase or per audit, so it is byte-identical from one
+# campaign to the next and costs nothing wherever it sits; these two end the
+# cacheable prefix at the first place they appear.
+PER_CAMPAIGN_VALUES = ("campaign_record", "campaign_id")
+
+# The line dividing the instructional body from the state block, in *template*
+# coordinates rather than rendered ones. It is unique in the template — the
+# decision record's own frontmatter arrives through `{{decision_template}}`
+# and so is not in the file — which is what lets this be checked without
+# rendering a prompt, and therefore without reading any repository state.
+BODY_END = "\n---\n"
+
+
+def prompt_body_problems(name: str, template: str) -> list[str]:
+    """`design/loops.md` §15's first token lever, as an exact check.
+
+        Keep the prompt's fixed prefix byte-identical across iterations and
+        order it stable-to-volatile ... so the cacheable prefix is as long as
+        possible.
+
+    `hj prompt-prefix` measures how far that holds and deliberately never
+    fails, because when it was written the revision it argues for was an open
+    question (`harness-001`, since answered in favour of moving the two ids to
+    the tail). This is the part that can fail: not "the prefix is long enough",
+    which is a judgement, but "no per-campaign value appears above the
+    separator", which is where the length comes from and is exact.
+
+    The second arm matters as much as the first. A campaign that cannot find
+    its own record writes no record, so deleting the tail block is a worse
+    failure than putting the value back in the body, and it would otherwise
+    read as a perfect score.
+    """
+    separators = template.count(BODY_END)
+    if separators != 1:
+        return [
+            f"{name} has {separators} state-block separators (`---` alone on a line) "
+            "and needs exactly one: it is what divides the instructional body from "
+            "the per-campaign tail, and every check here is relative to it"
+        ]
+    body = template.split(BODY_END, 1)[0]
+    problems = []
+    for value in PER_CAMPAIGN_VALUES:
+        placeholder = "{{" + value + "}}"
+        if placeholder in body:
+            problems.append(
+                f"{name} renders {placeholder} in the instructional body. It carries the "
+                "campaign uuid, so the cacheable prefix ends there and everything after "
+                "it is re-sent uncached on every campaign of every loop "
+                "(design/loops.md section 15; state/decisions/harness-001.md). Refer to "
+                "the `## This campaign` block in the tail instead"
+            )
+        elif placeholder not in template:
+            problems.append(
+                f"{name} renders {placeholder} nowhere. A campaign that cannot find its "
+                "own record writes no record, which is worse than the prefix cost this "
+                "check exists to prevent"
+            )
+    return problems
+
+
+def check_prompt_prefix(config: LoopConfig, phase: Phase) -> int:
+    """The gate's route to `prompt_body_problems`, for the one loop that can
+    break it.
+
+    Scoped to `writes_harness`, and not because the property is that loop's
+    alone — it costs every loop tokens. It is that the pinned harness runs
+    this against *each* loop's own worktree (`HJ_REPO`), and a worktree that
+    has not merged `main` since the prompt changed still holds the old one. A
+    check on a shared file that fails in the tree of whoever has not merged
+    yet is `harness-011`, and it has cost two campaigns; only the loop that
+    owns `harness/prompts/` can act on the failure anyway.
+
+    Live templates only, for `live_prompt_templates`' reason: a tuning prompt
+    for a phase that has not run generates nothing, so its shape costs nobody
+    anything yet.
+    """
+    if not config.writes_harness:
+        return 0
+    problems = []
+    for name in sorted(live_prompt_templates(phase)):
+        path = REPO / name
+        if path.exists():
+            problems += prompt_body_problems(name, path.read_text())
+    for problem in problems:
+        print(f"prompt: {problem}", file=sys.stderr)
+    if problems:
+        print("prompt: `harness/hj prompt-prefix` reports what it costs.", file=sys.stderr)
+        return 1
+    print("prompt: no per-campaign value above the separator in any live template")
+    return 0
+
 
 def first_divergence(left: str, right: str) -> int:
     limit = min(len(left), len(right))
@@ -3317,6 +3418,8 @@ def cmd_prompt_prefix(args: argparse.Namespace) -> int:
                     f"  re-sent per campaign  {state_at - offset:,} chars of the instructional body,"
                     " because a per-campaign value appears inside it"
                 )
+        for problem in prompt_body_problems(f"harness/prompts/{config.prompt}", template):
+            print(f"  problem            {problem}")
     return 0
 
 
@@ -6344,6 +6447,32 @@ def selftest_cases() -> list[tuple[str, object]]:
         offset = rendered.index("ID-1234")
         assert value_at(rendered, offset, values) == "campaign_id", "the shortest spanning value wins"
         assert value_at(rendered, 0, values) is None, "text outside every value belongs to the template"
+
+    def a_per_campaign_value_in_the_body_is_a_problem():
+        # The whole of §15's first token lever, and the state harness-001 was
+        # answered out of: the id sat in the body at step 1, which ended the
+        # core loop's cacheable prefix at 11.9% of a 40KB prompt.
+        template = "body {{campaign_record}} more\n---\n\ntail {{campaign_id}}\n"
+        problems = prompt_body_problems("p.md", template)
+        assert len(problems) == 1, problems
+        assert "campaign_record" in problems[0] and "instructional body" in problems[0]
+
+    def ids_in_the_tail_are_clean():
+        template = "body, no ids\n---\n\ntail {{campaign_record}} {{campaign_id}}\n"
+        assert prompt_body_problems("p.md", template) == []
+
+    def a_prompt_that_never_names_the_record_is_worse_than_a_slow_one():
+        template = "body\n---\n\ntail {{campaign_id}}\n"
+        problems = prompt_body_problems("p.md", template)
+        assert len(problems) == 1 and "nowhere" in problems[0], problems
+
+    def the_separator_has_to_be_findable():
+        for template in ("no separator at all {{campaign_id}}", "a\n---\nb\n---\nc"):
+            problems = prompt_body_problems("p.md", template)
+            assert len(problems) == 1 and "separator" in problems[0], template
+        # A body value under a missing separator is not silently forgiven: the
+        # separator failure is reported first and the check still fails.
+        assert prompt_body_problems("p.md", "{{campaign_id}} no separator") != []
 
     def the_estimate_table_parses():
         rows = parse_estimate_table([
