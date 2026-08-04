@@ -3616,7 +3616,7 @@ def cmd_campaign_close(args: argparse.Namespace) -> int:
             # whole-tree snapshot and under workers carries whatever the
             # other two merged around it; this does not.
             "diff": campaign_diffstat().get(args.id, {}),
-            "loc_nontest": sum(loc_per_crate().values()),
+            "loc_nontest": sum(loc_per_crate()[0].values()),
             "tests_before": tests_before,
             "tests_after": tests_after,
             "worker": opened.get("worker") or config.owner,
@@ -4495,6 +4495,33 @@ def cmd_spec_changes(args: argparse.Namespace) -> int:
     return 0
 
 
+def tuple_returning_misuse(source: str) -> list[str]:
+    """Call sites that treat a `-> tuple[...]` helper as if it returned one value.
+
+    There is no type checker here, and the gate's first three steps run `cargo`
+    over crates a Python file is not in — so a signature that gains a second
+    return value breaks its callers at *runtime*, in whichever command happens
+    to run first. `loc_per_crate` did exactly that: it grew a counter name, one
+    of its two call sites was updated, and `hj campaign-close` crashed reading
+    a dict method straight off the bare call — for every campaign of a round,
+    before anyone saw it. The close row is written after that line, so the cost
+    was two campaigns closing with no row at all.
+
+    Deliberately narrow: an attribute read straight off a bare call. That is
+    the shape the mistake takes. Unpacking and subscripting are the correct
+    uses and must not be flagged, and widening this to "any use" would need a
+    parser. The pattern must not appear in this docstring either, or the check
+    reports itself.
+    """
+    returns_tuple = re.findall(r"^def (\w+)\([^)]*\)\s*->\s*tuple\[", source, re.MULTILINE)
+    misused = []
+    for name in returns_tuple:
+        for match in re.finditer(rf"\b{name}\(\)\s*\.", source):
+            line = source.count("\n", 0, match.start()) + 1
+            misused.append(f"{name} at line {line}")
+    return misused
+
+
 # --------------------------------------------------------------------------
 # The self-test
 #
@@ -4879,6 +4906,17 @@ def selftest_cases() -> list[tuple[str, object]]:
         )
         assert tag_sites(output) == [("harness/hj", 100), ("crates/shared/src/proto:types.rs", 7)]
         assert tag_sites("") == []
+
+    def a_tuple_returning_helper_is_not_used_as_one_value():
+        bad = "def f(a: int) -> tuple[dict, str]:\n    pass\n\nx = sum(f().values())\n"
+        assert tuple_returning_misuse(bad) == ["f at line 4"], tuple_returning_misuse(bad)
+        good = "def f(a: int) -> tuple[dict, str]:\n    pass\n\nnumbers, counter = f()\ny = f()[0].values()\n"
+        assert tuple_returning_misuse(good) == [], "unpacking and subscripting are the correct uses"
+        plain = "def f() -> dict:\n    pass\n\nx = f().values()\n"
+        assert tuple_returning_misuse(plain) == [], "a helper that returns one value may be used as one"
+        assert tuple_returning_misuse((HARNESS / "hj").read_text()) == [], (
+            "this file has a call site that will crash the command it is in"
+        )
 
     def the_selftests_own_tag_fixtures_are_not_sites():
         source = "import os\ndef selftest_cases():\n    diff = 'x'\n\n\ndef cmd_selftest():\n    pass\n"
