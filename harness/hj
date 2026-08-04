@@ -1668,6 +1668,109 @@ def size_baseline(owner: str, package: str) -> int | None:
     return min(sizes) if sizes else None
 
 
+# §11's second number, and the authoritative one: "Binary size is measured as a
+# delta: build with and without each `lang_*` linked. Each language then has its
+# own line item rather than a workspace aggregate nobody can influence."
+#
+# Building `heuristic_jump` *without* a language is only possible if the
+# dependency is optional and a feature gates it, so the convention has to be
+# named somewhere and this is it. `lang-rust` rather than `rust`, because a
+# bare feature called `rust` on a Rust crate reads as something about the
+# toolchain.
+SHIPPED_PACKAGE = "heuristic_jump"
+
+
+def language_feature(language: str) -> str:
+    return f"lang-{language}"
+
+
+def language_packages() -> list[str]:
+    return sorted(name for name in workspace_members() if name.startswith("lang_"))
+
+
+def declared_features(package: str) -> dict[str, list[str]]:
+    for entry in cargo_metadata().get("packages", []):
+        if entry.get("name") == package:
+            features = entry.get("features")
+            return features if isinstance(features, dict) else {}
+    return {}
+
+
+def build_shipped(features: list[str] | None) -> int | None:
+    """The stripped size of `heuristic-jump`, built with `features` in place of
+    its defaults. `None` means the default set, which is the whole of it."""
+    targets = binary_targets(SHIPPED_PACKAGE)
+    if not targets:
+        return None
+    arguments = ["cargo", "build", "--release", "-p", SHIPPED_PACKAGE, "--bin", targets[0]]
+    if features is not None:
+        arguments += ["--no-default-features"]
+        if features:
+            arguments += ["--features", ",".join(features)]
+    result = subprocess.run(arguments, cwd=REPO, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        return None
+    return stripped_size(REPO / "target" / "release" / targets[0])
+
+
+def link_deltas() -> list[dict]:
+    """One line item per language: what linking it costs the shipped binary.
+
+    A row with `delta: None` carries `reason`, and the reason is the point. The
+    measurement needs `heuristic_jump` to be buildable without the language,
+    which means an optional dependency behind `lang-<x>`; today the dependency
+    is unconditional, so the number cannot be taken. Saying which feature is
+    missing turns "this is not measured" into a one-line manifest change for
+    whoever owns that crate — where a silent zero would read as a language that
+    costs nothing.
+    """
+    languages = [name[len("lang_") :] for name in language_packages()]
+    if SHIPPED_PACKAGE not in workspace_members() or not languages:
+        return []
+    features = declared_features(SHIPPED_PACKAGE)
+    missing = [
+        language for language in languages if language_feature(language) not in features
+    ]
+    if missing:
+        return [
+            {
+                "language": language,
+                "feature": language_feature(language),
+                "delta": None,
+                "reason": (
+                    f"{SHIPPED_PACKAGE} declares no `{language_feature(language)}` feature, "
+                    f"so it cannot be built without lang_{language}"
+                ),
+            }
+            for language in languages
+        ]
+    whole = build_shipped(None)
+    if whole is None:
+        return [
+            {"language": language, "feature": language_feature(language), "delta": None,
+             "reason": f"{SHIPPED_PACKAGE} did not build with its default features"}
+            for language in languages
+        ]
+    rows = []
+    for language in languages:
+        others = [language_feature(other) for other in languages if other != language]
+        without = build_shipped(others)
+        rows.append(
+            {
+                "language": language,
+                "feature": language_feature(language),
+                "whole": whole,
+                "without": without,
+                "delta": None if without is None else whole - without,
+                "reason": None if without is not None else "the build without it failed",
+            }
+        )
+    # Leave the tree holding the artifact a reader would expect, rather than
+    # whichever partial link the last iteration of the loop produced.
+    build_shipped(None)
+    return rows
+
+
 # The phases in which size is gated. §11: "Gated only in phase 3, where the
 # ratchet is hard: neither may increase at all, since phase 3 may not buy size
 # with quality in the first place." Phase 7 is the second cost phase and
@@ -2445,6 +2548,42 @@ def cmd_size(args: argparse.Namespace) -> int:
             line += "; no per-crate attribution (cargo-bloat is not installed)"
         print(line)
     return 0
+
+
+def cmd_link_delta(args: argparse.Namespace) -> int:
+    """§11's authoritative size number, which belongs at a phase gate.
+
+    Non-zero when a language's line item cannot be taken, because the whole
+    point of per-language billing is that "each language then has its own line
+    item rather than a workspace aggregate nobody can influence" — and an
+    unmeasurable language is an aggregate again. It is not wired into
+    `harness/gate`: that file is denied to every loop, and the number is a
+    gate's rather than an iteration's, so a human runs it or `harness-008`
+    settles where it goes.
+    """
+    rows = link_deltas()
+    if not rows:
+        print(f"link-delta: no lang_* crate, or no {SHIPPED_PACKAGE}, in this workspace")
+        return 0
+    unmeasured = 0
+    for row in rows:
+        if row["delta"] is None:
+            unmeasured += 1
+            print(f"link-delta: {row['language']}: unmeasured — {row['reason']}", file=sys.stderr)
+        else:
+            print(
+                f"link-delta: {row['language']}: {row['delta']} bytes "
+                f"({row['whole']} with, {row['without']} without)"
+            )
+    if unmeasured:
+        print(
+            "         design/loops.md section 11 measures binary size as a delta, built "
+            f"with and without each lang_* linked. That needs {SHIPPED_PACKAGE} to carry "
+            "one optional dependency per language behind a `lang-<x>` feature, all of "
+            "them in `default`.",
+            file=sys.stderr,
+        )
+    return 1 if unmeasured else 0
 
 
 def fragment(name: str) -> str:
@@ -5597,6 +5736,13 @@ def selftest_cases() -> list[tuple[str, object]]:
         rows = [{"commit": "aaa"}, {"commit": "bbb"}, {"commit": "ccc"}]
         assert rows_since(rows, None) == rows, "no re-baseline commit means the whole history"
 
+    def the_language_feature_convention_is_one_string():
+        assert language_feature("rust") == "lang-rust"
+        assert language_feature("typescript") == "lang-typescript", (
+            "the delta is unmeasurable without it, so the name has to be written "
+            "down in exactly one place rather than agreed twice"
+        )
+
     def the_size_ratchet_is_silent_outside_a_cost_phase():
         # It has to be silent rather than merely lenient: §11 argues that a
         # standing ratchet applies pressure during the iterations that should
@@ -6026,6 +6172,9 @@ def main() -> int:
     p = sub.add_parser("record", help="append the metrics row for HEAD")
     p.add_argument("loop")
     p.set_defaults(run=cmd_record)
+
+    p = sub.add_parser("link-delta", help="per-language binary size against the shipped binary")
+    p.set_defaults(run=cmd_link_delta)
 
     p = sub.add_parser("check-ratchets", help="the cost-phase size ratchet (loops.md §11)")
     p.add_argument("loop")

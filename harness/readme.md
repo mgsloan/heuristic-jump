@@ -237,6 +237,48 @@ A check belongs in `selftest` only if it is hermetic — in-memory fixtures, or
 files resolved relative to `hj` itself. Nothing that reads repository state:
 a campaign is usually mid-flight in one of those trees.
 
+## Binary size is two numbers, and only one of them is cheap
+
+`design/loops.md` §11 keeps them apart and so does the harness.
+
+```sh
+harness/hj size                 # the proxy: stripped measure_<lang>, per crate where it can
+harness/hj link-delta           # the authoritative one, per language, at a phase gate
+harness/hj check-ratchets core  # the ratchet, which is silent outside phases 3 and 7
+```
+
+**The proxy is the stripped release size of `measure_<lang>`**, and it goes in
+the metrics row of any loop that declares a `language`. Stripping is the whole
+of the measurement: the workspace release profile carries `debug = "limited"`,
+so the artifact on disk is about five times the number the section means — 26.3
+MB against 5.4 MB for `measure-rust`. No `strip` on `PATH` records nothing
+rather than the unstripped figure, because the series is ratcheted in a cost
+phase and one unstripped row in it would fail a loop over a missing tool.
+`cargo bloat --crates` supplies the per-crate half when it is installed, which
+is what separates the handler from the grammar sitting beside it.
+
+It is not recorded for a loop with no language, and that is a choice rather
+than an omission: a release build with `lto = "thin"` and `codegen-units = 1`
+is minutes of machine time per row, and §11's bullet sits under *Per-language
+billing*. `hj size` measures on demand for anyone who wants it anyway — which
+is the useful command for a conformance campaign that has just changed
+`shared`, since that is the constant every language loop will carry.
+
+**The ratchet re-baselines when `shared` or `measure_core` moves.** §10 is
+explicit that a language loop must not be failed for a step somebody else's
+diff put in its series, so the baseline is the lowest value recorded *since*
+the last commit to either — found by reachability, not by position in the
+append-ordered file, because a worker's branch merges out of order. And unlike
+the test ratchet, an increase here needs an *approved* escalation: it is the
+one gate failure a provisional choice does not clear.
+
+**`link-delta` exits non-zero until the manifests allow it.** Measuring what a
+language costs the shipped binary means building `heuristic_jump` with and
+without it, which needs one optional dependency per language behind a
+`lang-<x>` feature. Today the dependency is unconditional, so the command says
+exactly which feature is missing rather than reporting a zero that would read
+as a language that costs nothing.
+
 ## Cost, and the three budget scopes
 
 One row per campaign in `state/cost/<loop>.jsonl`, joined on the session id
