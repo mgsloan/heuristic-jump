@@ -2016,6 +2016,20 @@ fn no_member_names_a_dependency_version_of_its_own() {
 /// produce dozens of errors across upstream's text, before `unwrap_used` or
 /// the `cast_*` family is reached.
 ///
+/// > So each vendored crate carries its own `[lints]` table — empty, or near
+/// > enough — and the workspace rules apply to `crates/*` only. … It is worth
+/// > restating in `vendor/README.md` as one of the recorded differences from
+/// > upstream.
+///
+/// That last sentence is the half with a live failure mode, and it is the one
+/// the compiler's incidental enforcement does not reach in either direction.
+/// An *empty* `[lints]` table changes nothing about what is linted, so
+/// deleting it takes the exemption's only record with it while every other
+/// assertion here goes on passing — and the next re-sync then reads a
+/// deliberate decision as a crate somebody forgot. Both controls fire:
+/// removing `vendor/sum_tree`'s table, and rewording its comment so it no
+/// longer names the section it is obeying.
+///
 /// That is §14's own claim, measured rather than argued: "Bending them to
 /// `unwrap_used`, `panic`, and the `cast_*` family would be a large amount of
 /// work that buys no correctness, and every line of it would widen the re-sync
@@ -2052,6 +2066,35 @@ fn the_workspace_lints_reach_our_crates_and_not_the_vendored_ones() {
                  readable — a vendored crate under unwrap_used and the cast_* family is a \
                  large edit that buys no correctness"
             );
+
+            // The rest of §14's sentence, which is the half that decays: "So
+            // each vendored crate carries its own `[lints]` table -- empty, or
+            // near enough". An empty table changes nothing about what is
+            // linted, so deleting it and the comment above it leaves the
+            // assertion above still passing and the exemption looking like an
+            // oversight. What the table is *for* is being the place the
+            // omission is recorded, which is why the argument is asserted with
+            // it.
+            let recorded: String = lint_tables(&manifest)
+                .into_iter()
+                .map(|(_, argument)| argument)
+                .collect();
+            assert!(
+                !recorded.is_empty(),
+                "{member} carries no [lints] table at all: deps.md §14 asks each vendored crate \
+                 for its own, empty or near enough, and restates it in vendor/README.md — an \
+                 absent table and a deliberate exemption are the same file, and a re-sync reads \
+                 the first as the second's oversight"
+            );
+            for marker in ["§14", "vendor/README.md"] {
+                assert!(
+                    recorded.contains(marker),
+                    "{member}'s [lints] table is not argued for -- no comment above it names \
+                     {marker}: the table's whole purpose is to record that the workspace rules \
+                     were left off on purpose, and one with no argument beside it is \
+                     indistinguishable from a crate somebody forgot"
+                );
+            }
         } else {
             assert!(
                 inherits,
@@ -2141,6 +2184,36 @@ fn every_allow_in_a_lint_table_names_the_lint_it_argues_for() {
         allowed.len(),
         manifests.len()
     );
+}
+
+/// Every lint table in one manifest, as `(table, the comment run above it)`.
+/// Unlike `lint_allowances` below, an entry line ends a run here: what is being
+/// read is the argument for the *table*, and a comment two entries above it
+/// argues for something else.
+fn lint_tables(manifest: &str) -> Vec<(String, String)> {
+    let mut found = Vec::new();
+    let mut run = String::new();
+    for line in manifest.lines() {
+        let line = line.trim();
+        if let Some(comment) = line.strip_prefix('#') {
+            run.push_str(comment);
+            run.push('\n');
+            continue;
+        }
+        match line
+            .strip_prefix('[')
+            .and_then(|rest| rest.strip_suffix(']'))
+        {
+            Some(name) => {
+                let above = std::mem::take(&mut run);
+                if name.split('.').any(|part| part == "lints") {
+                    found.push((name.to_owned(), above));
+                }
+            }
+            None => run.clear(),
+        }
+    }
+    found
 }
 
 /// Every `allow` in every lint table of one manifest, as
