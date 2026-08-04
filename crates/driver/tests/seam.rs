@@ -1496,6 +1496,144 @@ fn awaits(source: &str) -> bool {
     })
 }
 
+/// `deps.md` §10's closing sentence, which is the one that makes every rule
+/// above it reachable from outside the enum:
+///
+/// > `heuristic_jump::main` returns `Result<(), shared::Error>` (or exits with
+/// > the child's status), so the top-level match is exhaustive.
+///
+/// The rest of §10 is scanned inside `shared/src/error.rs` — no `Other(String)`,
+/// no `Box<dyn`, every foreign error sourced beside context of ours. None of it
+/// survives a `main` that widens on the way out. `-> Result<(), Box<dyn Error>>`
+/// compiles, needs no new dependency, reads as ordinary, and makes the closed
+/// set an implementation detail of a program whose exit type is open: it is the
+/// escape hatch §10 bans as a *variant*, one frame further out, where the scan
+/// for it was not looking.
+///
+/// Every `fn main` is checked and not only the shim's, because `core.md`'s
+/// adding-a-language price makes the four-line `measure_<x>` a thing that is
+/// *copied* per language — so the version that spreads is whichever one exists
+/// when the second language arrives. The template printed in `measure_core`'s
+/// own doc comment is caught by the same scan, deliberately: a code example is
+/// exactly the copy that gets made.
+#[test]
+fn every_main_returns_the_total_error() {
+    const SIGNATURE: &str = "fn main() -> Result<(), shared::Error> {";
+
+    let mut mains: Vec<String> = Vec::new();
+    for member in crate_members() {
+        for (file, source) in sources_of(&member) {
+            for line in source.lines() {
+                let code = line.trim_start();
+                // Doc comments are read as the code they print, which is what
+                // reaches the template. Prose naming `fn main` in backticks
+                // does not start with the paren and is skipped.
+                let code = code.strip_prefix("///").unwrap_or(code).trim_start();
+                if !code.starts_with("fn main(") {
+                    continue;
+                }
+                assert_eq!(
+                    code, SIGNATURE,
+                    "{file} declares `{code}`. deps.md §10 makes every failure in the system a \
+                     variant of one enum so shim.md §11's table can match on it exhaustively, \
+                     and a binary whose exit type is wider than `shared::Error` reopens the set \
+                     at the only frame where nothing is left to match"
+                );
+                mains.push(file.clone());
+            }
+        }
+    }
+
+    for required in [
+        "crates/heuristic_jump/src/heuristic_jump.rs",
+        "crates/measure_rust/src/measure_rust.rs",
+    ] {
+        assert!(
+            mains.iter().any(|file| file == required),
+            "no `fn main` found in {required}, so the scan is reading something other than the \
+             sources and would pass against a workspace of `anyhow`"
+        );
+    }
+}
+
+/// `deps.md` §2, and what the withdrawn lint left behind:
+///
+/// > So the bound is a per-channel judgement rather than a repository-wide
+/// > rule, and the only mechanism left is the one this section already named —
+/// > log the `core` inbox depth and watch it.
+///
+/// `driver/tests/actor.rs` holds the depth half. This holds the judgement,
+/// which has been made once: `driver/src/files.rs` "uses `bounded(1)` and
+/// states why, and that remains correct". Everywhere else is `unbounded()`, and
+/// not out of taste — §2 is explicit that in the transport a full channel does
+/// not apply backpressure but *deadlocks*, because the sender is a pipe-reader
+/// thread, so blocking it stops the fd being drained, which blocks the child's
+/// write, and `shim.md` §1 forbids a stalled reader outright.
+///
+/// So it guards code that does not exist yet, which is the reason to write it
+/// now rather than with the transport: that is both the subsystem where the
+/// mistake is unrecoverable and the one where a bound reads as prudence.
+/// `conformance-016` withdrew the lint that would have caught it, on the
+/// grounds that a lint cannot be right per-channel — which leaves this, because
+/// it names the one channel the judgement went the other way on instead of
+/// ruling on all of them.
+///
+/// Comment lines are skipped, and that is not tidiness. A scan that reads
+/// source *text* makes naming the thing it bans a way to fail the build from a
+/// comment: `actor.rs` already explains at length why its inbox is not bounded,
+/// and a scan that fired on that sentence would be one nobody could write the
+/// explanation under.
+#[test]
+fn the_only_bounded_channel_is_the_one_section_2_argues_for() {
+    const ARGUED: &str = "crates/driver/src/files.rs";
+
+    let members = crate_members();
+    assert!(
+        !members.is_empty(),
+        "no crates/* workspace member, so this test would pass vacuously"
+    );
+
+    let mut found = 0;
+    for member in &members {
+        for (file, source) in sources_of(member) {
+            for line in source.lines() {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                for (at, _) in line.match_indices("bounded(") {
+                    if line[..at].ends_with("un") {
+                        continue;
+                    }
+                    found += 1;
+                    assert_eq!(
+                        file, ARGUED,
+                        "{file} builds a bounded channel. deps.md §2 makes the bound a \
+                         per-channel judgement and records exactly one — files.rs's, where at \
+                         most one walk is ever in flight — because everywhere else a full \
+                         channel does not apply backpressure but deadlocks: the sender is a \
+                         pipe-reader thread, so blocking it stops the fd being drained, and \
+                         shim.md §1 forbids a stalled reader outright"
+                    );
+                }
+            }
+        }
+    }
+    assert_eq!(
+        found, 2,
+        "the scan found {found} bounded channels, where files.rs builds the two §2 argues for \
+         — so it is reading something other than the sources, and would pass against a \
+         workspace whose transport was bounded throughout"
+    );
+
+    assert!(
+        workspace_file(ARGUED).contains("at most one walk is ever"),
+        "files.rs no longer says why its channels are bounded. §2 lets the bound be a \
+         per-channel judgement precisely because the one site that took it states its \
+         reasoning; an unexplained bound is the repository-wide rule the section refuses, \
+         arrived at one channel at a time"
+    );
+}
+
 /// `deps.md` §15 is not prose about the lint configuration — it *is* the lint
 /// configuration, printed as a `toml` block that `Cargo.toml`'s
 /// `[workspace.lints]` tables are meant to be. So the document is the fixture
@@ -2495,23 +2633,73 @@ fn every_foreign_error_is_wrapped_beside_context_of_ours() {
          because an exhaustive match on the nine classes is what makes shim.md §11's table a \
          table"
     );
-    for arm in [
-        "ConfigError",
-        "CodecError",
-        "ChildError",
-        "ProtocolError",
-        "DocumentError",
-        "ParseError",
-        "ProjectError",
-        "HandlerError",
-        "EncodingError",
-    ] {
+    // The tree is the fixture, in both directions. What this replaced was the
+    // nine names transcribed here, which checks the code against a copy of the
+    // document rather than against the document: a tenth sub-enum, or one
+    // renamed, drifts the section away from the code with every assertion still
+    // green. The count is load-bearing enough that `ConfigError`'s own doc
+    // comment cites it — `measure_core`'s corpus failures share that arm rather
+    // than taking a tenth "because `deps.md` §10 fixes the arm count at nine so
+    // `shim.md` §11's table stays a table".
+    let mut printed = error_arms(&fenced_block_of(
+        &workspace_file("design/deps.md"),
+        "## 10. Errors: one enumerated type",
+    ));
+    assert_eq!(
+        printed.len(),
+        9,
+        "deps.md §10's tree yielded {printed:?} rather than the nine classes it prints, so the \
+         comparison below is reading something other than the tree"
+    );
+    // Bounded to the total enum's own body, so the forty-odd leaf variants
+    // below it are not read as classes.
+    let mut declared = error_arms(sub_enums.split_once("\n}").map_or("", |(body, _)| body));
+    printed.sort();
+    declared.sort();
+    assert_eq!(
+        printed, declared,
+        "deps.md §10's tree and `shared::Error` name different classes. The tree is not a \
+         description of the enum — it is the enum's specification, and `shim.md` §11's failure \
+         table is an exhaustive match on exactly these arms, so a class in one and not the \
+         other is a failure mode with no row or a row with no failure mode"
+    );
+
+    for (_, sub) in &printed {
         assert!(
-            sub_enums.contains(&format!("#[non_exhaustive]\npub enum {arm} {{")),
-            "{arm} is not #[non_exhaustive]: deps.md §10 marks every sub-enum, so that adding \
+            sub_enums.contains(&format!("#[non_exhaustive]\npub enum {sub} {{")),
+            "{sub} is not #[non_exhaustive]: deps.md §10 marks every sub-enum, so that adding \
              a leaf is not a breaking change to the class table above it"
         );
     }
+}
+
+/// The `Name(NameError)` pairs of a block, whether it is `deps.md` §10's tree
+/// or the `pub enum Error` that tree specifies.
+///
+/// One reader for both sides, for the reason [`lint_entries`] is one: a
+/// difference is then a difference and not a parsing artefact. Both halves are
+/// required to look like type names, which is what keeps `#[error(transparent)]`
+/// — a line that is `something(something)` and nothing else here is — from
+/// being read as a tenth class.
+fn error_arms(text: &str) -> Vec<(String, String)> {
+    fn is_type_name(name: &str) -> bool {
+        name.starts_with(|first: char| first.is_ascii_uppercase())
+            && name
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric())
+    }
+
+    text.lines()
+        .filter_map(|line| {
+            let (before, rest) = line.split_once('(')?;
+            // The last token either side of the paren: the tree draws `├─ `
+            // in front of the arm and the enum writes `#[from] ` in front of
+            // the sub-enum, and neither is part of a name.
+            let arm = before.split_whitespace().next_back()?;
+            let sub = rest.split_once(')')?.0.split_whitespace().next_back()?;
+            (is_type_name(arm) && is_type_name(sub)).then(|| (arm.to_owned(), sub.to_owned()))
+        })
+        .collect()
 }
 
 /// `deps.md` §9, whose three claims are each about something that is invisible

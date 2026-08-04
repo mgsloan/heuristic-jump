@@ -209,11 +209,11 @@ last_audited = "2026-08-04T20:59:31+00:00"
 state = "clean"
 last_audited = "2026-08-04T20:59:31+00:00"
 
-[section."loops.md#branches-exist-for-one-commit-at-a-time"]
+[section."loops.md#branches-exist-for-one-campaign-at-a-time"]
 state = "gaps"
 last_audited = "2026-08-04T20:59:31+00:00"
 
-  [[section."loops.md#branches-exist-for-one-commit-at-a-time".gap]]
+  [[section."loops.md#branches-exist-for-one-campaign-at-a-time".gap]]
   claim = "a rebase that turns the gate red is escalated as a blocked item rather than repaired locally"
   found = "harness/loop:143 logs it as `hj intervene --kind merge-blocked`, but merge-blocked is in neither INTERVENTION_KINDS nor KINDS_IN_USE, so cmd_intervene dies on an unknown kind (harness/hj:6530) and the failure is swallowed by `|| true`. The block reaches only the worker's log file. state/interventions.jsonl carries five merge-blocked rows from before the vocabulary was closed. A selftest asserting every --kind passed to `hj intervene` under harness/ is in KNOWN_KINDS would make this exact."
   where = "harness/hj:1073"

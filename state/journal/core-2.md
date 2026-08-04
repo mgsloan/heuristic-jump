@@ -431,3 +431,115 @@ tempts a lock.
   fail on a machine without it. Left as a decision for someone taking the
   resume arithmetic deliberately; the prefix invariant itself is unreachable
   from an integration test, since `Truth`, `Writer` and `Row` are `pub(crate)`.
+
+## Campaign 88d25014 — §10 and §2, and what a one-gap section was hiding
+
+Five commits: `9c30b0f`, `8eafc87`, `9a5a721`, `01284f8`, `e521118`. Both
+assigned sections clean, one `CHANGE-` record, no reverts, 283 → 286 tests.
+
+### The staleness ritual is worth doing even when it comes back clean — and it
+### came back *both* ways this round
+
+One turn settled both assigned gaps, and the two answers differed, which is the
+first time that has happened here. The check that discriminates is not
+`git log -1` on the `where:` file alone: it is **which audit run opened the
+gap, and whether that run's `sections_audited` includes the section**.
+
+- `d50e2285d0` (§10) was opened by the 20:33 UTC run; `dispatch.rs` last moved
+  at 19:58 UTC. The audit saw the current file — real, and it was.
+- `8e707386b4` (§2) was opened by the *05:37* run, `actor.rs` moved after it,
+  and `deps.md#2-channels` is absent from the 20:33 run's `sections_audited`.
+  So the gap is a *stale row carried forward by a partial audit*, not a
+  judgement about the current tree. It was closed by `2dca52ce` at
+  `actor.rs:256`.
+
+`gap-log.jsonl` is where both answers are: `opened`/`closed` per run, plus
+`sections_audited`. It is one `grep` and it beats reasoning about timestamps.
+
+### The gap list under-reports too, and that is the finding
+
+Every findings file on this loop says the list over-reports and the code is the
+oracle. True, and it stayed true. What none of them says is the other half: the
+gap is only what the auditor could *see*, so a section with one gap is not a
+section with one problem.
+
+§10's listed gap closed in ten lines. The section then had **four** more claims
+with no mechanism behind them, none of them listed:
+
+- the nine sub-enum names were transcribed into `seam.rs`, so the test compared
+  the code against a *copy* of the document;
+- `main`'s return type — §10's closing sentence, and the one that makes every
+  other rule in the section reachable from outside the enum;
+- the one foreign error not carried as `#[source]` (a listed *minor*);
+- (§2) the bound being a per-channel judgement made exactly once.
+
+Procedure that found them: print the section with `harness/hj section-text`,
+and take its sentences one at a time asking "what would fail if this stopped
+being true". Same method `20bbc1bf` used on §14, and it works on a section the
+audit calls nearly clean.
+
+### The conversion is at `classify`, and the reason generalises
+
+§10 says the `Error`→abstention conversion is "explicit and logged". The
+auditor named two candidate sites (`classify`, `Actor::answer`) and the right
+answer is neither-and-one: `classify` is where an `Error` stops being a
+failure, and it is the *only* such place. `Actor::answer` builds the
+`Outcome::Abstain` but is handed a `Classified`, and the other thing that
+reaches that arm was never an `Error` — a merely-late answer that `hard_cap`
+dropped, which already logs. So one line at `classify` covers all three callers
+(`realise`, `call`, the conversion) and double-logs nothing.
+
+**Log at the point of conversion, not at the point of construction.** The
+construction site sees several origins and cannot name the one that matters.
+
+### The test's second half is the whole test
+
+`converting_an_expiry_into_an_abstention_is_logged` runs two fixtures that
+differ only in which file holds the definition. Same-file takes `target_text`'s
+free path, builds no `Error`, and is dropped by `hard_cap` under its own line;
+cross-file expires inside the read and is converted. Asserting the conversion
+line is *absent* on the first is what makes it a test of the conversion rather
+than of expiry — planted exactly that (log only in `answer`) and it failed.
+Three plants, three correct failures.
+
+### Do not create the comment trap you were burned by
+
+`2dca52ce` cost a red gate because a comment quoted `std::sync::mpsc` and a
+text scan reads source text. Writing a new text scan is the chance to create
+that trap for somebody else — `the_only_bounded_channel_is_the_one_section_2_argues_for`
+would have fired on `actor.rs`'s own paragraph explaining why its inbox is not
+bounded. **Skip comment lines**, and say in the doc comment why: a scan that
+bans a word is a scan nobody can write the explanation under. Planted both
+ways to prove the skip is real and the scan still bites.
+
+### `CHANGE-core-023`, and why it is safe to have made
+
+§10 wraps foreign errors as `#[source]` "always"; `core.md` §9 fixes `shared`'s
+dependency list; the enum is in `shared`, so a `#[source]` on a parser's error
+declares that parser for every crate naming an `Error`.
+`ConfigError::ManifestMalformed` renders a `toml::de::Error` for exactly that
+reason, and had said so in its own doc comment since before this campaign.
+
+It is Class A because the boundary is decided by a *test*
+(`shared_declares_only_the_dependencies_section_9_lists`) and not by an author,
+so the exception cannot widen without something going red. And it is safe to
+have made in this campaign specifically because it closes a **minor**, so no
+number moves either way — there was no progress available to fake. If a future
+campaign finds itself doing this for a *gap*, that is a different situation.
+
+### Not taken, and why
+
+- **The two refused claims.** `core.md#the-trait[218a36571e]` (the stale
+  printed block — the same types I had open all campaign) and
+  `deps.md#8-parse-cache[fb0aa10250]`. Both held by other workers. Two
+  refusals in a row is the fleet saying the round is allocated; a third fishing
+  attempt would have been a turn spent on nothing.
+- **`core.md#the-trait`'s minor about `Outcome::Committed` being constructible
+  by a `lang_*` crate.** Still the right shape (a `seam.rs` source scan, and I
+  held `seam.rs`), still recorded in `state/audit/core.toml` — but the section
+  is claimed, and closing a minor of a section somebody else is working is how
+  two campaigns collide in one file.
+- **A second plant for the real binary in `every_main_returns_the_total_error`.**
+  Not laziness: the `mains` control already asserts both binaries' roots were
+  reached by the scan, and the assertion runs on every main found, so the
+  doc-template plant exercised the strictly harder path.

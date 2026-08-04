@@ -549,3 +549,260 @@ precisely the rewrite a `(path, mtime, len)` key cannot notice, so the test
 fails against the cache the old sentence described.
 
 **Campaign:** 636bbd45-e572-46de-9078-ab09897c68da
+
+## CHANGE-core-023 — deps.md#10-errors-one-enumerated-type-no-anyhow — the `#[source]` rule yields to §9's dependency list, and says so
+
+**Contradiction:** §10 says foreign errors are wrapped as `#[source]` fields
+"always alongside our own context (which path, which frame)". `core.md` §9
+fixes `shared`'s dependency list and is authoritative about it — and `shared`
+is where the enum lives, so a `#[source]` on a parser's error is a declaration
+of that parser by every crate that names an `Error`. The two cannot both hold
+for `ConfigError::ManifestMalformed`, which is handed a `toml::de::Error` by
+`measure_core/src/corpus.rs:222` and stores it as `reason: Box<str>`.
+
+**Resolution:** §10 now states the exception, bounds it, and names what decides
+it: the rule yields exactly when `shared` may not name the carrier's type, and
+the message is rendered into context of ours instead — path kept, class kept,
+graph unmoved. Rendering an error whose type `shared` *already* names stays
+forbidden, which is the half that keeps the rule's teeth.
+
+This trades nothing off because the boundary is not an author's judgement. It
+is decided by `shared_declares_only_the_dependencies_section_9_lists` in
+`crates/driver/tests/seam.rs`, which already fails if `toml` is added to
+`shared` — so the exception cannot widen without a test going red first. The
+alternative reading, adding `toml` to `shared` so the chain can be carried, is
+the one that trades: it puts a parser behind the seam to preserve a line and
+column in one variant.
+
+**No code moved with it, and nothing to move.** The variant's own doc comment
+has stated this reasoning since before this campaign; what was missing was the
+document agreeing with it. This closes an audit *minor* and not a gap, so the
+section count does not move either way — which is worth saying plainly, since
+editing a design document toward the code is the one way of faking progress the
+audit cannot catch, and here there is no progress to fake.
+
+**Campaign:** 88d25014-0b38-4185-9614-59cdeed27840
+## CHANGE-core-019 — core.md#two-modes-collect-and-replay — three subcommands, and enumeration is not `collect`'s first half
+
+**Contradiction:** `#two-modes-collect-and-replay` said "`measure` therefore
+has two subcommands, and only the first needs a server", and described
+`collect` as "spawn the server, drive `didOpen` across the repository,
+**enumerate identifiers**, ask the LSP, write `truth.jsonl`".
+
+[`#the-command-line`](../../design/core.md#the-command-line), 270 lines further
+down the same document, opens "**Three** subcommands, one per stage of
+`data-collection.md`", prints `measure-<lang> enumerate --corpus <dir> ...`
+first of the three, and gives it its own bullet: "**`enumerate`** parses each
+repository, samples positions, writes `positions/<repo>.jsonl`."
+
+`crates/measure_core/src/cli.rs:19` has the three-way `Command` enum, and its
+`Collect` carries no limit and no seed — the two flags enumeration needs — so
+the code cannot express the two-subcommand reading either.
+
+**Resolution:** the three-subcommand reading, because it is the only one
+`data-collection.md` allows and the disagreement is not really about how many
+subcommands there are.
+
+[`data-collection.md` §2](../../design/data-collection.md) is titled "Positions
+are enumerated once per repository" and its first line is "**Not once per
+server.** `positions/<name>.jsonl` is written first, and every server run
+consumes the same file", because "if each server run enumerated its own
+positions, two servers' answers could not be aligned, and the agreement /
+divergence split that `core.md` §7 builds the whole per-server design on would
+have nothing to join on". Enumeration inside `collect` *is* enumeration once
+per server: `collect` takes `--server`, so its output would be a function of
+which server it was collecting against. So the stale text was not a smaller
+version of the same design, it was one that takes away the join
+`#7-observability-and-the-corpus-scan` rests on.
+
+This trades nothing off in the other direction either, because the section's
+own argument survives the correction untouched: the split it exists to defend
+is the *mode* split — a slow server-driven collection frozen once, against a
+serverless replay that can be run every iteration — and that is still two, with
+`enumerate` on `replay`'s side of it. Which is why the heading, and the "two
+modes" framing under it, are unchanged: the section now says the modes are a
+two-way split and the subcommands a three-way one, and that they are not the
+same partition.
+
+**No code moved with it, and none was read for it beyond confirming the enum
+has three arms.** The resolution is decided entirely by two other design
+documents, one of which is this one.
+
+**Campaign:** 9110a409-f685-4569-ba82-fbf938928727
+
+## CHANGE-core-018 — core.md#the-trait — the printed seam is the one `conformance-013` settled
+
+**Contradiction:** `#the-trait` prints
+
+```rust
+pub enum Outcome {
+    Committed { locations: Vec<Location>, confidence: Confidence, stratum: Stratum },
+    Abstain { reason: AbstainReason, stratum: Stratum },
+}
+```
+
+and `pub fn decide(&self, stratum: Stratum, confidence: Confidence, locations:
+Vec<Location>) -> Outcome`, with a note bullet reading "**`Stratum` is reported
+on both arms**".
+
+[`#7-observability-and-the-corpus-scan`](../../design/core.md#7-observability-and-the-corpus-scan)
+requires nine handler-reported values, of which one is not a stratum but two:
+"The stratum is two fields, not one … Coverage is reported on `stratum_prior`
+so the denominator is fixed by the reference and does not move when the
+implementation changes; precision is reported on `stratum_final` so an answer
+is judged against the class it turned out to be. **One field cannot do both.**"
+A single `stratum` on `Outcome` is exactly the one field, so the two sections
+could not both stand, and §7 is the one the metrics table is computed from.
+
+**Resolution:** the printed block now carries `strata: Strata` and
+`trace: Trace` on both arms, prints `Strata`, `Refinement` and `Trace`, and
+gives `decide` its fourth parameter.
+
+This trades nothing off *here* because the trade was made elsewhere and by
+somebody else. `state/decisions/conformance-013.md` escalated precisely this —
+widening `Outcome` is a change to the seam `state/phase.toml` freezes — weighed
+it against an out-parameter `trace: &mut Trace` on `goto_definition` and against
+interior mutability on `Query`, and was **answered `accepted`, option A**, on
+2026-08-03T19:00:32Z. The ruling's own words: "A's cost is real and accepted:
+two fields at every construction site in every language crate, and
+`CommitPolicy::decide` grows to four parameters." So the code at
+`crates/shared/src/handler.rs:120` is not a drift the document is being bent
+toward; it is the answer, and this section was the one place still printing the
+question. The bullet now records the alternative and why it lost, since a
+decision record is not where a reader of §1 will look.
+
+Two smaller divergences in the same block, both audited as minors and both
+strengthenings of what the block claimed rather than departures from it:
+
+* `ServerProfile`'s `id` is private with `standalone()`, `proxying_command(..)`
+  and `proxying_named(..)`, not a public `Option<ServerId>`. The block said a
+  handler branching on the absence "is doing something wrong"; the constructors
+  make the case that loses information — a caller that knows the server and
+  passes `None` anyway — unspellable rather than discouraged.
+* "Handlers never construct `Outcome::Committed`" is held by review, not by the
+  type: the variant is public. The bullet now says so, says why the distinction
+  is inert until a precision floor exists, and names the source scan that is the
+  available mechanical check. Making it type-level is a seam change and is not
+  taken on the strength of a rule nothing has broken.
+
+**No code moved with it.** Nothing under `crates/` is touched by this campaign;
+`handler.rs` has carried this shape since `conformance-013` was reconciled.
+
+**Campaign:** 9110a409-f685-4569-ba82-fbf938928727
+
+## CHANGE-core-020 — core.md#83-the-wire-position-type-is-inert — the printed derive is one of the two §8.2 requires
+
+**Contradiction:** §8.3 prints
+
+```rust
+#[derive(Deserialize)]
+pub struct WirePosition { line: LineIndex, character: u32 }
+```
+
+and, eighteen lines below it, "The same applies outbound:
+`WirePosition::encode(Offset, enc, &Rope)` is the only constructor."
+
+[`#82-what-replaces-it-and-why-it-is-smaller-than-it-sounds`](../../design/core.md#82-what-replaces-it-and-why-it-is-smaller-than-it-sounds)
+puts `WirePosition` in its third list — the types that travel twice — with the
+reason given as "**Section 8.3 requires `WirePosition::encode`**, so the type
+that arrives in a request is the type an answer is built from". A type an
+answer is built from is written, and a type that is written derives
+`Serialize`.
+
+So §8.3's own closing paragraph requires the derive its own code block omits,
+and §8.2 names §8.3 as the requirement's source. The derive list is not
+decoration in this document: the same section says "what the rule does forbid
+is a *projection* carrying both derives", and
+`crates/shared/tests/proto.rs`'s `read_projections_are_never_serialized` fails
+a type that carries a derive its list does not allow — so a reader who took
+§8.3's block for the whole truth and filed `WirePosition` under `READ` would
+get a red suite, not a quiet divergence.
+
+**Resolution:** the block prints `#[derive(Deserialize, Serialize)]`, with the
+one-line reason and a pointer to §8.2's third list, and prints `encode`'s
+signature in the `impl` beside `resolve` and `line` — where the claim "the only
+constructor" can be checked against what is on the page rather than against a
+paragraph further down.
+
+This trades nothing off. Both readings cannot stand, only one of them has a
+rule attached, and it is the one §8.2 wrote down deliberately when the third
+list was added (CHANGE-core-008, same document, same anchor cited).
+`crates/shared/src/proto.rs:80` has carried both derives since it was written.
+
+**Why it survived the section's own audit:** the open gap on §8.3 was about
+`line()` being a public accessor (CHANGE-core-007), and the block was read for
+what it *exposes* rather than for what it derives. Two claims, one code block,
+and closing the first did not make anybody re-read the first line of it.
+
+**No code moved with it.**
+
+**Campaign:** 9110a409-f685-4569-ba82-fbf938928727
+
+## CHANGE-core-021 — core.md#two-modes-collect-and-replay — the header names the repository, it does not locate it
+
+**Contradiction:** the constraint list under "Two modes" said the provenance
+header carries "**repository path** and commit, language server name and
+version, grammar revision, and the `measure` version that wrote it".
+
+Two other statements do not allow a path there:
+
+* [`data-collection.md` §0](../../design/data-collection.md) prints the corpus
+  layout as `repos/<name>/`, `positions/<name>.jsonl` and
+  `truth/<server>/<name>.jsonl` — every identity in the corpus is a name — and
+  the root they sit under is passed at run time.
+  [`#the-command-line`](../../design/core.md#the-command-line) requires
+  `--corpus <dir>` and gives it no default *so that it can differ*: "held-out
+  is selected by passing a different `--corpus` path". A frozen artifact that
+  recorded the path it was collected under would make the deliberately
+  unfixed part of the layout the part the drift check fires on — relocating
+  the corpus, or handing `test/` to another machine, would be indistinguishable
+  from a misfiled truth file.
+* `crates/measure_core/src/replay.rs:76` compares `provenance.repository`
+  against `repository.name`, alongside `server` and `language`, before
+  verifying the checkout.
+
+The same list omits two fields the header has always had to carry, and both
+are named by the document that owns the artifact:
+
+* `language`, which is one of the three identity fields replay checks.
+* `complete`. [`data-collection.md` §4](../../design/data-collection.md): "A
+  partially collected truth file is marked incomplete in its header and is
+  never consumed by replay." It belongs in *this* list, whose heading is
+  "constraints that make a replay trustworthy", because `collect` is resumable
+  by design — a hundred machine-hours will be interrupted — so a truth file
+  spends much of its life incomplete, and replaying one silently reports a
+  smaller corpus rather than a broken one.
+
+**Resolution:** the bullet lists the corpus *name*, the commit, the language,
+the server name and version, the grammar revision, the `measure` version and
+the completion flag, with a paragraph each on why the repository is named
+rather than located and why the incompleteness flag is a replay constraint and
+not a collection detail.
+
+Nothing is traded off: "path" and "name" cannot both be right, only one of them
+survives the corpus being relocatable, and relocatability is the mechanism
+`loops.md` §12's held-out isolation is built on rather than a convenience.
+
+**No code moved with it.**
+
+**Campaign:** 9110a409-f685-4569-ba82-fbf938928727
+
+## CHANGE-core-022 — deps.md#8-parse-cache — there is one cache, and the disk-file key describes one that was refused
+
+**Superseded by `CHANGE-core-017`, which made the same edit.** Campaign
+`9110a409` and campaign `636bbd45` both resolved §8's disk-file parse-cache key
+against `conformance-005`, in the same round. `636bbd45` held the assignment —
+the planner gave `deps.md#8-parse-cache[fb0aa10250]` to worker 3 alone — and
+`9110a409` reached it as a step-4 extension without taking the claim the prompt
+requires for one, so nothing refused it and the rebase was the backstop.
+
+`CHANGE-core-017` is the version in the document. It is the more complete of the
+two: it names both keys as a list, and it carries the `open-questions.md`
+question 5 paragraph on whether second-granularity `mtime` is sound at all,
+which this one did not. Nothing is lost by taking it.
+
+This entry is kept as a stub rather than deleted because this campaign's record
+and commits cite the id, and an id that resolves to nothing is worse than one
+that says what happened.
+
+**Campaign:** 9110a409-f685-4569-ba82-fbf938928727

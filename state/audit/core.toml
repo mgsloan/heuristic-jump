@@ -4,7 +4,7 @@
 
 [section."core.md#1-handler-interface"]
 state = "clean"
-last_audited = "2026-08-04T04:57:16+00:00"
+last_audited = "2026-08-04T21:12:07+00:00"
 
 [section."core.md#vocabulary-types"]
 state = "clean"
@@ -54,11 +54,17 @@ last_audited = "2026-08-04T04:57:16+00:00"
 
 [section."core.md#3-position-encoding"]
 state = "clean"
-last_audited = "2026-08-04T04:57:16+00:00"
+last_audited = "2026-08-04T21:12:07+00:00"
 
 [section."core.md#4-project-file-enumeration"]
-state = "clean"
-last_audited = "2026-08-04T04:57:16+00:00"
+state = "gaps"
+last_audited = "2026-08-04T21:12:07+00:00"
+
+  [[section."core.md#4-project-file-enumeration".gap]]
+  claim = "the editor's watcher is opportunistic and nothing depends on it; the on-demand NoCandidates rescan is the backstop that always works, and a stale entry for a removed file only ever surfaces as a failed read"
+  found = "a removed candidate fails the whole scan (project.rs:586 propagates ProjectError::Read), dispatch classifies Error::Project as Dispatched::Failed (dispatch.rs:557), and FileListCache::observe ignores Failed as 'evidence about the handler' (files.rs:179) \u2014 so the list is never marked stale, no rescan is scheduled, and every later query over that candidate set fails the same way until a watcher event only proxy mode can produce. A fixture test that deletes a file after FileList::enumerate and asserts an abstention or a stale mark rather than a permanent Err would make this claim mechanical; driver/tests/file_list.rs has no read-failure case."
+  where = "crates/driver/src/files.rs:179"
+  found_at = "41ebe25a3140dc47bbdaeb9f71bef44f98402948"
 
 [section."core.md#5-deadlines-and-abstention"]
 state = "clean"
@@ -66,7 +72,7 @@ last_audited = "2026-08-04T05:37:37+00:00"
 
 [section."core.md#6-the-agreement-predicate"]
 state = "clean"
-last_audited = "2026-08-04T04:57:16+00:00"
+last_audited = "2026-08-04T21:12:07+00:00"
 
 [section."core.md#both-sides-are-sets"]
 state = "clean"
@@ -131,31 +137,25 @@ last_audited = "2026-08-04T20:33:33+00:00"
 
 [section."core.md#81-why-not-lsp-types"]
 state = "clean"
-last_audited = "2026-08-04T04:57:16+00:00"
+last_audited = "2026-08-04T21:12:07+00:00"
 
   [[section."core.md#81-why-not-lsp-types".minor]]
-  claim = "the newtypes are what deserialization produces rather than what a conversion layer produces afterwards \u2014 DocumentUri, DocumentVersion, EditorRequestId, LanguageId, Offset"
-  note = "three of the five are genuine deserialization targets and Offset is reachable only through WirePosition::resolve, but language_id deserializes as Box<str> and is laundered by Registry::language_id afterwards. The layer is mandatory rather than optional, which is the section's real objection, and the code states the exception \u2014 but it is a conversion layer in one of the named types"
-  where = "crates/shared/src/proto.rs:519"
+  claim = "the newtypes are what deserialization produces, not what a conversion layer produces afterwards \u2014 DocumentUri, DocumentVersion, EditorRequestId, LanguageId, Offset"
+  note = "language_id deserializes as Box<str> and is turned into a LanguageId by a registry lookup afterwards. The code states the exception and the lookup is mandatory rather than optional, which is the section's real objection, but it is a conversion layer in one of the five named types"
+  where = "crates/shared/src/proto.rs:522"
 
 [section."core.md#82-what-replaces-it-and-why-it-is-smaller-than-it-sounds"]
 state = "clean"
-last_audited = "2026-08-04T04:57:16+00:00"
+last_audited = "2026-08-04T21:12:07+00:00"
 
   [[section."core.md#82-what-replaces-it-and-why-it-is-smaller-than-it-sounds".minor]]
-  claim = "each constructed type is separate from its read twin, carrying Serialize and not Deserialize, so the two lists stay disjoint"
-  note = "the code adds a third category, BOTH \u2014 PositionEncoding, TextDocumentSyncKind, WireLocation, WirePosition, WireRange \u2014 each deriving both. Defensible, since these are total value types that lose nothing on a round trip and \u00a78.3 requires WirePosition::encode, but the third list is the code's invention asserted by a test as though the section had named it"
-  where = "crates/shared/tests/proto.rs:125"
+  claim = "only a small set is ever constructed, and the three tables are the inventory"
+  note = "measure_core's ChildFrame/ChildResponseError (read) and ClientReply (constructed) are in neither table; the derive split still holds. tests/proto.rs transcribes the three lists as constants, so drift between the section's tables and the code is caught by nobody \u2014 unlike deps.md \u00a715, whose test reads the document as the fixture"
+  where = "crates/shared/src/proto.rs:1057"
 
 [section."core.md#83-the-wire-position-type-is-inert"]
-state = "gaps"
-last_audited = "2026-08-04T04:57:16+00:00"
-
-  [[section."core.md#83-the-wire-position-type-is-inert".gap]]
-  claim = "WirePosition has private fields and no accessors"
-  found = "`pub fn line(self) -> LineIndex` is a public accessor, and it is load-bearing: agreement.rs:239 reads the child's row through it because \u00a76's predicate must compare (uri, line) without reading the child's document. The inertness that matters \u2014 no Offset without the encoding and the text \u2014 is intact, so the two sections cannot both stand as written"
-  where = "crates/shared/src/proto.rs:106"
-  found_at = "e23d2149549728b19f61bbdd3fb2490dcb8256d2"
+state = "clean"
+last_audited = "2026-08-04T21:12:07+00:00"
 
 [section."core.md#84-location-is-byte-based-and-this-fixes-a-real-inconsistency"]
 state = "clean"
@@ -188,7 +188,7 @@ last_audited = "2026-08-04T05:37:37+00:00"
 
 [section."core.md#why-shared-is-separate-from-driver"]
 state = "clean"
-last_audited = "2026-08-04T00:27:32+00:00"
+last_audited = "2026-08-04T21:12:07+00:00"
 
 [section."core.md#adding-a-language"]
 state = "clean"

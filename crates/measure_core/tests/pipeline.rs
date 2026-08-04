@@ -976,6 +976,56 @@ fn the_command_line_is_section_7s_and_admits_no_flag_it_does_not_name() {
     );
 }
 
+/// The same set, held against the section that argues the split rather than the
+/// one that prints the usage lines.
+///
+/// `#two-modes-collect-and-replay` said "`measure` therefore has two
+/// subcommands" for as long as there have been three, and described `collect`
+/// as the thing that enumerates identifiers — while the test above held the
+/// section immediately below it to `clap`'s set exactly. That is the failure
+/// this one is about, and it is not a spelling mistake: enumeration inside
+/// `collect` is enumeration once per *server*, which
+/// [`data-collection.md` §2] rules out because two servers' answers then have
+/// nothing to join on (CHANGE-core-019).
+///
+/// So a fact pinned in one section is not pinned in the section next door that
+/// restates it, and prose is where a stale count survives. The count is
+/// asserted as the document spells it, so a fourth stage fails here until
+/// §7 says "four" — and, as above, editing the document rather than the code
+/// fails too.
+#[test]
+fn the_section_that_splits_the_modes_names_every_subcommand_there_is() {
+    let start = CORE_MD
+        .find("### Two modes: collect and replay")
+        .expect("core.md §7 argues the mode split");
+    let section = &CORE_MD[start..];
+    let section = &section[..section[3..]
+        .find("\n### ")
+        .map_or(section.len(), |end| end + 3)];
+
+    let command = <measure_core::Cli as clap::CommandFactory>::command();
+    for name in command.get_subcommands().map(clap::Command::get_name) {
+        assert!(
+            section.contains(&format!("`{name}`")),
+            "the section that divides `measure` into modes never names `{name}`, \
+             so a reader of it cannot tell which side of the split the stage is \
+             on — which is how enumeration spent this section inside `collect`"
+        );
+    }
+
+    let counted = command.get_subcommands().count();
+    let spelled = ["no", "one", "two", "three", "four", "five", "six"]
+        .get(counted)
+        .expect("a stage count this test was written to spell");
+    assert!(
+        section.contains(&format!("{spelled} subcommands")),
+        "the binary has {counted} subcommands and the section does not say \
+         \"{spelled} subcommands\". The count is load-bearing rather than \
+         decorative: the modes are a two-way split and the stages are not, and \
+         the section is where that distinction is made"
+    );
+}
+
 /// The rest of what §7's flags are chosen to give, which is about their
 /// defaults rather than their names: "**`--corpus <dir>` is required and has no
 /// default.** A defaulted corpus path is one that eventually points at the

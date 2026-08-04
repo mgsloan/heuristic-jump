@@ -1721,7 +1721,7 @@ not a claim.
 With code and state both partitioned, nothing two loops write ever
 overlaps.
 
-### Branches exist for one commit at a time
+### Branches exist for one campaign at a time
 
 The goal is that everything lands on `main` and no long-lived
 branches accumulate. That is right — divergent branches are where
@@ -1911,7 +1911,7 @@ setting should be re-read when N changes rather than carried over.
   falls as N rises, the workers are picking worse targets because the good
   ones are claimed.
 * **Latency measurement is unaffected**, for the reason
-  [above](#branches-exist-for-one-commit-at-a-time) — it is not measured
+  [above](#branches-exist-for-one-campaign-at-a-time) — it is not measured
   during iterations at all.
 
 Three is a starting point, not a derived number.

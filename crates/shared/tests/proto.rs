@@ -157,6 +157,31 @@ fn source() -> String {
     std::fs::read_to_string(&path).unwrap_or_default()
 }
 
+fn document() -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../design/core.md");
+    std::fs::read_to_string(&path).unwrap_or_default()
+}
+
+/// The names in the first column of §8.2's third table, sorted.
+///
+/// A missing document or a renamed table yields nothing rather than failing
+/// here, because the assertion that reads this says more than a `expect` at the
+/// point of the read would: an empty list against five names names the five.
+fn third_list(document: &str) -> Vec<String> {
+    let Some(start) = document.find("| Both | Why it travels twice |") else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = Vec::new();
+    for line in document[start..].lines().skip(2) {
+        let Some(cell) = line.strip_prefix('|').and_then(|row| row.split('|').next()) else {
+            break;
+        };
+        names.extend(cell.split('`').skip(1).step_by(2).map(str::to_owned));
+    }
+    names.sort();
+    names
+}
+
 /// Attribute-block scanning rather than a parser: derives are one line each in
 /// this module, and rustfmt keeps them that way.
 fn declared(source: &str) -> Vec<Declared> {
@@ -787,4 +812,33 @@ fn only_the_outbound_types_can_be_written() {
     // `let _: PhantomData<InitializeParams> = writable();` does not compile,
     // which is the property. An absence cannot be asserted, so it is written
     // here as the sentence a reader needs.
+}
+
+/// The third list, against the document that bounds it.
+///
+/// `BOTH`'s own note says a sixth entry is "a claim someone has to make
+/// deliberately, here and in §8.2" — and until this test, the second half of
+/// that sentence was unenforced: the module doc above calls the inventory "the
+/// §8.2 table, transcribed", and a transcription nothing reads back is a copy
+/// that drifts. §8.3's printed derive had drifted exactly that way
+/// (CHANGE-core-020).
+///
+/// The third list rather than all three, because it is the only one of them
+/// whose table is a list of type names. The first two rows are prose — "didOpen
+/// / didChange / didClose / didSave params", "response envelope" — and a test
+/// that demanded they parse would be a test about how §8.2 is worded.
+#[test]
+fn the_types_that_travel_twice_are_the_ones_section_82_names() {
+    let mut expected: Vec<String> = BOTH.iter().map(|name| (*name).to_owned()).collect();
+    expected.sort();
+
+    assert_eq!(
+        third_list(&document()),
+        expected,
+        "§8.2's third table and this file's `BOTH` disagree. The table is what \
+         makes a both-directions type deliberate: a value that travels twice \
+         does not round-trip a message, which is the distinction the whole \
+         section rests on, and it stops being deliberate the moment one of the \
+         two lists can move without the other"
+    );
 }
