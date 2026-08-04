@@ -731,6 +731,93 @@ fn a_resume_refuses_every_provenance_field_that_moved() {
     }
 }
 
+/// §7: "**replay refuses to run against a truth file whose repository commit
+/// does not match the checkout**, rather than silently reporting metrics for
+/// positions that have since moved", and "a partially collected truth file is
+/// marked incomplete and is never consumed by replay".
+///
+/// [`a_resume_refuses_every_provenance_field_that_moved`] holds the *collect*
+/// side of the first one — a resume that would write a header over rows
+/// gathered under another. This is the replay side, which is the one the
+/// sentence is actually about and which that test cannot reach: it drives
+/// `check_resumable`, and a replay does not call it.
+///
+/// Three refusals, because a truth file can be untrustworthy in three ways and
+/// two of them do not touch the header at all. The third is the one
+/// `data-collection.md` §1 says matters most: an untracked file changes byte
+/// offsets and **does not change `HEAD`**, so a checkout that passes the commit
+/// check can still be a checkout the recorded offsets do not describe.
+#[test]
+fn a_replay_refuses_a_truth_file_it_cannot_trust() {
+    let moved = fixture("commit_moved");
+    enumerate(&moved);
+    let elsewhere = "0".repeat(40);
+    write_truth_headed(&moved, "oracle", &header("oracle", &elsewhere, true));
+
+    let refused = replay_result(&moved, measure_core::Format::Json)
+        .expect_err("a truth file collected at another commit was replayed");
+    let Error::Config(shared::ConfigError::CommitMismatch {
+        expected, found, ..
+    }) = &refused
+    else {
+        panic!("a truth file from another commit was refused as {refused}");
+    };
+    assert_eq!(
+        (&**expected, &**found),
+        (&*elsewhere, &*moved.commit),
+        "the refusal names the wrong pair of commits, and which one is the \
+         file's is what tells an operator whether to re-collect or to check out"
+    );
+
+    let partial = fixture("incomplete_truth");
+    enumerate(&partial);
+    write_truth_headed(
+        &partial,
+        "oracle",
+        &header("oracle", &partial.commit, false),
+    );
+
+    let refused = replay_result(&partial, measure_core::Format::Json)
+        .expect_err("a truth file whose collection never finished was replayed");
+    assert!(
+        matches!(
+            refused,
+            Error::Config(shared::ConfigError::ArtifactIncomplete { .. })
+        ),
+        "a half-collected truth file was refused as {refused}. Its rows stop \
+         wherever the run died, so every stratum below that point reads as a \
+         corpus the oracle answered less of — a regression that never happened"
+    );
+
+    let dirty = fixture("dirty_checkout");
+    enumerate(&dirty);
+    write_truth(&dirty);
+    fs::write(
+        dirty
+            .split
+            .join("rust")
+            .join("repos")
+            .join("one")
+            .join("src")
+            .join("extra.rs"),
+        "pub fn gamma() {}\n",
+    )
+    .expect("an untracked file");
+
+    let refused = replay_result(&dirty, measure_core::Format::Json)
+        .expect_err("a dirty checkout was replayed");
+    assert!(
+        matches!(
+            refused,
+            Error::Config(shared::ConfigError::DirtyCheckout { .. })
+        ),
+        "an untracked file in the checkout was refused as {refused}. It does \
+         not move HEAD and it is not gitignored, so the file list finds a file \
+         the truth has never heard of — and an edit to a tracked one moves \
+         every byte offset after it while the commit check still passes"
+    );
+}
+
 /// The replay-side half of "a truth file is never silently merged with
 /// another's" (§7). `truth/<server>/` is a path and not a check: a file copied
 /// into it replays under a server name it was never collected against, and
@@ -1354,6 +1441,20 @@ fn answer(uri: &str, line: u32) -> String {
 /// `recorded` is the server its header claims. They differ in exactly one test,
 /// which is the one asserting that the path is not the check.
 fn write_truth_as(corpus: &Fixture, directory: &str, recorded: &str) {
+    write_truth_headed(corpus, directory, &header(recorded, &corpus.commit, true));
+}
+
+/// The provenance header as a line, so a test can move the two fields a replay
+/// checks for itself — the commit, and whether the collection ever finished.
+fn header(server: &str, commit: &str, complete: bool) -> String {
+    format!(
+        "{{\"repository\":\"one\",\"commit\":\"{commit}\",\"language\":\"rust\",\
+         \"server\":\"{server}\",\"server_version\":\"0\",\"grammar\":\"fixture\",\
+         \"measure_version\":\"0\",\"complete\":{complete}}}"
+    )
+}
+
+fn write_truth_headed(corpus: &Fixture, directory: &str, header: &str) {
     let positions = fs::read_to_string(
         corpus
             .split
@@ -1363,12 +1464,7 @@ fn write_truth_as(corpus: &Fixture, directory: &str, recorded: &str) {
     )
     .expect("enumerate ran first");
 
-    let mut text = format!(
-        "{{\"repository\":\"one\",\"commit\":\"{}\",\"language\":\"rust\",\
-         \"server\":\"{recorded}\",\"server_version\":\"0\",\"grammar\":\"fixture\",\
-         \"measure_version\":\"0\",\"complete\":true}}\n",
-        corpus.commit
-    );
+    let mut text = format!("{header}\n");
     for line in positions.lines() {
         let file = between(line, "\"file\":\"", "\"");
         let offset = between(line, "\"offset\":", ",");
