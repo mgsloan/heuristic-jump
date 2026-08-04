@@ -374,3 +374,58 @@ the only trigger — a degenerate cadence, not a broken one, and setting it is
 one line for whoever decides what the number should be.
 
 **Campaign:** 3e637dcd-7552-460c-8eb4-fb41941ef14b
+
+## CHANGE-harness-009 — loops.md#branches-exist-for-one-commit-at-a-time — the merge is per campaign, and `master` is `main`
+
+**Contradiction:** the subsection said
+
+> So each loop has a branch, and **merges after every green iteration** [...]
+> The branch exists for the duration of one commit. There is no merge queue
+> and no integration loop; merging is a step in the iteration contract
+> ([section 4](#4-the-iteration-contract)), not an agent.
+
+§4's iteration contract has six steps — read, pick, do, gate, commit, exit —
+and no merge step. So the cross-reference does not resolve to anything: the
+section it names as the home of the merge step does not contain one.
+
+**Resolution:** the merge happens when a campaign closes, and is a step in the
+campaign contract rather than the iteration contract.
+
+The reason it cannot be per commit is not a preference. The merge rebases the
+branch onto `main`, and rebasing mid-campaign swaps the working tree under a
+session that is reasoning from it — including `state/audit/`, which holds the
+gap list that campaign was given and is the only oracle it has. That is
+recorded evidence rather than a hypothesis: `harness-004` was raised by a
+campaign that reached this conclusion the hard way, and its note reads "the
+audit that produced this campaign's gap list was computed in *this* worktree,
+and rebasing swaps it for a different one halfway through."
+
+Nothing is traded away, because the property the subsection is *for* survives
+whole: a campaign is hours rather than weeks, so no long-lived branch
+accumulates and `main` still receives a campaign's work as soon as it is
+judged. What changes is the unit, from commit to campaign, which is the same
+unit §4's "campaigns are the unit of fresh context" and §15's accounting
+already use.
+
+Two further sentences were added because they change what `main` looks like
+and were only in the code: the fast-forward is serialised by a lock, so a
+worker that read `main` a moment before another moved it waits and rebases
+onto what landed rather than losing a race; and linear history is traded for a
+merge commit once a branch is far enough ahead that a rebase would re-resolve
+one conflict on every commit it replays. "Conflict-free by construction" is
+now stated as a claim about *loops*, with the pointer to §13's Workers, which
+already says it does not hold between workers of one loop.
+
+`master` became `main` in three places. The branch is `main`; nothing in the
+harness has ever referred to `master`.
+
+**Left undone deliberately: the heading.** "Branches exist for one commit at a
+time" now contradicts its own body. Renaming it changes the anchor, which
+appears in `state/audit/loops.toml`, in this document's own cross-references,
+and in `harness/section-baseline.toml` — the last of which is denied to every
+loop, so a rename would show as permanent baseline drift and one missing
+section that no campaign could clear. It is a one-line change for whoever
+retakes the baseline next, and the body's first correcting sentence carries
+the meaning until then.
+
+**Campaign:** 3e637dcd-7552-460c-8eb4-fb41941ef14b

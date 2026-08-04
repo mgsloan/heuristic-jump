@@ -1699,31 +1699,53 @@ overlaps.
 
 ### Branches exist for one commit at a time
 
-The goal is that everything lands on `master` and no long-lived
+The goal is that everything lands on `main` and no long-lived
 branches accumulate. That is right — divergent branches are where
 integration debt comes from, and none of the reasons to keep one apply
 here.
 
-It cannot be done by pointing every loop at `master` directly, for a
+It cannot be done by pointing every loop at `main` directly, for a
 mechanical reason: **git refuses to check out the same branch in two
 worktrees.** And sharing a single working tree between concurrent loops
 is worse than the branch it avoids — loop B would compile loop A's
 half-written files, so A's transient breakage becomes B's gate failure,
 and green-or-revert stops meaning anything.
 
-So each loop has a branch, and **merges after every green iteration**
-rather than at a phase gate:
+So each loop has a branch, and **merges when a campaign closes** rather
+than at a phase gate:
 
 ```
-gate passes -> rebase onto master -> fast-forward master -> continue
+campaign closes -> rebase onto main -> fast-forward main -> continue
 ```
 
-Since code and state are partitioned by owner, the rebase is
-conflict-free by construction, and `master` gets a linear history with
-one commit per iteration from whichever loop finished first. The branch
-exists for the duration of one commit. There is no merge queue and no
-integration loop; merging is a step in the iteration contract
-([section 4](#4-the-iteration-contract)), not an agent.
+**Once per campaign, and not once per commit**, which an earlier
+revision of this subsection asked for. It cannot be per commit: the
+merge rebases the branch onto `main`, and doing that mid-campaign swaps
+the working tree under a session that is reasoning from it — including
+`state/audit/`, which holds the gap list the campaign was given and is
+the only oracle it has. The property this subsection wants survives
+intact, because a campaign is hours rather than weeks: nothing
+long-lived accumulates, and `main` receives a campaign's work as soon as
+it is judged. What follows is that merging is a step in the **campaign**
+contract; [section 4](#4-the-iteration-contract)'s iteration contract has
+no merge step and should not grow one. There is still no merge queue and
+no integration loop.
+
+Since code and state are partitioned by owner, the rebase between
+*loops* is conflict-free by construction. **Between workers of one loop
+it is not**, and that is where the guarantee stops: they read one gap
+list and write one document set, so a conflict there is a rare event
+with a handler rather than an impossibility
+([below](#workers-one-loop-several-campaigns-at-once)). Two consequences
+of that concurrency change what `main` looks like and are worth stating
+here rather than leaving to the code: the fast-forward is **serialised
+by a lock**, so a worker that read `main` a moment before another moved
+it waits and then rebases onto what landed, which is the intended
+sequence rather than a retry; and **linear history is traded for a merge
+commit** once a branch is far enough ahead that rebasing would
+re-resolve the same conflict on every commit it replays. The merge
+commit is then the record that the branch diverged, which is worth
+having.
 
 The one case that is not automatic: the conformance loop changing
 `shared` can break a language crate that rebases onto it. A language
