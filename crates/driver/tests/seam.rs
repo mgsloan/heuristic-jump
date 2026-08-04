@@ -3731,6 +3731,43 @@ fn every_vendored_crate_records_the_patches_it_carries() {
          at all"
     );
 
+    // `deps.md` §5 lists the patches vendoring costs and says each is
+    // "recorded in `vendor/README.md`". That is a claim about two documents
+    // and it held in only one direction: the README's list has grown to eight
+    // while §5's stayed at four, and for a while §5's preamble read as a
+    // census of the vendored tree rather than a cost of the choice.
+    //
+    // The direction with teeth is the other one. `CLAUDE.md` requires every
+    // edit to a vendored crate to be recorded, so a patch §5 decides and the
+    // README does not carry is an unrecorded edit — where a patch the README
+    // carries and §5 does not is ordinary work on a crate that is ours. So the
+    // README is asserted to be the longer list, never the equal one.
+    let counted = |text: &str| {
+        text.lines()
+            .filter(|line| {
+                line.split_once(". **")
+                    .is_some_and(|(number, _)| number.trim().parse::<u32>().is_ok())
+            })
+            .count()
+    };
+    let decided = counted(&section_of(
+        &workspace_file("design/deps.md"),
+        "\n## 5. Text: vendored",
+    ));
+    let recorded = counted(
+        section_of(&readme, "\n## Patches to `rope`")
+            .split("\n## ")
+            .next()
+            .unwrap_or_default(),
+    );
+    assert!(
+        decided > 0 && recorded >= decided,
+        "deps.md §5 decides {decided} patch(es) to rope and vendor/README.md records \
+         {recorded}: CLAUDE.md permits editing a vendored crate and requires the edit be \
+         recorded, so a patch the section decides and the README does not carry is an edit a \
+         re-sync has no account of — the README is meant to be the longer list"
+    );
+
     let surviving: Vec<&String> = vendored
         .iter()
         .filter(|crate_name| {

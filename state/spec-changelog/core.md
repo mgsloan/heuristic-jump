@@ -841,3 +841,38 @@ in the bullet rather than asserted in a test that would pass for the wrong
 reason.
 
 **Campaign:** 340b4361-1c73-4b85-a5c8-0de27852ea8d
+
+## CHANGE-core-026 — deps.md#5-text-vendored-zed-rope — the four patches are a cost of vendoring, not a census of the tree
+
+**Contradiction:** §5's list is introduced as
+
+> Four patches, each recorded in `vendor/README.md`:
+
+and `vendor/README.md`'s `## Patches to \`rope\`` numbers **eight**. The four
+§5 names are all present and are the README's 1–4; what was wrong was the
+reading the sentence invites, that four is how many there are. Patches 5–8 are
+the vocabulary newtypes, the `sum_tree::Bias` re-export, the public-API sweep
+and two upstream `TextSummary::add_newline` bugs — all `rope-modifications.md`
+§4's work, which §5 explicitly defers to that document.
+
+**Resolution:** the preamble now says the four follow from the vendoring
+itself, names the README as the exhaustive and longer list, and states the
+asymmetry: a fifth item arriving *here* is a fifth thing the choice costs, and
+one arriving in the README alone is ordinary work on a crate `CLAUDE.md` says
+is ours to edit.
+
+This trades nothing off because it changes no decision — §5's four are the same
+four, and the README's eight are unchanged. It also declines the alternative
+resolution, which would be renumbering §5 to eight and duplicating
+`rope-modifications.md` §4 into a dependency section: that is the transcription
+that goes stale on the next patch, and the reason `vendor/README.md` is the
+record in the first place.
+
+The direction that matters is now asserted, in
+`every_vendored_crate_records_the_patches_it_carries`: the README must number
+at least as many rope patches as §5 decides, never fewer. A patch §5 decides
+and the README does not carry is an edit to a vendored crate with no record,
+which is the one thing `CLAUDE.md` requires; the reverse is expected and is why
+this is an inequality rather than the equality the old sentence implied.
+
+**Campaign:** 340b4361-1c73-4b85-a5c8-0de27852ea8d

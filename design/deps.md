@@ -271,7 +271,13 @@ What vendoring actually costs, measured rather than assumed:
 * Zed deps that do not: `util`, `ztracing`, and — in **dev**-dependencies —
   `gpui`, `zlog`, `ctor`.
 
-Four patches, each recorded in `vendor/README.md`:
+Four patches follow from the vendoring itself, each recorded in
+`vendor/README.md` — which is the exhaustive list and is longer, because
+`rope-modifications.md` §4's newtype sweep and the fixes beside it are patches
+this section does not decide. **The count here is a cost of choosing to vendor,
+not a census of the vendored tree**; a fifth arriving in this list is a fifth
+thing the choice costs, and one arriving in the README alone is ordinary work
+on a crate that is ours to edit:
 
 1. **`util` folded into `rope`.** Confirmed by grep: `sum_tree` does not
    depend on `util` at all, and `rope` uses exactly
