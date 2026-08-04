@@ -138,10 +138,15 @@ fn the_corpus_exercises_every_kind_the_differential_can_compare() {
 /// hand-written would satisfy the differential and not the section, and nothing
 /// would say so — which is what this asserts instead.
 ///
-/// The three kinds named are the server-to-client ones. The client half is
-/// composed by an editor nobody here runs — `state/decisions/core-018.md` —
-/// and a message this project wrote to look like VS Code's is hand-authored
-/// however it is labelled.
+/// The three kinds named are the server-to-client ones, and that is the whole
+/// of what a loop can produce: `initialize` params and document traffic are
+/// composed by an editor, and a message this project wrote to look like VS
+/// Code's is hand-authored however it is labelled. Whether that leaves §8.5's
+/// condition met is `state/decisions/core-018.md`, which also says why the
+/// missing half is the one that matters — every `didChange` here is
+/// hand-authored, and `contentChanges` is the union §8.5 spends its longest
+/// passage on.
+// DECISION-core-018: provisional
 #[test]
 fn the_corpus_holds_traffic_nobody_here_composed() {
     let corpus = corpus();

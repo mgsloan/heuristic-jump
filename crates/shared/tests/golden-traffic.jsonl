@@ -18,7 +18,9 @@
 #
 # All three servers §8.5 names are now represented, and `differential.rs`
 # asserts it by name. What is still wanted is an editor's own `initialize`
-# params and its document traffic, which no loop can compose — `core-018`.
+# params and its document traffic, which no loop can compose: it takes a
+# human at a desktop, with a recording wrapper in front of the real server.
+# DECISION-core-018: provisional
 {"kind":"initializeParams","source":"VS Code against rust-analyzer, shaped from LSP 3.17 InitializeParams and GeneralClientCapabilities","message":{"processId":41231,"clientInfo":{"name":"Visual Studio Code","version":"1.85.1"},"locale":"en-us","rootPath":"/home/dev/project","rootUri":"file:///home/dev/project","capabilities":{"workspace":{"applyEdit":true,"workspaceEdit":{"documentChanges":true}},"textDocument":{"synchronization":{"dynamicRegistration":true,"willSave":true,"didSave":true},"definition":{"dynamicRegistration":true,"linkSupport":true}},"window":{"workDoneProgress":true,"showMessage":{"messageActionItem":{"additionalPropertiesSupport":true}},"showDocument":{"support":true}},"general":{"staleRequestSupport":{"cancel":true,"retryOnContentModified":[]},"positionEncodings":["utf-16"]}},"trace":"off","workspaceFolders":[{"uri":"file:///home/dev/project","name":"project"}]}}
 {"kind":"initializeParams","source":"the smallest InitializeParams the specification permits: rootUri null, no folders, no clientInfo, no general","message":{"processId":null,"rootUri":null,"capabilities":{}}}
 {"kind":"initializeParams","source":"an editor offering an encoding we do not model, which is the case `known_encodings` exists for","message":{"processId":900,"rootUri":"file:///home/dev/other","capabilities":{"general":{"positionEncodings":["utf-8","utf-64","utf-16"]},"textDocument":{"definition":{"linkSupport":false}}},"workspaceFolders":[{"uri":"file:///home/dev/other","name":"other"},{"uri":"file:///home/dev/vendored","name":"vendored"}]}}
