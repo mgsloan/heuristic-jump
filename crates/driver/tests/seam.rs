@@ -1370,6 +1370,226 @@ fn every_package_section_14_names_gets_its_opt_level() {
     );
 }
 
+/// The rest of `deps.md` §14's conventions — the ones no other test in this
+/// file reads, which is why they are grouped rather than argued one at a time.
+///
+/// They have a failure mode in common, and it is not that the workspace stops
+/// building. Every one of them is a value that is *correct now* and that
+/// nothing would report as wrong: `resolver = "2"` still resolves,
+/// `lto = false` still links, a `[lib]` without `doctest = false` still tests,
+/// and a `license` added to `[workspace.package]` still compiles while
+/// quietly overriding the per-crate answers §5 spends a subsection on. The
+/// only thing standing between each of them and a drift is that somebody
+/// reads §14 again.
+///
+/// > **`[workspace.package]` carries only what is genuinely uniform.** For Zed
+/// > that is `publish` and `edition`; members write `edition.workspace = true`
+/// > and `publish.workspace = true`. We add `rust-version` and keep `license`
+/// > out, since ours differs per crate (§5).
+///
+/// The inheritance half is asserted with it, because a `[workspace.package]`
+/// nobody inherits is three keys with no effect — and `rust-version` is the
+/// one whose absence is silent in the direction that matters: cargo enforces
+/// it as a floor per package, so a member that does not inherit it is a member
+/// with no minimum toolchain at all.
+///
+/// > **`[profile.release]`**: `lto = "thin"`, `codegen-units = 1`,
+/// > `debug = "limited"` — Zed's values, and the right ones for a binary whose
+/// > headline metric is latency but which still needs usable backtraces from
+/// > user reports.
+///
+/// > **`[workspace.metadata.cargo-machete] ignored`** for deps that are used
+/// > but invisible to static analysis. `rope` already needs `tracing` listed
+/// > this way upstream, and our patched copy still will.
+///
+/// That bullet named the wrong table and CHANGE-core-006 moved it to
+/// `[package.metadata.cargo-machete]`, which is where upstream's `rope` puts
+/// it and the precedent the bullet's own second sentence cites. The check is
+/// derived rather than listed: a crate whose only mention of `tracing` is the
+/// `#[instrument]` redirect is exactly a dependency "used but invisible to
+/// static analysis", so the condition computes which crates those are and
+/// requires the record of each. `heuristic_jump` deliberately does not match —
+/// it declares `tracing` and names it nowhere, which is a dependency that is
+/// not used rather than one that is invisible, and §14 does not cover it.
+///
+/// The `rust-toolchain.toml` half is §14's file tree, "pin 1.95.0, so
+/// grammar/rope behaviour is reproducible", read against `rust-version`. The
+/// two are different mechanisms — a selection and a floor — and
+/// `conformance-002` (answered) is the record of why both exist. What breaks
+/// silently is them disagreeing: `rust-version` above the pinned channel makes
+/// every build fail, and below it makes the floor a fiction, and neither is
+/// visible in either file alone.
+#[test]
+fn the_workspace_manifest_has_the_shape_section_14_states() {
+    let manifest = workspace_file("Cargo.toml");
+    assert!(
+        !manifest.is_empty(),
+        "no workspace Cargo.toml, so every assertion below is vacuous"
+    );
+
+    assert!(
+        table_of(&manifest, "workspace")
+            .iter()
+            .any(|line| line.replace(' ', "") == "resolver=\"3\""),
+        "[workspace] does not set resolver = \"3\": deps.md §14 names it as one of the two \
+         places we deliberately differ from Zed, whose \"2\" is legacy — and a resolver that \
+         reverts resolves a different feature set for every crate in the graph while building \
+         perfectly"
+    );
+
+    let mut uniform: Vec<String> = table_of(&manifest, "workspace.package")
+        .iter()
+        .filter_map(|line| Some(line.split_once('=')?.0.trim().to_owned()))
+        .collect();
+    uniform.sort();
+    assert_eq!(
+        uniform,
+        ["edition", "publish", "rust-version"]
+            .map(str::to_owned)
+            .to_vec(),
+        "[workspace.package] is not the three keys deps.md §14 calls genuinely uniform: Zed's \
+         publish and edition, plus the rust-version we add. `license` most of all belongs out \
+         of it — §5's answers differ per crate, and one here would override all seven while \
+         leaving every manifest looking right"
+    );
+
+    let release = table_of(&manifest, "profile.release");
+    for (key, expected) in [
+        ("debug", "\"limited\""),
+        ("lto", "\"thin\""),
+        ("codegen-units", "1"),
+    ] {
+        let set = release.iter().find_map(|line| {
+            let (name, value) = line.split_once('=')?;
+            (name.trim() == key).then(|| value.split('#').next().unwrap_or("").trim().to_owned())
+        });
+        assert_eq!(
+            set.as_deref(),
+            Some(expected),
+            "[profile.release] sets {key} to {set:?} and deps.md §14 takes Zed's {expected}: \
+             the three are one decision — a binary whose headline metric is latency, which \
+             still needs a usable backtrace out of a user's report"
+        );
+    }
+
+    let pinned = table_of(&workspace_file("rust-toolchain.toml"), "toolchain")
+        .iter()
+        .find_map(|line| {
+            let (name, value) = line.split_once('=')?;
+            (name.trim() == "channel").then(|| value.trim().trim_matches('"').to_owned())
+        })
+        .unwrap_or_default();
+    let floor = table_of(&manifest, "workspace.package")
+        .iter()
+        .find_map(|line| {
+            let (name, value) = line.split_once('=')?;
+            (name.trim() == "rust-version").then(|| value.trim().trim_matches('"').to_owned())
+        })
+        .unwrap_or_default();
+    assert!(
+        !pinned.is_empty(),
+        "rust-toolchain.toml names no [toolchain] channel: deps.md §14's file tree makes the \
+         pin what keeps grammar and rope behaviour reproducible across machines and across the \
+         life of the metrics history"
+    );
+    assert_eq!(
+        floor, pinned,
+        "rust-version is {floor:?} and rust-toolchain.toml pins {pinned:?}: the two are a floor \
+         and a selection rather than a duplicate, and they are only both true while they agree \
+         — above the channel every build fails, below it the floor is a fiction \
+         (conformance-002)"
+    );
+
+    let members = workspace_members();
+    assert!(
+        !members.is_empty(),
+        "no workspace members parsed out of Cargo.toml, so the scan below would pass vacuously"
+    );
+
+    let mut invisible = 0;
+    for member in &members {
+        let text = workspace_file(&format!("{member}/Cargo.toml"));
+        assert!(
+            !text.is_empty(),
+            "no manifest for {member}, so every assertion below is vacuous"
+        );
+
+        for key in ["edition", "publish"] {
+            assert!(
+                text.contains(&format!("{key}.workspace = true")),
+                "{member} does not write `{key}.workspace = true`: deps.md §14 puts the \
+                 uniform keys in [workspace.package], and a member that inherits none of \
+                 them is one the table does not reach"
+            );
+        }
+
+        if member.starts_with("crates/") {
+            assert!(
+                text.contains("rust-version.workspace = true"),
+                "{member} does not inherit rust-version: deps.md §14 adds it to Zed's two, and \
+                 cargo enforces it per package — a member that does not inherit it declares no \
+                 minimum toolchain at all, which is invisible until a build succeeds somewhere \
+                 it should not have"
+            );
+            if text.contains("[lib]") {
+                assert!(
+                    table_of(&text, "lib")
+                        .iter()
+                        .any(|line| line.replace(' ', "") == "doctest=false"),
+                    "{member}'s [lib] does not set doctest = false, which deps.md §14 asks for \
+                     on crates with no doctests. The vendored crates are exempt for the reason \
+                     §14 gives the [lib] path bullet — they arrive with upstream's answer — but \
+                     ours are written here, and a doctest harness nobody uses is a build \
+                     target nobody reads the output of"
+                );
+            }
+        }
+
+        if !declares(&text, "tracing") {
+            continue;
+        }
+        const REDIRECT: &str = "use tracing::instrument;";
+        let sources = member_sources(member);
+        let attribute_only = sources.iter().any(|source| source.contains(REDIRECT))
+            && !sources
+                .iter()
+                .any(|source| source.replace(REDIRECT, "").contains("tracing::"));
+        if !attribute_only {
+            continue;
+        }
+        invisible += 1;
+        assert!(
+            table_of(&text, "package.metadata.cargo-machete")
+                .iter()
+                .any(|line| line.starts_with("ignored") && line.contains("\"tracing\"")),
+            "{member} reaches tracing only through the #[instrument] redirect and records no \
+             cargo-machete exemption: deps.md §14 keeps the table for deps that are used but \
+             invisible to static analysis, and this is the case it names — an unused-dependency \
+             report that is wrong is one nobody acts on twice"
+        );
+    }
+    assert_eq!(
+        invisible, 2,
+        "{invisible} member(s) reach tracing through the #[instrument] redirect alone, and \
+         core.md §9 puts the redirect in rope and both of sum_tree's instrumented files — so \
+         either the redirect moved or this scan is reading nothing"
+    );
+}
+
+/// Every source file of a workspace member, whichever half of the workspace it
+/// is in. `sources_of` and `vendored_sources` differ in return type and in
+/// what they assert, because each grew for one caller; a rule quantified over
+/// `[workspace] members` needs both without caring which.
+fn member_sources(member: &str) -> Vec<String> {
+    match member.strip_prefix("vendor/") {
+        Some(crate_name) => vendored_sources(crate_name),
+        None => sources_of(member.strip_prefix("crates/").unwrap_or(member))
+            .into_iter()
+            .map(|(_, source)| source)
+            .collect(),
+    }
+}
+
 /// §5's table, as a rule rather than a list, because six more `lang_*` and six
 /// more `measure_*` arrive by copying the template and a hardcoded list would
 /// stop applying the moment one did.

@@ -154,3 +154,31 @@ unchanged in kind. Nothing about which impls exist, or what they do, is
 touched.
 
 **Campaign:** 37a6d098-e7c7-4fb3-af7a-5f1562728e56
+
+## CHANGE-core-006 — deps.md#14-workspace-cargotoml-shape — the cargo-machete table is `[package.metadata]`, which is what the bullet's own precedent cites
+
+**Contradiction:** the bullet names a workspace-level table and then cites a
+package-level one as its precedent, in consecutive sentences:
+"**`[workspace.metadata.cargo-machete] ignored`** for deps that are used but
+invisible to static analysis. `rope` already needs `tracing` listed this way
+upstream, and our patched copy still will." What `rope` carries upstream, and
+what `vendor/rope/Cargo.toml:56` and `vendor/sum_tree/Cargo.toml:29` carry
+here, is `[package.metadata.cargo-machete] ignored = ["tracing"]`.
+
+**Resolution:** the bullet now names `[package.metadata.cargo-machete]`, "in
+the crate that carries the dependency", and states the reason the exemption is
+needed at all — the redirect reaches `tracing` only through `#[instrument]`,
+which no static scan follows. This trades nothing off: it is the placement the
+bullet's second sentence already appealed to, it is the one a re-sync
+preserves without a diff, and it keeps the record of a dependency beside the
+crate whose dependency it is rather than in a root file that would have to be
+edited every time a vendored crate arrived or left.
+
+No code moved to meet the document. Both manifests already carried the
+package-level table, unchanged since the vendoring campaign; what changed is
+the sentence that described them, and
+`the_workspace_manifest_has_the_shape_section_14_states` in
+`crates/driver/tests/seam.rs` now derives which crates need the record rather
+than listing them.
+
+**Campaign:** c601eeec-b30f-479c-8a7d-49e19e4c166d

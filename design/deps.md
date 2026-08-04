@@ -878,9 +878,11 @@ deliberately rather than by imitation:
   `debug = "limited"` — Zed's values, and the right ones for a binary whose
   headline metric is latency but which still needs usable backtraces from user
   reports.
-* **`[workspace.metadata.cargo-machete] ignored`** for deps that are used but
-  invisible to static analysis. `rope` already needs `tracing` listed this way
-  upstream, and our patched copy still will.
+* **`[package.metadata.cargo-machete] ignored`** for deps that are used but
+  invisible to static analysis, in the crate that carries the dependency.
+  `rope` already needs `tracing` listed this way upstream, and our patched
+  copy still will — the redirect reaches `tracing` only through
+  `#[instrument]`, which no static scan follows (CHANGE-core-006).
 * **License texts live once at the workspace root and are symlinked into each
   crate.** Zed does this without exception — 245 symlinks and not one regular
   copy — and it is the right call: a crate directory that declares

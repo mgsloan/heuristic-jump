@@ -15,10 +15,12 @@ members = [
 [workspace.package]
 edition = "2024"
 publish = false
-# `conformance-002` (answered). `deps.md` §14 puts the toolchain pin
-# in `rust-toolchain.toml`, which no loop owns, so it does not exist. This is a
-# floor rather than a selection: an older toolchain is refused, a newer one is
-# not, which is weaker than the reproducibility the pin was for.
+# `conformance-002` (answered): a human placed `rust-toolchain.toml`, and the
+# two are not a duplicate. That file *selects* a toolchain; this is a floor —
+# an older rustc is refused, a newer one is not — and cargo enforces it per
+# package, which `rust-toolchain.toml` does not. They are both true only while
+# they agree, which `the_workspace_manifest_has_the_shape_section_14_states`
+# in `crates/driver/tests/seam.rs` is what checks.
 rust-version = "1.95.0"
 
 # Every version lives here and members write `foo.workspace = true`, so the
