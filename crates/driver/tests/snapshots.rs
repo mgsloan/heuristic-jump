@@ -82,7 +82,7 @@ fn a_parse_that_runs_out_of_time_never_reaches_the_handler() {
     );
 
     match completed.dispatched {
-        Dispatched::DeadlineExpired => {}
+        Dispatched::DeadlineExpired(_) => {}
         other @ (Dispatched::Decided(_) | Dispatched::Failed(_)) => panic!(
             "a parse abandoned on the deadline came back as {other:?}, where core.md §2 \
              pays it inside the deadline and §1 maps that one class back to an abstention"
@@ -118,7 +118,7 @@ fn the_same_query_with_time_left_reaches_the_handler() {
 
     match completed.dispatched {
         Dispatched::Decided(_) => {}
-        other @ (Dispatched::DeadlineExpired | Dispatched::Failed(_)) => {
+        other @ (Dispatched::DeadlineExpired(_) | Dispatched::Failed(_)) => {
             panic!("the query did not decide: {other:?}")
         }
     }
@@ -218,7 +218,7 @@ fn the_tree_a_worker_parsed_is_what_the_next_seed_reparses_from() {
     );
     match completed.dispatched {
         Dispatched::Decided(_) => {}
-        other @ (Dispatched::DeadlineExpired | Dispatched::Failed(_)) => {
+        other @ (Dispatched::DeadlineExpired(_) | Dispatched::Failed(_)) => {
             panic!("the reparse from a cached base did not decide: {other:?}")
         }
     }

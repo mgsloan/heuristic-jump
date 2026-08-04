@@ -52,7 +52,7 @@ fn an_answer_that_arrives_after_the_deadline_is_dropped() {
     clock.advance(budget + Duration::from_millis(1));
 
     match hard_cap(&deadline, an_answer()) {
-        Dispatched::DeadlineExpired => {}
+        Dispatched::DeadlineExpired(_) => {}
         other @ (Dispatched::Decided(_) | Dispatched::Failed(_)) => {
             panic!("a late answer reached the user as {other:?}")
         }
@@ -84,7 +84,7 @@ fn an_answer_that_arrives_in_time_is_kept() {
                 trace: _,
             } => panic!("a commit came back through the cap as {other:?}"),
         },
-        other @ (Dispatched::DeadlineExpired | Dispatched::Failed(_)) => {
+        other @ (Dispatched::DeadlineExpired(_) | Dispatched::Failed(_)) => {
             panic!("an answer inside its deadline was dropped: {other:?}")
         }
     }
@@ -103,7 +103,7 @@ fn a_cancelled_query_drops_its_answer_before_the_clock_runs_out() {
     deadline.cancel();
 
     match hard_cap(&deadline, an_answer()) {
-        Dispatched::DeadlineExpired => {}
+        Dispatched::DeadlineExpired(_) => {}
         other @ (Dispatched::Decided(_) | Dispatched::Failed(_)) => {
             panic!("a cancelled query still answered, with {other:?}")
         }
@@ -124,7 +124,9 @@ fn a_late_failure_is_still_recorded_as_a_failure() {
 
     match hard_cap(&deadline, broken) {
         Dispatched::Failed(Error::Handler(HandlerError::DeadlineExpired)) => {}
-        other @ (Dispatched::Failed(_) | Dispatched::Decided(_) | Dispatched::DeadlineExpired) => {
+        other @ (Dispatched::Failed(_)
+        | Dispatched::Decided(_)
+        | Dispatched::DeadlineExpired(_)) => {
             panic!("a late failure was reclassified as {other:?}")
         }
     }
@@ -134,7 +136,9 @@ fn a_late_failure_is_still_recorded_as_a_failure() {
     }));
     match hard_cap(&deadline, parse_failed) {
         Dispatched::Failed(Error::Parse(_)) => {}
-        other @ (Dispatched::Failed(_) | Dispatched::Decided(_) | Dispatched::DeadlineExpired) => {
+        other @ (Dispatched::Failed(_)
+        | Dispatched::Decided(_)
+        | Dispatched::DeadlineExpired(_)) => {
             panic!("a late failure was reclassified as {other:?}")
         }
     }

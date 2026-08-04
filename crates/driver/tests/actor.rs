@@ -21,6 +21,7 @@
     reason = "`clippy.toml`'s allow-expect-in-tests and allow-panic-in-tests reach only `#[test]` bodies, and the fixture builder, the handler doubles and the trace readers below are free functions and trait impls. Failing loudly is the point: a half-built fixture answers nothing, and an assertion about an absent trace row passes against a run that never wrote one."
 )]
 
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -270,6 +271,102 @@ fn an_abstention_is_recorded_with_its_reason_in_the_stages() {
     );
 }
 
+/// `core.md` §1: `Stratum::Unimplemented` is the unmodified template's, no real
+/// handler may return it, and "its presence in a metrics table means the
+/// template has not been replaced".
+///
+/// The hard cap is what made that false. §5 drops an answer that arrives after
+/// its deadline, and the driver then had no stratum to record the row under, so
+/// it synthesised the template's — which means a *real* handler that misses its
+/// deadline writes an `unimplemented` **abstention**, and that is exactly the
+/// counter `measure_core`'s `Table::template` reads as an unreplaced template.
+/// `core-017` settles that nothing had to be synthesised: the prior's rule reads
+/// only the query and the reference, so it "was never the outcome's to carry
+/// away".
+///
+/// The two halves are asserted together because either alone passes on a
+/// mistake: a row under the right stratum that was never capped is just a
+/// commit, and a capped row under `unimplemented` is the bug.
+#[test]
+fn a_hard_capped_answer_keeps_the_stratum_the_handler_assigned() {
+    let fixture = Fixture::new("actor_hard_cap", Proxying::No);
+    // In the queried document, so §8.4's conversion needs no second read: a
+    // read is what would expire *before* the cap, and this test is about the
+    // cap.
+    let target = fixture.definition_in("src/lib.rs");
+    let mut actor = fixture.actor(Arc::new(Slow {
+        clock: Arc::clone(&fixture.clock),
+        locations: vec![target],
+    }));
+
+    fixture.open(&mut actor);
+    fixture.request(&mut actor, 1);
+
+    let rows = fixture.rows();
+    let [row] = rows.as_slice() else {
+        panic!("{} rows for one capped query", rows.len());
+    };
+    assert_eq!(
+        field(row, "decision"),
+        "\"abstained\"",
+        "the late answer was not dropped, so the assertion below is not about the hard \
+         cap: {row}"
+    );
+    assert_eq!(
+        field(row, "stages"),
+        "[\"abstain:deadline\"]",
+        "a capped answer was recorded under some other abstention reason: {row}"
+    );
+    for column in ["stratum_prior", "stratum_final"] {
+        assert_eq!(
+            field(row, column),
+            "\"explicitly_imported\"",
+            "{column} is the template's stratum for a query a real handler classified, so \
+             `Table::template` reads this row as an unreplaced template and §7's coverage \
+             denominator lost a query from the class it was really asked about: {row}"
+        );
+    }
+    assert!(
+        fixture.outbound().is_empty(),
+        "the capped answer reached the editor, which is the whole of what §5's hard cap \
+         exists to prevent"
+    );
+}
+
+/// The same claim on the other path that discards an answer, which is the one
+/// easy to miss: §8.4's conversion reads the target file, and `ProjectView`
+/// fails a read whose deadline has already expired — so a handler that answers
+/// late with a definition in *another* file never reaches the hard cap at all.
+/// It surfaces as `HandlerError::DeadlineExpired` from inside the conversion,
+/// where the outcome has already been consumed.
+///
+/// The only difference from the test above is which file the definition is in.
+#[test]
+fn a_conversion_that_expires_keeps_the_stratum_too() {
+    let fixture = Fixture::new("actor_expired_conversion", Proxying::No);
+    let target = fixture.definition_in("src/target.rs");
+    let mut actor = fixture.actor(Arc::new(Slow {
+        clock: Arc::clone(&fixture.clock),
+        locations: vec![target],
+    }));
+
+    fixture.open(&mut actor);
+    fixture.request(&mut actor, 1);
+
+    let rows = fixture.rows();
+    let [row] = rows.as_slice() else {
+        panic!("{} rows for one expired query", rows.len());
+    };
+    assert_eq!(field(row, "decision"), "\"abstained\"", "{row}");
+    assert_eq!(
+        field(row, "stratum_prior"),
+        "\"explicitly_imported\"",
+        "the classification a handler had already made was lost because the query ended \
+         downstream of it rather than at the cap, which is the same query counted under the \
+         template's stratum by a different route: {row}"
+    );
+}
+
 /// `core.md` §2: "text and tree can never disagree", which the parse cache is
 /// the one thing that can break — and `core.md` §8.6 makes `didOpen` a resync
 /// rather than a continuation, so the document behind a URI can be replaced by
@@ -346,6 +443,56 @@ fn the_loop_drains_its_channel_and_ends_when_the_wire_closes() {
         );
     };
     assert_eq!(field(row, "agreement"), "\"match_top1\"", "{row}");
+}
+
+/// `deps.md` §2: the inbox is `unbounded()` because a bounded one would
+/// deadlock the transport rather than apply backpressure, so "memory is bounded
+/// only by the shed-load rule in `shim.md` §10, [and] the `core` inbox length is
+/// a number we should log and watch, not just assert about".
+///
+/// Four events are queued before the loop starts, so the depth the loop reports
+/// counts *down* — which is what makes this an assertion about `Receiver::len`
+/// rather than about a constant somebody wrote next to the word `depth`. The
+/// fourth event leaves the inbox empty and must log nothing: an empty inbox is
+/// the whole of normal operation, and a depth line per event would bury the one
+/// case the number exists for.
+#[test]
+fn the_inbox_depth_is_logged_when_core_falls_behind() {
+    let fixture = Fixture::new("actor_depth", Proxying::Yes);
+    let target = fixture.definition_in("src/target.rs");
+    let actor = fixture.actor(Arc::new(Committing {
+        locations: vec![target.clone()],
+    }));
+
+    let (events, incoming) = crossbeam_channel::unbounded();
+    for event in fixture.session(1) {
+        events.send(event).expect("a queued event");
+    }
+    events
+        .send(Event::ChildAnswered {
+            editor_id: EditorRequestId::from_number(1),
+            result: child_answer(&target, TARGET),
+            latency: Micros(1_000),
+        })
+        .expect("a queued event");
+    drop(events);
+
+    let (logged, lines) = crossbeam_channel::unbounded();
+    tracing::subscriber::with_default(Capturing { events: logged }, || {
+        actor.run(&incoming).expect("the actor loop");
+    });
+
+    let depths: Vec<u64> = lines
+        .try_iter()
+        .filter_map(|line| depth_of(&line))
+        .collect();
+    assert_eq!(
+        depths,
+        vec![3, 2, 1],
+        "the loop reported {depths:?} for four events queued ahead of it. §2 withdrew the \
+         unbounded lint and left this as the only mechanism, so a `core` that falls behind its \
+         transport is visible here or nowhere"
+    );
 }
 
 /// §6: "divergence is reported to the user on `mismatch` only", through the
@@ -462,6 +609,64 @@ fn a_cancelled_query_leaves_no_row_and_no_report() {
         0,
         "a cancelled query wrote a metric row, and nothing downstream can tell it apart \
          from a query nobody answered"
+    );
+}
+
+/// `core.md` §1: "the driver resolves an incoming LSP `languageId` against the
+/// registry and gets `Option<LanguageId>`. Unknown languages fail to resolve at
+/// the boundary rather than travelling inward as a string that matches
+/// nothing".
+///
+/// Both halves of the registry are asserted because they have different
+/// vocabularies and only one of them is exercised by anything else here: a
+/// `languageId` arrives on an open document, and a *file extension* arrives on
+/// "candidate files found by search [where] closed files arrive as a bare path
+/// with no languageId attached". The second lookup had no caller anywhere in the
+/// workspace, which is the state in which a boundary quietly stops being one.
+///
+/// The negative cases are the test. A registry that resolved everything would
+/// pass every positive assertion above, and the string that matches nothing is
+/// exactly what §1 says must not travel inward.
+#[test]
+fn the_registry_resolves_only_what_a_handler_declared() {
+    let registry = Registry::new(vec![Arc::new(Declining) as Arc<dyn LanguageHandler>]);
+
+    assert!(
+        registry.for_language_id("rust").is_some(),
+        "the one declared languageId resolves to nothing, so every assertion below is \
+         vacuous"
+    );
+    assert!(
+        registry.for_language_id("ruby").is_none(),
+        "an undeclared languageId resolved to a handler, which is a document parsed with \
+         somebody else's grammar"
+    );
+    assert_eq!(
+        registry.language_id("rust").map(LanguageId::as_str),
+        Some("rust"),
+        "the interning lookup does not return the id the handler declared, and it is the \
+         only way to obtain a `LanguageId` — so `Documents` could not track the document \
+         at all"
+    );
+    assert!(
+        registry.language_id("ruby").is_none(),
+        "an undeclared languageId was interned, which is §1's string that matches nothing \
+         travelling inward with a newtype on"
+    );
+
+    assert!(
+        registry.for_path(Path::new("src/lib.rs")).is_some(),
+        "a bare path with a declared extension resolves to no handler, so a closed file \
+         found by search can never be attributed to the language that owns it"
+    );
+    assert!(
+        registry.for_path(Path::new("src/lib.py")).is_none(),
+        "a path whose extension nobody declared resolved to a handler"
+    );
+    assert!(
+        registry.for_path(Path::new("Makefile")).is_none(),
+        "a path with no extension at all resolved to a handler: the lookup is reading \
+         something other than the extension"
     );
 }
 
@@ -740,6 +945,71 @@ fn field(row: &str, name: &str) -> String {
     rest.to_owned()
 }
 
+/// A subscriber that keeps every event's fields as one line of text.
+///
+/// Hand-written rather than `tracing_subscriber::fmt`, and not for want of the
+/// crate: `driver` may not *name* `tracing_subscriber` anywhere, because
+/// `deps.md` §9 installs the subscriber in the crate that owns a program's
+/// command line and `seam.rs` scans every source file in the crate — this one
+/// included — to hold it. `tracing`'s own `Subscriber` trait needs no such
+/// permission.
+///
+/// A channel rather than a `Mutex<Vec<_>>` because `Subscriber` is `Send + Sync`
+/// and records through `&self`, which is the one shape in a test that tempts a
+/// lock. It is the same reason the `Checking` handler double below has a sender.
+struct Capturing {
+    events: crossbeam_channel::Sender<String>,
+}
+
+impl tracing::Subscriber for Capturing {
+    fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+
+    /// Nothing under test opens a span, and a subscriber must still mint ids.
+    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+
+    fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+    fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+
+    fn event(&self, event: &tracing::Event<'_>) {
+        let mut fields = Fields(String::new());
+        event.record(&mut fields);
+        self.events
+            .send(fields.0)
+            .expect("the test is still listening");
+    }
+
+    fn enter(&self, _span: &tracing::span::Id) {}
+
+    fn exit(&self, _span: &tracing::span::Id) {}
+}
+
+/// One event's fields, spelled `name=value` the way a `fmt` subscriber spells
+/// them, so an assertion reads like the log a human would be looking at.
+struct Fields(String);
+
+impl tracing::field::Visit for Fields {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        let _ = write!(self.0, " {}={value:?}", field.name());
+    }
+}
+
+/// The `depth` field of a captured line, if it has one. A scan rather than a
+/// parse, for the reason [`field`] is one: what is being asserted is the text.
+fn depth_of(line: &str) -> Option<u64> {
+    let start = line.find("depth=")? + "depth=".len();
+    line[start..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .ok()
+}
+
 fn definition_params(uri: &DocumentUri) -> Box<RawValue> {
     raw(&format!(
         r#"{{"textDocument":{{"uri":"{uri}"}},"position":{{"line":1,"character":{POSITION}}}}}"#
@@ -858,6 +1128,47 @@ impl LanguageHandler for Declining {
             strata: Strata::from_reference(Stratum::LocalBinding),
             trace: Trace::new(),
         })
+    }
+}
+
+/// A handler that answers, and takes longer than its deadline doing it — which
+/// is the one thing `Committing` cannot be made to do, since a handler that
+/// respects its budget is never hard-capped.
+///
+/// It moves the clock rather than sleeping: `core.md` §10's whole reason for an
+/// injected clock is that a test which waits for a real 750ms is a test that
+/// fails on a loaded machine and is deleted.
+struct Slow {
+    clock: Arc<TestClock>,
+    locations: Vec<Location>,
+}
+
+impl LanguageHandler for Slow {
+    fn language_ids(&self) -> &'static [LanguageId] {
+        LANGUAGE_IDS
+    }
+
+    fn file_extensions(&self) -> &'static [FileExtension] {
+        FILE_EXTENSIONS
+    }
+
+    fn grammar(&self) -> Language {
+        grammar()
+    }
+
+    fn goto_definition(&self, query: &Query<'_>) -> Result<Outcome, Error> {
+        // Past the 750ms the fixture names, so what this returns is already
+        // late by the time it returns it.
+        self.clock.advance(Duration::from_millis(1_000));
+        // Not `LocalBinding`: every other double here reports that one, and a
+        // stratum that survives the cap has to be distinguishable from the one
+        // a mistake would most likely leave behind.
+        Ok(query.policy.decide(
+            Strata::from_reference(Stratum::ExplicitImport),
+            Confidence::ONE,
+            self.locations.clone(),
+            Trace::new(),
+        ))
     }
 }
 
