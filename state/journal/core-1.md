@@ -482,3 +482,113 @@ core-017's answer says such a query "still has a prior, because the reference
 and the query are all its rule needs", which is true of the rule and
 unavailable to the driver. Both ways out are Class B (a seam method, or a
 nullable `stratum_prior`), so it is escalated rather than guessed.
+
+## Campaign 9110a409 — the printed spec, and what makes a printed block stay honest
+
+Assignment was three anchors, all "stale printed spec against standing code".
+Eight commits. Five spec corrections (CHANGE-core-018 through -022) and three
+tests that pin them.
+
+### One of three assigned gaps was stale, and the check took one turn
+
+`core.md#83[f9ad1766b7]` was opened at `e23d214`, 2026-08-04T04:57:16Z.
+CHANGE-core-007 landed in `e60466a` at 05:10Z — **thirteen minutes later**.
+`git show e23d214:design/core.md | grep 'pub fn line(self)'` is empty and the
+working tree's is not. Sixth campaign running where an assigned gap was closed
+before I read it; the difference this time is that the section had a *second*
+defect one sentence further along, which is core-3's habit paying off on my own
+assignment.
+
+### The direction of a spec-vs-code correction is decided by who ruled, not by which is easier to edit
+
+Every one of the five was a document moving toward code, which is the thing the
+loop prompt says the audit cannot catch. What made each defensible was that the
+answer was already written down by somebody else:
+
+* `#the-trait` — `conformance-013`, **accepted**, whose human rationale names
+  "`CommitPolicy::decide` grows to four parameters" in as many words. The doc
+  was the last place still printing the question.
+* `#two-modes` — `#the-command-line` 270 lines below it already said three
+  subcommands, and `data-collection.md` §2 says why enumeration cannot be
+  inside `collect`: positions are enumerated once per repository and *not once
+  per server*, or two servers' answers have nothing to join on.
+* `#83` — §8.2's third list names `WirePosition` as a type that travels twice
+  and cites §8.3's `encode` as the reason, so §8.3 required the derive its own
+  block omitted.
+* `deps.md#8` — `conformance-005`, **accepted**, "no corpus, no benchmark, no
+  cache", and `project.rs:521` already says it where the cache would go.
+
+If no such ruling exists, it is Class B and the edit is not available. That is
+the whole test, and it is cheaper to apply than it sounds: one grep of
+`state/decisions/` for the type name.
+
+### The provenance header: "path" was the wrong word and the reason is structural
+
+`#two-modes` said the header carries "repository **path** and commit". The code
+compares `provenance.repository` against `repository.name`. A path there would
+make the one deliberately unfixed part of the layout — the corpus root, passed
+by `--corpus` precisely so it can differ — the part the drift check fires on:
+relocating the corpus, or handing `test/` to another machine, would be
+indistinguishable from a misfiled truth file. Held-out isolation is built on
+that relocatability, so the word was not loose, it was wrong.
+
+### What the campaign is actually about: a printed block is prose
+
+`measure_core/tests/pipeline.rs` already pins `#the-command-line` against what
+`clap` builds, and its doc comment states the rule — the document is the
+fixture, because editing the document is how progress is faked. **It stops at
+the section boundary.** That is exactly how the section directly above it said
+"two subcommands" for months. A fact pinned in one section is not pinned in the
+section next door that restates it.
+
+So three tests now read the document:
+
+* `the_section_that_splits_the_modes_names_every_subcommand_there_is` — names
+  and a spelled count, so a fourth stage fails until §7 says "four".
+* `crates/shared/tests/handler.rs` — §1's printed block against `handler.rs`,
+  **names and arity only**. A test demanding a transcription would make the
+  block unwritable and would be repaired by weakening it.
+* `the_types_that_travel_twice_are_the_ones_section_82_names` — §8.2's third
+  table against the `BOTH` constant, which the module doc calls a transcription
+  and which nothing read back.
+
+### Approaches tried and dropped
+
+* **Asserting that every `BOTH` type carries both derives.** Written, passing,
+  and **removed in the same commit because it could not be planted.** Dropping
+  `Serialize` from `WirePosition` — or the hand-written `impl Serialize for
+  TextDocumentSyncKind` — does not fail the test, it fails the *build*: each of
+  the five is embedded in a type on the other list, so the pair is
+  compiler-held. An unfalsifiable assertion in a file whose entire subject is
+  asserting absence would have been the worst possible place for one. The
+  useful residue: the code side of CHANGE-core-020 was never at risk, only the
+  document.
+* **Taking `deps.md#10-errors[d50e2285d0]`.** Claimed and **refused** — another
+  worker holds it. One turn, and the ledger did its job. It was the one
+  remaining gap whose *design* section I had open (§the-trait's deadline
+  bullet is the normative source for it), so it is the right next target for
+  whoever has it.
+* **Extending the parse-cache correction to `resolution.md` §3.** It carries
+  the same expectation from the other side, and conformance-005's answer names
+  that correction explicitly. Not done: `resolution.md` is not in this phase's
+  audit scope, so the edit would buy no number and would put two documents in
+  one changelog entry.
+* **Adding a test to `driver/tests/seam.rs`**, which is the natural home for a
+  printed-block check and already has `fenced_block_of`. Avoided on collision
+  grounds: a driver gap is claimed by another worker this round, and seam.rs is
+  the file everybody touches. `crates/shared/tests/handler.rs` is a new file,
+  which `CLAUDE.md` discourages — but shared's tests are one file per area
+  already (document, project, proto, vocabulary, agreement) and there was none
+  for the seam.
+
+### Two mechanical notes worth the line
+
+* A free function in a `tests/` file is not covered by `clippy.toml`'s
+  allow-expect-in-tests: it reaches `#[test]` bodies only. The house form is
+  the file-level `#![expect(clippy::expect_used, clippy::panic, reason = ...)]`
+  that `shared/tests/project.rs` carries.
+* Extracting members from a Rust block by scanning is fine if the piece rule is
+  `name:` with the next character not `:` — a path (`std::path::Path`) is
+  excluded by the second colon and a generic argument
+  (`BTreeMap<StageName, Micros>`) by having no colon at all. Those are the two
+  false positives that exist in this source.
