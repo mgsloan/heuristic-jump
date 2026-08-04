@@ -188,7 +188,11 @@ write = [
   # stays writable because a campaign whose prompt was rendered before the
   # split would otherwise fail the gate on a path it was told to use, and
   # because its oldest entry is `CHANGE-bootstrap`, which is nobody's loop.
-  "state/spec-changelog/core.md",
+  # Per worker: core.md plus core-1.md, core-2.md, core-3.md. Three
+  # workers appending Class A entries to one file conflicted on both
+  # merges of every round, which is the same partition-by-owner rule
+  # §13 already applies to journals and findings.
+  "state/spec-changelog/core*.md",
   "state/spec-changelog.md",
   "state/handoff.md",
 ]
@@ -284,7 +288,7 @@ write = [
   "state/decisions/harness-*.md",
   "state/metrics/harness.jsonl",
   "state/findings/harness.md",
-  "state/spec-changelog/harness.md",
+  "state/spec-changelog/harness*.md",
   "state/handoff.md",
 ]
 permission_mode = "bypassPermissions"
