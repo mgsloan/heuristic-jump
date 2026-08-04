@@ -38,7 +38,7 @@ boundary, which is safe because every experiment commits or reverts.
 | | |
 |---|---|
 | `loop` | one campaign per `claude -p` session, with the session id assigned rather than discovered so it is also the campaign id |
-| `gate` | `fmt`, `clippy`, `nextest`, diff scope, audit consistency, metrics row — in that order, all mandatory, scoped to the crates the loop owns |
+| `gate` | `fmt`, `clippy`, `nextest`, diff scope, audit consistency, metrics row and direction — in that order, all mandatory, scoped to the crates the loop owns |
 | `audit` | a fresh read-only session judging spec against code, and the merge of its verdict into `state/audit/` |
 | `hj` | everything mechanical: section lists, audit merges, scope checks, prompt rendering, campaign records, metrics rows |
 | `adapter` | every vendor-specific invocation, in one file. See below |
@@ -46,6 +46,7 @@ boundary, which is safe because every experiment commits or reverts.
 | `prompts/` | one prompt per variety of phase. Not one template with a swapped middle |
 | `trailer-format.md`, `decision-template.md` | the commit trailer convention and the decision-record shape, spliced into the prompts at launch so there is one copy of each |
 | `section-baseline.toml` | the denominator, frozen for the phase. See below |
+| `ratchets.toml` | the floor under each ratcheted metric. Hand-written; the live baseline is the highest value the loop has recorded |
 | `corpus`, `corpus-selection.toml`, `corpus-lock.toml` | phase 1b: which repositories the corpus is made of, and rebuilding it. See below |
 | `verify-servers`, `server-fixtures/` | phase 1c: every server in `../servers.toml` starts, reports the pinned version, and answers a definition. Here because a loop must not be able to edit the oracle it is scored against |
 

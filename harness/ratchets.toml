@@ -1,0 +1,25 @@
+# Ratchet floors. `design/loops.md` sections 7, 11 and 17.
+#
+# Written by hand, never by `hj`. A ratchet the loop can raise is a ratchet the
+# loop can lower, and §17 rejects Bencher partly on this point: "a baseline
+# file in git is *better* here, not merely cheaper — a ratchet change shows up
+# in the commit diff, which is exactly where the question 'did the loop justify
+# this regression?' gets asked."
+#
+# The live baseline for a metric is the highest value the loop has recorded in
+# `state/metrics/<loop>.jsonl`, which needs no maintenance and cannot go stale.
+# What is written here is the *floor* under that: it survives a rewritten
+# metrics history, and it is where a number is set that the history has not
+# reached. `harness/` is denied to every loop, so a floor is a human's to move.
+#
+# Only metrics whose direction is unambiguous belong here. `sections_clean`
+# does not: a fresh audit re-judging a section it had called clean is the
+# instrument correcting itself, and a ratchet would make that impossible.
+
+# Where the history stood when the ratchet was introduced. Backtested over the
+# 87 rows in state/metrics/core.jsonl at that point: the count rose or held at
+# every campaign and never once fell, so this ratchet would have failed nothing
+# that has actually been committed. It is redundant with the history until the
+# history is rewritten, which is the case it is here for.
+[core]
+tests = 205

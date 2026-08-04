@@ -1288,6 +1288,155 @@ def test_count(members: list[str]) -> int | None:
     return sum(len(suite.get("testcases", {})) for suite in listing.get("rust-suites", {}).values())
 
 
+# The ratchet baselines. `design/loops.md` §17 builds these rather than
+# adopting Bencher, and its reason decides the shape: our measurements are
+# deterministic, so the only threshold model that fits is the static one, and
+# "a baseline file in git is *better* than a service — a ratchet change shows
+# up in the commit diff, which is exactly where the question 'did the loop
+# justify this regression?' gets asked."
+#
+# The live baseline is the highest value the loop has recorded, which needs no
+# file and cannot go stale. This file is the *floor* underneath it: it survives
+# a rewritten metrics history, and it is where a human sets a number the
+# history has not reached yet. It lives in `harness/`, which is denied to every
+# loop, so lowering one is an edit a loop cannot make.
+RATCHETS = HARNESS / "ratchets.toml"
+
+
+def ratchet_floor(owner: str, metric: str) -> int | None:
+    if not RATCHETS.exists():
+        return None
+    value = (tomllib.loads(RATCHETS.read_text()).get(owner) or {}).get(metric)
+    return value if isinstance(value, int) else None
+
+
+def highest_recorded(recorded: list[object], floor: int | None) -> int | None:
+    """Highest rather than last: a ratchet that reads only the previous row can
+    be walked down one campaign at a time, each step passing because it only
+    has to clear the step before it. A row that recorded nothing — the metric
+    was unavailable, not zero — is not a value."""
+    values = [value for value in recorded if isinstance(value, int) and not isinstance(value, bool)]
+    if floor is not None:
+        values.append(floor)
+    return max(values) if values else None
+
+
+def ratchet_baseline(owner: str, metric: str) -> int | None:
+    """The highest value recorded, floored by `harness/ratchets.toml`."""
+    rows = read_jsonl(metrics_path(owner))
+    return highest_recorded([row.get(metric) for row in rows], ratchet_floor(owner, metric))
+
+
+# What a removed test looks like in a diff. `#[test]` covers `proptest!` and
+# insta snapshot tests, which expand to it; the other two are attribute macros
+# that generate their own cases, so removing one removes several.
+TEST_ATTRIBUTES = ("#[test]", "#[rstest", "#[test_case")
+REMOVED_FUNCTION = re.compile(r"^-\s*(?:pub\s+)?(?:async\s+)?fn\s+(?P<name>[A-Za-z0-9_]+)")
+
+
+def removed_tests(diff: str) -> list[str]:
+    """Test declarations this diff deletes, by name.
+
+    `design/loops.md` §7 asks for deletions to be "flagged for review
+    regardless of count", which the count ratchet cannot do: deleting one test
+    and adding another leaves the count flat, and that is the shape a loop
+    reaches for when a test is in its way. A rename is flagged too — the
+    countermeasure is a human reading it, and a rename takes one second to
+    dismiss where a silent deletion takes a campaign to notice.
+    """
+    names: list[str] = []
+    pending = 0
+
+    def close_attributes() -> None:
+        # A `#[test]` deleted while its function stays is the test being
+        # switched off rather than removed, and it has no name to report.
+        nonlocal pending
+        names.extend(["(a #[test] attribute, function kept)"] * pending)
+        pending = 0
+
+    for line in diff.splitlines():
+        if line.startswith("@@") or (line.startswith("+") and not line.startswith("+++")):
+            close_attributes()
+            continue
+        if not line.startswith("-") or line.startswith("---"):
+            continue
+        stripped = line[1:].strip()
+        if any(stripped.startswith(attribute) for attribute in TEST_ATTRIBUTES):
+            pending += 1
+            continue
+        match = REMOVED_FUNCTION.match(line)
+        if match:
+            if pending:
+                names.extend([match.group("name")] * pending)
+                pending = 0
+            continue
+        # Anything else between the attribute and the function means they were
+        # not a pair, so the count does not carry across it.
+        if stripped and not stripped.startswith(("#[", "//", "/*", "*")):
+            close_attributes()
+    close_attributes()
+    return names
+
+
+def removed_tests_in(rev: str | None, paths: list[str]) -> list[str]:
+    """Against the working tree by default, because that is what the gate is
+    about to let through; against a commit for `record`, which runs after it."""
+    if not paths:
+        return []
+    arguments = ["diff", "-U0"]
+    arguments += [f"{rev}~", rev] if rev else ["HEAD"]
+    result = subprocess.run(
+        ["git", "-C", str(REPO), *arguments, "--", *paths],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return removed_tests(result.stdout) if result.returncode == 0 else []
+
+
+def crate_paths(config: LoopConfig) -> list[str]:
+    return [pattern for pattern in config.write if pattern.startswith(("crates/", "vendor/"))]
+
+
+def check_test_ratchet(config: LoopConfig) -> int:
+    """Test count is a ratchet (`design/loops.md` §7, first row of the gaming
+    table). Deletions are flagged and do not fail: the flag is for a human, and
+    a legitimate rename would otherwise stop the loop dead.
+
+    Only the test count is ratcheted, and the others are worth naming so the
+    omission is a decision rather than an oversight. `sections_clean` falls
+    honestly whenever a fresh audit re-judges a section it had called clean —
+    ratcheting it would make the loop's number unable to correct itself.
+    `provisional_decisions` rises when the loop escalates, which is the
+    behaviour §6 wants. `loc` is reported and never gated (§11). Binary size is
+    the phase-3 ratchet and belongs to the gate's own step, which stays
+    unimplemented until there is a `measure_<lang>` to weigh.
+    """
+    for name in removed_tests_in(None, crate_paths(config)):
+        print(f"metrics: FLAGGED — this diff deletes a test: {name}")
+    measured = test_count(owned_members(config))
+    if measured is None:
+        print("metrics: no test count for this loop; the ratchet has nothing to hold")
+        return 0
+    baseline = ratchet_baseline(config.owner, "tests")
+    if baseline is None:
+        print(f"metrics: {measured} test(s); no baseline yet, so this one becomes it")
+        return 0
+    if measured >= baseline:
+        print(f"metrics: {measured} test(s), ratchet at {baseline}")
+        return 0
+    print(
+        f"metrics: {measured} test(s) against a ratchet of {baseline}. Tests are a "
+        "ratchet (design/loops.md section 7): deleting or weakening them is the "
+        "first gaming route the design names, so the count may not fall.\n"
+        "         If the drop is legitimate — a test that was wrong, or one "
+        "replaced by a stronger one — that is a decision record, not a gate "
+        f"argument. The floor lives in harness/ratchets.toml under [{config.owner}].",
+        file=sys.stderr,
+    )
+    return 1
+
+
 def cli_version() -> str:
     """Recorded per campaign beside the prompt sha, and for the same reason
     (`design/loops.md` section 17). A prompt revision changes the *generator*
@@ -1684,27 +1833,34 @@ def cmd_check_path(args: argparse.Namespace) -> int:
 
 
 def cmd_check_metrics(args: argparse.Namespace) -> int:
-    """Gate step: the previous iteration recorded its row.
+    """Gate step: the previous iteration recorded its row, and the numbers in
+    it are going the right way.
 
-    Checked against HEAD rather than the pending commit, because the row
-    keys on a commit that does not exist until after the gate passes. A
+    The row check is against HEAD rather than the pending commit, because the
+    row keys on a commit that does not exist until after the gate passes. A
     commit carrying this loop's `campaign:` trailer and no metrics row means
     `harness/hj record` was skipped, and the history has a hole in it.
+
+    The direction check is against the working tree, because that is what is
+    about to be committed and the point is to refuse it. `design/loops.md` §7
+    puts "the gate checks metric direction itself" behind the row that a
+    metric regression can be snapshot-accepted; without it, the gate read the
+    metrics file only to ask whether a line existed.
     """
     _, config = loop_config(args.loop)
     target = last_loop_commit(config.owner)
     if target is None:
         print("metrics: this loop has no commit in recent history; nothing to check")
-        return 0
-    recorded = {row.get("commit") for row in read_jsonl(metrics_path(config.owner))}
-    if target in recorded:
+    else:
+        recorded = {row.get("commit") for row in read_jsonl(metrics_path(config.owner))}
+        if target not in recorded:
+            print(
+                f"metrics: no row for {target[:12]}; run `harness/hj record {args.loop}`",
+                file=sys.stderr,
+            )
+            return 1
         print(f"metrics: {target[:12]} is recorded")
-        return 0
-    print(
-        f"metrics: no row for {target[:12]}; run `harness/hj record {args.loop}`",
-        file=sys.stderr,
-    )
-    return 1
+    return check_test_ratchet(config)
 
 
 def cmd_record(args: argparse.Namespace) -> int:
@@ -1725,6 +1881,11 @@ def cmd_record(args: argparse.Namespace) -> int:
         "loc": loc,
         "loc_counter": loc_counter,
         "tests": test_count(members),
+        # Flagged rather than gated, and recorded rather than only printed:
+        # the gate says it to a transcript nobody reads twice, and §7 wants
+        # deletions visible "regardless of count" — which means visible to
+        # whoever reads the history, not to the campaign that did it.
+        "tests_removed": removed_tests_in(target, crate_paths(config))[:20],
         "provisional_decisions": provisional_decisions(),
     }
     append_jsonl(metrics_path(config.owner), row)
@@ -3760,6 +3921,63 @@ def selftest_cases() -> list[tuple[str, object]]:
         assert numbers["reverts"] == 1, numbers
         assert numbers["gate_seconds"] == 16.5, numbers
         assert numbers["usd"] == 1.5 and numbers["turns"] == 4
+
+    def a_deleted_test_is_named():
+        diff = textwrap.dedent("""\
+            --- a/crates/shared/tests/proto.rs
+            +++ b/crates/shared/tests/proto.rs
+            @@ -10,6 +10,0 @@
+            -#[test]
+            -fn untagged_variants_are_disjoint() {
+            -    assert!(true);
+            -}
+            """)
+        assert removed_tests(diff) == ["untagged_variants_are_disjoint"], removed_tests(diff)
+
+    def a_test_swapped_for_another_is_still_flagged():
+        diff = textwrap.dedent("""\
+            @@ -3,4 +3,4 @@
+            -    #[test]
+            -    fn old_name() {
+            +    #[test]
+            +    fn new_name() {
+            """)
+        assert removed_tests(diff) == ["old_name"], "the count is flat and the deletion is not"
+
+    def a_disabled_test_has_no_name_to_report():
+        diff = "@@ -1,2 +1,1 @@\n-#[test]\n fn still_here() {\n"
+        assert len(removed_tests(diff)) == 1, "deleting the attribute is deleting the test"
+        assert "attribute" in removed_tests(diff)[0]
+
+    def an_ordinary_refactor_flags_nothing():
+        diff = textwrap.dedent("""\
+            @@ -1,6 +1,6 @@
+            -fn resolve(query: Query) -> Outcome {
+            -    let scope = enclosing(query);
+            +fn resolve(query: &Query) -> Outcome {
+            +    let scope = enclosing(query);
+            """)
+        assert removed_tests(diff) == [], "removing a plain function is not removing a test"
+
+    def an_attribute_does_not_carry_across_unrelated_removals():
+        diff = textwrap.dedent("""\
+            @@ -1,5 +1,1 @@
+            -#[test]
+            - fn kept() {}
+            -let scope = enclosing(query);
+            -fn helper() {}
+            """)
+        assert removed_tests(diff) == ["kept"], "the helper below is not the deleted test"
+
+    def the_ratchet_takes_the_highest_value_not_the_last():
+        assert highest_recorded([200, 205, 201], None) == 205, "read off the last row it walks down"
+        assert highest_recorded([200, None, 205], None) == 205, "a missing count is not a zero"
+        assert highest_recorded([], None) is None, "no history is no ratchet, not a ratchet at zero"
+
+    def a_floor_holds_a_rewritten_history_up():
+        assert highest_recorded([12], 205) == 205, "the file is the floor under the history"
+        assert highest_recorded([300], 205) == 300, "and never a ceiling"
+        assert highest_recorded([], 205) == 205
 
     def tokei_json_is_read_in_both_shapes():
         modern = '{"Rust":{"blanks":9,"code":413,"comments":57,"reports":[]},"Markdown":{"code":8}}'
