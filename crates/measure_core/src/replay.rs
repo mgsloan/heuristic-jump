@@ -26,7 +26,7 @@ use shared::{
 };
 
 use crate::corpus::{Corpus, Repository, verify_checkout};
-use crate::table::Table;
+use crate::table::{Judged, Table};
 use crate::truth::{self, Truth};
 
 pub(crate) struct Replay<'a> {
@@ -264,7 +264,20 @@ impl Replay<'_> {
         // `elapsed` is not offered to the table: §7's command line makes the
         // table byte-identical across runs, and it goes into the record below
         // instead, which is the one field §7 says a replay does not reproduce.
-        table.observe(strata, decision, agreement);
+        //
+        // The list's *length* is offered, and comes from the same place the
+        // verdict does: §"both sides are sets" reports containment "only
+        // alongside the result count, since alone it is gameable", and a count
+        // taken anywhere but beside the classification is a count of some other
+        // answer.
+        table.observe(
+            strata,
+            decision,
+            agreement.map(|agreement| Judged {
+                agreement,
+                results: u64::try_from(ours.len()).unwrap_or(u64::MAX),
+            }),
+        );
 
         let mut record = QueryRecord::new(
             &QueryContext {
