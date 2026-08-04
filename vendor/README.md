@@ -145,6 +145,31 @@ property (`deps.md` §14).
    * **The verification is upstream's tests**, which is patch 3's whole point.
      All 24 pass unchanged.
 
+8. **Two upstream bugs in `TextSummary::add_newline` are fixed**, and this is
+   the one patch that is *not* patch 7's class — the distinction is the point
+   of listing it separately, because a re-sync that reads it as sweep fallout
+   will drop it. Upstream at `90d024b8` (`crates/rope/src/rope.rs:1328`):
+
+   ```rust
+   self.len_utf16 += OffsetUtf16(self.len_utf16.0 + 1);   // doubles
+   // and no `self.chars += 1` at all
+   ```
+
+   The first doubles the UTF-16 length it means to increment; the second leaves
+   `chars` behind, where `TextSummary::newline()` twelve lines above sets it to
+   1 for the same character. Neither shows upstream because **nothing calls
+   the method** — every other summary in the crate comes from `From<&str>` —
+   and that is also why none of the kept tests catch it.
+
+   Ours reads `+= OffsetUtf16(1)` and `self.chars.0 += 1`, which makes
+   `add_newline` agree with `From<&str>` and with `newline()`. Held by
+   `add_newline_agrees_with_the_summary_of_the_same_text_plus_a_newline` in
+   `tests/newtype_api.rs`, over `RandomCharIter` text; each half of the fix has
+   its own control and they fail in different places.
+
+   Re-sync cost: three lines that will conflict if upstream ever touches the
+   method, and a fix that must be re-applied if it does not.
+
 ## Patches to `sum_tree`
 
 1. **`src/tree_map.rs` deleted** (`TreeMap`, `TreeSet`, `MapSeekTarget`),

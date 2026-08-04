@@ -496,6 +496,51 @@ fn every_newtype_has_its_bounds_and_prints_as_a_bare_number() {
     );
 }
 
+/// §4 converts `TextSummary`, and §3 says what a conversion edit may be:
+/// "**Every edit changes representation, never arithmetic.**" `add_newline` is
+/// where that is hardest to check, because it is the one method on the type
+/// with no caller and no upstream test — nothing in the crate would notice
+/// either a sweep that mangled it or the two upstream bugs it actually had.
+///
+/// So the oracle is the type's other constructor. `From<&str>` is what every
+/// summary in the crate is built from, and adding a newline to a text has to
+/// agree with summarising the text with a newline on the end; the empty case
+/// is `TextSummary::newline()`, which is the same claim with the fields
+/// written out by hand twelve lines above the method.
+///
+/// Both of the old bugs fail it, and differently: `len_utf16 +=
+/// OffsetUtf16(len_utf16.0 + 1)` doubles rather than increments, so it passes
+/// on the empty summary and fails on everything else, and the missing
+/// `chars += 1` fails on all of them including the empty one.
+#[test]
+fn add_newline_agrees_with_the_summary_of_the_same_text_plus_a_newline() {
+    let mut empty = TextSummary::default();
+    empty.add_newline();
+    assert_eq!(
+        empty,
+        TextSummary::newline(),
+        "a newline added to nothing is `TextSummary::newline()`, which is the \
+         same nine fields written out by hand"
+    );
+
+    for seed in 0..64 {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let length = rng.random_range(0..512);
+        let text: String = RandomCharIter::new(&mut rng).take(length).collect();
+
+        let mut incremented = TextSummary::from(text.as_str());
+        incremented.add_newline();
+
+        assert_eq!(
+            incremented,
+            TextSummary::from(format!("{text}\n").as_str()),
+            "add_newline disagrees with the summary of the same text plus a \
+             newline (seed {seed}, {} bytes)",
+            text.len()
+        );
+    }
+}
+
 /// §7: round-trip property tests over `Offset` ↔ `Point` ↔ `PointUtf16` ↔
 /// `OffsetUtf16` on random text with astral-plane characters. `core.md` §10
 /// already requires them for the encoding layer; running them against the

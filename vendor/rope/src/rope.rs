@@ -1400,9 +1400,19 @@ impl TextSummary {
         }
     }
 
+    /// Two lines here are ours rather than upstream's, and they are a *fix*
+    /// rather than the newtype sweep — the distinction matters on re-sync, so
+    /// `vendor/README.md` records it as its own patch. Upstream at `90d024b8`
+    /// reads `self.len_utf16 += OffsetUtf16(self.len_utf16.0 + 1)`, which
+    /// doubles the length it means to increment, and never touches `chars`,
+    /// which `newline()` above sets to 1 for the same character. Both are
+    /// invisible upstream because nothing calls this: the summary a newline
+    /// produces comes from `From<&str>` everywhere else, and this method is
+    /// the only thing that disagrees with it.
     pub fn add_newline(&mut self) {
         self.len += ByteLen(1);
-        self.len_utf16 += OffsetUtf16(self.len_utf16.0 + 1);
+        self.chars.0 += 1;
+        self.len_utf16 += OffsetUtf16(1);
         self.last_line_chars = CharCount::ZERO;
         self.last_line_len_utf16 = Utf16Column::ZERO;
         self.lines += Point::new(LineIndex(1), ByteColumn::ZERO);
