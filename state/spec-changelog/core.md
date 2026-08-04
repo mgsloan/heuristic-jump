@@ -201,3 +201,31 @@ public surface is exactly `line`, `resolve` and `encode`, so a `character()`
 accessor added later fails rather than quietly widening the section again.
 
 **Campaign:** 44773a93-738f-4dd6-8ca1-fa951465ac44
+
+## CHANGE-core-008 — core.md#82-what-replaces-it-and-why-it-is-smaller-than-it-sounds — the third list, which §8.3 requires and §8.2 did not name
+
+**Contradiction:** §8.2 gives two lists and says of them "**Nothing is ever
+round-tripped**" and "the two lists have to stay disjoint". §8.3 requires
+`WirePosition::encode(Offset, enc, &Rope)` as the outbound constructor of
+the same type §8.2's Read table lists as arriving in `definition params`. So
+`WirePosition` must carry both derives, and with it `WireRange`,
+`WireLocation`, `PositionEncoding` and `TextDocumentSyncKind`. Two lists
+cannot hold five types that are in both.
+
+**Resolution:** §8.2 now names the third list and says what bounds it. This
+trades nothing off because the two claims were never about the same thing:
+"nothing is round-tripped" is about *messages* — a projection deserialized and
+written back, losing the fields it did not model — and these are *values*. A
+`WirePosition` that arrives is resolved to a `Offset` and dropped; one that
+leaves was built by `encode` from an offset this system produced. No instance
+makes the trip, so the forward-compatibility property the first bullet
+protects is untouched. The alternative reading — that §8.2 forbids a value
+type in both directions — makes §8.3 unimplementable.
+
+**Written toward existing code, and said plainly:** `crates/shared/tests/proto.rs`
+already asserted a `BOTH` list of exactly these five, and the audit records it
+as a minor: "the third category is the code's invention asserted by a test as
+though it were the section's". It is the section's now, with the same five and
+the same bound, and no code changed.
+
+**Campaign:** 44773a93-738f-4dd6-8ca1-fa951465ac44

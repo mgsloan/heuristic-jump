@@ -116,12 +116,17 @@ const CONSTRUCT: &[&str] = &[
     "StandaloneServerInfo",
 ];
 
-/// The value types that genuinely travel in both directions: a position and a
-/// range arrive in a request and leave in a response, a location arrives from
-/// the oracle and leaves as our answer, and the negotiated encoding is read
-/// from a child and written by standalone. This list is short on purpose —
-/// every entry is a type §8.2's read-only rule does not cover, so a fifth one
-/// appearing is a claim someone should have to make deliberately.
+/// §8.2's third table: the value types that travel in both directions. A
+/// position and a range arrive in a request and leave in a response, a
+/// location arrives from the oracle and leaves as our answer, and the
+/// negotiated encoding is read from a child and written by standalone.
+///
+/// The list is short because §8.2 bounds it, not because nothing has been
+/// added yet: "nothing is ever round-tripped" is a claim about messages, and a
+/// value type in both directions does not round-trip anything — an inbound
+/// position is resolved to an offset and dropped, an outbound one is built by
+/// `encode`. A sixth entry is therefore a claim someone has to make
+/// deliberately, here and in §8.2 (CHANGE-core-008).
 const BOTH: &[&str] = &[
     "PositionEncoding",
     "TextDocumentSyncKind",

@@ -1524,6 +1524,26 @@ rather than in `measure_core` per [section 8.7](#87-where-it-lives); the
 alternative is a second vocabulary for one protocol, in the one crate whose
 job is to agree with the shim.
 
+There is a third and much shorter list, and it is short because it is bounded
+rather than because nothing has been added to it yet:
+
+| Both | Why it travels twice |
+|---|---|
+| `WirePosition`, `WireRange` | [Section 8.3](#83-the-wire-position-type-is-inert) requires `WirePosition::encode`, so the type that arrives in a request is the type an answer is built from |
+| `WireLocation` | arrives from the oracle ([section 6](#6-the-agreement-predicate)) and leaves as our answer |
+| `PositionEncoding` | read from a child's `InitializeResult`, written by standalone's |
+| `TextDocumentSyncKind` | the same, one field further in |
+
+**"Nothing is ever round-tripped" is a claim about messages, and these are
+values.** A `WirePosition` that arrives is resolved to a `Offset` and
+dropped; one that leaves was built by `encode` from an offset this system
+produced. No instance makes the trip, so nothing a field we did not model
+could have been attached to is written back — which is the property the first
+bullet is protecting. What the rule does forbid is a *projection* carrying
+both derives, and the test that enforces the split keeps this list separate
+from the other two so that a sixth entry is a claim someone has to make
+deliberately.
+
 ### 8.3 The wire position type is inert
 
 This is the design's payoff and the reason the change is worth making.
