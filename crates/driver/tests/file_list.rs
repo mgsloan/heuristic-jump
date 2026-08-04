@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use driver::{Answer, Classified, DebounceMs, Dispatched, FileListCache};
+use driver::{Answer, Classified, DID_CHANGE_WATCHED_FILES, DebounceMs, Dispatched, FileListCache};
 use shared::{
     AbstainReason, Clock, Confidence, Deadline, DocumentUri, Error, FileExtension, FileList,
     Generation, Language, Outcome, ProjectError, ProjectPath, ProjectRoot, ProjectView, RelPath,
@@ -300,6 +300,63 @@ fn the_two_triggers_share_one_debounce_rather_than_one_each() {
         "four triggers produced more than one walk, so the debounce is per \
          trigger rather than the single one §4 describes"
     );
+}
+
+/// §4's proxy-mode invalidation is a routing row keyed by a method name, and
+/// the name is a `const` here with no caller: `shim.md` §3's router does not
+/// exist yet, and its own doc calls the string "the entire coupling between
+/// that row and this module".
+///
+/// A typo in it costs nothing today, and on the day the row is written costs
+/// the whole proxy-mode path *silently* — the tee never fires, the list never
+/// goes stale, and the only symptom is recall on files created since the walk,
+/// which §4 has already decided is an acceptable cost of a stale list. There is
+/// no failure to notice.
+///
+/// Held against `reference/lsp-3.17/metaModel.json`, the protocol
+/// machine-readable, rather than against a second copy of the string somewhere
+/// else in the workspace — which would only assert that two things we wrote
+/// agree. The direction is asserted with it because it is the half §4's
+/// argument rests on: these frames flow editor → child and the shim forwards
+/// them anyway, which is why teeing them costs one row and no descriptors.
+#[test]
+#[expect(
+    clippy::disallowed_types,
+    reason = "`serde_json::Value` is banned because it allocates a whole tree per frame and \
+              forwarded frames must not be materialized. There is no frame here: this is the \
+              vendored meta model, read once in a test, and the typed struct the lint suggests \
+              would put a `serde` dev-dependency on `driver` for one deserialize. Same \
+              reasoning as `seam.rs`'s `cargo metadata` reader"
+)]
+fn the_teed_notification_is_the_one_the_protocol_names() {
+    let model: serde_json::Value = serde_json::from_str(&meta_model()).expect("the meta model");
+    let notifications = model["notifications"]
+        .as_array()
+        .expect("the meta model lists notifications");
+    assert!(
+        notifications.len() > 10,
+        "only {} notification(s) parsed out of the meta model, so this lookup is \
+         not reading what it thinks it is",
+        notifications.len()
+    );
+
+    let teed = notifications
+        .iter()
+        .find(|notification| notification["method"] == DID_CHANGE_WATCHED_FILES)
+        .unwrap_or_else(|| panic!("LSP 3.17 has no notification {DID_CHANGE_WATCHED_FILES:?}"));
+    assert_eq!(
+        teed["messageDirection"], "clientToServer",
+        "§4 tees this because it already flows editor → child through the shim. A \
+         server-originated notification would have to be watched for rather than \
+         forwarded, and the bullet's whole argument — no descriptors, correct \
+         scoping for nothing — is about the editor having paid for it already"
+    );
+}
+
+fn meta_model() -> String {
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../reference/lsp-3.17/metaModel.json");
+    fs::read_to_string(&path).expect("the vendored LSP 3.17 meta model")
 }
 
 /// §4's deletion sentence, over a real removal: "a stale entry for a file that
