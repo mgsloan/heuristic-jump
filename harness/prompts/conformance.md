@@ -149,6 +149,16 @@ worked through in sequence.
      be reading its tail, so a conclusion you reached ten campaigns ago
      survives only if it is in this file.
 
+     **Say which of your conclusions are falsified and which are confirmed,
+     and keep them apart.** Every other loop reads this file, and the two
+     kinds do not travel on equal terms (`design/loops.md` section 13): a
+     falsified hypothesis is broadcast plainly, because it removes an option
+     and saves another loop the whole cost of retrying it; a confirmed one is
+     published as a *candidate*, to be tested elsewhere on that loop's own
+     evidence and never adopted on yours. A reader cannot apply that rule to a
+     digest that does not mark which is which, so marking it is your job and
+     not theirs.
+
 The auditor runs after you exit. You will never see its prompt, and its gap
 list is your next campaign's most likely target.
 
@@ -292,6 +302,25 @@ rebuilding — and it is only as good as the last close made it, so if it is
 thin or wrong, fixing it is part of your own close.
 
 {{self_summary}}
+
+## What the other loops have concluded
+
+Their digests, one per loop, rewritten at each of their campaign closes.
+`design/loops.md` section 13 shares these on purpose: the loops differ in
+mechanism and their problems rhyme, and prose creates neither write
+contention nor silent cross-loop regressions. **The two kinds of finding are
+not shared on equal terms, so do not read them the same way:**
+
+- **A falsified hypothesis is a result, and you may act on it directly.** It
+  removes an option rather than proposing one, so it cannot anchor you
+  anywhere, and retrying it costs you the campaign that loop already spent.
+- **A confirmed hypothesis is a candidate, never a result.** Test it among
+  your own hypotheses, on your own evidence. Adopting it because it worked
+  elsewhere spends the independence that makes several loops worth more than
+  one loop run several times — and it tends to get tested *instead of* your
+  own space rather than alongside it.
+
+{{other_findings}}
 
 ## Decisions affecting you
 

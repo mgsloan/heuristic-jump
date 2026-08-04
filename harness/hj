@@ -2247,6 +2247,34 @@ def worker_findings(owner: str, worker: str) -> str:
     return "\n\n".join(parts)
 
 
+def other_loop_findings(owners: list[str], owner: str) -> list[str]:
+    """Every other *loop's* digest, for this loop's volatile tail.
+
+    `design/loops.md` §13, "Campaigns compare notes, asymmetrically". Driven by
+    the owners in `state/phase.toml` rather than by a glob over
+    `state/findings/`, because a glob also matches `core-1.md`, `core-2.md`
+    and `core-3.md` — sibling *workers*, which are `worker_findings`' job and
+    are three views of an implementation a different loop shares none of.
+    §13's sizing is per loop for the same reason: "a dozen loops, 512 words
+    each" fits a tail, and a dozen loops times three workers does not.
+
+    The asymmetry §13 is named for — falsified broadcast plainly, confirmed
+    published as a candidate — is not enforceable here, because it is a
+    property of prose. It is carried in two places instead: the close
+    instruction that tells a digest's *writer* to mark which is which, and the
+    heading above this splice that tells its *reader* how the two differ.
+    """
+    digests = []
+    for other in owners:
+        if other == owner:
+            continue
+        path = STATE / "findings" / f"{other}.md"
+        body = path.read_text().strip() if path.exists() else ""
+        if body:
+            digests.append(f"### What the `{other}` loop concluded\n\n{body}")
+    return digests
+
+
 def staleness_note(gap: Gap) -> str:
     """Whether the file this gap points at has moved since the audit saw it.
 
@@ -2399,10 +2427,7 @@ def prompt_values(
                 f"  still tagged at: {sites}"
             )
 
-    findings = []
-    for path in sorted((STATE / "findings").glob("*.md")):
-        if path.stem != config.owner:
-            findings.append(f"### {path.stem}\n\n{path.read_text().strip()}")
+    findings = other_loop_findings(sorted(phase.loops), config.owner)
 
     # A worker writes its own journal and reads the loop's when it has none of
     # its own yet: three workers each starting from an empty file would each
@@ -5002,6 +5027,30 @@ def selftest_cases() -> list[tuple[str, object]]:
         assert selftest_line_range("def other():\n    pass\n") == (0, 0), (
             "a file with no selftest excludes nothing, rather than excluding everything"
         )
+
+    def a_loop_reads_loops_and_not_their_workers():
+        # A glob over state/findings/ matches core-1.md, core-2.md, core-3.md
+        # too. Those are sibling workers — `worker_findings`' job — and putting
+        # three views of one implementation in front of a loop that shares none
+        # of it is both noise and three times §13's per-loop sizing.
+        assert "phase.loops" in inspect.getsource(prompt_values), (
+            "the owner list is the phase's loops; a glob over state/findings/ "
+            "also matches core-1.md, core-2.md and core-3.md"
+        )
+        assert other_loop_findings(["harness"], "harness") == [], "never its own"
+        assert all(
+            d.startswith("### What the `core` loop concluded")
+            for d in other_loop_findings(["core", "harness"], "harness")
+        )
+
+    def the_digest_asymmetry_reaches_both_ends():
+        template = (HARNESS / "prompts" / "conformance.md").read_text()
+        assert "{{other_findings}}" in template, (
+            "the digest was computed and spliced nowhere for the whole of phase 1a"
+        )
+        writer, reader = template.split("{{other_findings}}")[0], template
+        assert "published as a *candidate*" in writer, "the writer must mark which is which"
+        assert "never a result" in reader, "the reader must be told the two differ"
 
     def no_threshold_means_the_phase_gate_is_the_only_trigger():
         due, reason = batch_is_due(9, None)
