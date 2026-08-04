@@ -265,3 +265,73 @@ forever.
 - **Widening the `allowed-primitives.txt` check to assert emptiness.** Rejected:
   the file exists for the re-sync case, and a test that fails when someone adds
   a legitimate entry is a test that will be deleted rather than obeyed.
+
+## c601eeec — §14, §5's licensing, `#adding-a-language`, §9's layout
+
+Five commits, all in `crates/driver/tests/seam.rs` plus the documents they
+read. Four new tests, five Class A changes (`CHANGE-core-006` … `010`).
+
+### The assignment named three gap ids that do not exist here
+
+`grep`ping `state/audit/gap-log.jsonl` for the four assigned ids found one.
+The audit on this branch ran at `3dba8fae`, not an ancestor of `loop/core-2`,
+so the planner's gap list describes a sibling tree. The branch's own audit
+recorded one gap per assigned section and both were already closed
+(`f288bd5296` by `a9937015`, `0858868078` by `b59733c6`).
+
+**What worked, and is the thing to repeat:** take the *sections*, print each
+with `harness/hj section-text`, and enumerate its claims against the tree one
+by one. §14 has fifteen bullets; six were read by no test. That is a
+mechanical procedure and it does not need the ids at all. It cost ~10 turns,
+which is what `core-004` (harness-request) is about.
+
+### What was actually unbacked, and what was not
+
+Unbacked, and now scanned: `resolver = "3"`, `[workspace.package]`'s key set
+and who inherits it, `[profile.release]`'s three values, `doctest = false`,
+the `cargo-machete` table, `rust-version` against `rust-toolchain.toml`, the
+root licence texts being *regular files*, `high-level.md`'s licence prose,
+both template manifests, `measure_<x>`'s four lines, the absence of a `tests/`
+directory, and §9's whole directory tree.
+
+**Not unbacked, though it reads that way:** §14's "each `allow` carries a
+comment saying why". For `[workspace.lints.*]` the §15 test already enforces
+something stronger — every lint in `Cargo.toml` must be *printed and argued*
+in `deps.md` §15 — and `vendor/*` is exempt by §14's own next bullet. Do not
+add a comment-proximity scan for it; the versions that hold for all four allow
+sites are heuristics that pass tables with one comment and three allows, which
+makes the section look covered when it is not.
+
+### Documents as fixtures, twice more
+
+`fenced_toml_of` had one user (§15's lint block). This campaign added
+`fenced_block_of` for §9's untagged directory tree and `section_of` for a
+markdown section body. The §9 test compares the printed tree against
+`[workspace] members` in **both** directions and is the strongest thing here:
+a crate added without the document naming it fails, and vice versa.
+
+That test forced `CHANGE-core-010`. §9's tree lists eleven `crates/` entries
+and four cannot exist — `loops.md`'s decided question 10 puts a new
+`crates/lang_*` outside every loop's owned paths, and `state/phase.toml` names
+`crates/lang_rust/` rather than globbing for exactly that reason. Marking them
+`phase 2` is what made the comparison possible; without it the test demands
+the commit the gate is built to reject.
+
+### A negative check that fired on its own fix
+
+The first version of the licensing test banned the phrase "only GPL" from
+`high-level.md`, to catch the superseded "rope is the only GPL input". It
+failed on the corrected text, which *quotes* the superseded claim while
+recanting it. Replaced with a positive assertion — the section must say "two
+GPL inputs, not one". General shape: a ban on a wrong sentence fires on the
+paragraph that explains why it was wrong, and a document that cannot explain
+its own history is one the next reader re-derives the mistake from.
+
+### Not taken
+
+- **The driver run loop.** Still where the real gaps are, still four sections
+  seen from one missing transport, still a separate campaign — it shares no
+  file with anything here.
+- **`core.md#9`'s four phase-2 crates.** Cannot be built by any loop. If a
+  future audit re-opens `ce5dfefab5`, the answer is `CHANGE-core-010` and not
+  a campaign.

@@ -2,59 +2,69 @@
 
 ## Do these two things before anything else
 
-1. **Run `harness/gate core`.** It was red at this campaign's open, from a
-   cross-branch race between two loops that were each green alone
-   (`state/decisions/core-002.md`). A red HEAD suspends green-or-revert: you
-   can neither revert nor commit, so find out in turn one rather than turn
-   thirty.
-2. **Verify the gap in the code before planning around it.** The last audit ran
-   on `3dba8fae`, which is *not an ancestor of this branch*, so the open-gap
-   list describes a sibling loop's tree. Already closed here and still listed:
-   `core.md#vendoring-the-zed-crates[dcb3592e02]`,
-   `deps.md#7-file-enumeration-and-watching[2b4c370ec5]`,
-   `deps.md#8-parse-cache[ffcd948852]`, `deps.md#12-testing[6590573bb2]`,
-   `deps.md#fxhashmap-and-fxhashset-are-the-default[e83fd58b7a]`. One grep each.
-   The planner reads the same stale list, so an *assignment* is not evidence.
+1. **Run `harness/gate core`.** It has been red at a campaign's open before,
+   from a cross-branch race between two loops that were each green alone
+   (`state/decisions/core-002.md`). A red HEAD suspends green-or-revert.
+2. **Verify every assigned gap id against `state/audit/gap-log.jsonl`.** Last
+   round, three of four assigned ids were not in this branch's log at all: the
+   audit that produced them ran on a commit that is not an ancestor of this
+   branch, so the list describes a sibling tree, and what the branch's own
+   audit recorded for the same sections was already closed. This is now
+   `core-004` (harness-request, open). **An assignment is not evidence.**
+
+## Working a section whose ids you cannot resolve
+
+This is the procedure that produced five commits last round, and it needs no
+ids. `harness/hj section-text <anchor>`, then enumerate the section's claims
+one at a time and grep for the test that reads each. §14 had fifteen bullets
+and six were read by nothing. It is mechanical, and it costs about ten turns.
 
 ## Where the gaps actually are
 
-`vendor/` is done: `rope-modifications.md` has no open gaps left, and both of
-the last two were real (`longest_row`'s `&mut usize`, `add_newline`'s
-arithmetic). `deps.md` is nearly done — what remains is `#11`'s missing
-`--trace=<path>` and `#15`, which no loop may close.
+`vendor/` is done. `deps.md` is done except `#11`'s missing `--trace=<path>`
+and `#15`, which no loop may close (`clippy.toml` is denied; `core-003` has
+the measured thresholds — do not take it, do not "fix" §15 by editing it).
+`core.md`'s manifest-shaped sections — §9's layout, `#adding-a-language`, the
+licensing subsection — are now scanned in both directions from the documents
+themselves.
 
-What is left concentrates in **`crates/driver`, and it is one shape**: there is
-no run loop. `driver::run` logs a config and returns, so every gap that says
+What is left concentrates in **`crates/driver`, and it is one shape**: there
+is no run loop. `driver::run` logs a config and returns, so every gap saying
 "the driver owns X" — the deadline starting at request arrival, the JSONL
 emission, the pending-query record, divergence reporting — is the same missing
-transport seen from four sections. The classifiers, the codecs and the replay
-half all exist and are tested. A campaign that takes one of those four should
-expect to be building the run loop, and should say so in its hypothesis rather
-than discovering it.
+transport seen from four sections. Classifiers, codecs and replay all exist.
+A campaign taking one of those four is building the run loop; say so in the
+hypothesis rather than discovering it.
 
 ## Ruled out, with the evidence
 
-- **"The newtype sweep changed arithmetic somewhere."** It did not, in the one
-  place the audit found. Upstream at `90d024b8` has the same doubling.
-  `curl raw.githubusercontent.com/zed-industries/zed/<rev>/crates/rope/...`
-  works here and costs one turn; CHANGE-core-001 was settled the same way.
-  Reasoning about the diff instead is how a real upstream bug gets filed as a
-  conversion error.
-- **"Cargo rejects a profile override naming a package outside the graph."** It
-  warns and builds. Planted and measured.
-- **`clippy.toml` is denied to every loop**, so `deps.md#15` is unclosable by a
-  campaign. `core-003` has the measured thresholds
-  (`shared::Error` is 112 bytes; 112 fires, 113 is clean) verified against a
-  copy of HEAD. Do not take it as a target; do not "fix" it by editing §15.
+- **"The newtype sweep changed arithmetic."** It did not, where checked;
+  upstream at `90d024b8` has the same code. `curl raw.githubusercontent.com`
+  costs one turn and settles it.
+- **"Cargo rejects a profile override naming a package outside the graph."**
+  It warns and builds. Planted and measured.
+- **§14's "each `allow` carries a comment saying why" is not an open claim.**
+  The §15 test already enforces something stronger for `[workspace.lints.*]` —
+  every lint must be printed *and argued* in `deps.md` §15 — and `vendor/*` is
+  exempt by §14's next bullet. Every comment-proximity scan that holds for all
+  four allow sites is a heuristic that would pass a table with one comment and
+  three allows.
+- **§9's four phase-2 crates cannot be built by any loop** (`loops.md` decided
+  question 10; `phase.toml` names `lang_rust` rather than globbing). If
+  `ce5dfefab5` re-opens, the answer is `CHANGE-core-010`, not a campaign.
 
 ## Load-bearing spec claims
 
-`rope-modifications.md` §3's "every edit changes representation, never
-arithmetic" is the one that pays. It is what makes a suspicious line
-answerable — either it matches upstream and the sweep is exonerated, or it does
-not and the fix is obvious — and it is why `vendor/README.md` distinguishes
-patch classes rather than listing patches.
+Documents-as-fixtures is the pattern that pays: `fenced_toml_of` (§15's
+lints), `fenced_block_of` (§9's tree), `section_of` (a markdown body). Compare
+the document to the tree in **both** directions and a third copy cannot drift.
 
-`core.md` §7's "a `measure_<lang>` is four lines" is load-bearing in a way that
-is easy to miss: it is the reason `clap` and now the log subscriber live in
-`measure_core`, and it is the cost side of `core-002`.
+A negative check on a wrong sentence fires on the paragraph that recants it —
+assert the corrected claim positively instead.
+
+## Decisions affecting you
+
+- core-001: Who writes `harness/measure`? [open]
+- core-002: Does `measure_core` install a log subscriber? [open]
+- core-003: Who writes the two `clippy.toml` thresholds? [open]
+- core-004: Can an assignment be computed from an audit of this branch? [open]
