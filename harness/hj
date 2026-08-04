@@ -1601,15 +1601,41 @@ DECISION_TAG_NOT_A_SITE = [
 ]
 
 
-def count_tagged_lines(grep_output: str) -> int:
-    """Sum `git grep -c`'s per-file counts. Split from the right: a path can
-    contain a colon, the count cannot."""
-    total = 0
-    for line in grep_output.splitlines():
-        _, _, count = line.rpartition(":")
-        if count.isdigit():
-            total += int(count)
-    return total
+def tag_sites(grep_output: str) -> list[tuple[str, int]]:
+    """Parse `git grep -z -n`, which puts a NUL after the path and after the
+    line number. `-z` rather than plain `-n` because both of the other fields
+    can contain a colon — a path may, and the matched line is a tag followed
+    by `: provisional`, so it always does."""
+    sites = []
+    for record in grep_output.splitlines():
+        path, _, rest = record.partition("\0")
+        number, _, _ = rest.partition("\0")
+        if number.isdigit():
+            sites.append((path, int(number)))
+    return sites
+
+
+def selftest_line_range(source: str) -> tuple[int, int]:
+    """The lines `selftest_cases` occupies in this file.
+
+    Four of its fixtures are diffs written out as string literals that carry a
+    `DECISION-` tag, because what they test is the reader of that tag. They are
+    talk about the mechanism in exactly the sense the prompts and the template
+    are, and the only reason `DECISION_TAG_NOT_A_SITE` cannot exclude them by
+    path is that they share a file with the harness loop's implementation,
+    which has to stay countable or the metric is structurally zero for that
+    loop. So the exclusion is by region instead, read off the source rather
+    than written down, since a line number in a constant goes stale silently.
+    """
+    start = 0
+    for number, line in enumerate(source.splitlines(), start=1):
+        if line.startswith("def selftest_cases("):
+            start = number
+        elif start and line.startswith("def "):
+            return start, number
+    # An empty range rather than an open one when the marker is absent: if this
+    # ever stops matching, the count is wrong by four and not by everything.
+    return (start, sys.maxsize) if start else (0, 0)
 
 
 def provisional_decisions() -> int:
@@ -1623,7 +1649,8 @@ def provisional_decisions() -> int:
             "-C",
             str(REPO),
             "grep",
-            "-c",
+            "-z",
+            "-n",
             "-E",
             r"DECISION-[A-Za-z0-9_-]+: provisional",
             "--",
@@ -1633,7 +1660,12 @@ def provisional_decisions() -> int:
         text=True,
         check=False,
     )
-    return count_tagged_lines(result.stdout)
+    first, past = selftest_line_range((HARNESS / "hj").read_text())
+    return sum(
+        1
+        for path, number in tag_sites(result.stdout)
+        if not (path == "harness/hj" and first <= number < past)
+    )
 
 
 # --------------------------------------------------------------------------
@@ -4385,8 +4417,21 @@ def cmd_status(args: argparse.Namespace) -> int:
         for campaign in campaigns_of(owner)
         if campaign.get("spec_drift")
     ]
+    # Subtracting the reviewed ones is the whole point: a line that counts
+    # every campaign ever flagged says "read them" forever, so it reads as a
+    # queue that reading never empties, and a queue nobody can empty stops
+    # being read at all. The two lines above it are already written this way.
+    drift_reviewed = {
+        row.get("target")
+        for row in read_jsonl(INTERVENTIONS)
+        if row.get("kind") == "spec-drift-reviewed"
+    }
+    unread = [campaign for campaign in flagged if campaign.get("campaign") not in drift_reviewed]
     if flagged:
-        print(f"  campaigns that edited design/ and code together: {len(flagged)} — read them")
+        print(
+            f"  campaigns that edited design/ and code together: {len(flagged)} recorded, "
+            f"{len(unread)} not yet read by a human"
+        )
     return 0
 
 
@@ -4825,10 +4870,25 @@ def selftest_cases() -> list[tuple[str, object]]:
         )
         assert ":!design" in DECISION_TAG_NOT_A_SITE and ":!state" in DECISION_TAG_NOT_A_SITE
 
-    def tag_counts_are_summed_per_file():
-        output = "harness/hj:2\ncrates/shared/src/proto:types.rs:1\n"
-        assert count_tagged_lines(output) == 3, "a colon in the path is not the count"
-        assert count_tagged_lines("") == 0
+    def tag_sites_survive_colons_in_both_other_fields():
+        # `\x00`, not `\0`: Python reads the latter as the start of an octal
+        # escape, so `"\0100"` is `"\x080"` and the fixture tests nothing.
+        output = (
+            "harness/hj\x00100\x00# DECISION-core-001: provisional\n"
+            "crates/shared/src/proto:types.rs\x007\x00// DECISION-core-002: provisional\n"
+        )
+        assert tag_sites(output) == [("harness/hj", 100), ("crates/shared/src/proto:types.rs", 7)]
+        assert tag_sites("") == []
+
+    def the_selftests_own_tag_fixtures_are_not_sites():
+        source = "import os\ndef selftest_cases():\n    diff = 'x'\n\n\ndef cmd_selftest():\n    pass\n"
+        assert selftest_line_range(source) == (2, 6), selftest_line_range(source)
+        assert selftest_line_range("def selftest_cases():\n    pass\n")[1] == sys.maxsize, (
+            "no function after it means the region runs to the end of the file"
+        )
+        assert selftest_line_range("def other():\n    pass\n") == (0, 0), (
+            "a file with no selftest excludes nothing, rather than excluding everything"
+        )
 
     def the_harness_is_code_for_drift_purposes():
         assert is_code_path("harness/hj"), "the loop building the detector is not exempt from it"
