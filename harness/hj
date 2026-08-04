@@ -1297,36 +1297,46 @@ def intervention_stats() -> dict:
 # Cheap measurements that go in every metrics row
 
 
+_METADATA: dict | None = None
+
+
+def cargo_metadata() -> dict:
+    """`cargo metadata --no-deps`, once per process.
+
+    Four callers want different slices of the same answer — the member names,
+    which of them are vendored, a package's binary targets, and whether
+    `heuristic_jump` declares a per-language feature — and the subprocess costs
+    about a tenth of a second, which `record` was paying twice per row before
+    any of them existed. An empty table stands for "there is no workspace
+    here", which is the state the gate has to be usable in.
+    """
+    global _METADATA
+    if _METADATA is None:
+        _METADATA = {}
+        if (REPO / "Cargo.toml").exists():
+            result = subprocess.run(
+                ["cargo", "metadata", "--no-deps", "--format-version", "1"],
+                cwd=REPO,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode == 0:
+                try:
+                    _METADATA = json.loads(result.stdout)
+                except json.JSONDecodeError:
+                    _METADATA = {}
+    return _METADATA
+
+
 def workspace_members() -> set[str]:
-    if not (REPO / "Cargo.toml").exists():
-        return set()
-    result = subprocess.run(
-        ["cargo", "metadata", "--no-deps", "--format-version", "1"],
-        cwd=REPO,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        return set()
-    return {package["name"] for package in json.loads(result.stdout)["packages"]}
+    return {package["name"] for package in cargo_metadata().get("packages", [])}
 
 
 def vendored_members() -> set[str]:
-    if not (REPO / "Cargo.toml").exists():
-        return set()
-    result = subprocess.run(
-        ["cargo", "metadata", "--no-deps", "--format-version", "1"],
-        cwd=REPO,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        return set()
     return {
         package["name"]
-        for package in json.loads(result.stdout)["packages"]
+        for package in cargo_metadata().get("packages", [])
         if f"{os.sep}vendor{os.sep}" in package["manifest_path"]
     }
 
@@ -1432,6 +1442,223 @@ def test_count(members: list[str]) -> int | None:
     except json.JSONDecodeError:
         return None
     return sum(len(suite.get("testcases", {})) for suite in listing.get("rust-suites", {}).values())
+
+
+# --------------------------------------------------------------------------
+# Binary size: a proxy in every row, the link delta at phase gates
+#
+# `design/loops.md` §11 makes it two numbers and they are not interchangeable.
+# The proxy is the stripped release size of `measure_<lang>`, which a loop can
+# compute in isolation — that is what `core.md` §7's crate split is for — and
+# which therefore goes in every row. The authoritative number is the
+# per-language link delta against `heuristic_jump`, which needs the whole
+# workspace built twice and belongs at a gate.
+#
+# §10's "`measure_<lang>` size covers the size gap" adds the three caveats that
+# shape the code below: the constant moves when `shared` or `measure_core`
+# does, so the ratchet re-baselines at those commits rather than blaming
+# whoever iterated next; the grammar dominates and has to be reported
+# separately, which `cargo bloat --crates` does approximately; and the link
+# delta stays authoritative when the two disagree.
+
+
+def binary_targets(package: str) -> list[str]:
+    """The `[[bin]]` names, which are not the package name here: `core.md` §9
+    renames every artifact to its hyphenated form, so `measure_rust` builds
+    `measure-rust`. Reading them out of the manifest rather than transliterating
+    the package name means a crate that renames its binary again is followed
+    rather than silently unmeasured."""
+    for entry in cargo_metadata().get("packages", []):
+        if entry.get("name") == package:
+            return [
+                target["name"]
+                for target in entry.get("targets", [])
+                if "bin" in target.get("kind", [])
+            ]
+    return []
+
+
+def stripped_size(binary: Path) -> int | None:
+    """The stripped size, measured on a copy.
+
+    §11 says *stripped* and the word is load-bearing: the workspace release
+    profile sets `debug = "limited"`, so the artifact on disk is about five
+    times the number the section means — 26.3 MB against 5.4 MB for
+    `measure-rust` when this was written. Stripping in place would also make
+    the next `cargo build` relink, so the copy is not a nicety.
+
+    No `strip` on PATH records nothing rather than the unstripped number. This
+    metric is ratcheted in phase 3 and a series that silently mixed the two
+    measurements would compare a stripped row against an unstripped one and
+    stop the loop over a missing tool. `loc` can afford `loc_counter` because
+    it is never gated; this cannot.
+    """
+    tool = shutil.which("strip") or shutil.which("llvm-strip")
+    if tool is None or not binary.exists():
+        return None
+    with tempfile.TemporaryDirectory() as directory:
+        copy = Path(directory) / binary.name
+        shutil.copy2(binary, copy)
+        result = subprocess.run([tool, str(copy)], capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            return None
+        return copy.stat().st_size
+
+
+def parse_bloat_crates(output: str) -> dict[str, int] | None:
+    """Per-crate byte attribution out of `cargo bloat --crates --message-format json`.
+
+    JSON rather than the text table, whose sizes are rendered as `1.1MiB` and
+    have already lost the precision a delta needs.
+
+    The shape is read defensively — a list of `{name, size}` under `crates` —
+    and anything else returns None, for `parse_tokei_rust`'s reason. cargo-bloat
+    is not a pinned dependency; it is an optional tool that may not be installed
+    and whose output nobody here controls, so a shape we do not recognise
+    records nothing rather than a number that is wrong invisibly. The attribution
+    is approximate even when it parses — symbols blur across inlining and
+    generics — which is why §10 keeps it beside the exact whole-binary number
+    instead of replacing it.
+    """
+    try:
+        table = json.loads(output)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(table, dict):
+        return None
+    crates = table.get("crates")
+    if not isinstance(crates, list):
+        return None
+    attributed: dict[str, int] = {}
+    for entry in crates:
+        if not isinstance(entry, dict):
+            continue
+        name, size = entry.get("name"), entry.get("size")
+        if isinstance(name, str) and isinstance(size, int) and not isinstance(size, bool):
+            attributed[name] = size
+    return attributed or None
+
+
+def bloat_crates(package: str, binary: str) -> dict[str, int] | None:
+    if shutil.which("cargo-bloat") is None:
+        return None
+    result = subprocess.run(
+        [
+            "cargo",
+            "bloat",
+            "--release",
+            "--crates",
+            "--message-format",
+            "json",
+            "-p",
+            package,
+            "--bin",
+            binary,
+        ],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return parse_bloat_crates(result.stdout) if result.returncode == 0 else None
+
+
+def binary_size(package: str) -> dict | None:
+    """§11's per-iteration proxy for one `measure_<lang>` package.
+
+    Both numbers §10 asks for: `stripped` is the whole binary, exact and
+    coarse; `crates` is the per-crate attribution, fuzzy and the only thing
+    that separates the handler from the grammar sitting next to it. A missing
+    `crates` key means cargo-bloat was unavailable, not that the handler
+    contributed nothing.
+    """
+    if package not in workspace_members():
+        return None
+    targets = binary_targets(package)
+    if not targets:
+        return None
+    binary = targets[0]
+    result = subprocess.run(
+        ["cargo", "build", "--release", "-p", package, "--bin", binary],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    size = stripped_size(REPO / "target" / "release" / binary)
+    if size is None:
+        return None
+    row: dict = {"package": package, "binary": binary, "stripped": size}
+    attributed = bloat_crates(package, binary)
+    if attributed:
+        row["crates"] = attributed
+    return row
+
+
+def measure_packages(config: LoopConfig) -> list[str]:
+    """The `measure_<lang>` packages whose size this loop's rows carry.
+
+    Gated on the loop declaring a `language` rather than on it owning the
+    crate, and the distinction costs the conformance loop its number
+    deliberately. §11's bullet says "the stripped release size of
+    `measure_<lang>`" under the heading **Per-language billing**, and the
+    number exists so a tuning loop can watch its own handler grow. A release
+    build with `lto = "thin"` and `codegen-units = 1` is minutes of machine
+    time per row; spending it on a loop that has no language, no frontier and
+    nothing that reads the series buys nothing. `hj size <loop>` measures on
+    demand for anyone who wants it anyway.
+    """
+    if not config.language:
+        return []
+    package = f"measure_{config.language}"
+    return [package] if package in workspace_members() else []
+
+
+# The crates whose size sits inside `measure_<lang>` as a constant the language
+# loop did not choose: `measure_core`'s LSP client, JSON handling and CLI, and
+# everything `shared` carries. §10 — "the constant moves when the conformance
+# loop changes `shared` or `measure_core`" — makes a commit to either the point
+# at which the ratchet starts over, so that a language loop is not failed for a
+# step somebody else's diff put in its series.
+SIZE_CONSTANT_PATHS = ["crates/shared", "crates/measure_core"]
+
+
+def size_rebaseline_commit() -> str | None:
+    return git("log", "-1", "--format=%H", "--", *SIZE_CONSTANT_PATHS, check=False).strip() or None
+
+
+def rows_since(rows: list[dict], commit: str | None) -> list[dict]:
+    """The rows recorded at or after `commit`, by reachability rather than by
+    position in the file. The metrics file is append-ordered, but a worker's
+    branch merges out of order often enough that "everything after the line
+    mentioning this sha" is not the same set."""
+    if commit is None:
+        return rows
+    reachable = set(git("rev-list", f"{commit}..HEAD", check=False).split())
+    reachable.add(commit)
+    return [row for row in rows if row.get("commit") in reachable]
+
+
+def size_baseline(owner: str, package: str) -> int | None:
+    """The size this loop may not exceed, out of its own history.
+
+    Lowest rather than highest, which inverts `highest_recorded`: the direction
+    is the other way round, since §11's phase-3 ratchet says neither number may
+    increase at all. Re-baselined at `size_rebaseline_commit`, and there is no
+    floor file for it — `harness/ratchets.toml` holds floors under metrics that
+    should rise, and a ceiling written by hand under one that should fall would
+    be a licence to grow rather than a guard against shrinking dishonestly.
+    """
+    sizes = [
+        row["binary"]["stripped"]
+        for row in rows_since(read_jsonl(metrics_path(owner)), size_rebaseline_commit())
+        if isinstance(row.get("binary"), dict)
+        and isinstance(row["binary"].get("stripped"), int)
+        and row["binary"].get("package") == package
+    ]
+    return min(sizes) if sizes else None
 
 
 # The ratchet baselines. `design/loops.md` §17 builds these rather than
@@ -2086,9 +2313,52 @@ def cmd_record(args: argparse.Namespace) -> int:
         "tests_removed": removed_tests_in(target, crate_paths(config))[:20],
         "provisional_decisions": provisional_decisions(),
     }
+    # §11's first of two numbers, and the only one a loop can compute in
+    # isolation. Absent for a loop with no language rather than null, so that a
+    # row from before this existed and a row that could not measure are not the
+    # same shape as one that measured nothing.
+    for package in measure_packages(config):
+        measured = binary_size(package)
+        if measured is not None:
+            row["binary"] = measured
     append_jsonl(metrics_path(config.owner), row)
     commit_harness_state([metrics_path(config.owner)], f"metrics row for {target[:8]}")
     print(json.dumps(row, sort_keys=True))
+    return 0
+
+
+def measurable_packages() -> list[str]:
+    return sorted(
+        name for name in workspace_members() if name.startswith("measure_") and binary_targets(name)
+    )
+
+
+def cmd_size(args: argparse.Namespace) -> int:
+    """§11's proxy, on demand.
+
+    `record` carries it for a loop that declares a language; this measures any
+    `measure_<lang>` in the workspace, which is what makes the number reachable
+    during a phase that has no tuning loop in it yet — and what lets a
+    conformance campaign see what its change to `shared` did to the constant
+    every language loop will later carry.
+    """
+    packages = [args.package] if args.package else measurable_packages()
+    if not packages:
+        print("size: no measure_<lang> package with a binary target in this workspace")
+        return 0
+    for package in packages:
+        measured = binary_size(package)
+        if measured is None:
+            print(f"size: {package} could not be measured (no strip, or the build failed)")
+            continue
+        line = f"size: {measured['binary']} {measured['stripped']} bytes stripped"
+        crates = measured.get("crates") or {}
+        if crates:
+            top = sorted(crates.items(), key=lambda item: -item[1])[:8]
+            line += "; " + ", ".join(f"{name} {size}" for name, size in top)
+        else:
+            line += "; no per-crate attribution (cargo-bloat is not installed)"
+        print(line)
     return 0
 
 
@@ -5148,6 +5418,47 @@ def selftest_cases() -> list[tuple[str, object]]:
         assert parse_tokei_rust('{"Rust":{"code":"413"}}') is None, "a string is not a count"
         assert parse_tokei_rust("[]") is None
 
+    def bloat_json_attributes_by_crate():
+        output = json.dumps(
+            {
+                "file-size": 5417048,
+                "text-section-size": 2100000,
+                "crates": [
+                    {"name": "std", "size": 900000},
+                    {"name": "lang_rust", "size": 41000},
+                    {"name": "tree_sitter_rust", "size": 380000},
+                ],
+            }
+        )
+        assert parse_bloat_crates(output) == {
+            "std": 900000,
+            "lang_rust": 41000,
+            "tree_sitter_rust": 380000,
+        }, "the grammar has to come out separately or the handler's signal drowns"
+
+    def an_unrecognised_bloat_shape_records_nothing():
+        assert parse_bloat_crates("error: no such subcommand: `bloat`") is None
+        assert parse_bloat_crates('{"crates":"1.1MiB"}') is None, "the text table is not a count"
+        assert parse_bloat_crates('{"crates":[{"name":"std","size":"900KiB"}]}') is None
+        assert parse_bloat_crates('{"crates":[]}') is None, "an empty table is unavailable, not zero"
+        assert parse_bloat_crates("[]") is None
+
+    def the_size_ratchet_reads_the_lowest_and_not_the_highest():
+        # The direction is the opposite of the test count's, and reusing
+        # `highest_recorded` here would ratchet the loop into growing.
+        assert highest_recorded([5, 9, 7], None) == 9
+        assert min([5, 9, 7]) == 5, "size may not increase, so the floor is the smallest seen"
+
+    def rows_since_reads_reachability_and_not_file_order():
+        rows = [{"commit": "aaa"}, {"commit": "bbb"}, {"commit": "ccc"}]
+        assert rows_since(rows, None) == rows, "no re-baseline commit means the whole history"
+
+    def a_loop_without_a_language_measures_no_binary():
+        assert measure_packages(_selftest_loop("core", None)) == [], (
+            "a release build with lto per row costs minutes, and §11's bullet "
+            "is under Per-language billing"
+        )
+
     def a_provisional_tag_in_the_harness_counts():
         assert ":!harness" not in DECISION_TAG_NOT_A_SITE, (
             "excluding the whole of harness/ makes the count structurally zero "
@@ -5534,6 +5845,10 @@ def main() -> int:
     p = sub.add_parser("record", help="append the metrics row for HEAD")
     p.add_argument("loop")
     p.set_defaults(run=cmd_record)
+
+    p = sub.add_parser("size", help="the stripped release size of measure_<lang> (loops.md §11)")
+    p.add_argument("package", nargs="?", help="default: every measure_* in the workspace")
+    p.set_defaults(run=cmd_size)
 
     p = sub.add_parser("render-prompt", help="render a loop's prompt")
     p.add_argument("loop")
