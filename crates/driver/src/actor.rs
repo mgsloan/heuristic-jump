@@ -239,6 +239,24 @@ impl Actor {
                 );
                 return Ok(());
             };
+            // `deps.md` §2: the inbox is unbounded because a bounded one would
+            // deadlock the transport rather than apply backpressure, so memory
+            // here is bounded only by `shim.md` §10's shed-load rule and the
+            // depth is "a number we should log and watch, not just assert
+            // about". This is the watching, and it is the only caller of
+            // `Receiver::len` — one of the two capabilities §1 names as its
+            // reason for choosing crossbeam over the standard library's
+            // channel.
+            //
+            // Read before the event is handled, so it is the queue as of
+            // dispatch rather than as of the return; and logged only when it is
+            // non-empty, because an empty inbox is the whole of normal
+            // operation and a line per event would bury the one thing this
+            // exists to surface — `core` falling behind what feeds it.
+            let depth = events.len();
+            if depth > 0 {
+                tracing::debug!(depth, "core is behind its inbox");
+            }
             self.handle(event)?;
         }
     }

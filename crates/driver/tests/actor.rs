@@ -21,6 +21,7 @@
     reason = "`clippy.toml`'s allow-expect-in-tests and allow-panic-in-tests reach only `#[test]` bodies, and the fixture builder, the handler doubles and the trace readers below are free functions and trait impls. Failing loudly is the point: a half-built fixture answers nothing, and an assertion about an absent trace row passes against a run that never wrote one."
 )]
 
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -346,6 +347,56 @@ fn the_loop_drains_its_channel_and_ends_when_the_wire_closes() {
         );
     };
     assert_eq!(field(row, "agreement"), "\"match_top1\"", "{row}");
+}
+
+/// `deps.md` §2: the inbox is `unbounded()` because a bounded one would
+/// deadlock the transport rather than apply backpressure, so "memory is bounded
+/// only by the shed-load rule in `shim.md` §10, [and] the `core` inbox length is
+/// a number we should log and watch, not just assert about".
+///
+/// Four events are queued before the loop starts, so the depth the loop reports
+/// counts *down* — which is what makes this an assertion about `Receiver::len`
+/// rather than about a constant somebody wrote next to the word `depth`. The
+/// fourth event leaves the inbox empty and must log nothing: an empty inbox is
+/// the whole of normal operation, and a depth line per event would bury the one
+/// case the number exists for.
+#[test]
+fn the_inbox_depth_is_logged_when_core_falls_behind() {
+    let fixture = Fixture::new("actor_depth", Proxying::Yes);
+    let target = fixture.definition_in("src/target.rs");
+    let actor = fixture.actor(Arc::new(Committing {
+        locations: vec![target.clone()],
+    }));
+
+    let (events, incoming) = crossbeam_channel::unbounded();
+    for event in fixture.session(1) {
+        events.send(event).expect("a queued event");
+    }
+    events
+        .send(Event::ChildAnswered {
+            editor_id: EditorRequestId::from_number(1),
+            result: child_answer(&target, TARGET),
+            latency: Micros(1_000),
+        })
+        .expect("a queued event");
+    drop(events);
+
+    let (logged, lines) = crossbeam_channel::unbounded();
+    tracing::subscriber::with_default(Capturing { events: logged }, || {
+        actor.run(&incoming).expect("the actor loop");
+    });
+
+    let depths: Vec<u64> = lines
+        .try_iter()
+        .filter_map(|line| depth_of(&line))
+        .collect();
+    assert_eq!(
+        depths,
+        vec![3, 2, 1],
+        "the loop reported {depths:?} for four events queued ahead of it. §2 withdrew the \
+         unbounded lint and left this as the only mechanism, so a `core` that falls behind its \
+         transport is visible here or nowhere"
+    );
 }
 
 /// §6: "divergence is reported to the user on `mismatch` only", through the
@@ -738,6 +789,71 @@ fn field(row: &str, name: &str) -> String {
         }
     }
     rest.to_owned()
+}
+
+/// A subscriber that keeps every event's fields as one line of text.
+///
+/// Hand-written rather than `tracing_subscriber::fmt`, and not for want of the
+/// crate: `driver` may not *name* `tracing_subscriber` anywhere, because
+/// `deps.md` §9 installs the subscriber in the crate that owns a program's
+/// command line and `seam.rs` scans every source file in the crate — this one
+/// included — to hold it. `tracing`'s own `Subscriber` trait needs no such
+/// permission.
+///
+/// A channel rather than a `Mutex<Vec<_>>` because `Subscriber` is `Send + Sync`
+/// and records through `&self`, which is the one shape in a test that tempts a
+/// lock. It is the same reason the `Checking` handler double below has a sender.
+struct Capturing {
+    events: crossbeam_channel::Sender<String>,
+}
+
+impl tracing::Subscriber for Capturing {
+    fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+
+    /// Nothing under test opens a span, and a subscriber must still mint ids.
+    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+
+    fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+    fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+
+    fn event(&self, event: &tracing::Event<'_>) {
+        let mut fields = Fields(String::new());
+        event.record(&mut fields);
+        self.events
+            .send(fields.0)
+            .expect("the test is still listening");
+    }
+
+    fn enter(&self, _span: &tracing::span::Id) {}
+
+    fn exit(&self, _span: &tracing::span::Id) {}
+}
+
+/// One event's fields, spelled `name=value` the way a `fmt` subscriber spells
+/// them, so an assertion reads like the log a human would be looking at.
+struct Fields(String);
+
+impl tracing::field::Visit for Fields {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        let _ = write!(self.0, " {}={value:?}", field.name());
+    }
+}
+
+/// The `depth` field of a captured line, if it has one. A scan rather than a
+/// parse, for the reason [`field`] is one: what is being asserted is the text.
+fn depth_of(line: &str) -> Option<u64> {
+    let start = line.find("depth=")? + "depth=".len();
+    line[start..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .ok()
 }
 
 fn definition_params(uri: &DocumentUri) -> Box<RawValue> {
