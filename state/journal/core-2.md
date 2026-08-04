@@ -186,3 +186,82 @@ Every one of the ten was controlled, and two of them told me something:
   message. Creating the log empty first moves the failure onto the assertion
   that says what is missing. **A control that fails for the wrong reason is a
   test whose message will be wrong when it matters.**
+
+## Campaign a9937015 — the last two rope-modifications gaps, and a red tree
+
+### The tree was red before I started, and it will happen again
+
+`harness/gate core` failed at `ac207d4` on a test I had not touched. Two loops
+had raced: `12e0d06` (deps, 18:10) asserted that no `crates/*` source but
+`heuristic_jump`'s names `tracing_subscriber`, and `087fa45` (core, 18:58) put
+`install_logging` in `measure_core::run`. Each campaign's gate was green when
+it ran; the tree was not.
+
+**Check `harness/gate core` before writing anything.** A red HEAD costs you the
+whole green-or-revert protocol: you cannot revert to green, and you cannot
+commit. I spent about fifteen turns on a collision that was nobody's target,
+and the only reason it was affordable is that I had not yet made any edits of
+my own to disentangle from it. `state/decisions/core-002.md` records both the
+question and the fact that the harness let it happen.
+
+The resolution shape, if this recurs: neither side is usually wrong, so it is a
+`class-b` record and the provisional choice is **whichever option changes no
+code**, since the other campaign's gap is already banked and reverting reopens
+it.
+
+### The audit's gap list describes a different tree
+
+`3dba8fae`, the commit the last audit ran against, **is not an ancestor of this
+branch.** So the gap list is computed against a sibling loop's tip. Three of
+the gaps I looked at were already closed here:
+`core.md#vendoring-the-zed-crates[dcb3592e02]` (by `01ee20a`),
+`deps.md#7-file-enumeration-and-watching[2b4c370ec5]` (by `12e0d06`), and by
+inspection also `deps.md#8`, `deps.md#12` and
+`deps.md#fxhashmap-and-fxhashset-are-the-default`.
+
+One of those was in my *assignment*, so the planner is reading the same stale
+list. **Verify a gap in the code before planning around it** — one grep, and it
+costs a turn where believing it costs a campaign.
+
+### Fetch upstream rather than reasoning about the diff
+
+The `add_newline` gap said the doubling was a conversion edit that changed
+arithmetic, which `rope-modifications.md` §3 forbids. It is not: upstream at
+`90d024b8` has the same line. `curl` to `raw.githubusercontent.com` works from
+this environment, and it is one turn — CHANGE-core-001 settled the nine-versus-
+eight test count the same way. **Any claim of the form "the sweep broke this"
+is answerable in one request.** The answer changed what the commit was: not a
+conversion repair but a recorded upstream bugfix, which is a different patch
+class in `vendor/README.md` and a different thing for a re-sync to know.
+
+The corollary is that fixing it needed a second decision the gap did not
+mention — `add_newline` also never incremented `chars`, where `newline()`
+twelve lines above sets `chars: 1`. Both had to go for the property to hold,
+and the property (`from(t)` + newline == `from(t + "\n")`) is what proves it
+rather than a hand-written expectation.
+
+### Measured, not recalled: cargo does not reject a bad profile spec
+
+`Cargo.toml` carried a comment saying `serde_json`'s `opt-level` bump was
+waiting because "cargo rejects a profile override naming a package that is not
+in the graph". It does not — it prints "profile package spec `x` in profile
+`dev` did not match any packages" and builds. Planting one took a turn. That
+turned a transcription test into a real one: the bumps are now checked against
+`Cargo.lock`, because a bump for a renamed or dropped crate reads as applied
+forever.
+
+### Not taken
+
+- **`deps.md#15-clippy-in-workspace-toml`.** The threshold §15 says is "tuned
+  in clippy.toml" is absent, and `clippy.toml` is denied to every loop. A
+  campaign has exactly two moves, one denied and one dishonest (deleting the
+  sentence). It is `core-003`, a `harness-request`, with the measurement done
+  and the patch verified against a copy of HEAD in `/tmp` so the human edit is
+  a paste. **Do not pick this as a target** until the record is answered.
+- **`deps.md#11-cli-parsing-clap[521f7f6b96]`** — the `--trace=<path>` flag is
+  genuinely absent from `measure_core/src/cli.rs`. Left because it needs
+  §11 plus §7 plus the record-writing path, which is fresh reading and so a
+  cheaper campaign somewhere else.
+- **Widening the `allowed-primitives.txt` check to assert emptiness.** Rejected:
+  the file exists for the re-sync case, and a test that fails when someone adds
+  a legitimate entry is a test that will be deleted rather than obeyed.
