@@ -52,6 +52,10 @@ const TARGET: &str = "fn target() {}\n";
 
 const DEFINITION: &str = "fn target() {}";
 
+/// What the same URI is reopened with: a different text, shorter than
+/// `DOCUMENT`, and still with a line 1 long enough for the query's position.
+const REOPENED: &str = "fn target() {}\n    // reopened\n";
+
 /// Where in `DOCUMENT` the query is asked. Inside `target()` on line 1; no
 /// handler double here reads it, but a position outside the document would be
 /// refused before any of them ran.
@@ -263,6 +267,43 @@ fn an_abstention_is_recorded_with_its_reason_in_the_stages() {
     assert!(
         fixture.outbound().is_empty(),
         "an abstention answered the editor, where `shim.md` §8 makes it silence"
+    );
+}
+
+/// `core.md` §2: "text and tree can never disagree", which the parse cache is
+/// the one thing that can break — and `core.md` §8.6 makes `didOpen` a resync
+/// rather than a continuation, so the document behind a URI can be replaced by
+/// a shorter one at a version we have already seen.
+///
+/// A cache that kept its entry across that resync would hand `TreeCache::seed`
+/// a tree of the *old* text as an incremental base with no edits, and
+/// tree-sitter — told nothing changed — would hand the handler back that same
+/// tree for text it was never parsed from. Nothing else would notice: the
+/// answer would be a location in a document that no longer says what the tree
+/// says it does.
+#[test]
+fn a_reopened_document_is_not_parsed_from_the_tree_of_the_old_one() {
+    let fixture = Fixture::new("actor_reopen", Proxying::No);
+    let (parsed, seen) = crossbeam_channel::unbounded();
+    let mut actor = fixture.actor(Arc::new(Checking { parsed }));
+
+    fixture.open(&mut actor);
+    fixture.request(&mut actor, 1);
+    actor
+        .handle(fixture.did_open(REOPENED))
+        .expect("the document reopened with a different text");
+    fixture.request(&mut actor, 2);
+
+    let spans: Vec<(usize, usize)> = seen.try_iter().collect();
+    assert_eq!(
+        spans,
+        vec![
+            (DOCUMENT.len(), DOCUMENT.len()),
+            (REOPENED.len(), REOPENED.len()),
+        ],
+        "a handler was given a tree that does not span its own text: the second query's \
+         tree is the first document's, reused as an incremental base for a text it was \
+         never parsed from"
     );
 }
 
@@ -541,16 +582,23 @@ impl Fixture {
                 roots: vec![self.root.clone()],
                 encoding: PositionEncoding::Utf16,
             },
-            Event::Notified {
-                notification: DocumentNotification::DidOpen,
-                params: raw(&format!(
-                    r#"{{"textDocument":{{"uri":"{}","languageId":"rust","version":1,"text":{}}}}}"#,
-                    self.uri("src/lib.rs"),
-                    json_string(DOCUMENT),
-                )),
-            },
+            self.did_open(DOCUMENT),
             self.definition(id),
         ]
+    }
+
+    /// `version` is 1 every time, deliberately: `core.md` §8.6 makes `didOpen`
+    /// a *resync*, so the text it carries need not continue the one we held and
+    /// its version need not be larger than the last one we saw.
+    fn did_open(&self, text: &str) -> Event {
+        Event::Notified {
+            notification: DocumentNotification::DidOpen,
+            params: raw(&format!(
+                r#"{{"textDocument":{{"uri":"{}","languageId":"rust","version":1,"text":{}}}}}"#,
+                self.uri("src/lib.rs"),
+                json_string(text),
+            )),
+        }
     }
 
     fn definition(&self, id: i64) -> Event {
@@ -805,6 +853,41 @@ impl LanguageHandler for Declining {
     }
 
     fn goto_definition(&self, _query: &Query<'_>) -> Result<Outcome, Error> {
+        Ok(Outcome::Abstain {
+            reason: AbstainReason::NoCandidates,
+            strata: Strata::from_reference(Stratum::LocalBinding),
+            trace: Trace::new(),
+        })
+    }
+}
+
+/// A handler that answers nothing and reports one thing: how far its tree
+/// reaches, beside how far its text does. `core.md` §2 says those cannot
+/// disagree, and a stale incremental base is the one way to make them.
+struct Checking {
+    parsed: crossbeam_channel::Sender<(usize, usize)>,
+}
+
+impl LanguageHandler for Checking {
+    fn language_ids(&self) -> &'static [LanguageId] {
+        LANGUAGE_IDS
+    }
+
+    fn file_extensions(&self) -> &'static [FileExtension] {
+        FILE_EXTENSIONS
+    }
+
+    fn grammar(&self) -> Language {
+        grammar()
+    }
+
+    fn goto_definition(&self, query: &Query<'_>) -> Result<Outcome, Error> {
+        self.parsed
+            .send((
+                query.doc.tree().root_node().end_byte(),
+                query.doc.text.len().0,
+            ))
+            .expect("the test is still listening");
         Ok(Outcome::Abstain {
             reason: AbstainReason::NoCandidates,
             strata: Strata::from_reference(Stratum::LocalBinding),

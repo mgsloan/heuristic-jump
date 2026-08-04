@@ -34,7 +34,8 @@ use std::time::Instant;
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, select};
 use serde_json::value::RawValue;
 use shared::proto::{
-    DefinitionParams, DefinitionResult, PositionEncoding, ShowMessageParams, WireLocation,
+    DefinitionParams, DefinitionResult, NotifiedDocument, PositionEncoding, ShowMessageParams,
+    WireLocation,
 };
 use shared::record::{Answered, ChildAnswer, QueryContext, QueryRecord, definition_labels, micros};
 use shared::{
@@ -310,17 +311,25 @@ impl Actor {
             tracing::warn!(%notification, "a document notification arrived before the negotiation");
             return;
         };
+        // Copied out rather than held, so the borrow of `negotiated` ends here
+        // and the arms below can take `&mut self`.
+        let encoding = negotiated.encoding;
         let synced = match notification {
-            DocumentNotification::DidOpen => self.documents.opened(params, &self.registry),
+            // Three of the four invalidate the parse cache, and `didOpen` is
+            // the one it would be easy to leave out. It is a *resync*
+            // (`core.md` §8.6), so the text it carries need not be a
+            // continuation of the one we held and its version need not be
+            // larger — a document reopened at version 1 with a cached tree at
+            // version 3 would otherwise leave `TreeCache::seed` handing out
+            // that tree as an incremental base for text it was never parsed
+            // from.
+            DocumentNotification::DidOpen => {
+                self.forget_trees(notification, params);
+                self.documents.opened(params, &self.registry)
+            }
             DocumentNotification::DidChange => {
-                let synced = self.documents.changed(params, negotiated.encoding);
-                // Every cached tree for this document, dropped: see `edits`.
-                if let Ok(changed) =
-                    serde_json::from_str::<shared::proto::NotifiedDocument>(params.get())
-                {
-                    self.trees.forget(&changed.text_document.uri);
-                }
-                synced
+                self.forget_trees(notification, params);
+                self.documents.changed(params, encoding)
             }
             DocumentNotification::DidSave => {
                 // The half that needs a worker's read is not wired: there is no
@@ -339,15 +348,34 @@ impl Actor {
                 }
             }
             DocumentNotification::DidClose => {
-                if let Ok(closed) =
-                    serde_json::from_str::<shared::proto::NotifiedDocument>(params.get())
-                {
-                    self.trees.forget(&closed.text_document.uri);
-                }
+                self.forget_trees(notification, params);
                 self.documents.closed(params)
             }
         };
         tracing::trace!(%notification, ?synced, "a document notification was applied");
+    }
+
+    /// Every cached tree for the document a notification names.
+    ///
+    /// The document is read out on its own rather than taken from whatever the
+    /// notification deserialized to, for the reason `Documents::unreadable`
+    /// reads it that way: it is the one field that is still there when the
+    /// modelling mistake is somewhere in `contentChanges`.
+    fn forget_trees(&mut self, notification: DocumentNotification, params: &RawValue) {
+        match serde_json::from_str::<NotifiedDocument>(params.get()) {
+            Ok(named) => self.trees.forget(&named.text_document.uri),
+            // Nothing said which document changed, so there is none to forget
+            // — and nothing to leak either: `Documents` distrusts every open
+            // document on this message (§8.6's `Unattributable`), a distrusted
+            // document yields no `Trusted` and so no seed, and the `didOpen`
+            // that restores trust comes back through here and forgets the
+            // trees itself.
+            Err(source) => tracing::warn!(
+                %notification,
+                %source,
+                "a state-bearing message named no document, so no parse cache entry was dropped"
+            ),
+        }
     }
 
     /// Steps 1 to 3 of `shim.md` §7's flow, minus the forwarding: the request
