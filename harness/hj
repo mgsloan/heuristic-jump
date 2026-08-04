@@ -147,7 +147,18 @@ CAMPAIGN_MAX_LIFETIME_SECONDS = 6 * 3600
 #       count delta. Strictly additive: a campaign that scored under 1
 #       still scores, and the backtest confirms rule 2 reclassifies none
 #       of the 29 historical campaigns.
-PROGRESS_RULE = 2
+#   3 — attribution by the gap, not by the round. Rule 2 read "this campaign
+#       named a section the audit looked at, and *some* gap closed
+#       somewhere", so a campaign that closed none of the gaps it named was
+#       credited whenever a sibling worker closed one. Rule 3 intersects the
+#       ids the campaign named with the ids that closed, and where it named a
+#       section rather than a gap, with the gaps that closed *in that
+#       section*. Strictly a tightening: over the 50 closed campaigns it
+#       moves the attributed *term* on 13 and the progress *verdict* on
+#       none, because every campaign it takes the audit-side term from had
+#       already scored at close. `state/decisions/harness-010.md`.
+# DECISION-harness-010: provisional
+PROGRESS_RULE = 3
 
 OUTCOMES = ("confirmed", "falsified", "no-movement", "partial", "budget", "crashed", "error")
 
@@ -2354,6 +2365,7 @@ def cmd_audit_merge(args: argparse.Namespace) -> int:
         for identifier, value in open_gap_ids(config.docs).items()
         if value[0] in audited
     }
+    closed = {identifier: before[identifier][0] for identifier in set(before) - set(after)}
     append_jsonl(
         GAP_LOG,
         {
@@ -2361,11 +2373,20 @@ def cmd_audit_merge(args: argparse.Namespace) -> int:
             "commit": head_sha(),
             "sections_audited": sorted(audited),
             "opened": sorted(set(after) - set(before)),
-            "closed": sorted(set(before) - set(after)),
+            "closed": sorted(closed),
+            # The section each closed gap was in, which `closed` cannot say: an
+            # id is a hash of the section and the claim, and a gap that has
+            # closed is no longer in the audit to look up. Attribution by named
+            # gap needs it (`gap_attribution`), so it is recorded at the one
+            # moment it is still knowable. Additive — `closed` stays as it was,
+            # because rows written before this exist and are the record.
+            "closed_gaps": [
+                {"id": identifier, "section": closed[identifier]} for identifier in sorted(closed)
+            ],
             "persisted": len(set(before) & set(after)),
         },
     )
-    settled = settle_progress(config, stamp, sorted(audited), sorted(set(before) - set(after)))
+    settled = settle_progress(config, stamp, sorted(audited), closed)
     commit_harness_state(
         [audit_path(doc) for doc in config.docs] + [GAP_LOG] + ([sessions_path()] if settled else []),
         f"audit of {', '.join(config.docs)}",
@@ -4165,6 +4186,58 @@ def replay_progress(rule: int) -> list[dict]:
                 if tests_only
                 else "none"
             )
+        elif rule == 3:
+            started = opened.get("started") or ""
+            window = [
+                audit
+                for audit in read_jsonl(GAP_LOG)
+                if started < (audit.get("ts") or "") <= (ended or "￿")
+            ]
+            # Per audit rather than over the union of the window, because rule
+            # 2 was per audit: a section reached by one audit and a gap closed
+            # by a later one is not that campaign's gap, and unioning first
+            # would make rule 3 *looser* than the rule it tightens in exactly
+            # that case. The same `gap_attribution` decides live and in replay.
+            attributed = ""
+            for audit in window:
+                closed_then = {
+                    identifier: "" for identifier in audit.get("closed") or []
+                } | {
+                    entry["id"]: entry.get("section") or ""
+                    for entry in audit.get("closed_gaps") or []
+                }
+                attributed = (
+                    gap_attribution(merged, closed_then, set(audit.get("sections_audited") or []))
+                    or attributed
+                )
+            cleaned = merged.get("sections_clean", 0) > opened.get("sections_clean", 0)
+            tests_only = (
+                not window
+                and tests_before is not None
+                and tests_after is not None
+                and tests_after > tests_before
+            )
+            # `settle_progress` ORs in what the close row already decided, and
+            # rules 1 and 2 modelled only the audit-side term. That was near
+            # enough while the audit-side term was loose; under rule 3 it is
+            # not, and the difference is not cosmetic — the audit-side term
+            # alone reports a longest no-progress run of 10 for campaigns the
+            # loop scored at close and never came near stalling on. The close
+            # row is read directly rather than from `merged`, which also
+            # carries the settled row's answer and would make this circular.
+            carried = bool(closed.get("progress"))
+            verdict = bool(cleaned or attributed or tests_only or carried)
+            term = (
+                "sections_clean"
+                if cleaned
+                else attributed
+                if attributed
+                else "tests_unmeasured"
+                if tests_only
+                else "carried"
+                if carried
+                else "none"
+            )
         else:
             die(f"progress-replay: no rule {rule}")
         out.append(
@@ -4245,8 +4318,75 @@ def earned_consolidation_credit(merged: dict, opened: dict, current: dict) -> bo
     return True
 
 
+# A gap is named `anchor[id]` everywhere a campaign is asked to name one — in
+# the prompt's gap list, in `hj claim`, and on the TARGET line. The id is
+# `gap_id`'s ten hex characters.
+GAP_REFERENCE = re.compile(r"\[([0-9a-f]{10})\]\s*$")
+
+
+def named_targets(merged: dict) -> tuple[set[str], set[str], set[str]]:
+    """What a campaign said it was working on: every anchor, the anchors it
+    named *without* a gap id, and the gap ids.
+
+    Two sources, because a campaign can be handed targets and can also choose
+    them: `claimed` is what the planner assigned and `hj claim` granted, and
+    `target` is the TARGET line it closed with. A loop that runs one campaign
+    at a time has no planner, so `claimed` is empty and the TARGET line is the
+    whole of it.
+
+    The split matters for attribution. Naming `a#x[abc1234567]` is a claim
+    about one gap and is judged on that gap; naming `a#x` is a claim about the
+    section and is judged on any gap in it.
+    """
+    anchors: set[str] = set()
+    loose: set[str] = set()
+    ids: set[str] = set()
+    for field in [merged.get("target") or ""] + list(merged.get("claimed") or []):
+        for piece in str(field).split(","):
+            piece = piece.strip()
+            if not piece:
+                continue
+            reference = GAP_REFERENCE.search(piece)
+            if reference:
+                ids.add(reference.group(1))
+                anchors.add(piece[: reference.start()].strip())
+            else:
+                anchors.add(piece)
+                loose.add(piece)
+    return anchors, loose, ids
+
+
+def gap_attribution(merged: dict, closed: dict[str, str], audited: set[str]) -> str:
+    """Which gap closure, if any, this campaign gets credit for.
+
+    `design/loops.md` section 5: "attribution is by named gap rather than by
+    count delta". Rule 2 implemented the *round* version of that — the
+    campaign named a section the audit reached, and the round closed something
+    — which credits a campaign for a sibling worker's work and was the open
+    gap on that section. This is the exact version.
+
+    `closed` maps a closed gap's id to its section. The section is what the
+    gap log did not carry: an id is a hash of the section and the claim, so it
+    cannot be read back out, and a gap that has closed is no longer in the
+    audit to look up. Rows written before `closed_gaps` existed map to the
+    empty string, and those fall back to the round-wide reading rather than
+    silently scoring zero — a historical row cannot be re-attributed, and
+    pretending otherwise would rewrite the record rather than the rule.
+    """
+    _, loose, ids = named_targets(merged)
+    if ids & set(closed):
+        return "gap_named"
+    sections = {section for section in closed.values() if section}
+    if loose & sections:
+        return "gap_named"
+    if ids or sections:
+        return ""
+    anchors, _, _ = named_targets(merged)
+    return "gap_named_round" if (anchors & audited and closed) else ""
+
+
 def settle_progress(
-    config: LoopConfig, stamp: str, audited: list[str], closed_ids: list[str]
+    config: LoopConfig, stamp: str, audited: list[str], closed: dict[str, str]
 ) -> int:
     """Re-judge campaigns that closed since the previous audit.
 
@@ -4269,6 +4409,7 @@ def settle_progress(
     five. A campaign gets credit for a gap it named closing, and gaps closed
     that nobody named get round credit and no campaign credit, which is what
     makes padding a campaign with unrelated work score worse than not.
+    `gap_attribution` is where "a gap it named" is decided.
     """
     rows: dict[str, list[dict]] = {}
     for row in session_rows():
@@ -4291,15 +4432,10 @@ def settle_progress(
         if merged.get("settled_at"):
             continue
         opened = campaign_rows[0]
-        targets = {
-            anchor.strip()
-            for anchor in (merged.get("target") or "").split(",")
-            if anchor.strip()
-        }
-        named = bool(targets & audited_sections) and bool(closed_ids)
+        attributed = gap_attribution(merged, closed, audited_sections)
         cleaned = current["sections_clean"] > opened.get("sections_clean", 0)
         consolidated = earned_consolidation_credit(merged, opened, current)
-        progress = bool(cleaned or named or consolidated or merged.get("progress"))
+        progress = bool(cleaned or attributed or consolidated or merged.get("progress"))
         append_jsonl(
             sessions_path(),
             {
@@ -4312,8 +4448,8 @@ def settle_progress(
                 "settled_term": (
                     "sections_clean"
                     if cleaned
-                    else "gap_named"
-                    if named
+                    else attributed
+                    if attributed
                     else "consolidation"
                     if consolidated
                     else "carried"
@@ -5993,6 +6129,39 @@ def selftest_cases() -> list[tuple[str, object]]:
                     f"harness/{name} logs {kind!r}, which is not in KNOWN_KINDS; "
                     "cmd_intervene would die on it and the caller would swallow the failure"
                 )
+
+    def a_named_gap_is_read_off_the_target_line_and_the_claim():
+        anchors, loose, ids = named_targets(
+            {"target": "a.md#one[0123456789], a.md#two", "claimed": ["b.md#three[abcdef0123]"]}
+        )
+        assert ids == {"0123456789", "abcdef0123"}, ids
+        assert anchors == {"a.md#one", "a.md#two", "b.md#three"}, anchors
+        assert loose == {"a.md#two"}, "a section named with an id is a claim about that gap"
+        assert named_targets({}) == (set(), set(), set())
+
+    def a_sibling_closing_a_gap_does_not_credit_this_campaign():
+        # The whole of §5's "attribution is by named gap rather than by count
+        # delta". Rule 2 credited any campaign that named an audited section
+        # whenever the round closed anything at all, so three workers scored
+        # off one worker's gap.
+        campaign = {"target": "a.md#one[0123456789]"}
+        elsewhere = {"9999999999": "b.md#two"}
+        assert gap_attribution(campaign, elsewhere, {"a.md#one", "b.md#two"}) == ""
+        assert gap_attribution(campaign, {"0123456789": "a.md#one"}, {"a.md#one"}) == "gap_named"
+
+    def naming_a_section_is_judged_on_that_sections_gaps():
+        campaign = {"target": "a.md#one"}
+        assert gap_attribution(campaign, {"9999999999": "a.md#one"}, {"a.md#one"}) == "gap_named"
+        assert gap_attribution(campaign, {"9999999999": "b.md#two"}, {"a.md#one"}) == ""
+
+    def a_gap_log_row_with_no_sections_falls_back_rather_than_scoring_zero():
+        # Rows written before `closed_gaps` existed map a closed id to no
+        # section. Scoring them zero would rewrite the record rather than the
+        # rule, so they get the round-wide reading rule 2 used.
+        campaign = {"target": "a.md#one"}
+        assert gap_attribution(campaign, {"9999999999": ""}, {"a.md#one"}) == "gap_named_round"
+        assert gap_attribution(campaign, {"9999999999": ""}, {"b.md#two"}) == ""
+        assert gap_attribution(campaign, {}, {"a.md#one"}) == "", "nothing closed is not credit"
 
     def a_shell_scan_reads_literals_and_skips_what_it_cannot():
         script = 'hj intervene --kind loop-killed --target x\nhj intervene --kind "$computed" --t\n'
