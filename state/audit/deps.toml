@@ -57,27 +57,15 @@ last_audited = "2026-08-04T20:33:33+00:00"
 
 [section."deps.md#7-file-enumeration-and-watching"]
 state = "clean"
-last_audited = "2026-08-04T04:57:16+00:00"
+last_audited = "2026-08-04T21:12:07+00:00"
 
 [section."deps.md#8-parse-cache"]
-state = "gaps"
-last_audited = "2026-08-04T20:33:33+00:00"
-
-  [[section."deps.md#8-parse-cache".gap]]
-  claim = "the cache is keyed by `(uri, version)` for open docs and `(path, mtime, len)` for disk files"
-  found = "only the open-document half exists; `ProjectView::parse` has no cache and no key at all, ruled by conformance-005, and \u00a78 carries no CHANGE- record for it"
-  where = "crates/shared/src/project.rs:533"
-  found_at = "187307eeed4c196ebb471f4a3e8d46f60e18a53a"
+state = "clean"
+last_audited = "2026-08-04T21:12:07+00:00"
 
 [section."deps.md#fxhashmap-and-fxhashset-are-the-default"]
-state = "gaps"
-last_audited = "2026-08-04T00:27:32+00:00"
-
-  [[section."deps.md#fxhashmap-and-fxhashset-are-the-default".gap]]
-  claim = "a type alias, not a naked import: shared exports `pub type Map<K, V> = FxHashMap<K, V>` and `pub type Set<T> = FxHashSet<T>`"
-  found = "no `pub type` exists anywhere in the workspace; all five sites import rustc_hash::FxHashMap/FxHashSet directly. A scan for `rustc_hash::` outside shared would make this mechanical"
-  where = "crates/shared/src/shared.rs:49"
-  found_at = "3dba8fae70beafb43851557f5d67a54115d53791"
+state = "clean"
+last_audited = "2026-08-04T21:12:07+00:00"
 
 [section."deps.md#9-logging-and-tracing"]
 state = "clean"
@@ -138,4 +126,4 @@ last_audited = "2026-08-04T05:37:37+00:00"
 
 [section."deps.md#15-clippy-in-workspace-toml"]
 state = "clean"
-last_audited = "2026-08-04T04:57:16+00:00"
+last_audited = "2026-08-04T21:12:07+00:00"

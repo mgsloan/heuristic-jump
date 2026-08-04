@@ -25,11 +25,11 @@ last_audited = "2026-08-04T20:33:33+00:00"
 
 [section."rope-modifications.md#the-newtypes-are-opaque"]
 state = "clean"
-last_audited = "2026-08-04T00:27:32+00:00"
+last_audited = "2026-08-04T21:12:07+00:00"
 
 [section."rope-modifications.md#the-constructors-take-newtypes"]
 state = "clean"
-last_audited = "2026-08-04T00:27:32+00:00"
+last_audited = "2026-08-04T21:12:07+00:00"
 
 [section."rope-modifications.md#the-signatures"]
 state = "clean"
@@ -41,15 +41,20 @@ last_audited = "2026-08-04T04:57:16+00:00"
 
 [section."rope-modifications.md#the-dimension-impls"]
 state = "clean"
-last_audited = "2026-08-04T00:27:32+00:00"
+last_audited = "2026-08-04T21:12:07+00:00"
+
+  [[section."rope-modifications.md#the-dimension-impls".minor]]
+  claim = "sum_tree needs no changes at all, and stays a pristine copy"
+  note = "the impls are in rope and sum_tree needed nothing for them, but the vendored sum_tree is not pristine: vendor/README.md records tree_map.rs deleted, ztracing->tracing in two files, and the ctor/zlog test logger deleted"
+  where = "vendor/sum_tree/src/sum_tree.rs:11"
 
 [section."rope-modifications.md#offsets-and-lengths-are-separate-types-and-bytelen-is-shared"]
 state = "clean"
-last_audited = "2026-08-04T00:27:32+00:00"
+last_audited = "2026-08-04T21:12:07+00:00"
 
 [section."rope-modifications.md#folding-vendorutil-in"]
 state = "clean"
-last_audited = "2026-08-04T00:27:32+00:00"
+last_audited = "2026-08-04T21:12:07+00:00"
 
 [section."rope-modifications.md#5-what-deliberately-does-not-change"]
 state = "clean"
@@ -57,7 +62,7 @@ last_audited = "2026-08-04T20:33:33+00:00"
 
 [section."rope-modifications.md#lineindex-is-ropes-and-shared-re-exports-it"]
 state = "clean"
-last_audited = "2026-08-04T00:27:32+00:00"
+last_audited = "2026-08-04T21:12:07+00:00"
 
 [section."rope-modifications.md#6-consequences-for-re-syncing"]
 state = "clean"
@@ -73,7 +78,7 @@ last_audited = "2026-08-04T20:33:33+00:00"
 
 [section."rope-modifications.md#consequences-for-the-dependency-plan"]
 state = "clean"
-last_audited = "2026-08-04T00:27:32+00:00"
+last_audited = "2026-08-04T21:12:07+00:00"
 
 [section."rope-modifications.md#beyond-upstreams-tests"]
 state = "clean"
