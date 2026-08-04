@@ -502,3 +502,51 @@ wrong sentence is absent: the members that depend on `similarity` are exactly
 `measure_core` and watched it fail.
 
 **Campaign:** 20bbc1bf-03c5-4d3c-afda-a5c5791d47ce
+
+## CHANGE-core-019 — core.md#two-modes-collect-and-replay — three subcommands, and enumeration is not `collect`'s first half
+
+**Contradiction:** `#two-modes-collect-and-replay` said "`measure` therefore
+has two subcommands, and only the first needs a server", and described
+`collect` as "spawn the server, drive `didOpen` across the repository,
+**enumerate identifiers**, ask the LSP, write `truth.jsonl`".
+
+[`#the-command-line`](../../design/core.md#the-command-line), 270 lines further
+down the same document, opens "**Three** subcommands, one per stage of
+`data-collection.md`", prints `measure-<lang> enumerate --corpus <dir> ...`
+first of the three, and gives it its own bullet: "**`enumerate`** parses each
+repository, samples positions, writes `positions/<repo>.jsonl`."
+
+`crates/measure_core/src/cli.rs:19` has the three-way `Command` enum, and its
+`Collect` carries no limit and no seed — the two flags enumeration needs — so
+the code cannot express the two-subcommand reading either.
+
+**Resolution:** the three-subcommand reading, because it is the only one
+`data-collection.md` allows and the disagreement is not really about how many
+subcommands there are.
+
+[`data-collection.md` §2](../../design/data-collection.md) is titled "Positions
+are enumerated once per repository" and its first line is "**Not once per
+server.** `positions/<name>.jsonl` is written first, and every server run
+consumes the same file", because "if each server run enumerated its own
+positions, two servers' answers could not be aligned, and the agreement /
+divergence split that `core.md` §7 builds the whole per-server design on would
+have nothing to join on". Enumeration inside `collect` *is* enumeration once
+per server: `collect` takes `--server`, so its output would be a function of
+which server it was collecting against. So the stale text was not a smaller
+version of the same design, it was one that takes away the join
+`#7-observability-and-the-corpus-scan` rests on.
+
+This trades nothing off in the other direction either, because the section's
+own argument survives the correction untouched: the split it exists to defend
+is the *mode* split — a slow server-driven collection frozen once, against a
+serverless replay that can be run every iteration — and that is still two, with
+`enumerate` on `replay`'s side of it. Which is why the heading, and the "two
+modes" framing under it, are unchanged: the section now says the modes are a
+two-way split and the subcommands a three-way one, and that they are not the
+same partition.
+
+**No code moved with it, and none was read for it beyond confirming the enum
+has three arms.** The resolution is decided entirely by two other design
+documents, one of which is this one.
+
+**Campaign:** 9110a409-f685-4569-ba82-fbf938928727

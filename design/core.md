@@ -1129,14 +1129,30 @@ and it produces an answer that does not change when the handler changes. The
 proper LSP's answer for a given position at a given commit is a *fact about
 the corpus*, not about our code, so it is collected once and frozen.
 
-`measure` therefore has two subcommands, and only the first needs a server:
+`measure` therefore has two *modes* — one that needs a server and one that does
+not — across the three subcommands [the command line](#the-command-line) lists:
 
-* **`collect`** — spawn the server, drive `didOpen` across the repository,
-  enumerate identifiers, ask the LSP, write `truth.jsonl`. Slow, run rarely,
-  output is a frozen artifact in the corpus root, never in the repository.
+* **`collect`** — spawn the server, drive `didOpen` across the repository, walk
+  the enumerated positions asking the LSP for each, write `truth.jsonl`. Slow,
+  run rarely, output is a frozen artifact in the corpus root, never in the
+  repository. The only mode that needs a server.
 * **`replay`** — read `truth.jsonl`, reconstruct the `DocumentSnapshot` and
   `Query` for each recorded position, run the handler, classify agreement,
   emit the metric table. No server, no network, no `didOpen` round trips.
+
+**Enumerating the positions is neither of these, and that is why it is a third
+subcommand rather than the first half of `collect`.** An earlier revision of
+this section put it inside `collect`, which cannot be right: positions are
+enumerated **once per repository and not once per server**
+([`data-collection.md` §2](data-collection.md)), and every server run consumes
+the same `positions/<repo>.jsonl`. Enumerating inside `collect` makes the
+position set a function of which server was being collected against, and then
+two servers' answers cannot be aligned — which takes away the join that the
+per-server agreement and divergence split in
+[section 7](#7-observability-and-the-corpus-scan) is built on. So the modes are
+a two-way split and the subcommands are a three-way one, and they are not the
+same partition: `enumerate` shares `replay`'s side of the mode split, since it
+reads the grammar and the repository and nothing else.
 
 The record in this section is the join, and the two modes supply its two
 halves: `collect` supplies the oracle's — the answer and how long it took —
