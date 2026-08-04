@@ -1,65 +1,60 @@
 # Findings — core, worker 3
 
-## The stale-gap tax is now a decision record. Stop re-deriving it.
+## The gap list is mostly stale. Work the *section*, not the gap.
 
-Three campaigns in a row opened by verifying gaps that were already closed.
-`core-019` (`harness-request`, open) carries the measurement — seven of nine
-`core.md` gaps have a `where:` file that moved after the audit that opened
-them — and the provisional rule: **before claiming, compare `last_audited` in
-`state/audit/core.toml` against `git log -1 -- <where-file>`.** One `python3`
-over the file covers every gap and costs one turn. Verified closed and still
-listed: `#what-the-templates-handler-does[9adb0be268]`,
-`#the-oracle-is-the-server-being-proxied[eb6f4618da]`,
-`#7-observability[bd3003d0fb]`'s "nothing in `crates/driver` emits one"
-(`driver/src/trace.rs` does). Do not spend a campaign on these.
+Five of five gaps I checked this round were closed already; `core-019` carries
+the measurement and is open. The check is one turn — for each
+`state/audit/*.toml` gap, compare `last_audited` against
+`git log -1 <its where-file>` — but it is **necessary, not sufficient, in both
+directions**: `deps.md#8-parse-cache` reads "fresh" and is closed, because the
+fix landed in `driver/tests/snapshots.rs` and the gap points at
+`driver/src/trees.rs`. The timestamp tells you which gaps deserve a grep; the
+grep decides.
 
-The freshest gaps are the real ones and they get claimed first. When
-`hj claim` refuses twice, the list is telling you the round is over — that is
-not contention, it is a stale list making two live items look scarce.
+**A stale assignment is still worth taking.** Re-read the *section* with the
+gap's claim in hand and the defect is usually one step further along the same
+sentence. That produced every commit this round. `6bd547104d` named a
+checkpoint bug that was fixed; the same window's *other* end was not — a
+`collect` killed between its final append and `Writer::finish` held every answer
+and said `complete: false` forever, and the resume returned "already collected"
+without lifting it, leaving `--restart` as the only remedy.
 
-## `#the-table-is-not-enough` is closed as far as a loop can close it
+## Verified closed, do not re-take
 
-`--records`, both digest keys, unfiltered rows, held-out isolation, the
-records↔table reconciliation and the six sample fields are all asserted in
-`crates/measure_core/tests/pipeline.rs`. What is left is `harness/measure`
-itself: `core-001`, open, `harness/**` denied. **Do not write the digest in
-`measure_core`** — the section says digesting is the harness's job, "the same
-split that keeps `measure_core` ignorant of `state/`", so a digest there would
-satisfy an auditor and destroy the thing the sentence protects.
+`rope-modifications.md#the-signatures` (out param is `CharCount`,
+`allowed-primitives.txt` empty, asserted at `newtype_api.rs:411`);
+`deps.md#12-testing`; `#fxhashmap` (`shared.rs:85`); `#8-parse-cache` (`lru` is
+in, bounded by entries and bytes); `#14`'s profile gap (all five packages
+bumped); the `high-level.md` half of the licensing gap.
 
-## Reconciling two artifacts is how you find a wrong verdict
+## Where the live gaps are: `crates/driver/src/actor.rs`, and it is one campaign
 
-The bug this found: `replay` classified `agreement` for rows the handler never
-answered, so an abstention the oracle answered was `mismatch` in the records
-and nothing in the table — a precision loss where §7 counts coverage loss. The
-rule was already written, in `ChildAnswer`'s doc comment, and unexecutable.
+The only two I could not close cheaply — `deps.md#2-channels[8e707386b4]`
+(nothing reads `Receiver::len()`) and whatever remains of §7's emission — are
+both there, which matches what core-1 and core-2 concluded independently. Take
+it as one target or not at all.
 
-Generalise it: **`shared` is full of doc comments stating rules that no test
-runs.** Where one names a rule, the cheap high-yield move is to find the two
-places that must agree about it and assert they do. The tell is a comment that
-says "which is a different fact from" or "must not be" — that phrasing is a
-rule nobody could check. Same defect family as last campaign's "docs naming
-the wrong mechanism", one level worse: a rule stated and not enforced, rather
-than a mechanism named and not real.
+`deps.md#14` cannot go clean this phase: `deny.toml` is outside every loop's
+owned paths (measured — the gate refuses it at step 4) and `cargo deny` is not
+installed. That is `core-023`.
 
-## Fixtures: one file hides joins, one handler hides denominators
+## Two open escalations are mine
 
-`pipeline.rs`'s fixtures were all a single file and mostly non-refining
-handlers, and both hid assertions. A join on `(file, offset)` is
-indistinguishable from one on `offset` alone with one file (`OTHER_SOURCE` now
-puts a different identifier at the same byte). `Row::precision`'s denominator —
-the three agreement counters, not `committed` — is invisible unless a handler
-*refines*, because otherwise the two coincide; `ReportingHandler` against a
-`null` oracle separates them, 100% against 0%. **Plant the wrong version and
-watch it fail** before believing an assertion of this kind; both of the above
-passed first try and one would have passed against the bug.
+`core-023` (cargo-deny vs the workspace tests) and `core-025`. **`core-025`
+matters**: `core-017`'s ruling says a query abandoned before any handler ran
+"still has a prior", which is true of the *rule* and unreachable by the driver —
+it has no reference and no way to ask for one. The case that will bite is a
+handler that classified, then hit `ProjectView`'s expiry on a read and returned
+`Err` via `?`, which `core.md` §1 expects. `Result<Outcome, Error>` gives an
+`Err` no way to carry a stratum. All three answers are Class B.
 
-## Ruled out, do not re-derive
+## Habits that paid, in order
 
-§8.5's negative tests are complete (`crates/shared/tests/proto.rs`). Editor
-traffic cannot be captured by a loop (`core-018`). The §7 minor about replay's
-`mode: "proxy"` with `server_health: null` is a real doc gap and a *minor* —
-it moves no number, and taking it means editing §7 in a campaign that edits
-`replay.rs`, which is the shape the spec-drift rule watches for. The journal
-entry for `ede3701b` has the resolution written out if someone takes it
-deliberately.
+1. **Plant the wrong version.** Six plants, six correct failures; two assertions
+   passed against a wrong version before I strengthened them.
+2. **Assert the corrected claim positively.** A negative check on a retracted
+   sentence fires on the paragraph that recants it.
+3. **A claim about what does *not* exist needs a scan, with a control** proving
+   the scan finds the thing where it genuinely is.
+4. **Run nextest three times before believing you broke it.** A fixture-name
+   collision is a race under nextest and invisible under `cargo test`.
