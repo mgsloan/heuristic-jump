@@ -764,6 +764,22 @@ fn the_licence_text_is_symlinked_into_every_member() {
         "no workspace members parsed out of Cargo.toml, so this test would pass vacuously"
     );
 
+    // The "live once" half. Every assertion below is about a link, and a link
+    // is only a link to something: a root text that was itself a symlink would
+    // satisfy all of them while the one copy nobody can find is somewhere else
+    // entirely.
+    for text in ["LICENSE-MIT", "LICENSE-GPL", "LICENSE-APACHE"] {
+        let path = workspace_path(text);
+        assert!(
+            std::fs::symlink_metadata(&path)
+                .ok()
+                .is_some_and(|meta| meta.is_file() && !meta.is_symlink()),
+            "{text} at the workspace root is missing, or is not a regular file: deps.md §14 \
+             keeps one copy of each licence text there and symlinks it into every crate, so the \
+             root is where the copy has to actually be"
+        );
+    }
+
     for member in &members {
         let manifest = workspace_file(&format!("{member}/Cargo.toml"));
         let declared = licence_of(&manifest);
