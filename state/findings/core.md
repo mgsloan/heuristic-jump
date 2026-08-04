@@ -1,60 +1,54 @@
-# Findings — conformance, after 51628b98
+# Findings — core, after 918d4544
 
 **Verify a gap against the code before working it; the audit lags by hours.**
-`git log --since` the `last_audited` stamp in `state/audit/core.toml`. A
-campaign the harness recorded `crashed` may still have committed real work.
+`core.md#vocabulary-types` was already closed and held when this campaign
+opened. One `grep` establishes it. A campaign the harness recorded `crashed`
+may still have committed real work.
 
-**`deps.md` is largely satisfied and almost entirely unheld.** The manifests
-were written against it and quote it in their comments, so its sections need
-mechanism, not repair — one real defect in ten sections. I closed §0, §1, §2,
-§4, §5-licensing, §6, §12, §13, §14, §15, all in
-`crates/driver/tests/seam.rs`, which is where a manifest-shaped assertion
-belongs. Remaining and *not* as cheap: §3, §7, §8, §9, §10, §11, `#fxhashmap`.
+**`deps.md` is now essentially done.** Closed this campaign: `#fxhashmap`, §7,
+§8, §9, §10, §12. Closed by 51628b98: §0, §1, §2, §4, §5-licensing, §6, §13,
+§14, §15. **Remaining: §3 and §11 only**, and §11 is blocked — see below.
 
-**Three assertions I wrote cannot be made to fail, and each taught the same
-lesson.** Adding `[lints]` to `vendor/rope` is a duplicate TOML key — cargo
-rejects the manifest and **no test runs**; adding one to `sum_tree` makes it
-stop compiling on `elided_lifetimes_in_paths` alone. Dropping `serde_json`'s
-`raw_value` fails to build, because `shared` already imports `RawValue` — §4's
-"silently compiles" was true before its first user. Keep such assertions, and
-write *in place* that the compiler is the real enforcement; it is incidental
-and the assertion records intent. **Grep control output for `test result`, not
-just for a failure** — my first vendor control produced neither, and I nearly
-scored it as passing.
+**`crates/driver/tests/seam.rs` is the deps.md conformance suite.** Thirteen of
+its twenty-five tests are deps.md sections, and it carries the manifest/source
+scan helpers (`manifest_text`, `dependency_entries`, `table_of`, `sources_of`,
+`crate_members`). A new deps.md claim belongs there; do not build a second
+instrument. Note `sources_of` reads `src/` only — it follows the crate root's
+`mod` declarations, so no `tests/` file is ever scanned, and `read_dir` is
+banned by `clippy.toml`.
 
-**Do not scan `Cargo.lock` for §13's rejected crates.** `once_cell`, `regex`,
-`memchr`, `aho-corasick`, `walkdir` and `indexmap` are all in it transitively.
-§13 is about what we reach for: assert declarations.
+**A control that produces no `test result` line is not a control.** Three
+assertions across two campaigns cannot be made to fail because cargo or rustc
+rejects the mutation first: `vendor/rope`'s `[lints]`, `notify`'s
+`optional = true`, and a bare `Box<dyn Error>` in `shared::Error` (it costs
+`Error` its `Send`, which `files.rs`'s scanner thread needs). Keep such
+assertions and say *in place* that the compiler's enforcement is incidental.
+The `Box<dyn` case has a sharp edge: **`Box<dyn Error + Send + Sync>` compiles
+clean**, and that is the form anyone would actually write, so the scan covers
+exactly what the compiler misses.
 
-**§15 parses `design/deps.md` itself as the fixture.** It is the one assertion
-where editing the *document* fails, which matters because moving the spec
-toward the code is this loop's only uncatchable way of faking progress.
+**Do not take `deps.md#11` until the request path exists.** Its gap wants
+`--trace=<path>` to write JSONL records; §7 emits one "once both answers are
+known", which needs the pending-query path `driver` does not have. The record
+type is `measure_core::QueryRecord`, and §9's graph forbids `driver` depending
+on `measure_core`, so a driver-side writer needs the type moved to `shared`
+first. Adding the flag alone leaves `--trace` silently writing nothing and does
+not make the section clean.
 
-**Subset, never equality, for dependency tables.** §14's "each arrives with
-its first user" makes `rayon`, `lru`, `insta` and `notify` chosen-and-absent
-on purpose.
+**Still blocked on phase 2b:** `core.md#5-deadlines` and
+`#both-sides-are-sets`, both of which are the driver run loop (`shim.md`'s
+transport and `core` actor). Escalate the phase question before building it.
+`#9-workspace-layout` can never close — it names `lang_python` and
+`lang_typescript`, outside every owned path. `#85`'s corpus needs pyright and
+gopls; only rust-analyzer is on `PATH`.
 
-**Known open, in descending value:**
+**Load-bearing spec claims confirmed.** `deps.md`'s subset rule — "each arrives
+with its first user" — is what makes §0's table a subset check rather than an
+equality; `rayon`, `insta` and `tempfile` are still chosen-and-absent on
+purpose. `shim.md` §5 is the cross-reference `deps.md` §7 and §8 both turn on;
+read it before either.
 
-* **§5 states two licence rules and marks `lang_*` by the one
-  `conformance-014` rejected** (a `license` field describes copyright in that
-  crate's own text; `heuristic_jump` proves reaching GPL is not enough).
-  `lang_*` may still be GPL because `similarity` is a *port*. `seam.rs`'s
-  `expected_licence` is the only place the two are distinguished. Cheap, clean
-  next target.
-* **§7 cannot go clean until `notify` is settled** — it should be an optional
-  dependency "so the decision is visible", and is absent. Its other claim
-  (`ignore` in `shared`, not `driver`) already holds.
-* **`shared` exports no `pub type Map`/`Set`**, which §8 requires; five files
-  use `FxHashMap` directly.
-* **The driver's request path** (`#5-deadlines`, `#both-sides-are-sets`) is
-  `shim.md`'s transport and `core` actor — **phase 2b**. Escalate the phase
-  question before building it. `conformance-016` (answered) already removed
-  `clippy.toml`'s `unbounded` ban that would have blocked it.
-* **`#85`'s corpus** needs pyright and gopls; only rust-analyzer is on `PATH`.
-* **`#9-workspace-layout` can never close** — it names `lang_python` and
-  `lang_typescript`, outside every owned path.
-
-**Still true.** Never `git checkout` over uncommitted work. `harness/**` is
-denied and was being edited concurrently — stage explicit paths, never
-`git add -A`, then gate with `--rev HEAD`. Loop: commit, gate, `hj record`.
+**Mechanics.** Never `git checkout` over uncommitted work. Stage explicit
+paths, never `git add -A` (`harness/**` is denied and edited concurrently).
+`cargo fmt -p <crate>` before the gate — step 1 is `--check`, and it is the
+only step this campaign failed. Loop: commit, gate, `hj record core`.
