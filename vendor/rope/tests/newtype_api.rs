@@ -400,14 +400,15 @@ fn the_public_surface_speaks_in_the_units_it_measures_in() {
     // §4's second table: the four functions that are *not* byte offsets and
     // get the correct newtype rather than being left bare. Being left bare is
     // what the signature scan would have permitted, since `allowed-primitives`
-    // is where a `u32` goes to be forgiven.
+    // is where a `u32` goes to be forgiven -- and `longest_row`'s out
+    // parameter was its only entry until CHANGE-core-005.
     let chunk = Chunk::new("aé\nbb");
     let slice: ChunkSlice<'_> = chunk.as_slice();
     let slice_length: ByteLen = slice.len();
     let chunk_first_line: CharCount = slice.first_line_chars();
     let chunk_last_line: CharCount = slice.last_line_chars();
     let chunk_last_line_utf16: Utf16Column = slice.last_line_len_utf16();
-    let mut total_characters = 0usize;
+    let mut total_characters: CharCount = CharCount::ZERO;
     let (chunk_longest, chunk_longest_characters): (LineIndex, CharCount) =
         slice.longest_row(&mut total_characters);
     assert_eq!(
@@ -422,8 +423,12 @@ fn the_public_surface_speaks_in_the_units_it_measures_in() {
          first line's length is a different number in each unit"
     );
     assert_eq!(
-        (chunk_longest, chunk_longest_characters),
-        (LineIndex::ZERO, CharCount(2))
+        (chunk_longest, chunk_longest_characters, total_characters),
+        (LineIndex::ZERO, CharCount(2), CharCount(5)),
+        "the out parameter is the third value this function returns and the \
+         one whose unit is least visible at the call site, so it is asserted \
+         with the other two: `aé\\nbb` is five scalar values counting the \
+         newline"
     );
 }
 

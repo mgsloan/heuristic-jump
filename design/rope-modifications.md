@@ -490,11 +490,14 @@ on:
 > **CI asserts that no `pub fn` signature in `vendor/rope` mentions bare
 > `usize` or `u32`**, outside an explicit allowlist.
 
-The allowlist is `vendor/rope/allowed-primitives.txt` and is short: the
-`total_chars: &mut usize` parameter of `ChunkSlice::longest_row` and anything else
-[section 4](#the-signatures) records as a genuine primitive. Every entry needs
-a comment saying which unit it is, since "it is a `usize`" is the problem
-rather than the explanation.
+The allowlist is `vendor/rope/allowed-primitives.txt` and is **empty**.
+[Section 4](#the-signatures) audits the functions that are not byte offsets and
+gives each one the newtype for its unit, `ChunkSlice::longest_row`'s
+`total_chars` — a `CharCount` — included, so the conversion leaves nothing
+behind to forgive. The file exists for the re-sync case rather than for that
+one: an upstream `pub fn` arriving with a bare primitive that is genuinely one.
+Every entry needs a comment saying which unit it is, since "it is a `usize`" is
+the problem rather than the explanation, and an entry is a hole in the change.
 
 The check is cheap, it catches the one failure mode the diff cannot, and it
 turns "someone notices" into a build failure.

@@ -136,8 +136,12 @@ property (`deps.md` §14).
      every `pub fn` signature in `src/` for a bare `usize` or `u32` and fails
      on one that is not in `allowed-primitives.txt` — the case §6 says the
      diff cannot catch, because a new upstream public function with a bare
-     primitive is a hunk that looks entirely normal. The same file carries §7's
-     four-unit round-trip property test. Both are ours; upstream has neither.
+     primitive is a hunk that looks entirely normal. **That file has no
+     entries** (CHANGE-core-005): `ChunkSlice::longest_row`'s
+     `total_chars` was the last one and now takes a `&mut CharCount`, so the
+     scan forgives nothing and the file is there for what a re-sync brings.
+     The same file carries §7's four-unit round-trip property test. Both are
+     ours; upstream has neither.
    * **The verification is upstream's tests**, which is patch 3's whole point.
      All 24 pass unchanged.
 

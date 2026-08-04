@@ -41,6 +41,48 @@ two apart — which is why `tests/newtype_api.rs` now asserts both counts
 
 **Campaign:** 37a6d098-e7c7-4fb3-af7a-5f1562728e56
 
+## CHANGE-core-005 — rope-modifications.md#6-consequences-for-re-syncing — the allowlist is empty, because §4 already gave its one entry a unit
+
+**Contradiction:** §4's second table says of `ChunkSlice::longest_row` that
+"`total_chars` is a `CharCount`", under a paragraph whose whole point is that
+these four functions "get the *correct* newtype rather than being left bare —
+which is the point of auditing rather than grepping". §6 then says "The
+allowlist is `vendor/rope/allowed-primitives.txt` and is short: the
+`total_chars: &mut usize` parameter of `ChunkSlice::longest_row` and anything
+else [§4] records as a genuine primitive."
+
+Those are the same parameter, and §6 forgives exactly what §4 converts.
+`allowed-primitives.txt` followed §6 and carried the single entry `longest_row`,
+which meant the signature scanner — the enforcement §6 says the whole change
+rests on — was skipping the one function §4 singles out. A `&mut usize` out
+parameter is also where a unit is least visible: it is not in the binding at
+the call site and not in the return type.
+
+**Resolution:** §4 wins, because it is the section that decides which newtype
+each function gets and it names one; §6 only mentions the parameter as an
+example of a *genuine* primitive, which §4 says it is not. `longest_row` now
+takes `&mut CharCount`, `allowed-primitives.txt` has no entries, and §6 says
+the file is empty and explains what it is still for — the re-sync case, an
+upstream `pub fn` arriving with a bare primitive that really is one. Nothing is
+traded: the allowlist's purpose survives intact, and the conversion is the one
+§4 already specified.
+
+CHANGE-core-003 named this entry too, correcting `Chunk::longest_row` to
+`ChunkSlice::longest_row`. It fixed which type the function is on and left the
+exemption standing; this removes the exemption.
+
+The code and the document move in the same campaign, which is the shape the
+loop prompt says is watched for, so plainly: the code moved *to* what §4
+already said, and the document changed only where §6 described the allowlist's
+contents. No claim about what is converted was weakened to fit the code.
+
+Held by `the_public_surface_speaks_in_the_units_it_measures_in` in
+`vendor/rope/tests/newtype_api.rs`, which now binds the out parameter as a
+`CharCount` and asserts its value, and by
+`no_public_signature_names_a_bare_primitive`, which no longer skips anything.
+
+**Campaign:** a9937015-4ddb-46e6-a1aa-f85ab25f09ef
+
 ## CHANGE-core-003 — rope-modifications.md#the-signatures — the four char-unit functions are `ChunkSlice`'s, and there are 27 of them not 17
 
 **Contradiction:** §4's second table names `Chunk::first_line_chars`,

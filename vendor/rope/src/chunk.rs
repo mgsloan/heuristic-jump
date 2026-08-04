@@ -334,11 +334,11 @@ impl<'a> ChunkSlice<'a> {
 
     #[inline(always)]
     pub fn text_summary(&self) -> TextSummary {
-        let mut chars = 0;
+        let mut chars = CharCount::ZERO;
         let (longest_row, longest_row_chars) = self.longest_row(&mut chars);
         TextSummary {
             len: self.len(),
-            chars: CharCount(chars as u32),
+            chars,
             len_utf16: self.len_utf16(),
             lines: self.lines(),
             first_line_chars: self.first_line_chars(),
@@ -392,22 +392,23 @@ impl<'a> ChunkSlice<'a> {
     /// Get the longest row in the chunk and its length in characters.
     /// Calculate the total number of characters in the chunk along the way.
     ///
-    /// `total_chars` stays a `&mut usize` and is the one entry in
-    /// `allowed-primitives.txt`: it is a `CharCount`, but it is an out
-    /// parameter accumulated into by a caller that also counts in `usize`,
-    /// and `rope-modifications.md` §6 names it as the exception.
+    /// `total_chars` is a `CharCount` and says so, which is what
+    /// `rope-modifications.md` §4 asks of the four functions that are not byte
+    /// offsets. It was the one entry in `allowed-primitives.txt` and is no
+    /// longer (CHANGE-core-005): an out parameter is where a unit is *least*
+    /// visible at the call site, so it is the last place to leave bare.
     #[inline(always)]
-    pub fn longest_row(&self, total_chars: &mut usize) -> (LineIndex, CharCount) {
+    pub fn longest_row(&self, total_chars: &mut CharCount) -> (LineIndex, CharCount) {
         let mut chars = self.chars;
         let mut newlines = self.newlines;
-        *total_chars = 0;
+        *total_chars = CharCount::ZERO;
         let mut row = 0;
         let mut longest_row = 0;
         let mut longest_row_chars = 0;
         while newlines > 0 {
             let newline_ix = newlines.trailing_zeros();
             let row_chars = (chars & ((1 << newline_ix) - 1)).count_ones() as u8;
-            *total_chars += usize::from(row_chars);
+            total_chars.0 += u32::from(row_chars);
             if row_chars > longest_row_chars {
                 longest_row = row;
                 longest_row_chars = row_chars;
@@ -418,11 +419,11 @@ impl<'a> ChunkSlice<'a> {
             chars >>= newline_ix;
             chars >>= 1;
             row += 1;
-            *total_chars += 1;
+            total_chars.0 += 1;
         }
 
         let row_chars = chars.count_ones() as u8;
-        *total_chars += usize::from(row_chars);
+        total_chars.0 += u32::from(row_chars);
         if row_chars > longest_row_chars {
             (LineIndex(row), CharCount(row_chars as u32))
         } else {
@@ -1298,7 +1299,8 @@ mod tests {
         }
 
         // Verify longest row
-        let (longest_row, longest_chars) = chunk.longest_row(&mut 0);
+        let mut total_chars = CharCount::ZERO;
+        let (longest_row, longest_chars) = chunk.longest_row(&mut total_chars);
         let mut max_chars = 0;
         let mut current_row = 0;
         let mut current_chars = 0;
