@@ -977,6 +977,62 @@ fn a_replay_given_no_records_path_writes_nothing() {
     );
 }
 
+/// §7's command line: "Exit status is about whether the run happened, not about
+/// whether the numbers are good: `replay` exits zero having printed a table
+/// full of zeroes. Judging the table is the gate's job, not the measurement's."
+///
+/// A corpus the oracle never answered is the sharpest form of that, and it is
+/// the one every other test in this file is the opposite of. It also holds the
+/// two rules that only fire here: `error` and `timeout` are not ground truth,
+/// so they are excluded from the metrics and reported beside them as a coverage
+/// figure for the *collection* — a quality signal about the repository's build
+/// setup rather than about the handler — and `nothing measured` is a third
+/// template state rather than `replaced`, since an empty table is not evidence
+/// the placeholder is gone.
+#[test]
+fn a_corpus_the_oracle_never_answered_is_a_table_of_zeroes_and_a_zero_exit() {
+    let corpus = fixture("uncollected");
+    enumerate(&corpus);
+    let rows = write_truth_uncollected(&corpus);
+    assert!(rows > 1, "the fixture enumerated {rows} positions");
+
+    let report = replay_result(&corpus, measure_core::Format::Json)
+        .expect("a replay whose oracle answered nothing still ran");
+
+    assert_eq!(
+        report.matches("\"queries\": 0").count(),
+        9,
+        "the nine strata should all be zero and {} of them are. core.md §7 \
+         excludes error and timeout rows from the metrics, so a corpus the \
+         oracle never answered measures nothing rather than measuring badly\n\
+         {report}",
+        report.matches("\"queries\": 0").count()
+    );
+    for expected in [
+        format!("\"uncollected\": {rows}"),
+        // The JSON spelling, which is `serde`'s snake_case rather than the
+        // text table's "nothing measured": one is what the harness matches on
+        // and the other is what a person reads.
+        "\"template\": \"nothing_measured\"".to_owned(),
+    ] {
+        assert!(
+            report.contains(&expected),
+            "the report does not carry {expected}. The uncollected count is a \
+             quality signal about the corpus and is never folded into the \
+             table, and an empty table read as `replaced` would pass a gate on \
+             every corpus that measured nothing at all\n{report}"
+        );
+    }
+
+    let printed = table_of(&corpus, measure_core::Format::Table);
+    assert!(
+        printed.contains(&format!("positions the oracle never answered: {rows}")),
+        "the printed table dropped the uncollected count, which is the figure \
+         that tells a reader whether a table of zeroes is a handler that \
+         resolved nothing or a collection that never happened\n{printed}"
+    );
+}
+
 #[test]
 fn a_run_given_one_split_cannot_reach_its_sibling() {
     let corpus = fixture("isolation");
@@ -1248,6 +1304,43 @@ fn write_truth_answered(corpus: &Fixture) {
     let path = truth_path(corpus, "oracle");
     fs::create_dir_all(path.parent().expect("a truth directory")).expect("the truth directory");
     fs::write(path, text).expect("the truth file");
+}
+
+/// A truth file the oracle never answered: every row `error`, which
+/// `data-collection.md` §4 keeps distinct from `none` because collapsing the
+/// two gives the heuristic credit for abstaining where the oracle merely
+/// failed.
+fn write_truth_uncollected(corpus: &Fixture) -> usize {
+    let positions = fs::read_to_string(
+        corpus
+            .split
+            .join("rust")
+            .join("positions")
+            .join("one.jsonl"),
+    )
+    .expect("enumerate ran first");
+
+    let mut text = format!(
+        "{{\"repository\":\"one\",\"commit\":\"{}\",\"language\":\"rust\",\
+         \"server\":\"oracle\",\"server_version\":\"0\",\"grammar\":\"fixture\",\
+         \"measure_version\":\"0\",\"complete\":true}}\n",
+        corpus.commit
+    );
+    let mut rows = 0;
+    for line in positions.lines() {
+        let file = between(line, "\"file\":\"", "\"");
+        let offset = between(line, "\"offset\":", ",");
+        text.push_str(&format!(
+            "{{\"file\":\"{file}\",\"offset\":{offset},\"outcome\":\"error\",\
+             \"answer\":null,\"latency_us\":1234}}\n"
+        ));
+        rows += 1;
+    }
+
+    let path = truth_path(corpus, "oracle");
+    fs::create_dir_all(path.parent().expect("a truth directory")).expect("the truth directory");
+    fs::write(path, text).expect("the truth file");
+    rows
 }
 
 fn answer(uri: &str, line: u32) -> String {
