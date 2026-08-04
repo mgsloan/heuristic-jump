@@ -1540,13 +1540,29 @@ impl WirePosition {
     /// which is exactly the information a correct conversion needs.
     pub fn resolve(self, enc: PositionEncoding, text: &Rope)
         -> Result<Offset, EncodingError>;
+
+    /// The row, which is the one part of a wire position that is not in the
+    /// negotiated encoding: every encoding LSP offers counts *columns*.
+    pub fn line(self) -> LineIndex;
 }
 ```
 
-`WirePosition` has private fields and no accessors. A `Offset` cannot be
-obtained from it without supplying both the negotiated encoding and the text,
-so the failure mode in [section 3](#3-position-encoding) — using a UTF-16 column
-as a byte index — is not something to be careful about. It does not compile.
+`WirePosition` has private fields, and `character` — the number that is in the
+negotiated encoding — has no accessor at all. A `Offset` cannot be obtained
+without supplying both the encoding and the text, so the failure mode in
+[section 3](#3-position-encoding) — using a UTF-16 column as a byte index — is
+not something to be careful about. It does not compile.
+
+`line` is readable, and that is not a hole in the above: a row is in no
+encoding, so it is not a number that can be misread as an offset.
+[Section 6](#6-the-agreement-predicate)'s predicate compares `(uri, line)` on
+the child's answer as well as on ours and **reads nothing** while doing it —
+and the child's row arrives only inside a `WirePosition`. Without the accessor
+it could be recovered only by resolving that position against the target
+document's text, which is the read section 6 may not do: divergence is
+classified seconds after the answer, with the per-query cache gone and the
+document possibly never opened. So the accessor is what makes section 6
+implementable, and it withholds nothing section 3 protects.
 
 The same applies outbound: `WirePosition::encode(Offset, enc, &Rope)` is
 the only constructor. Encoding is therefore applied in exactly two functions

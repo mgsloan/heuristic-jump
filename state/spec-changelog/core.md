@@ -166,3 +166,38 @@ the audit records it as a minor against `truth.rs` on the strength of the
 sentence being amended here.
 
 **Campaign:** 18835da5-abcf-4eed-bc64-f52405edd53f
+
+## CHANGE-core-007 — core.md#83-the-wire-position-type-is-inert — `line` is readable, and §6 is why
+
+**Contradiction:** §8.3 said "`WirePosition` has private fields and **no
+accessors**". §6 says "**The predicate compares `(uri, line)`, and nothing
+else.** Both sides carry a line: the shim's answer because `Location` does,
+and the child's because that is what came off the wire. So it **reads
+nothing**". The child's line arrives only inside a `WirePosition`, so under
+§8.3-as-written the only route to it is `resolve`, which takes the target
+document's text — and §6 is explicit that the classifier may not read, because
+"divergence is classified when the child responds, seconds after the answer,
+when the per-query read cache is long gone and the target document may never
+have been open". The two sentences cannot both be honoured.
+
+**Resolution:** §8.3 now says the fields are private, `character` has no
+accessor, and `line` does. This trades nothing off, because inertness is a
+claim about *offsets*: `character` is the number in the negotiated encoding
+and remains unreachable without naming that encoding and the text, which is
+the failure §3 exists to prevent. A row is in no encoding at all — every
+encoding LSP 3.17 offers counts columns
+(`reference/lsp-3.17/shim-relevant.md`, the position-encoding section), so a
+row cannot be misread as an offset the way a column can. The alternative
+reading — drop `line()` — is not implementable: it makes §6 read the target
+document, which §6 forbids in the same paragraph that requires the
+comparison.
+
+**Written toward existing code, and said plainly:** `WirePosition::line` was
+already there, with a doc comment making this argument. What this campaign
+changed is the document and a test. The test is the reason the edit is not
+simply moving the goalposts: `the_wire_position_has_exactly_one_door_per_unit`
+in `crates/shared/tests/proto.rs` scans `impl WirePosition` and asserts its
+public surface is exactly `line`, `resolve` and `encode`, so a `character()`
+accessor added later fails rather than quietly widening the section again.
+
+**Campaign:** 44773a93-738f-4dd6-8ca1-fa951465ac44

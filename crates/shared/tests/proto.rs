@@ -264,6 +264,48 @@ fn untagged_appears_only_where_section_85_permits_it() {
     }
 }
 
+/// §8.3, which is a claim about *absence* and so is checked the way §8.2's
+/// derive discipline is: against the text of `proto.rs`.
+///
+/// The section allows one door per unit. `character` is in the negotiated
+/// encoding and has none — it is reachable only through `resolve`, which takes
+/// the encoding and the document. `line` is in no encoding, so it has an
+/// accessor, and §6's predicate needs it: the child's row arrives only inside a
+/// `WirePosition`, and recovering it any other way means reading the target
+/// document, which §6 forbids in the same paragraph that requires the
+/// comparison (CHANGE-core-007).
+///
+/// So the surface is exactly three functions, and a fourth is a decision
+/// somebody has to make here rather than a line added to an `impl`. A
+/// `character()` accessor in particular would restore the failure §3 exists to
+/// prevent, and nothing that merely *used* `WirePosition` would notice.
+#[test]
+fn the_wire_position_has_exactly_one_door_per_unit() {
+    let source = source();
+    let block = source
+        .split_once("impl WirePosition {")
+        .and_then(|(_, rest)| rest.split_once("\n}\n"))
+        .map(|(block, _)| block.to_owned())
+        .expect("proto.rs declares one `impl WirePosition` block");
+
+    let mut doors: Vec<&str> = block
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("pub fn "))
+        .filter_map(|rest| rest.split(['(', '<']).next())
+        .collect();
+    doors.sort_unstable();
+
+    assert_eq!(
+        doors,
+        ["encode", "line", "resolve"],
+        "§8.3 gives a wire position one door per unit: `resolve` and `encode` \
+         for the column, which take the encoding and the text, and `line` for \
+         the row, which is in no encoding. Anything else here hands out a \
+         number whose unit the caller has to remember, which is the failure \
+         §3 exists to prevent"
+    );
+}
+
 #[test]
 fn initialize_params_project_the_fields_the_shim_reads() {
     let params: InitializeParams = serde_json::from_value(json!({
