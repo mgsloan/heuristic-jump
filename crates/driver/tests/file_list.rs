@@ -171,9 +171,19 @@ fn the_list_is_walked_once_on_first_need_and_handed_back_by_refcount_after() {
          hundreds of milliseconds the cache exists to avoid"
     );
     assert_eq!(first.generation(), Generation::FIRST);
-    assert!(
-        relative_paths(&first).contains(&"src/lib.rs".to_owned()),
-        "the fixture's files are not in the list, so nothing below is testing a walk"
+    assert_eq!(
+        relative_paths(&first),
+        vec![
+            "notes.md".to_owned(),
+            "src/lib.rs".to_owned(),
+            "src/util.rs".to_owned()
+        ],
+        "§4's first bullet is that the walk is the `ignore` crate's, so `.gitignore` \
+         is respected for free — `vendored/copy.rs` is in the fixture and must not be \
+         in the list. Asserted as the whole set rather than as a membership, because \
+         every test in this file builds a fixture with that `.gitignore` and nothing \
+         was reading it back: a walk that ignored the file would have passed here and \
+         would have handed the scan below a candidate outside the project"
     );
 }
 

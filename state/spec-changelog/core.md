@@ -856,6 +856,12 @@ walk, the walker returns the same entry next pass, and marking stale on one
 would be a rescan per query for as long as it lasted — the spin
 `FileListCache::install` refuses when a walk itself fails.
 
+The on-demand bullet's lead sentence moved with it, from "when a query finishes
+without a good candidate" to naming both things a query can run into. The bold
+heading on the second signal is enough for a reader going through the section;
+it is not enough for one skimming the bullet leads, and the lead was the
+sentence that said there was one signal.
+
 **Code moved in the same campaign, and it is the half that moved further.**
 `7ba59bd` added `Error::file_list_evidence` and made `FileListCache::observe`
 consult it on the `Failed` arm, with three tests in

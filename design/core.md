@@ -741,11 +741,12 @@ contents beyond the parse LRU.**
   of the proper LSP's way during its startup. The case that survives is
   **standalone**, which has no editor watching on our behalf; `deps.md` §7 has
   the deferral and `open-questions.md` question 10 has what would reverse it.
-*  Otherwise invalidated on demand: when a query finishes without a good
-  candidate, that is itself the signal the file list may be stale, so a rescan
-  is kicked off in the background. The query that triggered it still abstains,
-  since it cannot wait for a rescan inside the deadline, but the next query on
-  that spot sees a fresh list.
+*  Otherwise invalidated on demand, by what a query itself ran into — it either
+  finished without a good candidate or failed to read one that is no longer
+  there, and both are the signal that the file list may be stale, so a rescan is
+  kicked off in the background. The query that triggered it gets nothing better
+  for its trouble, since it cannot wait for a rescan inside the deadline, but
+  the next query on that spot sees a fresh list.
 
   The mechanism is `AbstainReason::NoCandidates` specifically, not any
   abstention (`resolution.md` §8). That reason means an *exhaustive* search
