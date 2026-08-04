@@ -39,6 +39,7 @@ last_audited = "2026-08-04T00:27:32+00:00"
   claim = "the GPL commitment is stated plainly in high-level.md, and there are two GPL inputs, not one \u2014 similarity and lang_* are GPL, which closes the permissive exit"
   found = "high-level.md still carries the superseded position: \"The crates in `crates/` are MIT\" and \"`rope` is the only GPL input, so replacing it would make the whole workspace permissively licensable\". The per-crate license fields themselves match the table. seam.rs already reads every manifest for expected_licence; comparing it against high-level.md's prose would make this exact"
   where = "design/high-level.md:483"
+  found_at = "3dba8fae70beafb43851557f5d67a54115d53791"
 
 [section."deps.md#6-tree-sitter"]
 state = "clean"
@@ -66,6 +67,7 @@ last_audited = "2026-08-04T00:27:32+00:00"
   claim = "lru, wrapped by driver to bound total bytes as well as entries, keyed by (uri, version) and (path, mtime, len)"
   found = "the parse cache is an unbounded FxHashMap keyed by uri alone with no eviction and no byte accounting; lru is in neither Cargo.toml nor Cargo.lock, though clippy.toml:48 already bans lru::LruCache::put and points at a wrapper that does not exist"
   where = "crates/driver/src/trees.rs:26"
+  found_at = "3dba8fae70beafb43851557f5d67a54115d53791"
 
 [section."deps.md#fxhashmap-and-fxhashset-are-the-default"]
 state = "gaps"
@@ -75,6 +77,7 @@ last_audited = "2026-08-04T00:27:32+00:00"
   claim = "a type alias, not a naked import: shared exports `pub type Map<K, V> = FxHashMap<K, V>` and `pub type Set<T> = FxHashSet<T>`"
   found = "no `pub type` exists anywhere in the workspace; all five sites import rustc_hash::FxHashMap/FxHashSet directly. A scan for `rustc_hash::` outside shared would make this mechanical"
   where = "crates/shared/src/shared.rs:49"
+  found_at = "3dba8fae70beafb43851557f5d67a54115d53791"
 
 [section."deps.md#9-logging-and-tracing"]
 state = "clean"
@@ -102,6 +105,7 @@ last_audited = "2026-08-03T23:07:08+00:00"
   claim = "the Cli carries `trace: Option<PathBuf>` and `--trace=<path>` writes JSONL metric records (core.md \u00a77)"
   found = "the implemented Cli has proxy_only, deadline_ms, log and server only; no trace field exists and Config::new takes no trace path. Mechanizable the way seam.rs already handles \u00a715: parse \u00a711's flag table out of design/deps.md and compare it against the #[arg(long)] names on Cli."
   where = "crates/heuristic_jump/src/heuristic_jump.rs:34"
+  found_at = "ad6991b08153bb57f3aa677f5c3c855531d89d72"
 
 [section."deps.md#12-testing"]
 state = "gaps"
@@ -111,6 +115,7 @@ last_audited = "2026-08-04T00:27:32+00:00"
   claim = "the injected clock is a `trait Clock` with a `TestClock` impl in `shared`, not a dependency"
   found = "shared defines the trait and SystemClock only; five test files each define their own clock impl. A scan asserting no `impl Clock for` outside shared/src/deadline.rs would hold it"
   where = "crates/shared/src/deadline.rs:14"
+  found_at = "3dba8fae70beafb43851557f5d67a54115d53791"
 
   [[section."deps.md#12-testing".minor]]
   claim = "tempfile is deliberately not added"
@@ -129,11 +134,13 @@ last_audited = "2026-08-04T04:57:16+00:00"
   claim = "[profile.dev.package] opt-level bumps: Zed sets tree-sitter and serde_json to opt-level = 3, plus the proc-macro crates, and we take exactly those"
   found = "only [profile.dev.package.tree-sitter] exists; no serde_json table and none for any proc-macro crate. The in-file reason (a package not in the graph) is stale: serde_json is a [dependencies] entry of shared, driver and measure_core, resolved at Cargo.lock:1156. A check that every package \u00a714 names has a [profile.dev.package.<name>] table would make this mechanical"
   where = "Cargo.toml:295"
+  found_at = "e23d2149549728b19f61bbdd3fb2490dcb8256d2"
 
   [[section."deps.md#14-workspace-cargotoml-shape".gap]]
   claim = "a cargo-deny config asserting that GPL reaches the graph only through vendor/rope and crates/similarity is worth having from the start, because it notices a third arriving without anyone deciding"
   found = "no deny.toml exists in the repository. The stand-in checks each workspace member's declared `license` field against \u00a75's table, which cannot see GPL arriving through a third-party dependency \u2014 the case the section says the check exists for; the test's own comment records that a root deny.toml was out of the loop's write scope"
   where = "crates/driver/tests/seam.rs:334"
+  found_at = "e23d2149549728b19f61bbdd3fb2490dcb8256d2"
 
 [section."deps.md#15-clippy-in-workspace-toml"]
 state = "clean"

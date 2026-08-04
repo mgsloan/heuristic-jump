@@ -39,6 +39,7 @@ last_audited = "2026-08-04T04:57:16+00:00"
   claim = "ChunkSlice::longest_row's out parameter gets the correct newtype: `total_chars` is a `CharCount`, not left bare"
   found = "the signature is `longest_row(&self, total_chars: &mut usize) -> (LineIndex, CharCount)`; the return is converted and the parameter is not, and vendor/rope/allowed-primitives.txt:17 makes the exemption permanent so the newtype_api scan passes. \u00a76's allowlist sanctions exactly this, so the document disagrees with itself and the fix may be \u00a74's sentence rather than the code"
   where = "vendor/rope/src/chunk.rs:400"
+  found_at = "e23d2149549728b19f61bbdd3fb2490dcb8256d2"
 
 [section."rope-modifications.md#textsummary-is-converted-too"]
 state = "clean"

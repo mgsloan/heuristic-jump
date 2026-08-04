@@ -67,6 +67,7 @@ last_audited = "2026-08-03T20:56:22+00:00"
   claim = "the deadline is absolute and starts at request arrival, not at handler entry; queueing time counts"
   found = "no production code constructs a Deadline: Deadline::new is called only from tests, and driver::run has no request path \u2014 it logs the resolved configuration and returns"
   where = "crates/driver/src/driver.rs:37"
+  found_at = "00d347edfccbe8d2c7b83558c8d720e5222ca6e8"
 
   [[section."core.md#5-deadlines-and-abstention".minor]]
   claim = "the hard cap is enforced by the driver"
@@ -89,6 +90,7 @@ last_audited = "2026-08-04T00:27:32+00:00"
   claim = "the driver owns the measurement and each query emits one JSONL record once both answers are known"
   found = "QueryRecord is constructed and written only by measure_core's replay; nothing in crates/driver emits one. driver::run has no transport, so queued_us \u2014 the field marked driver-only \u2014 has no producer, and proxy-mode rows are written by replay rather than by the shim. Agreement/Severity classification is implemented driver-side, so the missing half is the emission"
   where = "crates/driver/src/driver.rs:37"
+  found_at = "3dba8fae70beafb43851557f5d67a54115d53791"
 
   [[section."core.md#7-observability-and-the-corpus-scan".minor]]
   claim = "truncated_list says the ranked list hit the cap; in standalone five fields are null"
@@ -111,11 +113,13 @@ last_audited = "2026-08-03T20:56:22+00:00"
   claim = "truth.jsonl carries its provenance in a header record: repository path and commit, server name and version, grammar revision, and the measure version"
   found = "the grammar field is a constant literal naming no revision, so two collections under different grammar pins produce identical headers. Mechanically checkable: derive it from the locked grammar version and assert two pins differ"
   where = "crates/measure_core/src/collect.rs:310"
+  found_at = "00d347edfccbe8d2c7b83558c8d720e5222ca6e8"
 
   [[section."core.md#two-modes-collect-and-replay".gap]]
   claim = "replay refuses to run against a truth file whose repository commit does not match the checkout, rather than silently reporting metrics for positions that have since moved"
   found = "collect's resume path writes the current HEAD into the header while re-appending rows collected at the old commit; check_resumable compares only server_version, so a mixed-commit file passes replay's check. A commit comparison in check_resumable would close it"
   where = "crates/measure_core/src/collect.rs:44"
+  found_at = "00d347edfccbe8d2c7b83558c8d720e5222ca6e8"
 
   [[section."core.md#two-modes-collect-and-replay".minor]]
   claim = "collect writes rows with the lsp_* fields populated and the heuristic side null"
@@ -178,6 +182,7 @@ last_audited = "2026-08-04T04:57:16+00:00"
   claim = "WirePosition has private fields and no accessors"
   found = "`pub fn line(self) -> LineIndex` is a public accessor, and it is load-bearing: agreement.rs:239 reads the child's row through it because \u00a76's predicate must compare (uri, line) without reading the child's document. The inertness that matters \u2014 no Offset without the encoding and the text \u2014 is intact, so the two sections cannot both stand as written"
   where = "crates/shared/src/proto.rs:106"
+  found_at = "e23d2149549728b19f61bbdd3fb2490dcb8256d2"
 
 [section."core.md#84-location-is-byte-based-and-this-fixes-a-real-inconsistency"]
 state = "clean"
@@ -191,6 +196,7 @@ last_audited = "2026-08-03T20:56:22+00:00"
   claim = "a golden corpus of real traffic captured from Zed and VS Code against rust-analyzer, pyright and gopls, checked in and asserted against, is one of the two conditions on which dropping lsp-types is acceptable"
   found = "the corpus holds six captured lines, all rust-analyzer server-to-client; no editor initialize params, no captured document traffic, nothing from pyright or gopls. The unions that matter are exercised only by hand-authored messages"
   where = "crates/shared/tests/golden-traffic.jsonl:45"
+  found_at = "00d347edfccbe8d2c7b83558c8d720e5222ca6e8"
 
   [[section."core.md#85-the-untagged-unions-are-the-actual-risk".minor]]
   claim = "captured traffic is what the corpus is asserted to contain"
@@ -235,6 +241,7 @@ last_audited = "2026-08-04T04:57:16+00:00"
   claim = "the language crate's Cargo.toml is shared, similarity, tree-sitter-<x>. Nothing else"
   found = "crates/lang_rust/Cargo.toml declares four dependencies, adding tree-sitter, under a comment claiming the template verbatim with 'Nothing else'. The only tree_sitter item the handler names is Language, which shared re-exports at shared.rs:61 for exactly this reason, so the edge is avoidable. A manifest scan over the template's dependency set would make this mechanical"
   where = "crates/lang_rust/Cargo.toml:30"
+  found_at = "e23d2149549728b19f61bbdd3fb2490dcb8256d2"
 
   [[section."core.md#adding-a-language".minor]]
   claim = "crates/measure_<x>/Cargo.toml is measure_core, lang_<x>"
@@ -249,6 +256,7 @@ last_audited = "2026-08-03T20:56:22+00:00"
   claim = "Stratum::Unimplemented is self-identifying: its presence in a metrics table means the template has not been replaced, as a gate check"
   found = "a handler that returns Err is counted under Unimplemented in replay, and the table renders the row unconditionally, so presence is not evidence the template is in place. A gate needs `unimplemented.queries > 0 && failed == 0`, or failures need their own stratum"
   where = "crates/measure_core/src/replay.rs:205"
+  found_at = "00d347edfccbe8d2c7b83558c8d720e5222ca6e8"
 
   [[section."core.md#what-the-templates-handler-does".minor]]
   claim = "the identifier rule is one function in shared, not two implementations that agree"

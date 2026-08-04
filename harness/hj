@@ -428,6 +428,12 @@ class Gap:
     claim: str
     found: str
     where: str
+    # HEAD when the audit recorded it. The audit re-judges a rotation
+    # slice, so a gap closed by a commit afterwards stays in the list until
+    # its section comes round again — measured at seven of nine on core.md
+    # (`state/decisions/core-019.md`). This is what lets the prompt say
+    # which ones are worth verifying first.
+    found_at: str = ""
 
 
 @dataclass
@@ -464,7 +470,7 @@ def read_audit(doc: str) -> dict[str, SectionVerdict]:
             key=key,
             state=table.get("state", "unjudged"),
             last_audited=table.get("last_audited"),
-            gaps=[Gap(g.get("claim", ""), g.get("found", ""), g.get("where", "")) for g in table.get("gap", [])],
+            gaps=[Gap(g.get("claim", ""), g.get("found", ""), g.get("where", ""), g.get("found_at", "")) for g in table.get("gap", [])],
             minors=[Minor(m.get("claim", ""), m.get("note", ""), m.get("where", "")) for m in table.get("minor", [])],
         )
     return out
@@ -496,6 +502,8 @@ def write_audit(doc: str, verdicts: dict[str, SectionVerdict], order: list[str])
             lines.append(f"  claim = {toml_string(gap.claim)}")
             lines.append(f"  found = {toml_string(gap.found)}")
             lines.append(f"  where = {toml_string(gap.where)}")
+            if gap.found_at:
+                lines.append(f"  found_at = {toml_string(gap.found_at)}")
         for minor in verdict.minors:
             lines.append("")
             lines.append(f"  [[section.{toml_string(key)}.minor]]")
@@ -1103,7 +1111,16 @@ def cmd_audit_merge(args: argparse.Namespace) -> int:
         if state not in VALID_STATES:
             problems.append(f"{key}: state {state!r} is not one of {VALID_STATES}")
             continue
-        gaps = [Gap(g.get("claim", ""), g.get("found", ""), g.get("where", "")) for g in table.get("gap", [])]
+        stamp_commit = head_sha()
+        gaps = [
+            Gap(
+                g.get("claim", ""),
+                g.get("found", ""),
+                g.get("where", ""),
+                g.get("found_at") or stamp_commit,
+            )
+            for g in table.get("gap", [])
+        ]
         minors = [Minor(m.get("claim", ""), m.get("note", ""), m.get("where", "")) for m in table.get("minor", [])]
         if state == "gaps" and not gaps:
             problems.append(f"{key}: state is 'gaps' but no gap is listed")
@@ -1491,6 +1508,30 @@ def worker_findings(owner: str, worker: str) -> str:
     return "\n\n".join(parts)
 
 
+def staleness_note(gap: Gap) -> str:
+    """Whether the file this gap points at has moved since the audit saw it.
+
+    The audit re-judges a rotation slice, so a gap closed by a commit
+    afterwards keeps being handed out until its section comes round again. On
+    `core.md` that was seven of nine (`state/decisions/core-019.md`), and
+    campaigns were spending their opening turns proving gaps already closed.
+
+    Mechanical and never a judgement: it compares `found_at` against the last
+    commit touching the path in `where:`. It cannot say a gap *is* closed —
+    that is the audit's job and costs what an audit costs — only which ones are
+    worth one turn of checking before being taken as targets.
+    """
+    if not gap.found_at or not gap.where:
+        return ""
+    path = gap.where.split(":", 1)[0].strip()
+    if not path or not (REPO / path).exists():
+        return ""
+    moved = git("log", "-1", "--format=%h", f"{gap.found_at}..HEAD", "--", path).strip()
+    if not moved:
+        return ""
+    return f"  **{path} has changed since this was found ({moved}) — verify before taking it.**"
+
+
 def prompt_values(
     phase: Phase,
     config: LoopConfig,
@@ -1526,7 +1567,8 @@ def prompt_values(
     detailed, listed = ranked[: config.detail_gaps], ranked[config.detail_gaps :]
 
     gap_lines = [
-        f"- {key}[{gap_id(key, gap.claim)}]\n  claim: {gap.claim}\n  found: {gap.found}\n  where: {gap.where}"
+        f"- {key}[{gap_id(key, gap.claim)}]\n  claim: {gap.claim}\n  found: {gap.found}\n"
+        f"  where: {gap.where}" + (f"\n{staleness_note(gap)}" if staleness_note(gap) else "")
         for key, gap in detailed
     ]
     if listed:

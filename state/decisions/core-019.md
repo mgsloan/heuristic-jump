@@ -1,6 +1,6 @@
 ---
 id: core-019
-status: open
+status: accepted
 opened: 2026-08-04T05:20:00+00:00
 campaign: ede3701b-ff0b-4c95-b4f9-6d12c6bb0c84
 kind: harness-request
@@ -67,7 +67,27 @@ verification exercise.
 
 ## Decision
 
-Undecided — waiting on a human.
+**Option two, implemented**, 2026-08-04. Not really a choice: this record
+describes option one as "not really an option — it is asking for an audit on
+every campaign open", and it is right.
+
+What landed:
+
+* `Gap` gains `found_at`, the `HEAD` sha when the audit recorded it.
+  `audit-merge` stamps it, and `write_audit` persists it.
+* The prompt renders, under any gap whose `where:` path has moved since:
+  **"<path> has changed since this was found (<sha>) — verify before taking
+  it."** One `git log -1 <found_at>..HEAD -- <path>` per gap; no judgement,
+  and it never claims a gap *is* closed.
+* Backfilled from the gap log, which already records the commit each audit ran
+  at, so the benefit landed on the round in flight rather than the one after
+  the next audit. 32 gaps stamped; **5 of the currently open ones flag.**
+
+The measurement in this record is what made it worth doing now rather than
+queueing: seven of nine `core.md` gaps were stale, campaigns were spending
+opening turns proving things already true, and the planner was spending
+assignment slots on them. Thanks for measuring it rather than asserting it —
+the table is the reason this took twenty minutes instead of a discussion.
 
 ## Provisional choice in force
 

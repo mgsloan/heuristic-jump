@@ -14,6 +14,7 @@ last_audited = "2026-08-04T04:23:19+00:00"
   claim = "There is no code. There are the design documents, a clippy.toml, and a CLAUDE.md"
   found = "seven crates exist (shared, driver, heuristic_jump, measure_core, measure_rust, lang_rust, similarity) plus the whole harness; the section's premise, which \u00a713 and \u00a718 reason from, is stale"
   where = "crates/measure_core/Cargo.toml:1"
+  found_at = "9e070d8e36f6168ea60a85d1a8302e9281e97f18"
 
 [section."loops.md#2-two-loops-two-oracles"]
 state = "gaps"
@@ -23,6 +24,7 @@ last_audited = "2026-08-04T04:23:19+00:00"
   claim = "the conformance loop's concurrency is one writer"
   found = "the core conformance loop runs three concurrent workers, each in its own worktree writing the same crates and documents; \u00a713's Workers subsection sanctions this and the table cell was never reconciled with it"
   where = "state/phase.toml:72"
+  found_at = "9e070d8e36f6168ea60a85d1a8302e9281e97f18"
 
 [section."loops.md#3-where-the-work-comes-from"]
 state = "clean"
@@ -56,6 +58,7 @@ last_audited = "2026-08-04T04:23:19+00:00"
   claim = "falsified hypotheses are broadcast plainly, confirmed ones are published as candidates and never adopted on another loop's evidence"
   found = "nothing encodes the asymmetry: the only digest instruction asks for a theory, what was ruled out and what not to retry, and no reader distinguishes the two kinds"
   where = "harness/prompts/conformance.md:136"
+  found_at = "9e070d8e36f6168ea60a85d1a8302e9281e97f18"
 
   [[section."loops.md#campaigns-compare-notes-asymmetrically".minor]]
   claim = "a digest of at most 512 words; the cap is the mechanism"
@@ -73,6 +76,7 @@ last_audited = "2026-08-04T04:23:19+00:00"
   claim = "at every campaign close a separate fresh session audits the spec against the implementation"
   found = "the audit is gated on audit_every and, under workers, runs once per round: each worker skips auditing and the round runner audits after three closes, so most campaign closes produce no audit"
   where = "harness/hj:3308"
+  found_at = "9e070d8e36f6168ea60a85d1a8302e9281e97f18"
 
 [section."loops.md#sections-clean-is-the-metric"]
 state = "unjudged"
@@ -91,6 +95,7 @@ last_audited = "2026-08-04T04:23:19+00:00"
   claim = "an escalation batch is triggered by the outstanding DECISION- count crossing a threshold, or by a phase gate"
   found = "no threshold exists; provisional_decisions() is recorded in the metrics row and printed by hj status, and nothing compares it to anything. This is convertible to an exact check: a ceiling in state/phase.toml consulted the way hj budget consults its own"
   where = "harness/hj:925"
+  found_at = "9e070d8e36f6168ea60a85d1a8302e9281e97f18"
 
   [[section."loops.md#6-spec-changes-what-the-loop-may-decide-alone".minor]]
   claim = "Class A edits append to state/spec-changelog.md"
@@ -105,16 +110,19 @@ last_audited = "2026-08-04T04:23:19+00:00"
   claim = "progress is any of five forms, one being a decision item being resolved, and all five are computable from the repository"
   found = "the computed terms are sections-clean rising, a named gap closing, tests rising when no audit ran, and a consolidation credit; resolving a decision scores nothing, so reconciling a DECISION- tag pushes the loop toward its stall threshold"
   where = "harness/hj:2617"
+  found_at = "9e070d8e36f6168ea60a85d1a8302e9281e97f18"
 
   [[section."loops.md#7-progress-stall-and-the-ways-it-is-faked".gap]]
   claim = "flag when >=30% of recent iterations are test-only changes, and cap consecutive done signals"
   found = "neither exists; cmd_stall reports only trailing-no-progress, empty campaigns and crashes, though the per-campaign rust_test/rust_source diffstat needed for the first is already recorded"
   where = "harness/hj:3360"
+  found_at = "9e070d8e36f6168ea60a85d1a8302e9281e97f18"
 
   [[section."loops.md#7-progress-stall-and-the-ways-it-is-faked".gap]]
   claim = "test deletions are flagged for review regardless of count"
   found = "nothing flags them; rust_test_deleted is written to the session row and read by nothing, and the gate has no test-count step. A rust_test_deleted > 0 flag at campaign-close would make this mechanical"
   where = "harness/hj:2263"
+  found_at = "9e070d8e36f6168ea60a85d1a8302e9281e97f18"
 
   [[section."loops.md#7-progress-stall-and-the-ways-it-is-faked".minor]]
   claim = "progress is any of these five forms"
@@ -129,11 +137,13 @@ last_audited = "2026-08-04T04:23:19+00:00"
   claim = "phase 1a is core.md and explicitly not the router, the health model, the actor, dispatch, standalone, or divergence reporting, which are shim.md and phase 2b"
   found = "the tree in phase 1a contains crates/driver/src/actor.rs, whose header reads 'shim.md \u00a713's actor.rs', plus dispatch.rs \u2014 under a loop whose docs list excludes shim.md, so no document audits them"
   where = "crates/driver/src/actor.rs:1"
+  found_at = "9e070d8e36f6168ea60a85d1a8302e9281e97f18"
 
   [[section."loops.md#8-sequencing-and-gates".gap]]
   claim = "phase 1b's gate requires the tune / select / final split decided and physically separated"
   found = "harness/corpus defines two splits, training and test, and the selection file records five tuning and five held out per language; there is no final set. \u00a712 argues the final split should not be decided yet, so the two sections also disagree"
   where = "harness/corpus:73"
+  found_at = "9e070d8e36f6168ea60a85d1a8302e9281e97f18"
 
 [section."loops.md#why-2a-and-2b-in-parallel-is-safe"]
 state = "unjudged"
@@ -187,11 +197,13 @@ last_audited = "2026-08-04T04:23:19+00:00"
   claim = "LOC: non-test Rust only, via tokei, per crate"
   found = "loc_per_crate never invokes tokei \u2014 it walks *.rs and counts non-blank lines \u2014 and its docstring falsely claims a tokei branch with a line-count fallback"
   where = "harness/hj:876"
+  found_at = "9e070d8e36f6168ea60a85d1a8302e9281e97f18"
 
   [[section."loops.md#11-size-and-loc-as-objectives".gap]]
   claim = "binary size is two numbers: the stripped release size of measure_<lang> every iteration, and the per-language link delta at phase gates"
   found = "neither is measured; the metrics row carries loc, tests and provisional_decisions and no size field, and crates/measure_rust exists to be measured. The phase-2a standing ceiling on measure_<lang> size is also absent"
   where = "harness/hj:1318"
+  found_at = "9e070d8e36f6168ea60a85d1a8302e9281e97f18"
 
 [section."loops.md#12-held-out-integrity"]
 state = "gaps"
@@ -201,6 +213,7 @@ last_audited = "2026-08-04T04:23:19+00:00"
   claim = "the loop is shown a verdict rather than the numbers, held-out evaluation runs at phase gates, and a widening gap stops the loop and escalates"
   found = "no held-out evaluation exists in any form \u2014 nothing reads the test/ split, computes a gap, renders a verdict, or stops a loop; the harness readme lists held-out selection under what is not built. The split and its physical separation are implemented"
   where = "harness/readme.md:296"
+  found_at = "9e070d8e36f6168ea60a85d1a8302e9281e97f18"
 
 [section."loops.md#13-shared-code-and-when-it-may-exist"]
 state = "clean"
@@ -232,6 +245,7 @@ last_audited = "2026-08-04T04:23:19+00:00"
   claim = "merges after every green iteration; the branch exists for the duration of one commit; merging is a step in the iteration contract"
   found = "merge_back runs once per campaign, after close and audit, so a branch carries every commit a campaign made and a worker's branch and worktree persist across campaigns; the gate has no merge step"
   where = "harness/loop:421"
+  found_at = "9e070d8e36f6168ea60a85d1a8302e9281e97f18"
 
   [[section."loops.md#branches-exist-for-one-commit-at-a-time".minor]]
   claim = "everything lands on master"
@@ -321,11 +335,13 @@ last_audited = "2026-08-04T04:23:19+00:00"
   claim = "Cost monitoring: Adopt ccusage, behind the adapter"
   found = "ccusage is not used anywhere; the adapter parses the teed stream and argues against the dependency, which is a Reject where the table says Adopt"
   where = "harness/adapter:222"
+  found_at = "9e070d8e36f6168ea60a85d1a8302e9281e97f18"
 
   [[section."loops.md#17-tooling-adopt-steal-reject".gap]]
   claim = "Spec claim notation: Steal EARS, for phrasing auditable claims"
   found = "EARS appears nowhere \u2014 not in the design documents' claim phrasing, not in the auditor prompt's claim format, not in any prompt"
   where = "harness/prompts/auditor.md:41"
+  found_at = "9e070d8e36f6168ea60a85d1a8302e9281e97f18"
 
 [section."loops.md#the-largest-dependency-in-this-project-is-not-a-crate"]
 state = "unjudged"
