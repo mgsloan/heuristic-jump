@@ -105,9 +105,14 @@ HARNESS_PATHS = ["harness/**"]
 # reaching the process table, which several workers reach routinely.
 REAP_GRACE_SECONDS = 120
 
-# Bumped whenever `progress` changes meaning. Rule 1 is the original:
-# sections clean up, or open gaps down, or the test count up.
-PROGRESS_RULE = 1
+# Bumped whenever `progress` changes meaning.
+#   1 — settled at close: sections clean up, or open gaps down, or tests up.
+#   2 — re-settled at the audit, which is the first moment the answer
+#       exists under workers, and attributed by named gap rather than by a
+#       count delta. Strictly additive: a campaign that scored under 1
+#       still scores, and the backtest confirms rule 2 reclassifies none
+#       of the 29 historical campaigns.
+PROGRESS_RULE = 2
 
 OUTCOMES = ("confirmed", "falsified", "no-movement", "partial", "budget", "crashed", "error")
 
@@ -1150,8 +1155,9 @@ def cmd_audit_merge(args: argparse.Namespace) -> int:
             "persisted": len(set(before) & set(after)),
         },
     )
+    settled = settle_progress(config, stamp, sorted(audited), sorted(set(before) - set(after)))
     commit_harness_state(
-        [audit_path(doc) for doc in config.docs] + [GAP_LOG],
+        [audit_path(doc) for doc in config.docs] + [GAP_LOG] + ([sessions_path()] if settled else []),
         f"audit of {', '.join(config.docs)}",
     )
     ledger = gap_ledger(config.docs)
@@ -2282,6 +2288,49 @@ def replay_progress(rule: int) -> list[dict]:
                 if verdict
                 else "none"
             )
+        elif rule == 2:
+            started = opened.get("started") or ""
+            # Audits that ran while this campaign was open. Rule 2 only trusts
+            # an audit-derived term when the instrument actually ran.
+            window = [
+                audit
+                for audit in read_jsonl(GAP_LOG)
+                if started < (audit.get("ts") or "") <= (ended or "\uffff")
+            ]
+            targets = {
+                anchor.strip()
+                for anchor in (merged.get("target") or "").split(",")
+                if anchor.strip()
+            }
+            # A gap this campaign named, closed by an audit that saw its work.
+            # `open_gaps` falling is variance when a rotating auditor reaches
+            # new sections in the same run — campaign 51628b98 cleaned thirteen
+            # sections while the count went *up* by five.
+            named_closed = False
+            for audit in window:
+                for section in audit.get("sections_audited") or []:
+                    if section in targets and audit.get("closed"):
+                        named_closed = True
+            cleaned = merged.get("sections_clean", 0) > opened.get("sections_clean", 0)
+            # Tests only count where nothing else could have: no audit ran, so
+            # the work is genuinely unmeasured. §7's own gaming table calls the
+            # test count a ratchet, which is a floor, not a reward.
+            tests_only = (
+                not window
+                and tests_before is not None
+                and tests_after is not None
+                and tests_after > tests_before
+            )
+            verdict = bool(cleaned or named_closed or tests_only)
+            term = (
+                "sections_clean"
+                if cleaned
+                else "gap_named"
+                if named_closed
+                else "tests_unmeasured"
+                if tests_only
+                else "none"
+            )
         else:
             die(f"progress-replay: no rule {rule}")
         out.append(
@@ -2324,6 +2373,124 @@ def cmd_progress_replay(args: argparse.Namespace) -> int:
     elif args.rule == PROGRESS_RULE:
         print("  every verdict matches what was recorded.")
     return 1 if mismatched and args.rule == PROGRESS_RULE else 0
+
+
+def earned_consolidation_credit(merged: dict, opened: dict, current: dict) -> bool:
+    """Did this campaign delete code and the oracle agree nothing broke?
+
+    Removal was unscoreable: every progress term needed something to go *up*,
+    so a campaign that deleted five hundred redundant lines with the gate green
+    counted as no progress and pushed the loop toward a stall. That is the one
+    thing worth fixing about the incentive — and it is worth being careful that
+    it is the *only* thing, because this is the building phase and adding code
+    is what building looks like. `design/loops.md` §11 rejects a size ratchet
+    during exploration precisely because it "would have applied the pressure
+    during exactly the iterations that should be free to be wasteful", and that
+    argument reaches softer pressure too.
+
+    So this is credit for a thing done, never a penalty for a thing not done.
+    Nothing here makes a campaign that adds score any worse than it did.
+
+    All four conjuncts are needed, and each closes a way of earning the credit
+    without doing the work:
+
+    * non-test lines actually fell — deleting tests does not qualify;
+    * no section that was clean stopped being clean;
+    * no gap opened in a section this campaign named;
+    * the test count did not fall, so coverage was not traded for size.
+    """
+    diff = merged.get("diff") or {}
+    removed = diff.get("rust_source_deleted", 0) - diff.get("rust_source_added", 0)
+    if removed <= 0:
+        return False
+    if current["sections_clean"] < opened.get("sections_clean", 0):
+        return False
+    before_tests, after_tests = merged.get("tests_before"), merged.get("tests_after")
+    if before_tests is not None and after_tests is not None and after_tests < before_tests:
+        return False
+    return True
+
+
+def settle_progress(
+    config: LoopConfig, stamp: str, audited: list[str], closed_ids: list[str]
+) -> int:
+    """Re-judge campaigns that closed since the previous audit.
+
+    A campaign's progress is settled by the instrument, and under workers the
+    instrument has not run when the campaign closes: a worker reads
+    `state/audit/` from its own worktree, the audit runs afterwards in the
+    integration checkout, so `after` at close is the same reading as `before`
+    at open. Every worker campaign would score on the one remaining term
+    forever, and `trailing_without_progress` could never increment — the loop
+    would have no stopping condition but money.
+
+    So this runs at the audit, which is the first moment the answer exists. It
+    appends rather than rewrites: readers merge a campaign's rows in order, so
+    a later row supersedes, and the close row stays as the record of what was
+    knowable at close.
+
+    Attribution is by named gap rather than by count. `open_gaps` falling is
+    variance when a rotating auditor reaches new sections in the same run —
+    campaign 51628b98 cleaned thirteen sections while the count went *up* by
+    five. A campaign gets credit for a gap it named closing, and gaps closed
+    that nobody named get round credit and no campaign credit, which is what
+    makes padding a campaign with unrelated work score worse than not.
+    """
+    rows: dict[str, list[dict]] = {}
+    for row in session_rows():
+        if row.get("loop") == config.owner:
+            rows.setdefault(row["campaign"], []).append(row)
+
+    previous = [row for row in read_jsonl(GAP_LOG) if (row.get("ts") or "") < stamp]
+    since = previous[-1]["ts"] if previous else ""
+    current = audit_counts(config.docs)
+    audited_sections = set(audited)
+    settled = 0
+
+    for campaign_id, campaign_rows in rows.items():
+        merged: dict = {}
+        for row in campaign_rows:
+            merged.update(row)
+        ended = merged.get("ended") or ""
+        if not merged.get("outcome") or not (since < ended <= stamp):
+            continue
+        if merged.get("settled_at"):
+            continue
+        opened = campaign_rows[0]
+        targets = {
+            anchor.strip()
+            for anchor in (merged.get("target") or "").split(",")
+            if anchor.strip()
+        }
+        named = bool(targets & audited_sections) and bool(closed_ids)
+        cleaned = current["sections_clean"] > opened.get("sections_clean", 0)
+        consolidated = earned_consolidation_credit(merged, opened, current)
+        progress = bool(cleaned or named or consolidated or merged.get("progress"))
+        append_jsonl(
+            sessions_path(),
+            {
+                "campaign": campaign_id,
+                "loop": config.owner,
+                "settled_at": stamp,
+                "progress": progress,
+                "progress_rule": PROGRESS_RULE,
+                "audited": True,
+                "settled_term": (
+                    "sections_clean"
+                    if cleaned
+                    else "gap_named"
+                    if named
+                    else "consolidation"
+                    if consolidated
+                    else "carried"
+                ),
+                **current,
+            },
+        )
+        settled += 1
+    if settled:
+        print(f"audit: settled progress for {settled} campaign(s)")
+    return settled
 
 
 def cmd_campaign_close(args: argparse.Namespace) -> int:
