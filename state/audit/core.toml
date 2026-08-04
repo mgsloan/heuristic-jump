@@ -16,27 +16,23 @@ last_audited = "2026-08-04T04:57:16+00:00"
   where = "crates/shared/src/vocabulary.rs:58"
 
 [section."core.md#the-trait"]
-state = "clean"
-last_audited = "2026-08-03T19:21:14+00:00"
+state = "gaps"
+last_audited = "2026-08-04T05:37:37+00:00"
+
+  [[section."core.md#the-trait".gap]]
+  claim = "Stratum::Unimplemented is the unmodified template's; no real handler may return it, and its presence in a metrics table means the template has not been replaced"
+  found = "the driver synthesises it: a hard-capped late answer is recorded as Abstain{Deadline} under Strata::from_reference(Stratum::Unimplemented), so a real handler that misses its deadline writes an `unimplemented` abstention into \u00a77's record \u2014 the exact counter Table::template reads as \"unreplaced\" (measure_core/src/table.rs:158). Marked DECISION-core-017 provisional in the code. Mechanisable: assert a recorded row never carries stratum_prior \"unimplemented\" when the handler reported a stratum"
+  where = "crates/driver/src/actor.rs:582"
+  found_at = "dd846068c786ddbbfe01f8970d7bd0914b1c1742"
 
   [[section."core.md#the-trait".minor]]
-  claim = "`Outcome::Committed { locations, confidence, stratum }` and `decide(&self, stratum, confidence, locations)`"
-  note = "the code carries `strata: Strata` and `trace: Trace` on both arms and a four-argument decide, per the accepted ruling on conformance-013; the section still prints the superseded shape and no spec-changelog entry aligns it"
-  where = "crates/shared/src/handler.rs:82"
-
-  [[section."core.md#the-trait".minor]]
-  claim = "handlers never construct `Outcome::Committed`; every path ends through `policy.decide(..)`"
-  note = "the variant and its fields are public, so a handler could build one directly \u2014 a driver test already does; the claim holds only because the sole handler abstains. A source scan over crates/lang_* would make it structural"
-  where = "crates/driver/tests/file_list.rs:208"
-
-  [[section."core.md#the-trait".minor]]
-  claim = "handlers work through `ProjectView` so the driver can cache reads within a query, reuse the parse LRU, and run the literal scan on the bounded pool"
-  note = "none of the three exist \u2014 read goes to the filesystem every time, parse builds a fresh Parser, scan is sequential; deliberate under conformance-005 and CLAUDE.md, but the bullet still promises all three"
-  where = "crates/shared/src/project.rs:500"
+  claim = "handlers run the literal scan on the bounded pool from shim.md \u00a710 rather than on threads a handler spawned"
+  note = "ProjectView::new takes (files, deadline, grammar) and scan runs sequentially on the calling thread; deliberate and documented, but the pool the section says is handed at construction does not exist"
+  where = "crates/shared/src/project.rs:426"
 
 [section."core.md#2-document-snapshots"]
 state = "clean"
-last_audited = "2026-08-03T20:56:22+00:00"
+last_audited = "2026-08-04T05:37:37+00:00"
 
 [section."core.md#snapshots-are-o1-to-take-and-are-parsed-before-a-handler-sees-one"]
 state = "clean"
@@ -60,19 +56,8 @@ state = "clean"
 last_audited = "2026-08-04T04:57:16+00:00"
 
 [section."core.md#5-deadlines-and-abstention"]
-state = "gaps"
-last_audited = "2026-08-03T20:56:22+00:00"
-
-  [[section."core.md#5-deadlines-and-abstention".gap]]
-  claim = "the deadline is absolute and starts at request arrival, not at handler entry; queueing time counts"
-  found = "no production code constructs a Deadline: Deadline::new is called only from tests, and driver::run has no request path \u2014 it logs the resolved configuration and returns"
-  where = "crates/driver/src/driver.rs:37"
-  found_at = "00d347edfccbe8d2c7b83558c8d720e5222ca6e8"
-
-  [[section."core.md#5-deadlines-and-abstention".minor]]
-  claim = "the hard cap is enforced by the driver"
-  note = "Deadline::none() is public and reachable from the shim path; the prohibition is a doc comment, where driver/tests/seam.rs already asserts absences of this kind mechanically"
-  where = "crates/shared/src/deadline.rs:89"
+state = "clean"
+last_audited = "2026-08-04T05:37:37+00:00"
 
 [section."core.md#6-the-agreement-predicate"]
 state = "clean"
@@ -107,46 +92,35 @@ last_audited = "2026-08-04T04:57:16+00:00"
 
 [section."core.md#two-modes-collect-and-replay"]
 state = "gaps"
-last_audited = "2026-08-03T20:56:22+00:00"
+last_audited = "2026-08-04T05:37:37+00:00"
 
   [[section."core.md#two-modes-collect-and-replay".gap]]
-  claim = "truth.jsonl carries its provenance in a header record: repository path and commit, server name and version, grammar revision, and the measure version"
-  found = "the grammar field is a constant literal naming no revision, so two collections under different grammar pins produce identical headers. Mechanically checkable: derive it from the locked grammar version and assert two pins differ"
-  where = "crates/measure_core/src/collect.rs:310"
-  found_at = "00d347edfccbe8d2c7b83558c8d720e5222ca6e8"
-
-  [[section."core.md#two-modes-collect-and-replay".gap]]
-  claim = "replay refuses to run against a truth file whose repository commit does not match the checkout, rather than silently reporting metrics for positions that have since moved"
-  found = "collect's resume path writes the current HEAD into the header while re-appending rows collected at the old commit; check_resumable compares only server_version, so a mixed-commit file passes replay's check. A commit comparison in check_resumable would close it"
-  where = "crates/measure_core/src/collect.rs:44"
-  found_at = "00d347edfccbe8d2c7b83558c8d720e5222ca6e8"
+  claim = "collect's output is a frozen artifact and a truth file is regenerated, never edited \u2014 a partially refreshed corpus is the worst case, because it looks like a regression"
+  found = "the checkpoint appends only the single latest row every CHECKPOINT_EVERY positions, so a crashed run leaves a sparse file that is not a prefix; the resume then uses that row count as a position index (done = existing.rows.len()), skipping the first `done` enumerated positions and duplicating the checkpoint rows. The finished file is marked complete:true and replay consumes it"
+  where = "crates/measure_core/src/collect.rs:113"
+  found_at = "dd846068c786ddbbfe01f8970d7bd0914b1c1742"
 
   [[section."core.md#two-modes-collect-and-replay".minor]]
-  claim = "collect writes rows with the lsp_* fields populated and the heuristic side null"
-  note = "collect writes a separate five-field truth row (file, offset, outcome, answer, latency_us); the \u00a77 record is only ever assembled in replay"
-  where = "crates/measure_core/src/truth.rs:71"
+  claim = "the record in this section is the join: collect writes rows with the lsp_* fields populated and the heuristic side null"
+  note = "collect writes a separate compact schema (truth::Row) and replay builds \u00a77's record from it; the byte-comparability property holds and is tested, but the stated mechanism is not the one implemented"
+  where = "crates/measure_core/src/truth.rs:160"
 
 [section."core.md#the-table-is-not-enough-a-replay-has-to-show-its-failures"]
-state = "unjudged"
-last_audited = "2026-08-03T19:21:14+00:00"
+state = "clean"
+last_audited = "2026-08-04T05:37:37+00:00"
+
+  [[section."core.md#the-table-is-not-enough-a-replay-has-to-show-its-failures".minor]]
+  claim = "digesting the records into something readable is the harness's job \u2014 harness/measure runs the replay, prints the table, and writes a failure digest beside it"
+  note = "harness/** is outside the paths given, so this half is unjudged; the measure_core half (--records unfiltered, both grouping keys recoverable by exact string group-by) is satisfied and tested"
+  where = "crates/measure_core/src/replay.rs:248"
 
 [section."core.md#the-oracle-is-the-server-being-proxied"]
-state = "gaps"
-last_audited = "2026-08-03T19:21:14+00:00"
-
-  [[section."core.md#the-oracle-is-the-server-being-proxied".gap]]
-  claim = "the behaviour varies through a `ServerProfile` reaching handlers in `Query`, carrying a `ServerId` resolved from the child's command name at startup"
-  found = "no ServerId is ever minted: ServerId::new has no caller in crates/**, driver never maps ServerCommand::program() to one, and measure_core discards the --server identity and passes ServerProfile { id: None }. Mechanizable: assert ServerId has a producer outside tests, or that a proxy-mode Query carries Some(id)"
-  where = "crates/measure_core/src/replay.rs:135"
+state = "clean"
+last_audited = "2026-08-04T05:37:37+00:00"
 
 [section."core.md#where-the-corpus-lives"]
 state = "clean"
-last_audited = "2026-08-03T20:56:22+00:00"
-
-  [[section."core.md#where-the-corpus-lives".minor]]
-  claim = "the provenance header names exactly one server and version, so a truth file is never silently merged with another's"
-  note = "replay compares only the commit; provenance.server and provenance.language are never checked against --server or the handler's language, leaving the truth/<server>/ path as the only guard"
-  where = "crates/measure_core/src/replay.rs:52"
+last_audited = "2026-08-04T05:37:37+00:00"
 
 [section."core.md#the-command-line"]
 state = "clean"
@@ -189,28 +163,17 @@ state = "clean"
 last_audited = "2026-08-04T04:57:16+00:00"
 
 [section."core.md#85-the-untagged-unions-are-the-actual-risk"]
-state = "gaps"
-last_audited = "2026-08-03T20:56:22+00:00"
-
-  [[section."core.md#85-the-untagged-unions-are-the-actual-risk".gap]]
-  claim = "a golden corpus of real traffic captured from Zed and VS Code against rust-analyzer, pyright and gopls, checked in and asserted against, is one of the two conditions on which dropping lsp-types is acceptable"
-  found = "the corpus holds six captured lines, all rust-analyzer server-to-client; no editor initialize params, no captured document traffic, nothing from pyright or gopls. The unions that matter are exercised only by hand-authored messages"
-  where = "crates/shared/tests/golden-traffic.jsonl:45"
-  found_at = "00d347edfccbe8d2c7b83558c8d720e5222ca6e8"
-
-  [[section."core.md#85-the-untagged-unions-are-the-actual-risk".minor]]
-  claim = "captured traffic is what the corpus is asserted to contain"
-  note = "the enforcing test filters on the `source` string starting with \"CAPTURED\", so a relabelled hand-authored line satisfies it"
-  where = "crates/shared/tests/differential.rs:147"
+state = "clean"
+last_audited = "2026-08-04T05:37:37+00:00"
 
 [section."core.md#86-modelling-errors-must-fail-closed"]
 state = "clean"
-last_audited = "2026-08-03T20:56:22+00:00"
+last_audited = "2026-08-04T05:37:37+00:00"
 
   [[section."core.md#86-modelling-errors-must-fail-closed".minor]]
-  claim = "for an editor that misbehaves, the answer is not to ignore it but to say so in the log"
-  note = "a didOpen for an already-open document is treated as a resync and replaces the row with no log line, where didChange for a never-opened document is both distrusted and logged"
-  where = "crates/driver/src/documents.rs:203"
+  claim = "didSave is a free end-to-end checksum; it costs a read, so it belongs in a worker, and a mismatch marks the document untrusted"
+  note = "Documents::checked has no caller and the actor returns early on Saved::NeedsRead, so the check fires only when the editor volunteered the text \u2014 the case that needs no read at all"
+  where = "crates/driver/src/actor.rs:341"
 
 [section."core.md#87-where-it-lives"]
 state = "clean"
@@ -218,50 +181,28 @@ last_audited = "2026-08-04T04:57:16+00:00"
 
 [section."core.md#9-workspace-layout"]
 state = "clean"
-last_audited = "2026-08-04T04:57:16+00:00"
+last_audited = "2026-08-04T05:37:37+00:00"
 
 [section."core.md#the-dependency-graph"]
 state = "clean"
-last_audited = "2026-08-03T19:21:14+00:00"
-
-  [[section."core.md#the-dependency-graph".minor]]
-  claim = "shared depends on rayon, for `ProjectView::scan`, which executes on the pool it is handed at construction"
-  note = "ProjectView::new takes (files, deadline, grammar) and no pool, and scan is sequential; the undeclared dependency is intended per deps.md \u00a714, the parenthetical is not"
-  where = "crates/shared/src/project.rs:426"
+last_audited = "2026-08-04T05:37:37+00:00"
 
 [section."core.md#why-shared-is-separate-from-driver"]
 state = "clean"
 last_audited = "2026-08-04T00:27:32+00:00"
 
 [section."core.md#adding-a-language"]
-state = "gaps"
-last_audited = "2026-08-04T04:57:16+00:00"
-
-  [[section."core.md#adding-a-language".gap]]
-  claim = "the language crate's Cargo.toml is shared, similarity, tree-sitter-<x>. Nothing else"
-  found = "crates/lang_rust/Cargo.toml declares four dependencies, adding tree-sitter, under a comment claiming the template verbatim with 'Nothing else'. The only tree_sitter item the handler names is Language, which shared re-exports at shared.rs:61 for exactly this reason, so the edge is avoidable. A manifest scan over the template's dependency set would make this mechanical"
-  where = "crates/lang_rust/Cargo.toml:30"
-  found_at = "e23d2149549728b19f61bbdd3fb2490dcb8256d2"
+state = "clean"
+last_audited = "2026-08-04T05:37:37+00:00"
 
   [[section."core.md#adding-a-language".minor]]
-  claim = "crates/measure_<x>/Cargo.toml is measure_core, lang_<x>"
-  note = "measure_rust also declares clap and shared. Both are forced by \u00a77's own printed main (Cli::parse() and Result<(), shared::Error>), and the shared edge is recorded as CHANGE-conformance-009, so this is the section's template block disagreeing with the section's code sample"
-  where = "crates/measure_rust/Cargo.toml:38"
+  claim = "the language-crate template's manifest is shared, similarity, tree-sitter-<x>, and nothing else"
+  note = "the manifest comment says \"verbatim: shared, similarity, the grammar. Nothing else\" while declaring the tree-sitter runtime too; measure_rust likewise adds clap and shared to \u00a79's two"
+  where = "crates/lang_rust/Cargo.toml:19"
 
 [section."core.md#what-the-templates-handler-does"]
-state = "gaps"
-last_audited = "2026-08-03T20:56:22+00:00"
-
-  [[section."core.md#what-the-templates-handler-does".gap]]
-  claim = "Stratum::Unimplemented is self-identifying: its presence in a metrics table means the template has not been replaced, as a gate check"
-  found = "a handler that returns Err is counted under Unimplemented in replay, and the table renders the row unconditionally, so presence is not evidence the template is in place. A gate needs `unimplemented.queries > 0 && failed == 0`, or failures need their own stratum"
-  where = "crates/measure_core/src/replay.rs:205"
-  found_at = "00d347edfccbe8d2c7b83558c8d720e5222ca6e8"
-
-  [[section."core.md#what-the-templates-handler-does".minor]]
-  claim = "the identifier rule is one function in shared, not two implementations that agree"
-  note = "the predicate is shared but the lookups differ \u2014 a tree walk for enumeration, named_descendant_for_byte_range for the handler \u2014 and nothing asserts they select the same positions"
-  where = "crates/shared/src/identifier.rs:31"
+state = "clean"
+last_audited = "2026-08-04T05:37:37+00:00"
 
 [section."core.md#vendoring-the-zed-crates"]
 state = "clean"
@@ -269,4 +210,4 @@ last_audited = "2026-08-04T04:57:16+00:00"
 
 [section."core.md#10-testing"]
 state = "clean"
-last_audited = "2026-08-03T20:56:22+00:00"
+last_audited = "2026-08-04T05:37:37+00:00"
