@@ -157,8 +157,23 @@ pub struct ServerProfile {
     /// for. A handler that branches on this is doing something wrong -- see
     /// below -- but the absence has to be representable, because the two
     /// modes are not the same situation and a synthesised identity would
-    /// hide that.
-    pub id: Option<ServerId>,
+    /// hide that. Private, with one constructor per situation, so that the
+    /// third case -- a caller that knows which server it is standing in for
+    /// and passes `None` anyway -- is not expressible.
+    id: Option<ServerId>,
+}
+
+impl ServerProfile {
+    /// No oracle at all, so there is no identity to resolve rather than one
+    /// we failed to resolve.
+    pub const fn standalone() -> Self;
+    /// Proxying the child on this command line, as the shim was invoked.
+    pub fn proxying_command(program: &OsStr, arguments: &[OsString]) -> Self;
+    /// Standing in for the server a corpus run names -- `measure`'s
+    /// `--server`, which is a `servers.toml` key because a replay has no
+    /// child to look at.
+    pub fn proxying_named(name: &str) -> Self;
+    pub fn id(&self) -> Option<ServerId>;
 }
 
 /// Interned server identity, resolved from the child's command name at
@@ -170,10 +185,43 @@ pub enum Outcome {
     Committed {
         locations: Vec<Location>,
         confidence: Confidence,
-        stratum: Stratum,
+        strata: Strata,
+        trace: Trace,
     },
-    Abstain { reason: AbstainReason, stratum: Stratum },
+    Abstain { reason: AbstainReason, strata: Strata, trace: Trace },
 }
+
+/// Section 7's `stratum_prior` and `stratum_final`, which are two fields and
+/// not one. The fields are private because `refine` is the only way to make
+/// them differ.
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+pub struct Strata { prior: Stratum, settled: Stratum }
+
+impl Strata {
+    /// Before the search: the two agree, because nothing has refined
+    /// anything.
+    pub fn from_reference(stratum: Stratum) -> Self;
+    /// The one refinement section 8 of `resolution.md` permits.
+    pub fn refine(self, refinement: Refinement) -> Self;
+    pub fn prior(self) -> Stratum;
+    /// Section 7's `stratum_final`, spelled `settled` because `final` is
+    /// reserved.
+    pub fn settled(self) -> Stratum;
+}
+
+/// The only two strata a search may refine *to*: neither is knowable before
+/// it runs, which is the whole reason a refinement is permitted at all. A
+/// two-variant enum rather than a `Stratum`, so that refining to a class the
+/// reference already decided does not compile.
+pub enum Refinement { AmbiguousName, ExternalDependency }
+
+/// Everything else section 7 calls handler-reported: `margin`, `considered`,
+/// `stages`, `stage_us`, `bytes_scanned`, `files_parsed`. Write-only from a
+/// handler's side -- the fields are private and the one reader consumes it,
+/// which is the strongest available form of section 7's "nothing branches on
+/// it, ever". Boxed and not allocated until something is reported, so the
+/// commonest abstention does not pay for a channel it never writes to.
+pub struct Trace(Option<Box<TraceParts>>);
 
 /// One per row of `high-level.md`'s stratification list, plus a placeholder.
 /// What each means, and how a query is assigned one, is `resolution.md` §8.
@@ -216,8 +264,8 @@ pub enum AbstainReason {
 pub struct CommitPolicy { /* ... */ }
 
 impl CommitPolicy {
-    pub fn decide(&self, stratum: Stratum, confidence: Confidence,
-                  locations: Vec<Location>) -> Outcome;
+    pub fn decide(&self, strata: Strata, confidence: Confidence,
+                  locations: Vec<Location>, trace: Trace) -> Outcome;
 }
 
 /// A file known to be inside a workspace root and not gitignored.
@@ -275,8 +323,31 @@ Notes on the shape:
   [`resolution.md` §1.2] refuses to centralise. The variants are unit or carry
   primitives; the detail a handler knows stays in the handler, and reaches the
   metrics through the trace record rather than the seam.
-*  ** `Stratum` is reported on both arms**, because coverage per stratum is
-  meaningless without knowing which stratum the abstentions belonged to.
+*  ** `Strata` and `Trace` are reported on both arms**, because coverage per
+  stratum is meaningless without knowing which stratum the abstentions belonged
+  to — and because a stratum with no coverage and a stratum whose searches all
+  cost 40ms before abstaining are different findings, of which the abstaining
+  one is the more interesting.
+
+  **The stratum is two fields and not one**, for the reason
+  [section 7](#7-observability-and-the-corpus-scan) gives: coverage is reported
+  on the prior so the denominator is fixed by the reference and does not move
+  when the implementation changes, and precision on the settled one so an
+  answer is judged against the class it turned out to be. `Strata` makes that
+  rule structural rather than remembered — `refine` takes a `Refinement` and
+  not a `Stratum`, so a search cannot claim a class the reference had already
+  decided.
+
+  **That the return value is the reporting channel at all is
+  `conformance-013`**, which was escalated because widening `Outcome` is a
+  change to the frozen seam, and answered in favour of it. The alternative
+  weighed was an out-parameter `trace: &mut Trace` on `goto_definition`; the
+  deciding argument against was this section's own, that an out-parameter is
+  readable *during* the query and section 7 says nothing branches on the trace,
+  ever. A trace a handler can read back is one it can condition on, and then
+  the record stops describing the run and starts shaping it. The cost accepted
+  with it is the one visible above: two more fields at every construction site
+  in every language crate, and a fourth parameter on `decide`.
 *  ** `Confidence` exists now** even though nothing compares it against a
   threshold in v1. It is recorded on every answer and never gates one. Two
   reasons it is not deferred along with the floor: `high-level.md` 's future
@@ -327,6 +398,18 @@ Notes on the shape:
   `lang_*` crate at the moment when there are the most of them, and
   half-adopting it is worse than either choice. `resolution.md` §7.4 argues it
   at length.
+
+  **What holds this is review and not the type system, and it is worth being
+  exact about which.** `Outcome::Committed` is a public variant with public
+  fields, so a `lang_*` crate *can* build one without going through the policy;
+  what it cannot do is build one the policy would have refused, because in v1
+  the policy refuses nothing. The two become distinguishable only when a floor
+  arrives, which is the moment the funnel is for — and the check available
+  before then is mechanical rather than architectural: a source scan over
+  `crates/lang_*` for the construction, in the shape `driver/tests/seam.rs`
+  already uses for the wire vocabulary. Making it type-level instead means a
+  private variant and a constructor, which is a change to the frozen seam and
+  is not made here on the strength of a rule nothing has yet broken.
 *  **Handlers are `Send + Sync` and re-entrant.** The same handler serves
   concurrent queries; per-query mutable state lives in locals.
 *  ** `grammar()` is what keeps `driver` language-free.** The driver needs to
@@ -377,6 +460,16 @@ Notes on the shape:
   another hat.
   A handler reads a field describing a behaviour; it does not ask which
   server it is talking to.
+
+  **The identity is a private field behind a constructor per situation**,
+  rather than a public `id: Option<ServerId>`. The absence has to be
+  representable — standalone has no oracle, and a proxied server we have no
+  profile for is a different thing from one we do — but with a public field a
+  third case is representable too, and it is the one that silently loses
+  information: a call site that *knows* which server it is standing in for and
+  passes `None` anyway. `standalone()`, `proxying_command(..)` and
+  `proxying_named(..)` are the three situations that exist, and none of them
+  can be spelled as another.
 
 ## 2. Document snapshots
 

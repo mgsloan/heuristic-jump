@@ -550,3 +550,63 @@ has three arms.** The resolution is decided entirely by two other design
 documents, one of which is this one.
 
 **Campaign:** 9110a409-f685-4569-ba82-fbf938928727
+
+## CHANGE-core-018 — core.md#the-trait — the printed seam is the one `conformance-013` settled
+
+**Contradiction:** `#the-trait` prints
+
+```rust
+pub enum Outcome {
+    Committed { locations: Vec<Location>, confidence: Confidence, stratum: Stratum },
+    Abstain { reason: AbstainReason, stratum: Stratum },
+}
+```
+
+and `pub fn decide(&self, stratum: Stratum, confidence: Confidence, locations:
+Vec<Location>) -> Outcome`, with a note bullet reading "**`Stratum` is reported
+on both arms**".
+
+[`#7-observability-and-the-corpus-scan`](../../design/core.md#7-observability-and-the-corpus-scan)
+requires nine handler-reported values, of which one is not a stratum but two:
+"The stratum is two fields, not one … Coverage is reported on `stratum_prior`
+so the denominator is fixed by the reference and does not move when the
+implementation changes; precision is reported on `stratum_final` so an answer
+is judged against the class it turned out to be. **One field cannot do both.**"
+A single `stratum` on `Outcome` is exactly the one field, so the two sections
+could not both stand, and §7 is the one the metrics table is computed from.
+
+**Resolution:** the printed block now carries `strata: Strata` and
+`trace: Trace` on both arms, prints `Strata`, `Refinement` and `Trace`, and
+gives `decide` its fourth parameter.
+
+This trades nothing off *here* because the trade was made elsewhere and by
+somebody else. `state/decisions/conformance-013.md` escalated precisely this —
+widening `Outcome` is a change to the seam `state/phase.toml` freezes — weighed
+it against an out-parameter `trace: &mut Trace` on `goto_definition` and against
+interior mutability on `Query`, and was **answered `accepted`, option A**, on
+2026-08-03T19:00:32Z. The ruling's own words: "A's cost is real and accepted:
+two fields at every construction site in every language crate, and
+`CommitPolicy::decide` grows to four parameters." So the code at
+`crates/shared/src/handler.rs:120` is not a drift the document is being bent
+toward; it is the answer, and this section was the one place still printing the
+question. The bullet now records the alternative and why it lost, since a
+decision record is not where a reader of §1 will look.
+
+Two smaller divergences in the same block, both audited as minors and both
+strengthenings of what the block claimed rather than departures from it:
+
+* `ServerProfile`'s `id` is private with `standalone()`, `proxying_command(..)`
+  and `proxying_named(..)`, not a public `Option<ServerId>`. The block said a
+  handler branching on the absence "is doing something wrong"; the constructors
+  make the case that loses information — a caller that knows the server and
+  passes `None` anyway — unspellable rather than discouraged.
+* "Handlers never construct `Outcome::Committed`" is held by review, not by the
+  type: the variant is public. The bullet now says so, says why the distinction
+  is inert until a precision floor exists, and names the source scan that is the
+  available mechanical check. Making it type-level is a seam change and is not
+  taken on the strength of a rule nothing has broken.
+
+**No code moved with it.** Nothing under `crates/` is touched by this campaign;
+`handler.rs` has carried this shape since `conformance-013` was reconciled.
+
+**Campaign:** 9110a409-f685-4569-ba82-fbf938928727
