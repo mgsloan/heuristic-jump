@@ -732,13 +732,25 @@ fn the_gpl_inputs_are_the_two_the_documents_name() {
 /// registry cache, and no scan over `crates/*` and `vendor/*` will ever read
 /// one — which is why every check in this file was blind to it.
 ///
-/// **The mechanism is not the one §14 names, and that is `core-021`.**
-/// `deny.toml` is outside every loop's owned paths and `cargo-deny` is not
-/// installed here, so a config committed now would be a file nothing runs —
-/// which is worse than no check, because the section would read as satisfied.
-/// `cargo metadata` carries `license` for every package in the graph, offline
-/// and in about a tenth of a second, so the property is asserted directly and
-/// on every gate instead.
+/// **The mechanism is not the one §14 names**, and the record is `core-021`,
+/// closed as a duplicate of `core-023`, which is **answered: `cargo-deny` is
+/// adopted**. What that leaves is a human's: `deny.toml` sits at the repository
+/// root and `harness/gate` is where it has to run, and both are outside every
+/// loop's owned paths — re-measured each campaign that has taken this section,
+/// most recently as `deny.toml: outside core's owned paths` and
+/// `cargo deny: no such command`. So the ruling does not delete this; a config
+/// committed now would be a file nothing runs, which is worse than no check
+/// because §14 would then read as satisfied.
+///
+/// It also survives the ruling for a reason the ruling did not have.
+/// `core-023` weighed `cargo-deny` against the *manifest* scans and reasoned
+/// that the resolved graph is what "no test can reach" — and this one reaches
+/// it, offline and in about a tenth of a second, because `cargo metadata`
+/// carries `license` for every package in the graph. What `cargo-deny` still
+/// buys over it is real and is narrower than that: proper SPDX expression
+/// parsing where this splits on `OR` and looks for `GPL`, an exception list
+/// with a reason per entry, and advisories. When `deny.toml` lands, this is
+/// the test to weigh against it rather than one already made redundant.
 ///
 /// The expected set is **derived rather than listed**: the copyleft packages
 /// in the graph must be exactly the copyleft workspace members, and which
@@ -760,7 +772,6 @@ fn the_gpl_inputs_are_the_two_the_documents_name() {
               there is no deadline to poll against"
 )]
 fn no_third_copyleft_input_reaches_the_dependency_graph() {
-    // DECISION-core-021: provisional
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
     let produced = std::process::Command::new(&cargo)
         .args(["metadata", "--format-version", "1"])
@@ -946,13 +957,14 @@ fn section_of(document: &str, heading: &str) -> String {
 ///
 /// `[dev-dependencies]` are out of it, as they are in §9's graph tests: what a
 /// licence is about is what the shipped binary combines.
-// DECISION-core-023: provisional. §14's last bullet asks for a `cargo-deny`
-// config "because it is what notices a third arriving without anyone
-// deciding", and this is what notices it meanwhile. The two are not equal: a
-// manifest scan cannot see a GPL crate arriving *transitively* through a
-// permissive direct dependency, which cargo-deny reads off the resolved graph.
-// Nothing reaches that case today — every GPL input in the graph is a
-// workspace member — and the record is where that stops being true.
+/// `core-023` is answered, and this test is the half of it that was never
+/// really provisional. The ruling adopts `cargo-deny` and keeps this: "they
+/// are not two statements of one policy. [This] is a claim about *our* crates
+/// and their direct manifests, which is a design property the tests should
+/// keep asserting. `deny.toml` is a claim about the resolved graph." A config
+/// could not make this claim in any case — a manifest edge that widens the GPL
+/// surface changes no `license` field, so it changes nothing `cargo-deny`
+/// reads.
 #[test]
 fn the_permissive_surface_is_exactly_what_does_not_reach_similarity() {
     let members = workspace_members();
