@@ -2227,6 +2227,105 @@ def cmd_backfill_lines(args: argparse.Namespace) -> int:
     return 0
 
 
+def replay_progress(rule: int) -> list[dict]:
+    """Recompute `progress` for every closed campaign under a given rule.
+
+    The point is the backtest. Every change to what progress means is a metric
+    redefinition, and the only honest way to make one is to see which past
+    campaigns it reclassifies before it decides anything live.
+
+    Rule 1 is reconstructed rather than read: `tests_after` was never recorded
+    on a close row, so it comes from the last metrics row at or before the
+    close. Everything else the rows already carry.
+    """
+    by_campaign: dict[str, list[dict]] = {}
+    for row in session_rows():
+        by_campaign.setdefault(row["campaign"], []).append(row)
+
+    metrics: dict[str, list[dict]] = {}
+    for owner in load_phase().loops:
+        metrics[owner] = [row for row in read_jsonl(metrics_path(owner)) if row.get("ts")]
+
+    out = []
+    for campaign_id, rows in by_campaign.items():
+        opened = rows[0]
+        closed = next((row for row in rows if row.get("outcome")), None)
+        if closed is None:
+            continue
+        merged: dict = {}
+        for row in rows:
+            merged.update(row)
+        owner = merged.get("loop") or ""
+        ended = merged.get("ended") or ""
+        tests_after = None
+        for row in metrics.get(owner, []):
+            if row["ts"] <= ended and "tests" in row:
+                tests_after = row["tests"]
+        tests_before = opened.get("tests")
+
+        if rule == 1:
+            verdict = bool(
+                (merged.get("sections_clean", 0) > opened.get("sections_clean", 0))
+                or (merged.get("open_gaps", 0) < opened.get("open_gaps", 0))
+                or (
+                    tests_before is not None
+                    and tests_after is not None
+                    and tests_after > tests_before
+                )
+            )
+            term = (
+                "sections_clean"
+                if merged.get("sections_clean", 0) > opened.get("sections_clean", 0)
+                else "open_gaps"
+                if merged.get("open_gaps", 0) < opened.get("open_gaps", 0)
+                else "tests"
+                if verdict
+                else "none"
+            )
+        else:
+            die(f"progress-replay: no rule {rule}")
+        out.append(
+            {
+                "campaign": campaign_id,
+                "loop": owner,
+                "worker": merged.get("worker"),
+                "ended": ended,
+                "recorded": bool(merged.get("progress")),
+                "replayed": verdict,
+                "term": term,
+                "commits": merged.get("commits"),
+            }
+        )
+    out.sort(key=lambda row: row["ended"])
+    return out
+
+
+def cmd_progress_replay(args: argparse.Namespace) -> int:
+    rows = replay_progress(args.rule)
+    mismatched = [row for row in rows if row["recorded"] != row["replayed"]]
+    counts: dict[str, int] = {}
+    for row in rows:
+        counts[row["term"]] = counts.get(row["term"], 0) + 1
+    print(f"progress-replay: rule {args.rule}, {len(rows)} closed campaign(s)")
+    for term, count in sorted(counts.items(), key=lambda pair: -pair[1]):
+        print(f"  {term:16} {count}")
+    longest = run = 0
+    for row in rows:
+        run = run + 1 if not row["replayed"] else 0
+        longest = max(longest, run)
+    print(f"  longest run without progress: {longest}")
+    if mismatched:
+        print(f"\n  {len(mismatched)} campaign(s) differ from what was recorded:")
+        for row in mismatched:
+            print(
+                f"    {row['campaign'][:8]} {row['ended'][:19]}"
+                f"  recorded={row['recorded']} replayed={row['replayed']} ({row['term']})"
+            )
+    elif args.rule == PROGRESS_RULE:
+        print("  every verdict matches what was recorded.")
+    return 1 if mismatched and args.rule == PROGRESS_RULE else 0
+
+
 def cmd_campaign_close(args: argparse.Namespace) -> int:
     phase, config = loop_config(args.loop)
     rows = [row for row in session_rows() if row.get("campaign") == args.id]
@@ -3395,6 +3494,10 @@ def main() -> int:
 
     p = sub.add_parser("backfill-lines", help="line counts for already-closed campaigns")
     p.set_defaults(run=cmd_backfill_lines)
+
+    p = sub.add_parser("progress-replay", help="recompute progress for every closed campaign")
+    p.add_argument("--rule", type=int, default=PROGRESS_RULE)
+    p.set_defaults(run=cmd_progress_replay)
 
     p = sub.add_parser("record", help="append the metrics row for HEAD")
     p.add_argument("loop")
