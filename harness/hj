@@ -5819,6 +5819,251 @@ def cmd_budget(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------
+# The frontier. `design/loops.md` §10, "The frontier, and why it stays
+# two-dimensional".
+#
+# "A commit is on the frontier if no other commit beats it on every axis. Over
+# a run of a few hundred iterations that is a real, computable object, and it
+# is strictly more informative than the current numbers: it is the record of
+# what was *achievable*, including by versions that were later abandoned."
+#
+# §18 lists the frontier under what is deliberately not built, on the argument
+# that "a thing that only serves tuning loops is not built before there are
+# tuning loops". The same section says what ends that: "this list shortens as
+# the followup is built, and it is the list rather than the argument that
+# moves". The argument is untouched by building it — nothing consumes a
+# frontier before 2a, and during phase 1a every function here answers "no row
+# carries both axes". What it buys is that the axes are fixed *before* there
+# are numbers to pick them by, which is the whole of §10's discipline: adding
+# a third axis to escape a bad-looking chart is easy, and impossible to notice
+# afterwards.
+
+# The two axes, and the order they print in. §10 chooses between the three
+# quality numbers by a criterion rather than by taste — "it must not be
+# improvable by answering more". Top-1 agreement passes it; containment "rises
+# monotonically with list length, so as an objective it is the old flaw
+# wearing new clothes"; result count is "the price of containment".
+FRONTIER_AXES = ("top1", "coverage")
+
+# Reported beside the frontier and never on it. Three different reasons, worth
+# keeping apart because they fail differently:
+#
+# * containment and result count — "a point that raises containment by
+#   lengthening lists is not a frontier advance and must not read as one";
+# * latency — a constraint rather than an objective, and already counted:
+#   past the hard cap a query abstains, so blown latency "spends itself as
+#   lost recall" and is visible on the quality axis. A third axis for it would
+#   double-count it;
+# * LOC — "it correlates with binary size, it is gameable by formatting, and
+#   what it is really a proxy for — maintainability — is not something a
+#   frontier can see".
+#
+# The list is the subject of a check rather than decoration. §10's stated
+# reason for the discipline is that with four or more objectives
+# "non-domination becomes nearly free — almost every point is on the frontier
+# and the concept stops selecting anything", so the failure it guards against
+# is a *later* campaign promoting one of these to an axis, which nothing else
+# here would notice.
+FRONTIER_BESIDE = ("contained", "result_count", "latency", "loc")
+
+# §10: "Phase 3 has no frontier of its own, because it may not move quality at
+# all. It has one axis, size, and a ratchet. The frontier reappears there only
+# inside an escalation, to show what a proposed exception would cost."
+FRONTIER_PHASES = ("2a", "2b")
+
+
+def stratum_mean(row: dict, key: str) -> float | None:
+    """One number out of §10's per-stratum metrics row, n-weighted.
+
+    The row spec is per stratum — "per-stratum {coverage, top1, contained,
+    result-count distribution, n}" — and the frontier is over commits, so an
+    axis has to be aggregated before it is one. Weighted by the stratum's `n`
+    rather than a plain mean: `data-collection.md` sizes the strata an order
+    of magnitude apart, and an unweighted mean lets the rarest one outvote
+    everything else.
+
+    A top-level value wins where a row carries one, so that a replay sweep
+    which recomputes and writes the aggregate directly cannot disagree with
+    this about which number is authoritative.
+    """
+    direct = row.get(key)
+    if isinstance(direct, (int, float)) and not isinstance(direct, bool):
+        return float(direct)
+    total = weight = 0.0
+    for numbers in (row.get("strata") or {}).values():
+        if not isinstance(numbers, dict):
+            continue
+        value, count = numbers.get(key), numbers.get("n", 1)
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            continue
+        if isinstance(count, (int, float)) and not isinstance(count, bool) and count > 0:
+            total += float(value) * float(count)
+            weight += float(count)
+    return total / weight if weight else None
+
+
+def frontier_axes_of(row: dict) -> dict[str, float] | None:
+    """A row's position on the frontier's plane, or None if it is not on it.
+
+    Both axes or neither. A point with one coordinate cannot be compared, and
+    filling the missing one in with zero would park every phase-1 row at the
+    origin and then read the first tuning commit as an advance over all of
+    them — a hundred campaigns of free progress from one absent field.
+    """
+    position = {axis: stratum_mean(row, axis) for axis in FRONTIER_AXES}
+    return None if any(value is None for value in position.values()) else position
+
+
+def dominates(better: dict, worse: dict) -> bool:
+    """Pareto domination: at least as good on every axis, strictly better on
+    at least one.
+
+    §10 phrases the frontier as "no other commit beats it on every axis",
+    which read strictly would keep a point that ties on one axis and loses on
+    the other. The two readings agree wherever no two commits tie; where they
+    do not, the literal one keeps points that are better than nothing. The
+    difference is settled in `advances_frontier` rather than here, because
+    that is the reading §7 pays for and this one only reports.
+    """
+    return all(better[axis] >= worse[axis] for axis in FRONTIER_AXES) and any(
+        better[axis] > worse[axis] for axis in FRONTIER_AXES
+    )
+
+
+def advances_frontier(point: dict, existing: list[dict]) -> bool:
+    """§7's fifth form of progress: "a frontier point being added that is not
+    dominated by an existing one".
+
+    Stricter than `not any(dominates(other, point))` by exactly the tie, and
+    the tie is the whole of it. `record` writes a row per commit, and a commit
+    that changes no behaviour carries the previous commit's numbers exactly;
+    under the looser reading that identical row is undominated, so every
+    commit forever scores progress and §7's stall detection stops existing.
+    That is the shape §7's own gaming table is about, arriving through the
+    term meant to reward real work.
+
+    So a point advances only if it is strictly better than *every* existing
+    point on at least one axis.
+    """
+    return not any(
+        all(other[axis] >= point[axis] for axis in FRONTIER_AXES) for other in existing
+    )
+
+
+def frontier_points(rows: list[dict]) -> list[dict]:
+    """The non-dominated rows, in the order they were recorded, each carrying
+    its position under `frontier_axes`.
+
+    Ties keep the earliest commit: the frontier is "the record of what was
+    achievable", and the commit that first achieved a point is the one that
+    achieved it. Keeping the latest would let a run of no-op commits reassign
+    every point on the frontier to whichever ran most recently, which is the
+    same free-progress route `advances_frontier` closes one step earlier.
+    """
+    positioned = [
+        (row, position)
+        for row in rows
+        if (position := frontier_axes_of(row)) is not None
+    ]
+    kept: list[tuple[dict, dict]] = []
+    for row, position in positioned:
+        if any(dominates(other, position) for _, other in positioned):
+            continue
+        if any(other == position for _, other in kept):
+            continue
+        kept.append((row, position))
+    return [dict(row, frontier_axes=position) for row, position in kept]
+
+
+def campaign_frontier_advance(rows: list[dict], campaign_id: str) -> bool:
+    """§7's fifth form, for one campaign, over one phase's metrics rows.
+
+    The baseline is the frontier as it stood *before* this campaign's first
+    row rather than over the whole phase: a campaign is judged on what it
+    added, and leaving its own rows in the comparison set would have every
+    point dominated by itself.
+
+    Keyed on `campaign` rather than on a commit list, because the metrics row
+    already carries the campaign from the commit's trailer — which makes this
+    answerable in a replay, where the working tree is whatever it is now and
+    `git log` for a campaign twenty campaigns ago is not.
+    """
+    index = next(
+        (number for number, row in enumerate(rows) if row.get("campaign") == campaign_id), None
+    )
+    if index is None:
+        return False
+    baseline = [point["frontier_axes"] for point in frontier_points(rows[:index])]
+    return any(
+        advances_frontier(position, baseline)
+        for row in rows[index:]
+        if row.get("campaign") == campaign_id
+        and (position := frontier_axes_of(row)) is not None
+    )
+
+
+def campaign_advanced_the_frontier(owner: str, campaign_id: str, phase: str) -> bool:
+    rows = [row for row in read_jsonl(metrics_path(owner)) if row.get("phase") == phase]
+    return campaign_frontier_advance(rows, campaign_id)
+
+
+def cmd_frontier(args: argparse.Namespace) -> int:
+    """§10's frontier, computed rather than described.
+
+    Deliberately not a gate step and not consulted by `harness/loop`. §10
+    makes the frontier a reporting object and a gate's selection input, and
+    the one place it decides anything on its own is §7's progress term, which
+    calls `advances_frontier` directly. A command that both printed the
+    frontier and enforced something against it would be the third axis
+    arriving by the back door.
+    """
+    phase = load_phase()
+    owners = [args.loop] if args.loop else sorted(phase.loops)
+    wanted = args.phase or phase.phase
+    if wanted not in FRONTIER_PHASES:
+        print(
+            f"frontier: phase {wanted} has no frontier of its own (design/loops.md "
+            "section 10). "
+            + (
+                "Phase 3 has one axis, size, and a ratchet; the frontier reappears "
+                "there only inside an escalation, to show what a proposed exception "
+                "would cost."
+                if wanted.startswith("3")
+                else "The frontier is a phase 2a object: top-1 agreement x coverage."
+            )
+        )
+    for owner in owners:
+        rows = [row for row in read_jsonl(metrics_path(owner)) if row.get("phase") == wanted]
+        points = frontier_points(rows)
+        if not points:
+            print(
+                f"frontier: {owner}: nothing to compare — {len(rows)} row(s) in phase "
+                f"{wanted}, none carrying both of {' and '.join(FRONTIER_AXES)}"
+            )
+            continue
+        print(
+            f"frontier: {owner}: {len(points)} of {len(rows)} row(s) in phase {wanted} "
+            f"are non-dominated on {' x '.join(FRONTIER_AXES)}"
+        )
+        for point in points:
+            axes = point["frontier_axes"]
+            beside = {
+                name: value
+                for name in FRONTIER_BESIDE
+                if (value := stratum_mean(point, name)) is not None
+            }
+            line = f"  {(point.get('commit') or '')[:12]}  " + "  ".join(
+                f"{axis} {axes[axis]:.4f}" for axis in FRONTIER_AXES
+            )
+            if beside:
+                line += "   beside, never an axis: " + ", ".join(
+                    f"{name} {value:g}" for name, value in beside.items()
+                )
+            print(line)
+    return 0
+
+
+# --------------------------------------------------------------------------
 # Held-out integrity. `design/loops.md` §12.
 #
 # The section's first two bullets are a single mechanism stated twice, and the
@@ -7246,6 +7491,91 @@ def selftest_cases() -> list[tuple[str, object]]:
         rows = [{"commit": "aaa"}, {"commit": "bbb"}, {"commit": "ccc"}]
         assert rows_since(rows, None) == rows, "no re-baseline commit means the whole history"
 
+    def a_commit_beaten_on_every_axis_is_off_the_frontier():
+        rows = [
+            {"commit": "aaa", "top1": 0.80, "coverage": 0.60},
+            {"commit": "bbb", "top1": 0.90, "coverage": 0.70},
+        ]
+        assert [point["commit"] for point in frontier_points(rows)] == ["bbb"]
+
+    def a_trade_between_the_two_axes_keeps_both_points():
+        # The whole reason the object exists. A point that answers less but
+        # gets more of what it answers right is "the record of what was
+        # achievable", including by a version later abandoned.
+        rows = [
+            {"commit": "aaa", "top1": 0.95, "coverage": 0.40},
+            {"commit": "bbb", "top1": 0.70, "coverage": 0.90},
+        ]
+        assert len(frontier_points(rows)) == 2
+
+    def the_frontier_keeps_the_commit_that_first_reached_a_point():
+        rows = [
+            {"commit": "first", "top1": 0.9, "coverage": 0.9},
+            {"commit": "later", "top1": 0.9, "coverage": 0.9},
+        ]
+        assert [point["commit"] for point in frontier_points(rows)] == ["first"], (
+            "keeping the latest would let a run of no-op commits reassign every "
+            "point on the frontier to whichever ran last"
+        )
+
+    def an_identical_row_is_not_a_frontier_advance():
+        # `record` writes a row per commit, so a commit that changes no
+        # behaviour carries the previous commit's numbers exactly. Reading §7's
+        # "not dominated by an existing one" as strict domination would pay
+        # progress for that row, and for every row after it forever.
+        existing = [{"top1": 0.9, "coverage": 0.8}]
+        assert not advances_frontier({"top1": 0.9, "coverage": 0.8}, existing)
+        assert not advances_frontier({"top1": 0.5, "coverage": 0.5}, existing)
+        assert advances_frontier({"top1": 0.9, "coverage": 0.81}, existing)
+        assert advances_frontier({"top1": 0.95, "coverage": 0.1}, existing), (
+            "a trade is an advance; it is a point nothing existing reaches"
+        )
+
+    def a_row_missing_one_axis_is_not_a_point():
+        assert frontier_axes_of({"top1": 0.9}) is None
+        assert frontier_axes_of({"top1": 0.9, "coverage": 0.8}) == {"top1": 0.9, "coverage": 0.8}
+        assert frontier_points([{"commit": "x", "coverage": 0.8}]) == [], (
+            "filling a missing axis with zero would park every phase-1 row at "
+            "the origin and read the first tuning commit as an advance over all"
+        )
+
+    def the_axes_stay_two_and_the_others_stay_beside():
+        # §10: with four or more objectives "non-domination becomes nearly
+        # free — almost every point is on the frontier and the concept stops
+        # selecting anything". The failure this catches is a later campaign
+        # promoting one of the reported numbers to an axis.
+        assert len(FRONTIER_AXES) == 2, FRONTIER_AXES
+        assert "top1" in FRONTIER_AXES and "contained" not in FRONTIER_AXES, (
+            "containment rises monotonically with list length, so as an "
+            "objective it is the old flaw wearing new clothes"
+        )
+        assert not set(FRONTIER_AXES) & set(FRONTIER_BESIDE)
+        for name in ("contained", "result_count", "latency", "loc"):
+            assert name in FRONTIER_BESIDE, name
+
+    def a_stratum_mean_is_weighted_by_its_n():
+        row = {"strata": {"Common": {"top1": 0.9, "n": 900}, "Rare": {"top1": 0.1, "n": 100}}}
+        assert abs(stratum_mean(row, "top1") - 0.82) < 1e-9, stratum_mean(row, "top1")
+        assert stratum_mean(row, "coverage") is None, "an absent number is not zero"
+        assert stratum_mean({"top1": 0.5, "strata": {"A": {"top1": 0.1}}}, "top1") == 0.5, (
+            "a recomputed aggregate is authoritative over the per-stratum rows"
+        )
+
+    def a_campaign_is_judged_against_the_frontier_as_it_stood_before_it():
+        rows = [
+            {"campaign": "old", "top1": 0.90, "coverage": 0.80},
+            {"campaign": "mine", "top1": 0.90, "coverage": 0.80},
+            {"campaign": "mine", "top1": 0.91, "coverage": 0.80},
+        ]
+        assert campaign_frontier_advance(rows, "mine")
+        assert not campaign_frontier_advance(rows[:2], "mine"), (
+            "matching the previous row is not an advance"
+        )
+        assert not campaign_frontier_advance(rows, "absent")
+        assert not campaign_frontier_advance(
+            [{"campaign": "mine", "sections_clean": 3}], "mine"
+        ), "a conformance row carries no axes, so it can never advance a frontier"
+
     def the_verdict_carries_no_number_a_loop_could_climb():
         rows = [
             {"strata": {"ExplicitImport": {"tuning": 0.9137, "heldout": 0.8942}}},
@@ -7871,6 +8201,11 @@ def main() -> int:
     p = sub.add_parser("record", help="append the metrics row for HEAD")
     p.add_argument("loop")
     p.set_defaults(run=cmd_record)
+
+    p = sub.add_parser("frontier", help="the non-dominated commits of a phase (loops.md §10)")
+    p.add_argument("loop", nargs="?")
+    p.add_argument("--phase", help="a phase other than the current one")
+    p.set_defaults(run=cmd_frontier)
 
     p = sub.add_parser("check-heldout", help="the held-out split is separate, and unnamed")
     p.set_defaults(run=cmd_check_heldout)
