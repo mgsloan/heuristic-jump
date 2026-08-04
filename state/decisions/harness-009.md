@@ -1,6 +1,6 @@
 ---
 id: harness-009
-status: open
+status: accepted
 opened: 2026-08-04T21:35:00+00:00
 campaign: 78bbbbc4-9003-447e-9139-61389562ceb5
 kind: class-b
@@ -62,7 +62,47 @@ shape.
 
 ## Decision
 
-Undecided — waiting on a human.
+**accepted: the third option, with the log made part of it — flag it, and
+record the flag as a `prompt-revised` intervention**, answered 2026-08-04 and
+logged as a `decision-answered` intervention, which is what makes it answered —
+`design/loops.md` §16 derives the status from the log rather than from this line.
+
+The record is right that the two §18 sentences cannot both be satisfied, and
+right that denying the loop its own prompt is the reading that honours §18's
+principle. What decides against it is that the defect §16 actually names is not
+*that* the prompt was edited — two gaps were legitimately closed that way, and
+the claims genuinely live in the prompt — but that the edit **was not recorded**.
+A prompt revision is the one intervention that cannot be replayed, so what an
+analyst needs is a row in the log marking where the generator changed. Denial
+would have delivered that as a side effect; logging delivers it directly, and
+keeps the route §18 assigns to this same loop in the same paragraph.
+
+This is the answer `harness/readme.md` already gives for the Class A hole, in
+its own words — the honest version is that it is made *visible* rather than
+impossible — with the gap that the visibility stopped at the dashboard now
+closed.
+
+**What tips it, and what would tip it back.** The evidence is two edits, both
+honest, which the record correctly says is evidence about two campaigns rather
+than about the mechanism. That is why the log matters more than the flag: it is
+what makes the next twenty edits countable, and `prompt-revised` rows
+accumulating faster than gaps close is the signal that would justify revisiting
+this and denying the template outright. The record exists to be answered from
+evidence, and now there will be some.
+
+### Done in the same commit as this ruling
+
+`log_prompt_revision` appends a `prompt-revised` row at campaign close, with the
+campaign id, the files, whether the template was the campaign's own, and a
+rationale saying the harness wrote it rather than a person — nobody is present
+at a close to give one, and a row that pretends otherwise is worse than one that
+says so. A human can still add their own row with reasoning.
+
+Only *live* templates, via `live_prompt_templates`: §18 gives this loop the
+tuning and optimisation prompts, and editing a prompt for a phase that has not
+run changes no generator and makes no measured metric incomparable. The commit
+is folded into the close, so a campaign that revised a prompt and one that did
+not leave the same number of commits behind.
 
 ## Provisional choice in force
 
