@@ -69,6 +69,25 @@ DENIED_ALWAYS = [
     "CLAUDE.md",
     "clippy.toml",
     ".claude/**",
+    # The four files in `harness/` that judge a loop rather than serve it, and
+    # the reason `HARNESS_PATHS` below is not the whole story. `writes_harness`
+    # exists so the phase-2 machinery can be built; it was granting these as
+    # well, and `harness/loop` fast-forwards `main` after every green campaign,
+    # so the reviewed gate would have become the loop's own output with no
+    # Class B record anywhere. §7: "`harness/` is owned by nobody and denied to
+    # every loop; changes to it are Class B."
+    #
+    # Being judged by the pinned copy already made an edit here ineffective
+    # within the campaign that made it. That is not the same as it being
+    # ineffective: it lands on `main` at the merge and grades everyone after.
+    #
+    # A gate step, an auditor's prompt or a denominator that needs changing is
+    # a decision record. The loop keeps `hj`, which is where a check is
+    # actually written; `gate` is the thin runner that calls it.
+    "harness/gate",
+    "harness/prompts/auditor.md",
+    "harness/section-baseline.toml",
+    "harness/ratchets.toml",
 ]
 
 # The one path whose owner is a function of the phase: shared resolution code
@@ -3974,6 +3993,19 @@ def selftest_cases() -> list[tuple[str, object]]:
         assert numbers["reverts"] == 1, numbers
         assert numbers["gate_seconds"] == 16.5, numbers
         assert numbers["usd"] == 1.5 and numbers["turns"] == 4
+
+    def the_judging_half_of_the_harness_is_denied_even_with_writes_harness():
+        phase = Phase(phase="1a", loops={"harness": _selftest_loop("harness", None)})
+        phase.loops["harness"].writes_harness = True
+        denied = denied_paths(phase, "harness")
+        for path in ("harness/gate", "harness/prompts/auditor.md", "harness/section-baseline.toml", "harness/ratchets.toml"):
+            assert matches_any(path, denied), f"{path} scores the loop and is not the loop's to write"
+        assert not matches_any("harness/hj", denied), "the loop still builds the machinery"
+
+    def every_other_loop_is_denied_the_whole_of_the_harness():
+        phase = Phase(phase="1a", loops={"core": _selftest_loop("core", None)})
+        denied = denied_paths(phase, "core")
+        assert matches_any("harness/hj", denied) and matches_any("harness/gate", denied)
 
     def reconciling_a_tag_is_progress():
         diff = "-    // DECISION-harness-002: provisional\n-    let sandbox = None;\n+    let sandbox = configured();\n"
