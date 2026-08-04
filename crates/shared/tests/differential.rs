@@ -148,9 +148,10 @@ fn the_corpus_exercises_every_kind_the_differential_can_compare() {
 /// hand-written would satisfy the differential and not the section, and nothing
 /// would say so — which is what this asserts instead.
 ///
-/// The three kinds named are the server-to-client ones. The client half is
-/// composed by an editor nobody here runs, and a message this project wrote to
-/// look like VS Code's is hand-authored however it is labelled.
+/// Both halves are captured now. The server half comes off a stdio client, and
+/// the client half needs an editor, because composing an `initialize` and a
+/// `contentChanges` is what an editor *is*: the header of the corpus says how,
+/// and the answer is a recording proxy between a real editor and a real server.
 ///
 /// **Provenance itself cannot be asserted from inside the process** — the
 /// `CAPTURED` prefix selects the captured half and a relabelled line would be
@@ -173,16 +174,12 @@ fn the_corpus_holds_traffic_nobody_here_composed() {
          messages are the population it says is not the long tail"
     );
 
-    for kind in [
-        Kind::InitializeResult,
-        Kind::DefinitionResult,
-        Kind::Progress,
-    ] {
+    for kind in KINDS {
         assert!(
-            captured.iter().any(|entry| entry.kind == kind),
+            captured.iter().any(|entry| entry.kind == *kind),
             "no captured {kind:?}: the header of golden-traffic.jsonl says how to record one, \
-             and a server saying something we did not predict is the only way this corpus \
-             finds a field nobody modelled"
+             and a message nobody here predicted is the only way this corpus finds a field \
+             nobody modelled"
         );
     }
 
@@ -259,6 +256,43 @@ fn the_corpus_holds_traffic_nobody_here_composed() {
             .any(|site| matches!(site, Sites::At(found) if found.len() > 1)),
         "no captured definition result with more than one site, so §6's set-against-set rule is \
          exercised only by messages this project composed"
+    );
+
+    // §8.5's fifth union, which is the one it spends its longest section on and
+    // the one whose failure destroys the document. What a composed corpus keeps
+    // getting wrong about it is not the common case but the edges: a deletion
+    // reaches the wire as an incremental change whose `text` is empty, and an
+    // editor's ranges cross rows whenever an edit does.
+    let changes: Vec<Change> = captured
+        .iter()
+        .filter(|entry| entry.kind == Kind::DidChange)
+        .flat_map(|entry| {
+            let params: DidChangeTextDocumentParams = read(
+                entry.message.get(),
+                "shared::proto::DidChangeTextDocumentParams",
+            );
+            params
+                .content_changes
+                .iter()
+                .map(our_change)
+                .collect::<Vec<Change>>()
+        })
+        .collect();
+    assert!(
+        changes
+            .iter()
+            .any(|change| matches!(change, Change::Incremental { text, .. } if text.is_empty())),
+        "no captured deletion. `{{range, text: \"\"}}` is what an editor sends when text goes \
+         away, and it is the incremental change most easily read as a whole-document one \
+         carrying no document"
+    );
+    assert!(
+        changes
+            .iter()
+            .any(|change| matches!(change, Change::Incremental { span, .. }
+                if span.start.0 != span.end.0)),
+        "no captured change whose range crosses a row, so nothing here would catch a reading \
+         that treats a content change as a span within one line"
     );
 }
 

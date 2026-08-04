@@ -8,18 +8,35 @@
 # `tests/differential.rs` knows which a line is, so growing the captured half
 # is appending lines.
 #
-# To capture more, drive the server over stdio and record what it sends back:
-# initialize, then `initialized` and a `didOpen`, then wait for the
-# `$/progress` end of its indexing token before asking anything — a definition
-# request that arrives first is answered `null`, which looks like a real answer
-# and is not one. Only server-to-client messages are worth capturing here; the
-# client half of this file is ours either way.
+# To capture more of the server half, drive the server over stdio and record
+# what it sends back: initialize, then `initialized` and a `didOpen`, then wait
+# for the `$/progress` end of its indexing token before asking anything — a
+# definition request that arrives first is answered `null`, which looks like a
+# real answer and is not one. gopls needs a module with a `go.mod`; pyright
+# needs nothing. Ask a position with no definition too, since a real decline is
+# a shape of its own.
 #
-# rust-analyzer, pyright and gopls are all captured now, which is the server
-# list §8.5 names. What is still hand-authored is the client half: an editor's
-# own `initialize` params and its document traffic, which no stdio client can
-# produce because composing them is what an editor *is*. Capturing those means
-# putting a recording proxy between a real editor and a real server.
+# To capture more of the client half you need an editor, and the editor has to
+# be pointed at a script that forwards to the real server and writes every
+# frame it forwards to a file. Emacs is the one that drives headless:
+# `emacs --batch` with `eglot-server-programs` bound to the proxy,
+# `(apply #'eglot--connect (eglot--guess-contact))` rather than `eglot-ensure`
+# — which defers to `post-command-hook` and so never fires in batch — and
+# `(eglot--signal-textDocument/didChange)` between buffer edits, or eglot
+# coalesces them into one notification. The project root needs a `.git` for
+# `project-current` to find it without prompting, and a server that does not
+# advertise `save` in its `textDocumentSync` will never make the editor send a
+# `didSave`.
+#
+# rust-analyzer, pyright and gopls are all captured, which is the server list
+# §8.5 names. The client half is captured too, and it needs a real editor
+# rather than a stdio client, because composing an `initialize` and a
+# `contentChanges` is what an editor *is*: a recording proxy is put between the
+# editor and the server, the editor is driven through open/edit/save/close, and
+# the client-to-server frames are the lines. §8.5 names Zed and VS Code; the
+# editor here is Emacs, whose eglot is a real LSP client and is the one that
+# runs headless. What that leaves untested is per-editor idiosyncrasy, not the
+# unions.
 {"kind":"initializeParams","source":"VS Code against rust-analyzer, shaped from LSP 3.17 InitializeParams and GeneralClientCapabilities","message":{"processId":41231,"clientInfo":{"name":"Visual Studio Code","version":"1.85.1"},"locale":"en-us","rootPath":"/home/dev/project","rootUri":"file:///home/dev/project","capabilities":{"workspace":{"applyEdit":true,"workspaceEdit":{"documentChanges":true}},"textDocument":{"synchronization":{"dynamicRegistration":true,"willSave":true,"didSave":true},"definition":{"dynamicRegistration":true,"linkSupport":true}},"window":{"workDoneProgress":true,"showMessage":{"messageActionItem":{"additionalPropertiesSupport":true}},"showDocument":{"support":true}},"general":{"staleRequestSupport":{"cancel":true,"retryOnContentModified":[]},"positionEncodings":["utf-16"]}},"trace":"off","workspaceFolders":[{"uri":"file:///home/dev/project","name":"project"}]}}
 {"kind":"initializeParams","source":"the smallest InitializeParams the specification permits: rootUri null, no folders, no clientInfo, no general","message":{"processId":null,"rootUri":null,"capabilities":{}}}
 {"kind":"initializeParams","source":"an editor offering an encoding we do not model, which is the case `known_encodings` exists for","message":{"processId":900,"rootUri":"file:///home/dev/other","capabilities":{"general":{"positionEncodings":["utf-8","utf-64","utf-16"]},"textDocument":{"definition":{"linkSupport":false}}},"workspaceFolders":[{"uri":"file:///home/dev/other","name":"other"},{"uri":"file:///home/dev/vendored","name":"vendored"}]}}
@@ -59,3 +76,11 @@
 {"kind":"definitionResult","source":"CAPTURED from pyright 1.1.411: textDocument/definition on `print`, answered with two overloads in typeshed — a real server expressing ambiguity, which §6 says is the LSP being right rather than wrong","message":[{"uri":"file:///tmp/pyright-install/node_modules/pyright/dist/typeshed-fallback/stdlib/builtins.pyi","range":{"start":{"line":2075,"character":4},"end":{"line":2075,"character":9}}},{"uri":"file:///tmp/pyright-install/node_modules/pyright/dist/typeshed-fallback/stdlib/builtins.pyi","range":{"start":{"line":2083,"character":4},"end":{"line":2083,"character":9}}}]}
 {"kind":"progress","source":"CAPTURED from gopls v0.23.0 (go1.26.5): a begin whose token is a string of digits, which is §8.5's first union at its worst — a client that reads number-or-name rather than number-or-string matches it against the wrong minted token","message":{"token":"6596665561239779367","value":{"kind":"begin","title":"Setting up workspace","message":"Loading packages..."}}}
 {"kind":"progress","source":"CAPTURED from gopls v0.23.0 (go1.26.5): an end whose token is a string of digits, which is §8.5's first union at its worst — a client that reads number-or-name rather than number-or-string matches it against the wrong minted token","message":{"token":"6596665561239779367","value":{"kind":"end","message":"Finished loading packages."}}}
+{"kind":"initializeParams","source":"CAPTURED from Eglot 1.17.30 (GNU Emacs 30.2) through a recording proxy to gopls: an editor's own initialize, offering positionEncodings [utf-32, utf-8, utf-16] — utf-32 first, which is the encoding §8.3 models on the grounds that a variant set unable to represent a legal negotiation is worse than an unused variant","message":{"processId":3117872,"clientInfo":{"name":"Eglot","version":"1.17.30"},"rootPath":"/tmp/hj-capture-editor-go/","rootUri":"file:///tmp/hj-capture-editor-go","initializationOptions":{},"capabilities":{"workspace":{"applyEdit":true,"executeCommand":{"dynamicRegistration":false},"workspaceEdit":{"documentChanges":true},"didChangeWatchedFiles":{"dynamicRegistration":true},"symbol":{"dynamicRegistration":false},"configuration":true,"workspaceFolders":true},"textDocument":{"synchronization":{"dynamicRegistration":false,"willSave":true,"willSaveWaitUntil":true,"didSave":true},"completion":{"dynamicRegistration":false,"completionItem":{"snippetSupport":false,"deprecatedSupport":true,"resolveSupport":{"properties":["documentation","details","additionalTextEdits"]},"tagSupport":{"valueSet":[1]}},"contextSupport":true},"hover":{"dynamicRegistration":false,"contentFormat":["plaintext"]},"signatureHelp":{"dynamicRegistration":false,"signatureInformation":{"parameterInformation":{"labelOffsetSupport":true},"documentationFormat":["plaintext"],"activeParameterSupport":true}},"references":{"dynamicRegistration":false},"definition":{"dynamicRegistration":false,"linkSupport":true},"declaration":{"dynamicRegistration":false,"linkSupport":true},"implementation":{"dynamicRegistration":false,"linkSupport":true},"typeDefinition":{"dynamicRegistration":false,"linkSupport":true},"documentSymbol":{"dynamicRegistration":false,"hierarchicalDocumentSymbolSupport":true,"symbolKind":{"valueSet":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26]}},"documentHighlight":{"dynamicRegistration":false},"codeAction":{"dynamicRegistration":false,"resolveSupport":{"properties":["edit","command"]},"dataSupport":true,"codeActionLiteralSupport":{"codeActionKind":{"valueSet":["quickfix","refactor","refactor.extract","refactor.inline","refactor.rewrite","source","source.organizeImports"]}},"isPreferredSupport":true},"formatting":{"dynamicRegistration":false},"rangeFormatting":{"dynamicRegistration":false},"rename":{"dynamicRegistration":false},"inlayHint":{"dynamicRegistration":false},"publishDiagnostics":{"relatedInformation":false,"codeDescriptionSupport":false,"tagSupport":{"valueSet":[1,2]}}},"window":{"showDocument":{"support":true},"workDoneProgress":true},"general":{"positionEncodings":["utf-32","utf-8","utf-16"]},"experimental":{}},"workspaceFolders":[{"uri":"file:///tmp/hj-capture-editor-go","name":"/tmp/hj-capture-editor-go/"}]}}
+{"kind":"didOpen","source":"CAPTURED from Eglot 1.17.30 (GNU Emacs 30.2): the didOpen an editor actually sends, whose version is 0 rather than 1","message":{"textDocument":{"uri":"file:///tmp/hj-capture-editor-go/main.go","version":0,"languageId":"go","text":"package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(Greet(\"world\"))\n}\n"}}}
+{"kind":"didChange","source":"CAPTURED from Eglot 1.17.30 (GNU Emacs 30.2): one incremental change replacing a word inside a line, with rangeLength beside the range. This is the message §8.5 spends its longest section on, and until now the corpus had only a composed one","message":{"textDocument":{"uri":"file:///tmp/hj-capture-editor-go/main.go","version":1},"contentChanges":[{"range":{"start":{"line":5,"character":20},"end":{"line":5,"character":25}},"rangeLength":5,"text":"there"}]}}
+{"kind":"didChange","source":"CAPTURED from Eglot 1.17.30 (GNU Emacs 30.2): a deletion, which reaches the wire as an incremental change whose text is the empty string — the shape that becomes the whole document deleted if `range` is read as an unknown field","message":{"textDocument":{"uri":"file:///tmp/hj-capture-editor-go/main.go","version":2},"contentChanges":[{"range":{"start":{"line":5,"character":20},"end":{"line":5,"character":25}},"rangeLength":5,"text":""}]}}
+{"kind":"didChange","source":"CAPTURED from Eglot 1.17.30 (GNU Emacs 30.2): an insertion, whose range is empty (start equals end) and whose rangeLength is 0","message":{"textDocument":{"uri":"file:///tmp/hj-capture-editor-go/main.go","version":3},"contentChanges":[{"range":{"start":{"line":7,"character":0},"end":{"line":7,"character":0}},"rangeLength":0,"text":"\nfunc other() string {\n\treturn Greet(\"again\")\n}\n"}]}}
+{"kind":"didChange","source":"CAPTURED from Eglot 1.17.30 (GNU Emacs 30.2) against pyright: three buffer edits coalesced into one change whose range spans two rows, which is the case a single-line reading of a range gets wrong","message":{"textDocument":{"uri":"file:///tmp/hj-capture-editor/main.py","version":1},"contentChanges":[{"range":{"start":{"line":4,"character":17},"end":{"line":5,"character":0}},"rangeLength":9,"text":"\"))\n\n\ndef other():\n    return greet(\"again\")\n"}]}}
+{"kind":"didSave","source":"CAPTURED from Eglot 1.17.30 (GNU Emacs 30.2): a save carrying the text, which gopls asked for and which §8.6 makes a free end-to-end check of the whole document-tracking pipeline","message":{"text":"package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(Greet(\"\"))\n}\n\nfunc other() string {\n\treturn Greet(\"again\")\n}\n","textDocument":{"uri":"file:///tmp/hj-capture-editor-go/main.go"}}}
+{"kind":"didClose","source":"CAPTURED from Eglot 1.17.30 (GNU Emacs 30.2): the didClose an editor sends when the buffer goes away","message":{"textDocument":{"uri":"file:///tmp/hj-capture-editor-go/main.go"}}}
