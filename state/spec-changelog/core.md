@@ -502,3 +502,36 @@ wrong sentence is absent: the members that depend on `similarity` are exactly
 `measure_core` and watched it fail.
 
 **Campaign:** 20bbc1bf-03c5-4d3c-afda-a5c5791d47ce
+
+## CHANGE-core-023 — deps.md#10-errors-one-enumerated-type-no-anyhow — the `#[source]` rule yields to §9's dependency list, and says so
+
+**Contradiction:** §10 says foreign errors are wrapped as `#[source]` fields
+"always alongside our own context (which path, which frame)". `core.md` §9
+fixes `shared`'s dependency list and is authoritative about it — and `shared`
+is where the enum lives, so a `#[source]` on a parser's error is a declaration
+of that parser by every crate that names an `Error`. The two cannot both hold
+for `ConfigError::ManifestMalformed`, which is handed a `toml::de::Error` by
+`measure_core/src/corpus.rs:222` and stores it as `reason: Box<str>`.
+
+**Resolution:** §10 now states the exception, bounds it, and names what decides
+it: the rule yields exactly when `shared` may not name the carrier's type, and
+the message is rendered into context of ours instead — path kept, class kept,
+graph unmoved. Rendering an error whose type `shared` *already* names stays
+forbidden, which is the half that keeps the rule's teeth.
+
+This trades nothing off because the boundary is not an author's judgement. It
+is decided by `shared_declares_only_the_dependencies_section_9_lists` in
+`crates/driver/tests/seam.rs`, which already fails if `toml` is added to
+`shared` — so the exception cannot widen without a test going red first. The
+alternative reading, adding `toml` to `shared` so the chain can be carried, is
+the one that trades: it puts a parser behind the seam to preserve a line and
+column in one variant.
+
+**No code moved with it, and nothing to move.** The variant's own doc comment
+has stated this reasoning since before this campaign; what was missing was the
+document agreeing with it. This closes an audit *minor* and not a gap, so the
+section count does not move either way — which is worth saying plainly, since
+editing a design document toward the code is the one way of faking progress the
+audit cannot catch, and here there is no progress to fake.
+
+**Campaign:** 88d25014-0b38-4185-9614-59cdeed27840

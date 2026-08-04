@@ -613,6 +613,24 @@ Rules, so this stays a real closed set rather than `anyhow` with extra steps:
   `#[source]` fields on our own variants, always alongside our own context
   (which path, which frame), so the *classification* is ours even though the
   detail is theirs.
+
+  **Carrying one requires naming its type, and that is a dependency.** The
+  enum lives in `shared`, whose dependency list is fixed by
+  [`core.md` §9](core.md#9-workspace-layout) and is authoritative — so a
+  `#[source]` on a parser's error puts that parser in the graph of every crate
+  that so much as names an `Error`. Where the two rules meet, §9 wins and the
+  message is *rendered* into context of ours instead: the detail survives as
+  text, the path and the classification stay ours, and the graph does not move.
+  `ConfigError::ManifestMalformed` is the only one, holding a `toml::de::Error`
+  as a `reason: Box<str>` because `toml` is `measure_core`'s and not
+  `shared`'s.
+
+  The exception is narrow on purpose, and it is not a matter of judgement:
+  it applies exactly when `shared` may not name the type, which
+  `shared_declares_only_the_dependencies_section_9_lists` decides rather than
+  an author. Rendering an error whose type `shared` already names is not
+  permitted — there the `#[source]` costs nothing and dropping the chain
+  discards a line and column nobody kept a copy of.
 * **`Result` is not the abstention path.** `Outcome::Abstain` /
   `AbstainReason` stay entirely separate, per `core.md` §1 — abstention is a
   correct outcome and must not share a type with failure. Some `driver` code
