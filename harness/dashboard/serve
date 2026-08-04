@@ -1414,12 +1414,61 @@ def panel_sessions(loop: str = "") -> str:
 
 
 def panel_interventions() -> str:
-    rows = hj.read_jsonl(STATE / "interventions.jsonl")
+    """The log, and the three numbers `design/loops.md` section 16 says fall
+    out of having it — none of which anything else in the design reports.
+
+    They are here rather than under Cost because none of them is about money:
+    they measure how much of this a human is doing, which question keeps coming
+    back, and how long a loop waits on an answer."""
+    rows = hj.intervention_rows()
     if not rows:
         return panel(
             "Interventions",
             empty("Nothing logged. Interventions per 100 experiments is the honest version of “close to one-shot”; nothing else in the design reports it."),
         )
+    stats = hj.intervention_stats()
+
+    def ratio(value) -> str:
+        return f"{value:.1f}" if value is not None else "—"
+
+    autonomy = "".join(
+        "<tr>"
+        f"<td>{esc(entry['phase'])}</td>"
+        f"<td class='num'>{entry['interventions']}</td>"
+        f"<td class='num'>{entry['experiments']:,}</td>"
+        f"<td class='num'>{ratio(entry['per_100'])}</td>"
+        "</tr>"
+        for entry in stats["per_phase"]
+    )
+
+    def reading(kind: str) -> str:
+        if kind in stats["recurring"]:
+            return "a rule is missing from a prompt, or an exchange rate was never written down"
+        if kind in hj.ROUTINE_KINDS:
+            return '<span class="dim">one per event by construction — workload, not backlog</span>'
+        return ""
+
+    kinds = "".join(
+        f"<tr><td>{esc(kind)}</td><td class='num'>{count}</td><td>{reading(kind)}</td></tr>"
+        for kind, count in stats["by_kind"]
+    )
+
+    def hours(value) -> str:
+        if value is None:
+            return "—"
+        return f"{value:.1f}h" if value < 48 else f"{value / 24:.1f}d"
+
+    waiting = "".join(
+        f"<tr class='live'><td><a href='#{esc(entry['id'])}'>{esc(entry['id'])}</a></td>"
+        f"<td>{inline(entry['title'])}</td><td class='num warn'>{hours(entry.get('hours'))}</td></tr>"
+        for entry in stats["waiting"]
+    )
+    answered = "".join(
+        f"<tr><td>{esc(entry['id'])}</td><td>{inline(entry['title'])}</td>"
+        f"<td class='num'>{hours(entry.get('hours'))}</td></tr>"
+        for entry in stats["answered"]
+    )
+
     body = "".join(
         f"<tr><td>{esc(row.get('ts'))}</td><td>{esc(row.get('kind'))}</td><td>{esc(row.get('target'))}</td>"
         f"<td>{esc(row.get('answer'))}</td><td>{esc(row.get('rationale'))}</td></tr>"
@@ -1427,8 +1476,34 @@ def panel_interventions() -> str:
     )
     return panel(
         "Interventions",
-        f"<table><thead><tr><th>when</th><th>kind</th><th>target</th><th>answer</th><th>rationale</th></tr></thead><tbody>{body}</tbody></table>",
-        note=f"{len(rows)} logged",
+        f"""
+        <article class="metrics">
+          <h3>How autonomous this actually is</h3>
+          <table><thead><tr><th>phase</th><th class="num">interventions</th>
+            <th class="num">experiments</th><th class="num">per 100</th></tr></thead>
+            <tbody>{autonomy}</tbody></table>
+          <p class="note">An experiment is one gate run, which is the unit the committed/reverted/empty
+            mix is composed from. This is the honest version of “close to one-shot”, and
+            nothing else in the design reports it.</p>
+        </article>
+        <article class="metrics">
+          <h3>Recurring kinds — the design backlog</h3>
+          <table><thead><tr><th>kind</th><th class="num">count</th><th>what {hj.RECURRING_KIND} of them means</th></tr></thead>
+            <tbody>{kinds}</tbody></table>
+        </article>
+        <article class="metrics">
+          <h3>Time to answer</h3>
+          <p class="headline"><strong>{hours(stats['median_hours'])}</strong> median
+            <span class="note">the gap between an escalation appearing and being answered is time a
+            loop spent idling on a provisional choice — it is the number that says whether this page
+            is doing its job</span></p>
+          <table><thead><tr><th>decision</th><th>question</th><th class="num">waited</th></tr></thead>
+            <tbody>{waiting or ''}{answered}</tbody></table>
+        </article>
+        <details><summary>the log, {len(rows)} row(s)</summary>
+        <table><thead><tr><th>when</th><th>kind</th><th>target</th><th>answer</th><th>rationale</th></tr></thead>
+        <tbody>{body}</tbody></table></details>""",
+        note=f"{len(rows)} logged; kinds are section 16's vocabulary, canonicalised on read",
     )
 
 

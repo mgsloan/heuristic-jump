@@ -866,6 +866,55 @@ def ruling_of(row: dict) -> str:
     return head if head in DECISION_RULINGS else "answered"
 
 
+# `design/loops.md` section 16 names the full set of intervention kinds. It is
+# a closed vocabulary rather than free text because the section asks the log to
+# answer "which kinds recur", and that only works if one event lands under one
+# name. It already had not: `prompt-revised` and `prompt-revision` are the same
+# intervention spelled two ways, which reported a kind that had happened eight
+# times as one that had happened seven and one that had happened once — the
+# exact reading the section calls a design backlog, silently split.
+INTERVENTION_KINDS = (
+    "decision-answered",
+    "behaviour-change-approved",
+    "behaviour-change-refused",
+    "frontier-point-selected",
+    "stall-unblocked",
+    "budget-raised",
+    "ratchet-exception-granted",
+    "spec-edited-by-hand",
+    "loop-killed",
+    "loop-restarted",
+    "audit-overruled",
+    "prompt-revised",
+    "harness-changed",
+)
+
+# Kinds the log already carries that section 16's list does not name. Kept as
+# they are rather than folded into `harness-changed`: rewriting a logged kind
+# rewrites the record, and each of these says something the general name does
+# not. `spec-change-reviewed` and `spec-drift-reviewed` are the dashboard's own
+# and are how a Class A edit stops being provisional.
+KINDS_IN_USE = (
+    "spec-change-reviewed",
+    "spec-drift-reviewed",
+    "docs-scope-changed",
+    "rotation-changed",
+    "audit-cadence-changed",
+    "harness-command-run-mid-campaign",
+)
+
+KNOWN_KINDS = INTERVENTION_KINDS + KINDS_IN_USE
+
+# One kind, two spellings, canonicalised when the log is read and never on
+# disk. The rows are the record of what happened and are not edited after the
+# fact; what is being fixed is the count, not the history.
+KIND_ALIASES = {"prompt-revision": "prompt-revised"}
+
+
+def canonical_kind(kind: str) -> str:
+    return KIND_ALIASES.get(kind, kind)
+
+
 def decision_status(identifier: str, recorded: str | None, answers: dict[str, dict] | None = None) -> str:
     """The status the harness believes, which is the log's when there is one.
 
@@ -878,6 +927,165 @@ def decision_status(identifier: str, recorded: str | None, answers: dict[str, di
     if answered:
         return ruling_of(answered)
     return str(recorded or "unknown").strip()
+
+
+def when(stamp: str | None) -> datetime | None:
+    try:
+        return datetime.fromisoformat(str(stamp))
+    except (TypeError, ValueError):
+        return None
+
+
+def hours_between(start: str | None, end: str | None) -> float | None:
+    first, second = when(start), when(end)
+    if first is None or second is None:
+        return None
+    return (second - first).total_seconds() / 3600
+
+
+def phase_timeline() -> list[tuple[str, str]]:
+    """When each phase started, as far as the session log can say.
+
+    An intervention row carries no phase of its own — nothing asked it to
+    until now — so one is attributed from the campaign that was running when
+    it was logged. `state/phase.toml` holds only the current phase, and the
+    audit rows' fallback of "everything unlabelled is the current phase" is
+    the thing the journal already flags as wrong the day a phase changes.
+    """
+    timeline: list[tuple[str, str]] = []
+    for row in session_rows():
+        started, phase = row.get("started") or "", row.get("phase") or ""
+        if started and phase and (not timeline or timeline[-1][1] != phase):
+            timeline.append((started, phase))
+    return timeline
+
+
+def phase_at(stamp: str, timeline: list[tuple[str, str]], fallback: str) -> str:
+    found = fallback
+    for started, phase in timeline:
+        if started <= stamp:
+            found = phase
+    return found
+
+
+def intervention_rows() -> list[dict]:
+    """The log, with kinds canonicalised and a phase attributed to each row."""
+    phase = load_phase()
+    timeline = phase_timeline()
+    rows = []
+    for row in read_jsonl(INTERVENTIONS):
+        entry = dict(row)
+        entry["kind"] = canonical_kind(str(row.get("kind") or ""))
+        entry["phase"] = row.get("phase") or phase_at(str(row.get("ts") or ""), timeline, phase.phase)
+        rows.append(entry)
+    return rows
+
+
+RECURRING_KIND = 3
+
+# Kinds that recur by construction, and whose count is therefore a workload
+# figure rather than a design backlog item: every escalation gets exactly one
+# answer, and every Class A edit gets exactly one reading. Section 16's
+# examples are all of the other shape — "fifteen variations of *is this trade
+# worth it*" — where the repetition is of the same question, not of the same
+# event type. Flagging the routine three would make the flag mean nothing,
+# which is how a signal gets ignored; their counts are still reported.
+ROUTINE_KINDS = ("decision-answered", "spec-change-reviewed", "spec-drift-reviewed")
+
+
+def intervention_stats() -> dict:
+    """The three things `design/loops.md` section 16 says fall out of having
+    the log, and which nothing else in the design reports.
+
+    * **Interventions per 100 experiments, per phase** — "the honest version of
+      close to one-shot". An experiment is a gate run, which is the same unit
+      section 15's committed/reverted/empty mix is composed from, so the two
+      numbers are about the same denominator.
+    * **Recurring kinds are a design backlog.** Answering the same question
+      repeatedly means a rule is missing from a prompt or an exchange rate was
+      never written down. Three is the threshold, matching the standard the
+      rules file already uses: one is an observation, three is evidence.
+    * **Time to answer** — the gap between an escalation appearing and being
+      answered "is time a loop spent idling on a provisional choice, and it is
+      the number that says whether the dashboard is doing its job".
+
+    Interventions per phase are counted, not the loops': a human answering a
+    core escalation and a human revising the harness prompt are the same cost
+    to the same person.
+    """
+    phase = load_phase()
+    rows = intervention_rows()
+
+    experiments: dict[str, int] = {}
+    for owner in phase.loops:
+        for row in cost_rows(owner):
+            if row.get("kind") == "audit":
+                continue
+            runs = (row.get("experiments") or {}).get("gate_runs") or 0
+            experiments[row.get("phase") or phase.phase] = (
+                experiments.get(row.get("phase") or phase.phase, 0) + runs
+            )
+
+    counted: dict[str, int] = {}
+    for row in rows:
+        counted[row["phase"]] = counted.get(row["phase"], 0) + 1
+
+    per_phase = []
+    for name in sorted(set(counted) | set(experiments)):
+        runs = experiments.get(name, 0)
+        count = counted.get(name, 0)
+        per_phase.append(
+            {
+                "phase": name,
+                "interventions": count,
+                "experiments": runs,
+                "per_100": (count / runs * 100) if runs else None,
+            }
+        )
+
+    by_kind: dict[str, int] = {}
+    for row in rows:
+        by_kind[row["kind"]] = by_kind.get(row["kind"], 0) + 1
+
+    answers = decision_answers()
+    answered, waiting = [], []
+    stamp = now()
+    for path in sorted((STATE / "decisions").glob("*.md")):
+        text = path.read_text()
+        opened = re.search(r"^opened:\s*(.+)$", text, re.MULTILINE)
+        recorded = re.search(r"^status:\s*(.+)$", text, re.MULTILINE)
+        title = re.search(r"^#\s+(.+)$", text, re.MULTILINE)
+        entry = {
+            "id": path.stem,
+            "title": title.group(1).strip() if title else path.stem,
+            "opened": opened.group(1).strip() if opened else "",
+        }
+        row = answers.get(path.stem)
+        if row:
+            entry["answered"] = row.get("ts") or ""
+            entry["hours"] = hours_between(entry["opened"], entry["answered"])
+            answered.append(entry)
+        elif decision_status(path.stem, recorded.group(1) if recorded else "", answers) in (
+            "open",
+            "provisional",
+        ):
+            entry["hours"] = hours_between(entry["opened"], stamp)
+            waiting.append(entry)
+
+    measured = sorted(entry["hours"] for entry in answered if entry["hours"] is not None)
+    return {
+        "per_phase": per_phase,
+        "by_kind": sorted(by_kind.items(), key=lambda pair: (-pair[1], pair[0])),
+        "recurring": [
+            kind
+            for kind, count in by_kind.items()
+            if count >= RECURRING_KIND and kind not in ROUTINE_KINDS
+        ],
+        "answered": sorted(answered, key=lambda entry: entry.get("hours") or 0, reverse=True),
+        "waiting": sorted(waiting, key=lambda entry: entry.get("hours") or 0, reverse=True),
+        "median_hours": measured[len(measured) // 2] if measured else None,
+        "total": len(rows),
+    }
 
 
 # --------------------------------------------------------------------------
@@ -3252,6 +3460,32 @@ def selftest_cases() -> list[tuple[str, object]]:
         assert ruling_of(row) == "rejected"
         assert ruling_of({"answer": "Superseded: the question changed"}) == "superseded"
 
+    def one_kind_spelled_two_ways_is_one_kind():
+        assert canonical_kind("prompt-revision") == "prompt-revised"
+        assert canonical_kind("prompt-revised") == "prompt-revised"
+        assert canonical_kind("loop-killed") == "loop-killed", "an alias table is not a filter"
+
+    def every_alias_points_at_a_known_kind():
+        for spelling, canonical in KIND_ALIASES.items():
+            assert canonical in KNOWN_KINDS, f"{spelling} aliases {canonical}, which is not a kind"
+        assert not set(INTERVENTION_KINDS) & set(KINDS_IN_USE), "a kind is named once"
+        for routine in ROUTINE_KINDS:
+            assert routine in KNOWN_KINDS, routine
+
+    def a_phase_is_attributed_by_when_it_started():
+        timeline = [("2026-01-01T00:00:00+00:00", "1a"), ("2026-03-01T00:00:00+00:00", "2a")]
+        assert phase_at("2026-02-01T00:00:00+00:00", timeline, "9z") == "1a"
+        assert phase_at("2026-04-01T00:00:00+00:00", timeline, "9z") == "2a"
+        assert phase_at("2025-01-01T00:00:00+00:00", timeline, "9z") == "9z", (
+            "an intervention older than every campaign falls to the caller's default"
+        )
+        assert phase_at("2026-02-01T00:00:00+00:00", [], "1a") == "1a"
+
+    def waiting_time_is_measured_in_hours():
+        assert hours_between("2026-01-01T00:00:00+00:00", "2026-01-02T06:00:00+00:00") == 30.0
+        assert hours_between(None, "2026-01-01T00:00:00+00:00") is None
+        assert hours_between("not a date", "2026-01-01T00:00:00+00:00") is None
+
     def adapter_measures_the_gate():
         events = [
             {"type": "assistant", "timestamp": "2026-01-01T00:00:00.000Z", "message": {"content": [
@@ -3346,22 +3580,80 @@ def cmd_selftest(args: argparse.Namespace) -> int:
 
 def cmd_intervene(args: argparse.Namespace) -> int:
     """`design/loops.md` section 16: the log is the mechanism, not a record of
-    it. Answering a decision means appending here."""
+    it. Answering a decision means appending here.
+
+    The kind is checked against section 16's vocabulary, because "recurring
+    kinds are a design backlog" is a count and a typo splits one. `--new-kind`
+    is the way past it: the list is closed against slips, not against events
+    the design did not anticipate.
+    """
     if not args.rationale.strip():
         die("rationale is required; a decision with no recorded reason gets re-litigated")
+    kind = canonical_kind(args.kind.strip())
+    if kind not in KNOWN_KINDS and not args.new_kind:
+        near = [known for known in KNOWN_KINDS if known.startswith(kind.split("-")[0])]
+        die(
+            f"unknown intervention kind {kind!r}.\n"
+            + (f"    did you mean: {', '.join(near)}?\n" if near else "")
+            + "    known kinds: "
+            + ", ".join(KNOWN_KINDS)
+            + "\n    pass --new-kind if this really is a kind nobody has logged before."
+        )
     append_jsonl(
-        STATE / "interventions.jsonl",
+        INTERVENTIONS,
         {
             "ts": now(),
-            "kind": args.kind,
+            "kind": kind,
+            # Recorded rather than attributed later. `phase_at` can only guess
+            # from whichever campaign was running, and an intervention made
+            # between phases is exactly when that guess is wrong.
+            "phase": load_phase().phase,
             "target": args.target,
             "answer": args.answer,
             "rationale": args.rationale,
             "commit": head_sha(),
         },
     )
-    commit_harness_state([STATE / "interventions.jsonl"], f"{args.kind} on {args.target}")
-    print(f"logged: {args.kind} on {args.target}")
+    commit_harness_state([INTERVENTIONS], f"{kind} on {args.target}")
+    print(f"logged: {kind} on {args.target}")
+    return 0
+
+
+def cmd_interventions(args: argparse.Namespace) -> int:
+    """What the log says about how autonomous this actually is."""
+    stats = intervention_stats()
+    print(f"interventions: {stats['total']} logged")
+    print()
+    print("  per 100 experiments, by phase")
+    for entry in stats["per_phase"]:
+        ratio = f"{entry['per_100']:.1f}" if entry["per_100"] is not None else "—"
+        print(
+            f"    {entry['phase']:<4}  {entry['interventions']:>4} interventions  "
+            f"{entry['experiments']:>5} experiments  {ratio:>6} per 100"
+        )
+    print()
+    print(f"  by kind (>= {RECURRING_KIND}, excluding the one-per-event kinds, is a design backlog item)")
+    for kind, count in stats["by_kind"]:
+        if kind in stats["recurring"]:
+            flag = "  <- recurring; a rule is missing somewhere"
+        elif kind in ROUTINE_KINDS:
+            flag = "  (one per event)"
+        else:
+            flag = ""
+        print(f"    {count:>4}  {kind}{flag}")
+    print()
+    median = stats["median_hours"]
+    print(f"  time to answer: median {median:.1f}h" if median is not None else "  time to answer: —")
+    for entry in stats["answered"][:5]:
+        if entry.get("hours") is not None:
+            print(f"    {entry['hours']:>7.1f}h  {entry['id']}")
+    if stats["waiting"]:
+        print()
+        print("  waiting now — a loop is running on a provisional choice for each of these")
+        for entry in stats["waiting"]:
+            hours = entry.get("hours")
+            print(f"    {hours:>7.1f}h  {entry['id']}  {entry['title'][:60]}" if hours is not None
+                  else f"          ?  {entry['id']}")
     return 0
 
 
@@ -3516,11 +3808,15 @@ def main() -> int:
     p.set_defaults(run=cmd_status)
 
     p = sub.add_parser("intervene", help="append to the intervention log")
-    p.add_argument("--kind", required=True)
+    p.add_argument("--kind", required=True, help=f"one of: {', '.join(KNOWN_KINDS)}")
     p.add_argument("--target", required=True)
     p.add_argument("--answer", default="")
     p.add_argument("--rationale", required=True)
+    p.add_argument("--new-kind", action="store_true", help="accept a kind the vocabulary does not have")
     p.set_defaults(run=cmd_intervene)
+
+    p = sub.add_parser("interventions", help="how autonomous this is, from the log")
+    p.set_defaults(run=cmd_interventions)
 
     args = parser.parse_args()
     return args.run(args)
