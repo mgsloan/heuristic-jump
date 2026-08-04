@@ -40,8 +40,8 @@ use std::process::Command;
 use clap::Parser;
 use shared::{
     AbstainReason, ByteLen, CandidateCount, Confidence, Error, FileCount, FileExtension,
-    LanguageHandler, LanguageId, Margin, Micros, Outcome, Query, Refinement, StageLabel, StageName,
-    Strata, Stratum, Trace,
+    LanguageHandler, LanguageId, Location, Margin, Micros, Outcome, Query, Refinement, StageLabel,
+    StageName, Strata, Stratum, Trace,
 };
 use tree_sitter::Language;
 
@@ -199,6 +199,57 @@ impl LanguageHandler for ReportingHandler {
             Strata::from_reference(Stratum::ExplicitImport).refine(Refinement::AmbiguousName),
             Confidence::ONE,
             Vec::new(),
+            trace,
+        ))
+    }
+}
+
+/// A handler that commits a ranked list, so that a replay reaches
+/// `Agreement::classify` with something on both sides.
+///
+/// The list is the same two locations for every query — the first identifier in
+/// the document and the first one on row 4 — because what the fixture varies is
+/// the *oracle's* answer, and a handler whose answer moved with the position
+/// would make the expected classification a function of the corpus rather than
+/// of the predicate.
+struct MismatchingHandler;
+
+impl LanguageHandler for MismatchingHandler {
+    fn language_ids(&self) -> &'static [LanguageId] {
+        const IDS: &[LanguageId] = &[LanguageId::new("rust")];
+        IDS
+    }
+
+    fn file_extensions(&self) -> &'static [FileExtension] {
+        const EXTENSIONS: &[FileExtension] = &[FileExtension::new("rs")];
+        EXTENSIONS
+    }
+
+    fn grammar(&self) -> Language {
+        tree_sitter_rust::LANGUAGE.into()
+    }
+
+    fn goto_definition(&self, query: &Query<'_>) -> Result<Outcome, Error> {
+        let mut trace = Trace::new();
+        trace.stage(StageLabel::new("ref:Value"));
+
+        let mut locations = Vec::new();
+        for node in shared::identifiers(query.doc) {
+            let row = node.start_position().row;
+            let wanted = match locations.len() {
+                0 => row == 0,
+                1 => row >= 4,
+                _ => break,
+            };
+            if wanted {
+                locations.push(Location::at_node(query.doc.uri.clone(), &node));
+            }
+        }
+
+        Ok(query.policy.decide(
+            Strata::from_reference(Stratum::ExplicitImport),
+            Confidence::ONE,
+            locations,
             trace,
         ))
     }
@@ -809,6 +860,91 @@ fn the_digests_abstention_key_falls_out_of_an_exact_string_group_by() {
     }
 }
 
+/// The precision half of the same key: mismatches by `(stratum_final,
+/// agreement, severity, stages)`, "with `match_contained` kept apart from
+/// `mismatch` since they are different problems: one is a ranking failure, the
+/// other a candidate-generation failure".
+///
+/// Every fixture truth row before this one was a `null` answer that the handler
+/// abstained on, so `severity` was `null` in every record any test had ever
+/// read and `Agreement::classify` was never reached through a replay at all.
+/// `crates/shared/tests/agreement.rs` holds the predicate; what was held
+/// nowhere is that its verdict *arrives in the record*, which is the only place
+/// a digest can read it from.
+///
+/// Five clusters from one corpus, because the key has to separate what the
+/// section says are different problems. Two of them differ only in `severity`,
+/// which is the field a record could drop without any other assertion noticing.
+#[test]
+fn the_digests_precision_key_separates_every_way_an_answer_can_be_wrong() {
+    let corpus = fixture("precision_key");
+    enumerate(&corpus);
+    write_truth_answered(&corpus);
+
+    let records = corpus.scratch.join("records.jsonl");
+    replay_with(&MismatchingHandler, &corpus, Some(&records));
+
+    let text = fs::read_to_string(&records).expect("replay wrote the records file");
+    let mut clusters: BTreeMap<(&str, &str, &str, &str), usize> = BTreeMap::new();
+    for line in text.lines() {
+        let key = (
+            between(line, "\"stratum_final\":\"", "\""),
+            between(line, "\"agreement\":\"", "\""),
+            between(line, "\"severity\":", "}"),
+            between(line, "\"stages\":[", "]"),
+        );
+        *clusters.entry(key).or_default() += 1;
+    }
+
+    let found: Vec<(&str, &str, &str, &str)> = clusters.keys().copied().collect();
+    assert_eq!(
+        found,
+        vec![
+            (
+                "explicitly_imported",
+                "match_contained",
+                "null",
+                "\"ref:Value\""
+            ),
+            ("explicitly_imported", "match_top1", "null", "\"ref:Value\""),
+            (
+                "explicitly_imported",
+                "mismatch",
+                "\"near_module\"",
+                "\"ref:Value\""
+            ),
+            (
+                "explicitly_imported",
+                "mismatch",
+                "\"same_file\"",
+                "\"ref:Value\""
+            ),
+            (
+                "explicitly_imported",
+                "mismatch",
+                "\"unrelated\"",
+                "\"ref:Value\""
+            ),
+        ],
+        "the oracle answered five different ways against one ranked list and \
+         the record keys them as {} group(s). core.md §7 keys precision loss on \
+         (stratum_final, agreement, severity, stages): match_contained is a \
+         ranking failure and mismatch a candidate-generation failure, and the \
+         three severities are what a divergence budget is spent against, so a \
+         key that cannot tell them apart digests them into one finding that \
+         names no cause",
+        found.len()
+    );
+
+    for (key, count) in &clusters {
+        assert!(
+            *count > 1,
+            "the {key:?} cluster holds one query, so an assertion about \
+             grouping would hold against a records file with no groups in it"
+        );
+    }
+}
+
 /// The other half of that flag: "with no `--records` it **writes nothing**, so
 /// the default stays a pure function of its inputs and `measure_core` still
 /// needs no knowledge of `state/`".
@@ -1054,6 +1190,71 @@ fn fixture_provenance(corpus: &Fixture) -> measure_core::Provenance {
         measure_version: "0".into(),
         complete: false,
     }
+}
+
+/// A truth file whose oracle *answered*, cycling through the five ways an
+/// answer can land against [`MismatchingHandler`]'s two locations: on its top,
+/// on its second, far away in the same file, in a sibling file, and somewhere
+/// else entirely.
+///
+/// Written as a `Location` on the wire rather than through a projection,
+/// because §8.2 gives `DefinitionResult` no `Serialize` — the truth file keeps
+/// the bytes the server sent, and this is the fixture standing in for a server.
+fn write_truth_answered(corpus: &Fixture) {
+    let positions = fs::read_to_string(
+        corpus
+            .split
+            .join("rust")
+            .join("positions")
+            .join("one.jsonl"),
+    )
+    .expect("enumerate ran first");
+
+    let lib = corpus
+        .split
+        .join("rust")
+        .join("repos")
+        .join("one")
+        .join("src")
+        .join("lib.rs");
+    let here = shared::DocumentUri::from_file_path(&lib).expect("a file uri");
+    let sibling =
+        shared::DocumentUri::from_file_path(&lib.with_file_name("other.rs")).expect("a file uri");
+
+    let answers = [
+        answer(&here.to_string(), 0),
+        answer(&here.to_string(), 4),
+        answer(&here.to_string(), 40),
+        answer(&sibling.to_string(), 0),
+        answer("file:///elsewhere/other.rs", 0),
+    ];
+
+    let mut text = format!(
+        "{{\"repository\":\"one\",\"commit\":\"{}\",\"language\":\"rust\",\
+         \"server\":\"oracle\",\"server_version\":\"0\",\"grammar\":\"fixture\",\
+         \"measure_version\":\"0\",\"complete\":true}}\n",
+        corpus.commit
+    );
+    for (index, line) in positions.lines().enumerate() {
+        let file = between(line, "\"file\":\"", "\"");
+        let offset = between(line, "\"offset\":", ",");
+        text.push_str(&format!(
+            "{{\"file\":\"{file}\",\"offset\":{offset},\"outcome\":\"resolved\",\
+             \"answer\":{},\"latency_us\":1234}}\n",
+            answers[index % answers.len()]
+        ));
+    }
+
+    let path = truth_path(corpus, "oracle");
+    fs::create_dir_all(path.parent().expect("a truth directory")).expect("the truth directory");
+    fs::write(path, text).expect("the truth file");
+}
+
+fn answer(uri: &str, line: u32) -> String {
+    format!(
+        "{{\"uri\":\"{uri}\",\"range\":{{\"start\":{{\"line\":{line},\"character\":0}},\
+         \"end\":{{\"line\":{line},\"character\":1}}}}}}"
+    )
 }
 
 /// `directory` is the `truth/<server>/` the file is written under and
