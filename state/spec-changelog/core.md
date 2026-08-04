@@ -140,3 +140,29 @@ a handler that reported a real stage timing would have failed a determinism
 assertion that §7 never made about it.
 
 **Campaign:** 18835da5-abcf-4eed-bc64-f52405edd53f
+
+## CHANGE-core-006 — core.md#two-modes-collect-and-replay — a truth row is its own shape, because §8.2 forbids the other one
+
+**Contradiction:** the two modes say "`collect` writes rows with the `lsp_*`
+fields populated and the heuristic side null", i.e. that a truth row is §7's
+record half-filled. §8.2 says of the wire types that they are read projections
+and gives them no `Serialize`: "a projection written back out" is the thing it
+exists to forbid, and `DefinitionResult` cannot be re-serialized at all. A
+truth row holding `lsp_locations` as §7 spells them — a list of `uri:line`
+labels — could not give replay the bytes the server sent, and replay reading
+the oracle's answer with the same code the shim reads a live one with is the
+property §6's predicate depends on.
+
+**Resolution:** the section now says the two modes supply the record's two
+halves and that only `replay` writes the record; a truth row is its own
+smaller shape, and what survives the join is the content of the `lsp_*`
+columns rather than their spelling in the intermediate file. This trades
+nothing off: §8.2 already decided it, the byte-comparability claim is about a
+*completed replay row* and is untouched, and the alternative reading is not
+implementable without reversing §8.2.
+
+No code changed in this commit — the implementation has always been this, and
+the audit records it as a minor against `truth.rs` on the strength of the
+sentence being amended here.
+
+**Campaign:** 18835da5-abcf-4eed-bc64-f52405edd53f

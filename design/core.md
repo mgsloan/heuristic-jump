@@ -1125,10 +1125,19 @@ the corpus*, not about our code, so it is collected once and frozen.
   `Query` for each recorded position, run the handler, classify agreement,
   emit the metric table. No server, no network, no `didOpen` round trips.
 
-The record in this section is the join. `collect` writes rows with the
-`lsp_*` fields populated and the heuristic side null; `replay` fills the
-heuristic side and computes `agreement` and `severity` with the same
-predicate the driver uses. A completed replay row is byte-comparable with a
+The record in this section is the join, and the two modes supply its two
+halves: `collect` supplies the oracle's — the answer and how long it took —
+and `replay` fills the heuristic side and computes `agreement` and `severity`
+with the same predicate the driver uses. **Only `replay` writes the record.**
+A truth row is its own smaller shape, because the oracle's answer is stored as
+the raw JSON the server sent rather than as a projection written back out:
+[section 8.2](#82-what-replaces-it-and-why-it-is-smaller-than-it-sounds) gives
+the read projections no `Serialize` at all, so a truth file of half-filled
+records could not hold what replay has to hand the same deserializer the shim
+reads a live answer with. What has to survive the join is the *content* of the
+`lsp_*` columns and not their spelling on the way.
+
+A completed replay row is byte-comparable with a
 row the shim emitted in the field, which is what keeps the measured metric and
 the shipped metric the same number.
 
