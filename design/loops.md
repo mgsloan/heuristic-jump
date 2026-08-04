@@ -62,10 +62,25 @@ different oracle, which is [section 2](#2-two-loops-two-oracles).
 
 ## 1. Current state, and what it forces
 
-There is no code. There are the design documents, a `clippy.toml`, and
-a `CLAUDE.md`. Every loop described here is blocked on a bootstrap that
-is not itself loopable in any interesting sense, because there is
-nothing to measure yet.
+This document was written before there was any code, and the plan it
+describes is shaped by that. **Where the project has actually got to is
+deliberately not recorded here**: it is `state/phase.toml`'s `phase`, the
+workspace members in `Cargo.toml`, and the section ledger in
+`state/audit/`. A prose inventory of what exists would be stale within a
+week and would have to be re-verified at every audit — the cost
+[section 8](#8-sequencing-and-gates) already avoids by letting
+`phases.md` answer "what is in phase 1a" rather than a list maintained
+in this document.
+
+What the state of the code forces is a split, and it is the split
+[section 2](#2-two-loops-two-oracles) is about. **The metric loop is
+blocked on a bootstrap**: it has nothing to measure until there is a
+corpus, ground truth, and a handler that answers something, which is
+phases 1a through 1.5, and that bootstrap is not itself loopable in any
+interesting sense. **The conformance loop is not blocked.** Its oracle
+is the audit, which exists as soon as the documents do, so it can run
+from day one and against phase 1a itself — which is what
+[section 18](#18-scope-phases-1-and-15-first) has it do.
 
 **So most of this document is not yet in scope.** The initial
 implementation covers phases 1a through 1.5 and stops
@@ -92,7 +107,7 @@ solving it. The only shared code during tuning is the seam and a frozen
 | Progress | a section going clean ([section 5](#5-the-auditor-and-the-conformance-loops-number)) | movement on the frontier ([section 10](#10-objectives-phases-and-the-frontier)) |
 | Done | every section clean, and a human has ruled on the minor list | frontier stops advancing, or budget exhausted |
 | Failure mode | spec drift; the loop edits the spec to match the code | overfitting to the tuning corpus |
-| Concurrency | one writer | parallel, **one per language**, in phase 2a ([section 13](#parallel-loops-and-what-they-share)) |
+| Concurrency | **N workers**, a campaign each, one gap list, conflict handled rather than excluded ([section 13](#workers-one-loop-several-campaigns-at-once)) | parallel, **one per language**, in phase 2a ([section 13](#parallel-loops-and-what-they-share)) |
 
 Conflating these is the first mistake available. A conformance loop
 with no number to chase will invent one; a metric loop with a spec
@@ -408,13 +423,27 @@ three, with no mechanism that questions it.
 the entity deciding is the entity that wrote the code, in the same
 context, having already convinced itself.
 
-So the decision is taken away from it. At every campaign close, a
+So the decision is taken away from it. At every **round** close, a
 **separate session with no memory of writing the code** is given the
 spec and the implementation and asked one question: *is this
 implemented, and where is it not?* It cannot edit anything. It answers
 in two numbered lists — **gaps** and **minor items** — and that shape is
 what turns the audit from a safety net into the measurement the
 conformance loop otherwise lacks.
+
+A round is one campaign for a loop that runs one at a time, and N for a
+loop running N workers ([section 13](#workers-one-loop-several-campaigns-at-once)) —
+which is where the distinction comes from, and it is not a softening.
+Three workers auditing their own branches would each judge a tree nobody
+ships and would write three verdicts for one section with no rule for
+which wins, so the audit runs once, against the merged result. The cost
+is that a campaign can close against a verdict older than itself, and
+the progress it made is then attributed to whichever campaign closes
+after the audit that measures it. That is `harness-003`, answered in
+favour of the round: attribution is by named gap rather than by count
+delta, which pays most of it off, and §7's stall rule already excludes a
+campaign that closed with no audit since it opened, so the cadence
+cannot stop the loop by itself.
 
 ### Sections clean is the metric
 
@@ -548,16 +577,36 @@ speculative.
 **Escalations are reviewed in batches, never as interrupts.** Answering
 each one as it arrives is unusable at campaign cadence and would make
 the operator the rate limiter for every loop at once. So they queue, and
-a batch is triggered by whichever comes first: the outstanding
-`DECISION-` count crossing a threshold, or a phase gate — which is
-already a synchronisation point where the loops are quiesced and a human
-is looking anyway.
+a batch is triggered by whichever comes first: the number of records
+**waiting on a human** crossing `escalation_batch` in
+`state/phase.toml`, or a phase gate — which is already a synchronisation
+point where the loops are quiesced and a human is looking anyway.
+`hj escalations` computes it and exits 1 when a batch is due; nothing in
+the runner consults that exit code, and nothing should, because a due
+batch is a message to the operator and never a stop. With no threshold
+set, the phase gate is the only trigger, which is a degenerate cadence
+and not a broken one.
+
+**Records waiting, not tagged sites.** An earlier revision made the
+trigger "the outstanding `DECISION-` count", meaning the `grep -r
+DECISION-` report above. But a record can be waiting with no taggable
+site at all, and those are systematically the ones that most need a
+human: the choice is about a file the raising loop may not write —
+`state/phase.toml`, `.claude/`, another loop's crate — so there was
+nowhere to put a tag and no work the loop could do meanwhile. Counting
+sites would leave exactly those invisible to the trigger. The grep count
+keeps the job it already has, which is the health metric; when the loop
+is running ahead of its decisions is a different question from when to
+hold a review.
 
 The cost of batching is that the loop runs further on provisional
 choices and reconciliation gets more expensive the longer it waits.
 That is the trade being taken deliberately, and the outstanding count is
-what makes it visible rather than silent. If reconciliation starts
-dominating, the threshold is too high.
+what makes it visible rather than silent. **The unit that expense is
+paid in is campaigns, not days** — a quiesced fleet costs nothing to
+wait — so `hj escalations` reports, per record, how many campaigns have
+closed since it was raised. If reconciliation starts dominating, the
+threshold is too high.
 
 **The queue starts empty, and is not seeded from `open-questions.md`.** An
 earlier revision said the opposite — that document and `resolution.md`'s
@@ -618,6 +667,30 @@ so. The first is the better one — a run that is mostly test churn is
 the characteristic shape of a loop that has run out of real work but
 not out of budget.
 
+Both are `hj stall`'s and neither stops anything. What each *means* here
+needs saying, because ralph's vocabulary does not map onto this one:
+
+* **Test-only** is per commit, since [section 4](#4-the-iteration-contract)
+  makes one commit per experiment, and means a commit that touched Rust
+  tests and **nothing else** — not merely no source. A commit that adds a
+  test and edits `design/` did other work, and for a conformance loop that
+  other work is usually the point: the test carries the claim the spec edit
+  settles. The loose reading measured 71% against a loop that was closing
+  gaps at the time, and a flag that fires on campaigns doing their job is
+  one nobody keeps believing. Commits touching no Rust at all sit outside
+  the denominator rather than counting as healthy — a loop whose tests live
+  *inside* its implementation, as this harness's do in `hj selftest`, is one
+  the measure cannot see, and it says so rather than reporting 0%.
+* **A "done" signal** here is a campaign closing `confirmed` or `partial` —
+  a claim of movement — when the repository shows none. The cap is not a new
+  rule: such a campaign already increments the no-progress count above and
+  stops the loop at N like any other. What is added is the *distinction*,
+  because the two shapes stop the loop identically and mean opposite things.
+  A run of honest `no-movement` closes is a loop that has hit something the
+  spec did not anticipate, which is exactly what should reach a human; a run
+  of `confirmed` closes with nothing behind them is a loop that has decided
+  it is finished, which is the failure this heuristic is named for.
+
 The failure this is guarding against is not idleness — it is the loop
 generating plausible activity indefinitely. Which brings up the ways
 the metrics can be satisfied without work being done:
@@ -677,11 +750,27 @@ the newtype work in `rope-modifications.md` (which folds Zed's `util`
 items into rope rather than vendoring a third crate), `shared` (seam,
 vocabulary, `ProjectView`, the client-side subset of `proto`), the
 framing codec, and `measure_core` itself. Explicitly **not** the router,
-the health model, the actor, dispatch, standalone, or divergence
-reporting — all of which are [`shim.md`](shim.md) and phase 2b. The two
-documents were split along exactly this line, so "what is in phase 1a" is
-now a question with a file for an answer rather than a list to maintain
-here.
+the health model, the actor, parallel dispatch, standalone, or divergence
+reporting — all of which are [`shim.md`](shim.md) and phase 2b. Parallel
+dispatch and **not** the handler registry: `shim.md` §13 puts both under
+`dispatch/`, but the registry is `core.md` §1's — "the driver resolves an
+incoming LSP `languageId` against the registry and gets
+`Option<LanguageId>`", which is what keeps `driver` free of a build
+dependency on every grammar crate — so `core.md` in its entirety includes
+it, and what 2b holds is `shim.md` §10's bounded pool and its fan-out to
+several servers.
+
+**Where the rest of that line falls is not settled, and the phase 1a tree
+already crosses it.** `core.md` §5's deadline, §6's agreement predicate
+and §7's per-query record are `core.md`'s claims, and each needs a single
+owner of the state it reads — which is the file `shim.md` §13 calls
+`actor.rs`. The tree contains that file, and a `Mode::Standalone`, and a
+`Divergence`, all three excluded by name above and none of them covered
+by a document the phase 1a audit reads. That is
+`state/decisions/harness-007.md`; until it is answered this list stands
+as written rather than being widened to fit what was built. So "what is
+in phase 1a" is a question with a file for an answer *except* at that
+seam, which is the one place it is still a list maintained here.
 Gate: workspace builds, upstream rope tests pass unchanged,
 position-encoding property tests pass, `measure_core` drives a real
 server end to end on one repository.
@@ -704,11 +793,15 @@ where the irreversibility is rather than over the whole phase.
 it starts on day one. C, C++, Go, JavaScript, TypeScript/TSX, Rust,
 Python; medium-sized, popular, trustworthy, spread across domains and
 styles.
-Gate: repositories checked out at pinned commits, **and the tune /
-select / final split decided and physically separated**
-([section 12](#12-held-out-integrity)). The split has to be made here,
+Gate: repositories checked out at pinned commits, **and the tuning /
+held-out split decided and physically separated**
+([section 12](#12-held-out-integrity)). That split has to be made here,
 not later: once a repository has been in the tuning corpus, moving it to
-held-out does not un-teach it.
+held-out does not un-teach it. Carving a *final* set out of the held-out
+half is deliberately **not** part of this gate — §12 leaves it until the
+first phase gates say how much leakage selection actually causes, and it
+stays available to be made then precisely because a finer split comes out
+of held-out and never out of tuning.
 
 **Phase 1c — LSP installation**, concurrently. Every trustworthy server
 Zed supports for these languages, installed, pinned, and documented in
@@ -1456,9 +1549,29 @@ the hook blocks is reachable through `sh -c`.
 **3. OS sandbox.** `/sandbox` uses bubblewrap on Linux and takes an
 `allowWrite` list. This *is* a real boundary — it covers subprocesses —
 and it is the layer that answers "prevent them from writing outside
-their dir" literally. `allowWrite` is the owned crate directory,
-`state/shared-proposals/`, `target/`, and the git directory; everything
-else in the checkout is read-only to the session.
+their dir" literally.
+
+**The list is per checkout, not per crate** (`harness-002`). It is every
+worktree, the integration checkout's git directory and `state/`, the
+transcript and log roots, and `~/.cargo`; everything outside those —
+`$HOME`, `~/.ssh`, and `.claude/` itself, so a loop cannot reach the file
+that configures its own sandbox — is read-only to the session. An earlier
+revision of this paragraph named the owned crate directory, which is
+narrower than the ownership table beside it and does not survive contact
+with the deployment: `harness/workers` runs in the integration checkout
+and writes into *each* worker's worktree when it fast-forwards them after
+an audit, so a list holding only the session's own project root breaks the
+round runner rather than a campaign. `~/.cargo` is on it because `cargo`
+writes its registry cache and `.package-cache` lock there and the gate's
+build step fails without it.
+
+What that concedes is that a campaign can write another loop's files
+*inside its own checkout*, `design/` included. Layer 4 catches that at
+commit time, which is the division of labour throughout: this layer stops
+a session escaping its tree, and the gate decides what may be in it.
+`failIfUnavailable` is set, so a machine without bubblewrap stops rather
+than running every campaign unsandboxed behind a warning — the same
+posture as abstaining rather than guessing, applied to the harness.
 
 **4. Gate diff scope.** The commit touches only owned paths, checked
 after the fact by the gate. Authoritative, because it inspects the
@@ -1610,31 +1723,53 @@ overlaps.
 
 ### Branches exist for one commit at a time
 
-The goal is that everything lands on `master` and no long-lived
+The goal is that everything lands on `main` and no long-lived
 branches accumulate. That is right — divergent branches are where
 integration debt comes from, and none of the reasons to keep one apply
 here.
 
-It cannot be done by pointing every loop at `master` directly, for a
+It cannot be done by pointing every loop at `main` directly, for a
 mechanical reason: **git refuses to check out the same branch in two
 worktrees.** And sharing a single working tree between concurrent loops
 is worse than the branch it avoids — loop B would compile loop A's
 half-written files, so A's transient breakage becomes B's gate failure,
 and green-or-revert stops meaning anything.
 
-So each loop has a branch, and **merges after every green iteration**
-rather than at a phase gate:
+So each loop has a branch, and **merges when a campaign closes** rather
+than at a phase gate:
 
 ```
-gate passes -> rebase onto master -> fast-forward master -> continue
+campaign closes -> rebase onto main -> fast-forward main -> continue
 ```
 
-Since code and state are partitioned by owner, the rebase is
-conflict-free by construction, and `master` gets a linear history with
-one commit per iteration from whichever loop finished first. The branch
-exists for the duration of one commit. There is no merge queue and no
-integration loop; merging is a step in the iteration contract
-([section 4](#4-the-iteration-contract)), not an agent.
+**Once per campaign, and not once per commit**, which an earlier
+revision of this subsection asked for. It cannot be per commit: the
+merge rebases the branch onto `main`, and doing that mid-campaign swaps
+the working tree under a session that is reasoning from it — including
+`state/audit/`, which holds the gap list the campaign was given and is
+the only oracle it has. The property this subsection wants survives
+intact, because a campaign is hours rather than weeks: nothing
+long-lived accumulates, and `main` receives a campaign's work as soon as
+it is judged. What follows is that merging is a step in the **campaign**
+contract; [section 4](#4-the-iteration-contract)'s iteration contract has
+no merge step and should not grow one. There is still no merge queue and
+no integration loop.
+
+Since code and state are partitioned by owner, the rebase between
+*loops* is conflict-free by construction. **Between workers of one loop
+it is not**, and that is where the guarantee stops: they read one gap
+list and write one document set, so a conflict there is a rare event
+with a handler rather than an impossibility
+([below](#workers-one-loop-several-campaigns-at-once)). Two consequences
+of that concurrency change what `main` looks like and are worth stating
+here rather than leaving to the code: the fast-forward is **serialised
+by a lock**, so a worker that read `main` a moment before another moved
+it waits and then rebases onto what landed, which is the intended
+sequence rather than a retry; and **linear history is traded for a merge
+commit** once a branch is far enough ahead that rebasing would
+re-resolve the same conflict on every commit it replays. The merge
+commit is then the record that the branch diverged, which is worth
+having.
 
 The one case that is not automatic: the conformance loop changing
 `shared` can break a language crate that rebases onto it. A language
@@ -2235,8 +2370,11 @@ is mechanical work under an exact oracle
 ([`phases.md`](phases.md)), which is the
 best candidate for a cheaper tier, whereas phase 2a resolution logic is
 the hardest reasoning in the project. The auditor is a fixed cost of one
-session per conformance campaign, and it is not a knob: it is the only
-number that loop has ([section 5](#sections-clean-is-the-metric)).
+session per conformance **round** ([section 5](#5-the-auditor-and-the-conformance-loops-number)),
+and it is **not a knob a loop may turn**: `audit_every` lives in
+`state/phase.toml`, which is denied to every loop, because it is the only
+number that loop has ([section 5](#sections-clean-is-the-metric)) and a
+loop that could make its own measurement cheaper would.
 
 **Model wall-clock.** Parallelism across languages, and replay speed —
 which is measured rather than targeted

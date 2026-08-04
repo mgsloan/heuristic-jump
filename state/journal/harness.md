@@ -299,3 +299,83 @@ read is that the gaps in this batch were unusually mechanical — nine
 one-function changes — and that the ones left in `loops.md` are not: what
 remains is spec edits, a cost trade, and a merge nobody owns. Expect the next
 campaign to have a worse ratio, and do not read that as it going badly.
+
+## 3e637dcd — the reconciliation campaign, and one gap deliberately left open
+
+Target: §1, §2 and §8's two gaps — the three spec edits the previous campaign
+handed over — which grew to §5, §6, §7, §13's merge cadence and §13's digest
+asymmetry, plus a false positive in `hj`. Ten commits, no reverts.
+
+### The method, again, and the one place it did not apply
+
+Take the section's literal nouns and grep. Three of this campaign's gaps were
+`master` (the branch is `main`), `tokei`, and `dispatch`. The one that was not
+findable that way is the one still open, and the difference is the lesson:
+§8's actor gap is not a word that is wrong, it is a **boundary that was
+crossed**, and boundaries are found by reading the tree against the list
+rather than by grepping the list against the tree.
+
+### The thing I want the next campaign to not undo
+
+**§8 keeps an open gap that two words would have closed.** `crates/driver/`
+holds `actor.rs`, a `Mode::Standalone` and a `Divergence`, all three on §8's
+phase-1a exclusion list by name, in `shim.md`, which the core loop's `docs`
+does not include — so 3,249 lines exist against no oracle. Widening the list
+would have made my number go up and made that invisible. It is `harness-007`
+with no provisional choice taken, which is unusual and correct: the provisional
+choices available were all less reversible than doing nothing loudly.
+
+If a future campaign finds `harness-007` answered, the work is small and the
+record says which. Do not close it by editing §8 first.
+
+### Approaches considered and not taken
+
+* **Renaming the heading "Branches exist for one commit at a time"**, which now
+  contradicts its own body. The anchor is in `harness/section-baseline.toml`,
+  denied to every loop, so a rename is permanent baseline drift and one
+  `sections_missing` no campaign can clear. `hj baseline-drift` says "the
+  documents match the baseline" today; keep it that way. Fixing the heading is
+  a job for whoever retakes the baseline.
+* **Adding a fifth progress term for a decision reconciled with no tagged
+  site.** `decisions_reconciled` reads tag *removals* from the diff, so
+  reconciling `harness-002` and `harness-003` — neither of which had a site,
+  because the choice was in `.claude/` and `state/phase.toml` — scored nothing.
+  The clean fix is to count a `decision:` trailer naming an already-*answered*
+  record, which distinguishes reconciling from acting-under. I did not do it:
+  changing how `progress` is computed is a metric redefinition and therefore
+  Class B, and doing it in the campaign that benefits is the wrong shape. It
+  is a good next escalation.
+* **The loose reading of "test-only".** "Touched no Rust source" measures 71%
+  against `core` over its last twenty commits, while that loop was closing
+  gaps — its shape is a test carrying the claim plus the `design/` edit
+  settling it. Strict ("touched Rust tests and nothing else") reads 7%. If a
+  future campaign is tempted to loosen it because it never fires, that is the
+  measure working; loosening it makes a flag that fires on correct work.
+* **Making `hj escalations` a step the runner consults.** §6 says the loop
+  "never idles waiting for an answer". It exits 1 when a batch is due so an
+  operator's script can act, and `harness/loop` deliberately does not call it.
+  That is the difference from `hj budget`, and it is in the docstring so the
+  next person does not wire it up.
+
+### Things worth knowing about the machinery
+
+* **`tagged_sites` and `provisional_decisions` had drifted apart while one's
+  docstring claimed they had not.** Same tell as `tokei` last campaign: the
+  comment is where a previous campaign wrote the claim it meant to satisfy.
+  The effect was that five answered decisions sat in loop prompts saying
+  "reconcile and remove the tag" against `harness/hj`, a file two of those
+  loops may not write. If two functions are documented as sharing a scope,
+  make them share the function.
+* **`{{other_findings}}` was computed in `prompt_values` and appeared in no
+  template**, for the whole of phase 1a. Worth grepping the placeholder list
+  against the templates occasionally: `grep -o "{{[a-z_]*}}"` on both sides.
+  The reverse — a placeholder in a template with no value — fails loudly; this
+  direction is silent.
+* **A glob over `state/findings/` matches `core-1.md`, `core-2.md` and
+  `core-3.md`.** Anything that means "per loop" must be driven by
+  `phase.loops`, not by the directory. The same trap exists for
+  `state/journal/`.
+* `harness/hj selftest` went 57 → 68 this campaign, and the gate now runs the
+  tree's copy as well as the pinned one ("harness/hj differs from the reviewed
+  copy; checking this tree's own too"), so the step my last journal entry said
+  had never run does now.

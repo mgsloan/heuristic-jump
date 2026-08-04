@@ -6,20 +6,54 @@ that one means a loop stalled and asked a question.
 
 ## Where things stand
 
-Both loops are **paused**, `main` is **green** (271 tests, all 7 gate steps for
-both loops, `hj selftest` 56 checks), the working tree is clean, and **every
-branch is merged**. All four worktrees sit on `main`.
+**Both loops are running again** as of 2026-08-04T19:41Z — `core` at three
+workers in rounds (`harness/workers core`), `harness` at one
+(`harness/loop harness`). `main` was green when they started (271 tests, all 7
+gate steps for both loops, `hj selftest` 57 checks) and **every branch was
+merged**; all four worktrees were fast-forwarded to `main` first, which cost
+nothing because each was already an ancestor.
+
+To stop them: set `status = "paused"` in `state/phase.toml` and they finish the
+round they are in. That is the lever, not a kill.
 
 | | clean | gaps | campaigns |
 |---|---|---|---|
 | `core` (core.md, deps.md, rope-modifications.md) | **60/71** | 12 open of 96 found | 39 |
 | `harness` (loops.md) | 13/75 | 16 open | 3 |
 
-Waiting on a human: **7 decisions**, **11 spec changes not yet read**, 6
-provisional `DECISION-` tags. `harness/hj status` lists them.
+**Nothing is waiting on a human**, which is what made the restart the right
+call: 30 decisions all answered, 34 spec changes all read, 20 drift flags all
+reviewed. Two provisional `DECISION-` tags remain and both are ordinary
+campaign reconciliation, not questions —
+`crates/driver/src/actor.rs:579` (`core-017`) and
+`crates/measure_core/src/measure_core.rs:173` (`core-002`).
 
-**The fleet can be restarted.** It has not been — that is a spending decision
-and it is the next person's to make, not a leftover.
+### Two status lines were lying, and both are fixed (`0742dd5`)
+
+Worth knowing because the *shape* of the bug recurs: a line that counts a
+standing total while its wording promises a queue.
+
+* `provisional DECISION- tags` read **6** when the truth was **2**. Widening
+  `DECISION_TAG_NOT_A_SITE` from `:!harness` was right — excluding all of
+  `harness/` makes the count structurally zero for the loop whose
+  implementation *is* `harness/` — but it reached one file too far and started
+  counting `hj`'s own selftest fixtures, which are diffs carrying a tag because
+  what they test is the reader of that tag. Now excluded by region rather than
+  by path, read off the source, failing closed.
+* `campaigns that edited design/ and code together: 20 — read them` counted
+  every campaign ever flagged, so reading never emptied it. It now subtracts
+  the reviewed ones — and immediately found one genuinely unread
+  (`44773a93`, arrived on `loop/core-1` after the last review batch, since
+  reviewed).
+
+### `harness-006` is answered: stage explicit paths
+
+`git add -A` fails under the sandbox because the masked dotfiles are
+`/dev/null` bind mounts. The ruling is the prompt sentence, not a gitignore —
+ignoring `.gitmodules` and `.claude/skills/` would make *that* failure quiet
+where this one is loud. It lives in `harness/trailer-format.md`, which is
+spliced into every loop prompt as `{{trailer_format}}`, so one edit reaches
+both loops and every worker.
 
 ## What the merges cost, and what they say
 
@@ -182,8 +216,26 @@ harness/workers core                  # start the fleet (rounds)
 harness/loop harness                  # the harness loop (single worker)
 harness/loop core --worker 1 --once   # one worker, foreground, no planner
 harness/gate <loop>                   # the 7 steps
-harness/hj selftest                   # 23 hermetic checks, ~0.5s
+harness/hj selftest                   # 57 hermetic checks, ~0.5s
 harness/dashboard/serve               # http://127.0.0.1:8787
+```
+
+**Launch from the integration checkout, always — including the single-worker
+`harness/loop harness`.** `loop` takes its repo from `$HJ_REPO` or from its own
+`dirname`, so starting it from inside `../heuristic-jump-harness` makes it read
+*that worktree's* `state/phase.toml` and its own `harness/prompts/`. Both were
+one commit stale on the restart, and the loop exited saying `harness is
+'paused'` seconds after `phase.toml` had been set to running. It looks like a
+config that did not take. `harness/workers` gets this right on its own — it
+`cd`s to the integration checkout and exports `HJ_CONTROL`.
+
+Fast-forward the worktrees before starting, and again after any commit to
+`main` that a loop should see:
+
+```
+for d in ../heuristic-jump-{core-1,core-2,core-3,harness}; do
+    git -C "$d" merge --ff-only main -q
+done
 ```
 
 Pause by setting `status = "paused"` in `state/phase.toml` **in the integration

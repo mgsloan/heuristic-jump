@@ -92,6 +92,14 @@ and each of those is read by code this loop does not own.
 Tagged at `crates/driver/src/actor.rs`, in `Actor::answer`'s
 `Dispatched::DeadlineExpired` arm — the one place a stratum is invented.
 
+**Reconciled** by campaign `2dca52ce`, which implemented B and removed the tag.
+`Dispatched::DeadlineExpired` carries a `Classified`, the hard cap fills it from
+the answer it drops, and an expiry raised downstream of the handler — inside
+§8.4's conversion — picks the same classification back up. The residue this
+answer disposes of in one sentence, the query no handler ever ran for, is
+`core-022`: the prior exists, but its rule is per-language and nothing in the
+driver can evaluate it without the handler that owns it.
+
 ## Consequences
 
 If the answer is B, the change is the enum variant, the two `dispatch.rs` sites

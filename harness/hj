@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -31,7 +32,7 @@ import textwrap
 import tomllib
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # The tree being operated on, which is not always the tree this script lives
@@ -125,6 +126,13 @@ HARNESS_PATHS = ["harness/**"]
 # dead. Covers the gap between `campaign-open` returning and the runner
 # reaching the process table, which several workers reach routinely.
 REAP_GRACE_SECONDS = 120
+
+# When a campaign that never wrote a close row stops being treated as running.
+# Not a timeout on anything — `hj campaign-reap` is the real recovery — only a
+# backstop so a crash between rounds cannot hold its targets indefinitely. Well
+# above any real campaign: the turn target is about 150 and a long one runs
+# under an hour.
+CAMPAIGN_MAX_LIFETIME_SECONDS = 6 * 3600
 
 # Bumped whenever `progress` changes meaning.
 #   1 — settled at close: sections clean up, or open gaps down, or tests up.
@@ -226,6 +234,13 @@ class Budget:
 class Phase:
     phase: str
     audit_every: int = 1
+    # `design/loops.md` section 6: "a batch is triggered by whichever comes
+    # first: the outstanding `DECISION-` count crossing a threshold, or a phase
+    # gate". Absent rather than a default number, for `Budget`'s reason — a
+    # guessed threshold either cries wolf or never fires, and the section names
+    # no number. Absent means the phase gate is the only trigger, which is the
+    # degenerate case the section already describes rather than a broken one.
+    escalation_batch: int | None = None
     budget: Budget = field(default_factory=Budget)
     loops: dict[str, LoopConfig] = field(default_factory=dict)
 
@@ -239,6 +254,7 @@ def load_phase() -> Phase:
     result = Phase(
         phase=raw["phase"],
         audit_every=raw.get("audit_every", 1),
+        escalation_batch=raw.get("escalation_batch"),
         budget=Budget(
             global_usd=budget_table.get("global_usd"),
             language_usd={
@@ -1638,34 +1654,44 @@ def selftest_line_range(source: str) -> tuple[int, int]:
     return (start, sys.maxsize) if start else (0, 0)
 
 
+def outside_selftest_region(sites: list[tuple[str, int]], source: str) -> list[tuple[str, int]]:
+    first, past = selftest_line_range(source)
+    return [(path, number) for path, number in sites if not (path == "harness/hj" and first <= number < past)]
+
+
+def provisional_tag_sites(identifier: str | None = None) -> list[tuple[str, int]]:
+    """Every site still running on a provisional choice, as (path, line).
+
+    The one place the scope is defined, because it has two exclusions and both
+    have to hold for every reader: `DECISION_TAG_NOT_A_SITE` drops the paths
+    that are talk about the mechanism, and `selftest_line_range` drops this
+    file's own fixtures, which are tags written to test the reader of tags.
+    `tagged_sites` used to state that scope in its docstring and implement a
+    different one, which listed `harness/hj` under every decision id a fixture
+    happened to name — so an answered decision could never be reported
+    reconciled, and the loop that raised it was sent to a file with no tag in
+    it. Sharing the function is what makes the docstring true by construction.
+    """
+    pattern = (
+        rf"DECISION-{re.escape(identifier)}: provisional"
+        if identifier
+        else r"DECISION-[A-Za-z0-9_-]+: provisional"
+    )
+    result = subprocess.run(
+        ["git", "-C", str(REPO), "grep", "-z", "-n", "-E", pattern, "--", *DECISION_TAG_NOT_A_SITE],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return outside_selftest_region(tag_sites(result.stdout), (HARNESS / "hj").read_text())
+
+
 def provisional_decisions() -> int:
     """Sites still running on a provisional choice. Its count is a health
     metric — rising steadily means the loop is running ahead of its decisions
     and the work is getting speculative (`design/loops.md` section 6).
     """
-    result = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(REPO),
-            "grep",
-            "-z",
-            "-n",
-            "-E",
-            r"DECISION-[A-Za-z0-9_-]+: provisional",
-            "--",
-            *DECISION_TAG_NOT_A_SITE,
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    first, past = selftest_line_range((HARNESS / "hj").read_text())
-    return sum(
-        1
-        for path, number in tag_sites(result.stdout)
-        if not (path == "harness/hj" and first <= number < past)
-    )
+    return len(provisional_tag_sites())
 
 
 # --------------------------------------------------------------------------
@@ -2124,17 +2150,16 @@ def judged_campaigns(owner: str) -> list[dict]:
 
 
 def tagged_sites(identifier: str) -> list[str]:
-    """The files an answered decision has to be reconciled in, spliced into the
-    next prompt. Same scope as `provisional_decisions`, and for the same
-    reason: with `harness/` excluded, an answered harness decision reached its
-    own loop's prompt carrying no sites at all."""
-    result = subprocess.run(
-        ["git", "-C", str(REPO), "grep", "-l", "-F", f"DECISION-{identifier}:", "--", *DECISION_TAG_NOT_A_SITE],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return [line for line in result.stdout.splitlines() if line][:20]
+    """The files an answered decision still has to be reconciled in, spliced
+    into the next prompt. `harness/` is in scope deliberately — excluding it
+    made an answered harness decision reach its own loop's prompt carrying no
+    sites at all — and the fixtures in this file's selftest region are not,
+    which is `provisional_tag_sites`'s job to know rather than this one's."""
+    files = []
+    for path, _ in provisional_tag_sites(identifier):
+        if path not in files:
+            files.append(path)
+    return files[:20]
 
 
 def trailing_without_progress(owner: str) -> int:
@@ -2227,6 +2252,34 @@ def worker_findings(owner: str, worker: str) -> str:
         if body:
             parts.append(f"### What {path.stem} concluded\n\n{body}")
     return "\n\n".join(parts)
+
+
+def other_loop_findings(owners: list[str], owner: str) -> list[str]:
+    """Every other *loop's* digest, for this loop's volatile tail.
+
+    `design/loops.md` §13, "Campaigns compare notes, asymmetrically". Driven by
+    the owners in `state/phase.toml` rather than by a glob over
+    `state/findings/`, because a glob also matches `core-1.md`, `core-2.md`
+    and `core-3.md` — sibling *workers*, which are `worker_findings`' job and
+    are three views of an implementation a different loop shares none of.
+    §13's sizing is per loop for the same reason: "a dozen loops, 512 words
+    each" fits a tail, and a dozen loops times three workers does not.
+
+    The asymmetry §13 is named for — falsified broadcast plainly, confirmed
+    published as a candidate — is not enforceable here, because it is a
+    property of prose. It is carried in two places instead: the close
+    instruction that tells a digest's *writer* to mark which is which, and the
+    heading above this splice that tells its *reader* how the two differ.
+    """
+    digests = []
+    for other in owners:
+        if other == owner:
+            continue
+        path = STATE / "findings" / f"{other}.md"
+        body = path.read_text().strip() if path.exists() else ""
+        if body:
+            digests.append(f"### What the `{other}` loop concluded\n\n{body}")
+    return digests
 
 
 def staleness_note(gap: Gap) -> str:
@@ -2375,17 +2428,13 @@ def prompt_values(
                 f"- {path.stem}: {name} [ANSWERED: {state} — read the record; the"
                 " ruling was not logged, so the reasoning is only in the file]"
             )
-        elif tagged_sites(path.stem):
-            sites = ", ".join(tagged_sites(path.stem))
+        elif sites := ", ".join(tagged_sites(path.stem)):
             decisions.append(
                 f"- {path.stem}: {name} [ANSWERED: {state} — reconcile and remove the tag]\n"
                 f"  still tagged at: {sites}"
             )
 
-    findings = []
-    for path in sorted((STATE / "findings").glob("*.md")):
-        if path.stem != config.owner:
-            findings.append(f"### {path.stem}\n\n{path.read_text().strip()}")
+    findings = other_loop_findings(sorted(phase.loops), config.owner)
 
     # A worker writes its own journal and reads the loop's when it has none of
     # its own yet: three workers each starting from an empty file would each
@@ -3131,6 +3180,111 @@ def spec_drift(campaign_id: str, target: str | None) -> dict | None:
 
 PYTHON_SHEBANG = re.compile(rb"^#!.*python")
 
+# `design/loops.md` section 7's better ralph heuristic, and its constant.
+# Twenty commits because it has to be a *run* rather than a campaign: three
+# workers interleave, so the last twenty of one loop's commits span a few
+# rounds, which is the window in which "mostly test churn" is a shape rather
+# than one campaign that happened to be writing tests.
+TEST_CHURN_WINDOW = 20
+TEST_CHURN_FLAG = 0.30
+
+
+def classify_diff_path(name: str) -> str:
+    """Which bucket a changed path counts in. `campaign_diffstat`'s split, and
+    `loc_per_crate`'s: a path component named `tests`, which is where this
+    workspace puts them — `CLAUDE.md` forbids unit tests, so there are no
+    in-file `#[cfg(test)]` modules to miss."""
+    if name.endswith(".rs"):
+        return "rust_test" if "tests" in name.split("/") else "rust_source"
+    if name.endswith(".md"):
+        return "markdown"
+    return "other"
+
+
+def test_churn(owner: str, window: int = TEST_CHURN_WINDOW) -> dict:
+    """Section 7: "flag when >=30% of recent iterations are test-only changes"
+    — "the characteristic shape of a loop that has run out of real work but not
+    out of budget".
+
+    Per commit, because section 7 says *iterations* and section 4's contract
+    makes one commit per experiment. Unlike the spec-drift detector, which that
+    section deliberately widened to the campaign, nothing here is defeated by
+    one-target commits: a commit is exactly the unit the heuristic is about.
+
+    **Only commits that touch Rust are classifiable, and the denominator says
+    so.** A markdown-only commit is neither test churn nor source work, and the
+    harness loop's tests are `selftest_cases` *inside* `harness/hj`, so no path
+    can distinguish them from the code they check. Reporting a denominator of
+    nothing as 0% would say "healthy" about a loop this measure cannot see, so
+    it reports `flagged` only when there is something to have seen.
+    """
+    raw = subprocess.run(
+        ["git", "-C", str(REPO), "log", f"-n{window * 8}", "--numstat", "--format=%x00%B%x00"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout
+    commits: list[set[str]] = []
+    pending: str | None = None
+    for block in raw.split("\0"):
+        if re.search(rf"^loop:\s*{re.escape(owner)}\s*$", block, re.MULTILINE):
+            pending = owner
+            continue
+        if pending is None:
+            continue
+        kinds = {
+            classify_diff_path(parts[2])
+            for line in block.splitlines()
+            if len(parts := line.split("\t")) == 3 and parts[0].isdigit()
+        }
+        commits.append(kinds)
+        pending = None
+        if len(commits) >= window:
+            break
+    return test_churn_ratio(commits)
+
+
+def test_churn_ratio(commits: list[set[str]]) -> dict:
+    """The arithmetic of `test_churn`, over one bucket-set per commit."""
+    classifiable = [kinds for kinds in commits if kinds & {"rust_test", "rust_source"}]
+    # Strictly nothing else, not merely "no source". A commit that adds a test
+    # and edits `design/` did other work, and for a conformance loop that other
+    # work is often the deliverable — the test carries the claim the spec edit
+    # settles. The loose reading measured 71% against a core loop that was
+    # closing gaps at the time, which is a flag nobody would keep believing.
+    test_only = [kinds for kinds in classifiable if kinds == {"rust_test"}]
+    ratio = len(test_only) / len(classifiable) if classifiable else None
+    return {
+        "commits": len(commits),
+        "classifiable": len(classifiable),
+        "test_only": len(test_only),
+        "ratio": ratio,
+        "flagged": ratio is not None and ratio >= TEST_CHURN_FLAG,
+    }
+
+
+def unsupported_claims(owner: str) -> int:
+    """Consecutive closes that claimed movement the repository does not show.
+
+    Section 7's other ralph heuristic is to "cap consecutive 'done' signals so
+    a loop that has decided it is finished cannot keep saying so". The cap
+    itself already exists and is the stall rule — a campaign closing
+    `confirmed` with no computed progress increments
+    `trailing_without_progress` exactly like one closing `no-movement` — so
+    this adds no second stop condition. What was missing is the *diagnosis*:
+    those two shapes stop the loop identically and mean opposite things. A run
+    of honest `no-movement` closes is a loop that has hit something hard; a run
+    of `confirmed` closes with nothing behind them is a loop that has decided
+    it is finished, and only the second is the failure section 7 names.
+    """
+    trailing = 0
+    for campaign in reversed(judged_campaigns(owner)):
+        if campaign.get("progress"):
+            break
+        if campaign.get("outcome") in ("confirmed", "partial"):
+            trailing += 1
+    return trailing
+
 
 def campaign_diffstat() -> dict[str, dict[str, int]]:
     """Lines a campaign added and deleted, split by what kind of line it is.
@@ -3167,13 +3321,7 @@ def campaign_diffstat() -> dict[str, dict[str, int]]:
             if len(parts) != 3 or not parts[0].isdigit() or not parts[1].isdigit():
                 continue
             added, deleted, name = int(parts[0]), int(parts[1]), parts[2]
-            segments = name.split("/")
-            if name.endswith(".rs"):
-                kind = "rust_test" if "tests" in segments else "rust_source"
-            elif name.endswith(".md"):
-                kind = "markdown"
-            else:
-                kind = "other"
+            kind = classify_diff_path(name)
             row[f"{kind}_added"] = row.get(f"{kind}_added", 0) + added
             row[f"{kind}_deleted"] = row.get(f"{kind}_deleted", 0) + deleted
         current = None
@@ -3616,7 +3764,7 @@ def cmd_campaign_close(args: argparse.Namespace) -> int:
             # whole-tree snapshot and under workers carries whatever the
             # other two merged around it; this does not.
             "diff": campaign_diffstat().get(args.id, {}),
-            "loc_nontest": sum(loc_per_crate().values()),
+            "loc_nontest": sum(loc_per_crate()[0].values()),
             "tests_before": tests_before,
             "tests_after": tests_after,
             "worker": opened.get("worker") or config.owner,
@@ -3641,8 +3789,64 @@ def cmd_campaign_close(args: argparse.Namespace) -> int:
     return 0
 
 
-def campaign_is_alive(campaign_id: str) -> bool:
-    """`pgrep -f` matches any command line containing the string, including a
+def campaign_is_alive(campaign_id: str, rows: list[dict] | None = None) -> bool:
+    """Is this campaign still running, as far as anyone outside it can tell?
+
+    Answered from `sessions.jsonl`, **never from the process table**, because
+    the process table is not shared. Campaigns run under the OS sandbox
+    (`design/loops.md` section 13, layer 3), which puts each in its own PID
+    namespace: from inside a campaign, `pgrep` and `/proc` cannot see a sibling
+    campaign's runner at all. The previous implementation asked exactly that,
+    so from inside any campaign every live sibling looked dead — and since a
+    stale claim is taken by design, `hj claim` granted every target another
+    worker already held. The round that found this ran two campaigns to one
+    result and left a thirteen-hunk merge for a person.
+
+    `sessions.jsonl` is in the integration checkout, written by the runner from
+    outside the sandbox and readable from every worktree, so it is the one
+    account of who is running that all parties see the same way.
+
+    **Uncertainty means alive**, which is the asymmetry: a claim refused in
+    error costs a worker picking a different target from a list it already has;
+    a claim granted in error costs a duplicate campaign and a merge. So a row
+    whose timestamp will not parse is treated as running.
+
+    The age backstop is only for what a crash leaves behind — a campaign that
+    dies without its close row has no `outcome` and would otherwise hold its
+    claims until someone noticed. `hj campaign-reap` is the real recovery and
+    runs at every loop start; this stops a claim outliving the fleet in between.
+    """
+    for row in rows if rows is not None else session_rows():
+        if row.get("campaign") != campaign_id:
+            continue
+        if row.get("outcome"):
+            return False
+    started = next(
+        (
+            row.get("started")
+            for row in (rows if rows is not None else session_rows())
+            if row.get("campaign") == campaign_id and row.get("started")
+        ),
+        None,
+    )
+    if started is None:
+        return False
+    try:
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(started)).total_seconds()
+    except ValueError:
+        return True
+    return age < CAMPAIGN_MAX_LIFETIME_SECONDS
+
+
+def campaign_process_is_running(campaign_id: str) -> bool:
+    """Whether the runner's process actually exists, for the reaper alone.
+
+    Valid only where the fleet's PID namespace is — `harness/loop` startup,
+    which is the one caller. Do not use this to answer "is a sibling working on
+    this", which is `campaign_is_alive`: inside a campaign's sandbox this
+    returns False for every live campaign in the fleet.
+
+    `pgrep -f` matches any command line containing the string, including a
     shell that merely mentions it — a watcher looking for the loop matched
     itself and reported the loop as running. So the match is confirmed against
     the process's actual argv: some argument must *be* the adapter, followed by
@@ -3691,7 +3895,10 @@ def cmd_campaign_reap(args: argparse.Namespace) -> int:
             if campaign.get("outcome"):
                 continue
             campaign_id = campaign.get("campaign", "")
-            if campaign_is_alive(campaign_id):
+            # The process table, not `campaign_is_alive`: this is the one place
+            # that wants to know whether the runner exists, and it is the one
+            # caller that runs where the fleet's PID namespace is.
+            if campaign_process_is_running(campaign_id):
                 print(f"reap: {campaign_id[:8]} is still running; left alone")
                 continue
             # A campaign is not alive between `campaign-open` returning and the
@@ -4278,6 +4485,104 @@ def cmd_budget(args: argparse.Namespace) -> int:
     return 1 if exhausted else 0
 
 
+def waiting_decisions(answers: dict[str, dict] | None = None) -> list[tuple[str, str]]:
+    """Records a batch review would consume, as (id, opened), oldest first.
+
+    Status comes from `decision_status`, which derives it from the intervention
+    log rather than from the record's own `status:` line: a record whose file
+    says `accepted` and whose ruling was never logged is still waiting, because
+    the reasoning a batch exists to produce is not there.
+    """
+    answers = decision_answers() if answers is None else answers
+    waiting = []
+    for path in sorted((STATE / "decisions").glob("*.md")):
+        text = path.read_text()
+        recorded = re.search(r"^status:\s*(.+)$", text, re.MULTILINE)
+        if decision_status(path.stem, recorded.group(1) if recorded else "", answers) not in (
+            "open",
+            "provisional",
+        ):
+            continue
+        opened = re.search(r"^opened:\s*(\S+)", text, re.MULTILINE)
+        waiting.append((path.stem, opened.group(1) if opened else ""))
+    return sorted(waiting, key=lambda entry: (entry[1] or "9999", entry[0]))
+
+
+def batch_is_due(waiting: int, threshold: int | None) -> tuple[bool, str]:
+    """`design/loops.md` section 6's first batch trigger. The second is a phase
+    gate, which is a human event and needs no arithmetic.
+
+    **What is counted is records waiting on a human, not tagged sites**, and
+    the two differ. Section 6 names "the outstanding `DECISION-` count", having
+    two paragraphs earlier defined that as what `grep -r DECISION-` reports —
+    but a record can be waiting with no taggable site at all, and that is not a
+    corner case. `harness-002`, `harness-003` and `harness-007` each say so in
+    their own "Provisional choice in force" section, and for the same reason:
+    the choice each is about lives in a file the raising loop may not write —
+    `.claude/settings.json`, `state/phase.toml`, another loop's crate — so
+    there is nowhere to put the tag. Counting sites would leave exactly the
+    escalations a loop could not act on invisible to the trigger. The grep
+    count stays
+    what section 6 separately calls it, a health metric that rises when the
+    loop runs ahead of its decisions (`provisional_decisions`).
+    """
+    if threshold is None:
+        return False, "no threshold set in state/phase.toml; a phase gate is the only trigger"
+    if waiting >= threshold:
+        return True, f"{waiting} waiting, threshold {threshold}"
+    return False, f"{waiting} of {threshold}"
+
+
+def campaigns_closed_since(timestamp: str) -> int:
+    """Campaigns closed across every loop since a decision was raised.
+
+    Section 6: "the loop runs further on provisional choices and reconciliation
+    gets more expensive the longer it waits". Campaigns are the unit that
+    expense is actually paid in, so this is the number that says whether the
+    threshold is too high — wall-clock says nothing when a fleet is idle.
+    """
+    if not timestamp:
+        return 0
+    latest: dict[str, dict] = {}
+    for row in session_rows():
+        latest.setdefault(row["campaign"], {}).update(row)
+    return sum(
+        1 for row in latest.values() if row.get("outcome") and (row.get("ended") or "") > timestamp
+    )
+
+
+def cmd_escalations(args: argparse.Namespace) -> int:
+    """`design/loops.md` section 6: escalations are reviewed in batches, never
+    as interrupts, because answering each as it arrives "would make the
+    operator the rate limiter for every loop at once".
+
+    Exit 1 means a batch is due. **Nothing in `harness/loop` consults this, and
+    nothing should**: section 6 says the loop "never idles waiting for an
+    answer", so a due batch is a message to the operator and never a stop. That
+    is the difference between this and `hj budget`, which exits 1 for a
+    condition the harness is supposed to act on.
+    """
+    phase = load_phase()
+    waiting = waiting_decisions()
+    due, reason = batch_is_due(len(waiting), phase.escalation_batch)
+    print(
+        f"escalations: {len(waiting)} waiting on a human, "
+        f"{provisional_decisions()} site(s) running on a provisional choice"
+    )
+    for identifier, opened in waiting:
+        waited = campaigns_closed_since(opened)
+        print(f"  {identifier:<16} opened {(opened[:10] or '?'):<12} {waited} campaign(s) ago")
+    print(f"escalations: batch {'DUE' if due else 'not due'} — {reason}")
+    if due:
+        print(
+            "escalations: answer them from the dashboard, which logs the ruling and the"
+            " reasoning in one action. The loops keep running meanwhile; a due batch"
+            " stops nothing.",
+            file=sys.stderr,
+        )
+    return 1 if due else 0
+
+
 def cmd_gaps(args: argparse.Namespace) -> int:
     _, config = loop_config(args.loop)
     ledger = gap_ledger(config.docs)
@@ -4358,6 +4663,27 @@ def cmd_stall(args: argparse.Namespace) -> int:
         f"stall: {trailing} campaign(s) without progress (N={config.stall_n}); "
         f"{empty} of the last {config.stall_n} produced no commit; {crashed} crashed (not counted)"
     )
+    # Section 7's two ralph heuristics. Both report and neither stops: the
+    # first the section calls a flag, and the second is a diagnosis of the
+    # stall rule above rather than a second rule beside it.
+    unsupported = unsupported_claims(config.owner)
+    if unsupported:
+        print(
+            f"stall: {unsupported} of those closed claiming movement the repository does not"
+            " show — a loop that has decided it is finished, not one that has hit something hard"
+        )
+    churn = test_churn(config.owner)
+    if churn["ratio"] is None:
+        print(
+            f"stall: test churn not measurable — none of the last {churn['commits']} commit(s)"
+            " touched Rust, so there is no source/test split to read"
+        )
+    else:
+        print(
+            f"stall: {churn['test_only']} of {churn['classifiable']} recent Rust commits were"
+            f" test-only ({churn['ratio']:.0%}, flag at {TEST_CHURN_FLAG:.0%})"
+            + ("  — FLAGGED" if churn["flagged"] else "")
+        )
     return 1 if trailing >= config.stall_n else 0
 
 
@@ -4400,14 +4726,12 @@ def cmd_status(args: argparse.Namespace) -> int:
     print()
     print(f"  provisional DECISION- tags: {provisional_decisions()}")
     decisions = sorted((STATE / "decisions").glob("*.md"))
-    answers = decision_answers()
-    waiting = []
-    for path in decisions:
-        recorded = re.search(r"^status:\s*(.+)$", path.read_text(), re.MULTILINE)
-        state = decision_status(path.stem, recorded.group(1) if recorded else "", answers)
-        if state in ("open", "provisional"):
-            waiting.append(path)
-    print(f"  decisions: {len(decisions)} recorded, {len(waiting)} waiting on a human")
+    waiting = waiting_decisions()
+    due, reason = batch_is_due(len(waiting), phase.escalation_batch)
+    print(
+        f"  decisions: {len(decisions)} recorded, {len(waiting)} waiting on a human; "
+        f"batch {'DUE' if due else 'not due'} ({reason})"
+    )
     changes = spec_changes()
     unread = [entry for entry in changes if not entry["reviewed"]]
     print(f"  spec changes: {len(changes)} recorded, {len(unread)} not yet read by a human")
@@ -4493,6 +4817,33 @@ def cmd_spec_changes(args: argparse.Namespace) -> int:
         print(f"{'   ' if entry['reviewed'] else '-> '}{entry['id']}  {entry['heading']}")
     print(f"spec-changelog: {len(entries)} entry(s), {len(waiting)} not yet read by a human")
     return 0
+
+
+def tuple_returning_misuse(source: str) -> list[str]:
+    """Call sites that treat a `-> tuple[...]` helper as if it returned one value.
+
+    There is no type checker here, and the gate's first three steps run `cargo`
+    over crates a Python file is not in — so a signature that gains a second
+    return value breaks its callers at *runtime*, in whichever command happens
+    to run first. `loc_per_crate` did exactly that: it grew a counter name, one
+    of its two call sites was updated, and `hj campaign-close` crashed reading
+    a dict method straight off the bare call — for every campaign of a round,
+    before anyone saw it. The close row is written after that line, so the cost
+    was two campaigns closing with no row at all.
+
+    Deliberately narrow: an attribute read straight off a bare call. That is
+    the shape the mistake takes. Unpacking and subscripting are the correct
+    uses and must not be flagged, and widening this to "any use" would need a
+    parser. The pattern must not appear in this docstring either, or the check
+    reports itself.
+    """
+    returns_tuple = re.findall(r"^def (\w+)\([^)]*\)\s*->\s*tuple\[", source, re.MULTILINE)
+    misused = []
+    for name in returns_tuple:
+        for match in re.finditer(rf"\b{name}\(\)\s*\.", source):
+            line = source.count("\n", 0, match.start()) + 1
+            misused.append(f"{name} at line {line}")
+    return misused
 
 
 # --------------------------------------------------------------------------
@@ -4880,6 +5231,44 @@ def selftest_cases() -> list[tuple[str, object]]:
         assert tag_sites(output) == [("harness/hj", 100), ("crates/shared/src/proto:types.rs", 7)]
         assert tag_sites("") == []
 
+    def liveness_is_read_off_the_record_not_the_process_table():
+        recent = (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat()
+        ancient = (datetime.now(timezone.utc) - timedelta(hours=9)).isoformat()
+        rows = [
+            {"campaign": "running", "started": recent},
+            {"campaign": "closed", "started": recent},
+            {"campaign": "closed", "outcome": "confirmed"},
+            {"campaign": "abandoned", "started": ancient},
+            {"campaign": "unparseable", "started": "not a timestamp"},
+        ]
+        assert campaign_is_alive("running", rows), "open, recent, no outcome — a sibling is on it"
+        assert not campaign_is_alive("closed", rows), "an outcome ends it whatever else the rows say"
+        assert not campaign_is_alive("abandoned", rows), "past the backstop, so a crash cannot hold targets"
+        assert campaign_is_alive("unparseable", rows), (
+            "uncertainty means alive: a claim refused in error costs a different target, "
+            "a claim granted in error costs a duplicate campaign and a merge"
+        )
+        assert not campaign_is_alive("never-opened", rows)
+
+    def the_reaper_is_the_only_caller_that_asks_the_process_table():
+        source = (HARNESS / "hj").read_text()
+        callers = re.findall(r"^[^#\n]*\bcampaign_process_is_running\(", source, re.MULTILINE)
+        assert len(callers) == 2, (
+            "the definition and one call. Asking the process table from inside a "
+            "campaign's sandbox reports every live sibling as dead"
+        )
+
+    def a_tuple_returning_helper_is_not_used_as_one_value():
+        bad = "def f(a: int) -> tuple[dict, str]:\n    pass\n\nx = sum(f().values())\n"
+        assert tuple_returning_misuse(bad) == ["f at line 4"], tuple_returning_misuse(bad)
+        good = "def f(a: int) -> tuple[dict, str]:\n    pass\n\nnumbers, counter = f()\ny = f()[0].values()\n"
+        assert tuple_returning_misuse(good) == [], "unpacking and subscripting are the correct uses"
+        plain = "def f() -> dict:\n    pass\n\nx = f().values()\n"
+        assert tuple_returning_misuse(plain) == [], "a helper that returns one value may be used as one"
+        assert tuple_returning_misuse((HARNESS / "hj").read_text()) == [], (
+            "this file has a call site that will crash the command it is in"
+        )
+
     def the_selftests_own_tag_fixtures_are_not_sites():
         source = "import os\ndef selftest_cases():\n    diff = 'x'\n\n\ndef cmd_selftest():\n    pass\n"
         assert selftest_line_range(source) == (2, 6), selftest_line_range(source)
@@ -4888,6 +5277,99 @@ def selftest_cases() -> list[tuple[str, object]]:
         )
         assert selftest_line_range("def other():\n    pass\n") == (0, 0), (
             "a file with no selftest excludes nothing, rather than excluding everything"
+        )
+
+    def a_commit_that_did_other_work_is_not_test_churn():
+        # The loose reading — "touched no source" — called a commit that adds a
+        # test and edits `design/` churn, and measured 71% against a core loop
+        # that was closing gaps at the time. For a conformance loop the test
+        # carries the claim the spec edit settles, so that is the deliverable.
+        churn = test_churn_ratio([{"rust_test", "markdown"}, {"rust_source"}])
+        assert churn["test_only"] == 0 and churn["ratio"] == 0.0, churn
+
+    def test_churn_is_undefined_rather_than_zero_when_nothing_is_rust():
+        churn = test_churn_ratio([{"markdown"}, {"other"}])
+        assert churn["ratio"] is None and churn["flagged"] is False, (
+            "the harness loop's tests live inside harness/hj, so no path can see them; "
+            "0% would report health about a loop this measure cannot look at"
+        )
+        assert churn["commits"] == 2 and churn["classifiable"] == 0
+
+    def the_churn_flag_fires_at_thirty_percent():
+        churn = test_churn_ratio([{"rust_test"}, {"rust_source"}, {"rust_source"}])
+        assert churn["ratio"] == 1 / 3 and churn["flagged"] is True
+        assert test_churn_ratio([{"rust_test"}] + [{"rust_source"}] * 3)["flagged"] is False
+
+    def classify_diff_path_splits_tests_by_directory():
+        assert classify_diff_path("crates/shared/tests/proto.rs") == "rust_test"
+        assert classify_diff_path("crates/shared/src/tests.rs") == "rust_source", (
+            "a component named tests, not a file; CLAUDE.md forbids unit tests"
+        )
+        assert classify_diff_path("design/loops.md") == "markdown"
+        assert classify_diff_path("harness/hj") == "other"
+
+    def a_loop_reads_loops_and_not_their_workers():
+        # A glob over state/findings/ matches core-1.md, core-2.md, core-3.md
+        # too. Those are sibling workers — `worker_findings`' job — and putting
+        # three views of one implementation in front of a loop that shares none
+        # of it is both noise and three times §13's per-loop sizing.
+        assert "phase.loops" in inspect.getsource(prompt_values), (
+            "the owner list is the phase's loops; a glob over state/findings/ "
+            "also matches core-1.md, core-2.md and core-3.md"
+        )
+        assert other_loop_findings(["harness"], "harness") == [], "never its own"
+        assert all(
+            d.startswith("### What the `core` loop concluded")
+            for d in other_loop_findings(["core", "harness"], "harness")
+        )
+
+    def the_digest_asymmetry_reaches_both_ends():
+        template = (HARNESS / "prompts" / "conformance.md").read_text()
+        assert "{{other_findings}}" in template, (
+            "the digest was computed and spliced nowhere for the whole of phase 1a"
+        )
+        writer, reader = template.split("{{other_findings}}")[0], template
+        assert "published as a *candidate*" in writer, "the writer must mark which is which"
+        assert "never a result" in reader, "the reader must be told the two differ"
+
+    def no_threshold_means_the_phase_gate_is_the_only_trigger():
+        due, reason = batch_is_due(9, None)
+        assert due is False and "phase gate" in reason, reason
+
+    def the_batch_fires_at_the_threshold_and_not_before():
+        assert batch_is_due(2, 3)[0] is False
+        assert batch_is_due(3, 3)[0] is True, "crossing is inclusive; at the threshold is at it"
+        assert batch_is_due(4, 3)[0] is True
+        assert batch_is_due(0, 0)[0] is True, "a threshold of zero is review-every-escalation"
+
+    def the_trigger_counts_records_and_not_tag_sites():
+        # A record can be waiting with no taggable site — the choice lives in a
+        # file the raising loop may not write, which is true of harness-002,
+        # harness-003 and harness-007. Counting sites would leave exactly the
+        # escalations a loop could not act on invisible to the trigger.
+        source = inspect.getsource(cmd_escalations)
+        assert "waiting_decisions()" in source
+        assert "batch_is_due(len(waiting)" in source, "the threshold applies to records"
+
+    def an_answered_decision_is_not_reported_at_a_fixture():
+        # The bug this replaced: `tagged_sites` claimed `provisional_decisions`'
+        # scope and did its own grep without the region filter, so every id a
+        # fixture below happens to name was reported as still tagged in
+        # `harness/hj` — permanently, since nothing there is ever reconciled.
+        # Five answered decisions were sitting in loop prompts saying
+        # "reconcile and remove the tag" against a file with no tag in it.
+        source = "def selftest_cases():\n    x = 'DECISION-harness-003: provisional'\n\n\ndef after():\n    pass\n"
+        sites = [("harness/hj", 2), ("harness/hj", 6), ("crates/driver/src/actor.rs", 579)]
+        kept = outside_selftest_region(sites, source)
+        assert ("harness/hj", 2) not in kept, "a fixture inside the selftest region is not a site"
+        assert ("harness/hj", 6) in kept, "the harness loop's own implementation still counts"
+        assert ("crates/driver/src/actor.rs", 579) in kept, "another file is never filtered by line"
+
+    def the_two_readers_of_the_tag_share_one_scope():
+        assert "provisional_tag_sites" in inspect.getsource(provisional_decisions)
+        assert "provisional_tag_sites" in inspect.getsource(tagged_sites), (
+            "tagged_sites must not grep for itself; the scope has two exclusions "
+            "and a second implementation drops one of them"
         )
 
     def the_harness_is_code_for_drift_purposes():
@@ -5226,6 +5708,12 @@ def main() -> int:
     p = sub.add_parser("budget", help="spend against each ceiling; exit 1 when one is reached")
     p.add_argument("loop", nargs="?")
     p.set_defaults(run=cmd_budget)
+
+    p = sub.add_parser(
+        "escalations",
+        help="the decision queue and whether a batch is due; exit 1 when it is (a report, not a stop)",
+    )
+    p.set_defaults(run=cmd_escalations)
 
     p = sub.add_parser("audit-cost", help="record what an audit session cost")
     p.add_argument("loop")

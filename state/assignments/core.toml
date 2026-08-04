@@ -1,18 +1,18 @@
 # One round's assignments, written by `hj plan-merge` from the planner's
 # answer. Regenerated every round; not history.
-planned = "2026-08-04T04:59:55+00:00"
+planned = "2026-08-04T19:43:43+00:00"
 
 [worker.1]
-targets = ["core.md#83-the-wire-position-type-is-inert[f9ad1766b7]", "core.md#85-the-untagged-unions-are-the-actual-risk[cfd3a3fbdc]"]
-reading = "crates/shared/src/proto.rs, crates/shared/src/agreement.rs, crates/shared/tests/proto.rs, crates/shared/tests/differential.rs, crates/shared/tests/golden-traffic.jsonl, design/core.md \u00a78"
-why = "both are \u00a78 protocol-type gaps living in proto.rs and its golden/differential tests; \u00a78.3 is a fresh audit and WirePosition::line is still public at proto.rs:106"
+targets = ["deps.md#14-workspace-cargotoml-shape[d822e97954]", "deps.md#14-workspace-cargotoml-shape[7d21b547b7]", "deps.md#licensing-our-crates-are-mit-the-binary-is-gpl[9d0b19a109]", "deps.md#12-testing[6590573bb2]", "deps.md#fxhashmap-and-fxhashset-are-the-default[e83fd58b7a]"]
+reading = "crates/driver/tests/seam.rs, Cargo.toml, deny.toml, design/deps.md (\u00a75 licensing, \u00a712, \u00a714), design/high-level.md, crates/shared/src/shared.rs, crates/shared/src/deadline.rs"
+why = "sole holder of seam.rs, root Cargo.toml and design/deps.md; all five are manifest/scan claims and \u00a714's two gaps together take that section clean (the clock and FxHashMap scans already look present at seam.rs:2579 and :2621 \u2014 verify and confirm rather than re-add)"
 
 [worker.2]
-targets = ["core.md#adding-a-language[68be1693b1]", "deps.md#14-workspace-cargotoml-shape[cda6a3e9e2]", "deps.md#14-workspace-cargotoml-shape[4e5b9e1cfa]", "deps.md#licensing-our-crates-are-mit-the-binary-is-gpl[3723863fd7]"]
-reading = "crates/driver/tests/seam.rs, Cargo.toml, deny.toml (new), crates/lang_rust/Cargo.toml, crates/lang_rust/src/lang_rust.rs, design/high-level.md, design/deps.md \u00a75/\u00a714"
-why = "every one of these mechanizes as a manifest scan in seam.rs, and the two GPL gaps share deny.toml and high-level.md's superseded licence prose; \u00a714 can go clean"
+targets = ["core.md#the-trait[5fcb043e7b]", "deps.md#2-channels[8e707386b4]"]
+reading = "crates/driver/src/actor.rs, crates/driver/tests/actor.rs, crates/shared/src/record.rs, crates/measure_core/src/table.rs, state/decisions/core-017.md"
+why = "both gaps are in actor.rs (:582 stratum synthesis, :203 select loop) with one shared reading; code and driver tests only \u2014 worker 1 holds seam.rs and design/deps.md, so put any new assertion in crates/driver/tests/actor.rs"
 
 [worker.3]
-targets = ["core.md#the-table-is-not-enough-a-replay-has-to-show-its-failures", "core.md#what-the-templates-handler-does[9adb0be268]"]
-reading = "crates/measure_core/src/table.rs, crates/measure_core/src/replay.rs, crates/measure_core/tests/pipeline.rs"
-why = "the unjudged section and the Unimplemented-vs-Failed gate are the same two files and the same question \u2014 a replay table that shows its failures; core-2 left this partial"
+targets = ["core.md#two-modes-collect-and-replay[6bd547104d]", "rope-modifications.md#the-signatures[a163ac3aee]"]
+reading = "crates/measure_core/src/collect.rs, crates/measure_core/src/truth.rs, crates/measure_core/tests/pipeline.rs, vendor/rope/src/chunk.rs, design/rope-modifications.md"
+why = "checkpoint/resume corruption is self-contained in collect.rs, and the rope out-param newtype is a cheap second target in files no one else opens; core.md \u00a78.3 and \u00a77-observability left for next round because they would land in driver.rs/actor.rs and design/core.md alongside worker 2"

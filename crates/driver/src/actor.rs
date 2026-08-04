@@ -40,11 +40,11 @@ use shared::proto::{
 use shared::record::{Answered, ChildAnswer, QueryContext, QueryRecord, definition_labels, micros};
 use shared::{
     Clock, CommitPolicy, Deadline, DocumentNotification, EditorRequestId, Error, InputEdit, Micros,
-    Outcome, Strata, Stratum, Trace,
+    Outcome, Trace,
 };
 
 use crate::config::{Config, DebounceMs, Heuristics};
-use crate::dispatch::{Answer, Completed, Dispatched, LateStrata, Registry, Request, dispatch};
+use crate::dispatch::{Answer, Completed, Dispatched, Registry, Request, dispatch};
 use crate::documents::{Documents, Queried};
 use crate::files::FileListCache;
 use crate::pending::{PendingQueries, PendingQuery, Resolution};
@@ -137,11 +137,6 @@ struct Negotiated {
     encoding: PositionEncoding,
 }
 
-/// How far behind `core` is: the events still queued at the moment one was
-/// taken off the inbox, which is zero for a shim that is keeping up.
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
-struct InboxDepth(usize);
-
 /// `shim.md` §2's single-threaded actor.
 #[derive(Debug)]
 pub struct Actor {
@@ -169,8 +164,6 @@ pub struct Actor {
     /// changes `Documents` has already consumed, would hand tree-sitter edits
     /// that do not describe the text it is given.
     edits: Arc<Vec<InputEdit>>,
-    /// The deepest the inbox has been. See [`Actor::observed`].
-    backlog: InboxDepth,
     outgoing: Sender<Outbound>,
 }
 
@@ -197,7 +190,6 @@ impl Actor {
             negotiated: None,
             debounce: DebounceMs::RESCAN,
             edits: Arc::new(Vec::new()),
-            backlog: InboxDepth::default(),
             outgoing,
         })
     }
@@ -247,47 +239,25 @@ impl Actor {
                 );
                 return Ok(());
             };
-            // Read here rather than before the `select!`, because the number
-            // that means anything is the backlog *behind* the event being
-            // handled: the depth before a receive counts the event itself, so
-            // a shim keeping up perfectly would report one forever.
-            self.observed(InboxDepth(events.len()));
+            // `deps.md` §2: the inbox is unbounded because a bounded one would
+            // deadlock the transport rather than apply backpressure, so memory
+            // here is bounded only by `shim.md` §10's shed-load rule and the
+            // depth is "a number we should log and watch, not just assert
+            // about". This is the watching, and it is the only caller of
+            // `Receiver::len` — one of the two capabilities §1 names as its
+            // reason for choosing crossbeam over the standard library's
+            // channel.
+            //
+            // Read before the event is handled, so it is the queue as of
+            // dispatch rather than as of the return; and logged only when it is
+            // non-empty, because an empty inbox is the whole of normal
+            // operation and a line per event would bury the one thing this
+            // exists to surface — `core` falling behind what feeds it.
+            let depth = events.len();
+            if depth > 0 {
+                tracing::debug!(depth, "core is behind its inbox");
+            }
             self.handle(event)?;
-        }
-    }
-
-    /// `deps.md` §2's one surviving mechanism, and the only caller of
-    /// `Receiver::len` in the workspace.
-    ///
-    /// §2 makes every channel `unbounded()` because a bounded one does not
-    /// apply backpressure in the transport — it deadlocks, since the sender is
-    /// a pipe-reader thread that `shim.md` §1 forbids stalling. What that
-    /// costs is stated in the same paragraph: "memory is bounded only by the
-    /// shed-load rule in `shim.md` §10, so the `core` inbox length is a number
-    /// we should log and watch, not just assert about". §1 gives the same
-    /// number as a reason to take `crossbeam-channel` over std's channel at
-    /// all — "crossbeam gives `Receiver::len()`, which `shim.md` §10's 'no
-    /// heuristic work while `core` is behind' rule needs to be able to read" —
-    /// and until this nothing read it. (Spelled that way round because
-    /// `seam.rs` bans the module path from `driver`'s sources, and a comment
-    /// explaining why we do not use it reads the same to a substring scan as
-    /// the import would.)
-    ///
-    /// **The high-water mark, not a line per event**, and the difference is
-    /// whether the number can be watched. A depth logged every time round the
-    /// loop puts a line between every pair of interesting ones, so it would
-    /// have to sit at `trace`, where nobody looks; logged when it *rises*, a
-    /// shim that keeps up is silent and one that falls behind writes a line
-    /// per new worst case — at `debug`, which is what a user turns on when the
-    /// shim feels slow.
-    ///
-    /// It is deliberately never reset. The worst case is the number §10's
-    /// shed-load rule would be calibrated from, and a mark that decayed would
-    /// report the last quiet second instead of the burst that matters.
-    fn observed(&mut self, depth: InboxDepth) {
-        if depth > self.backlog {
-            self.backlog = depth;
-            tracing::debug!(depth = depth.0, "`core` is further behind than it has been");
         }
     }
 
@@ -619,21 +589,16 @@ impl Actor {
                 }
                 Answered::of(Ok(outcome))
             }
-            // The cap dropped the answer and not the classification: §7's
-            // prior is a fact about the reference, so it survives the outcome
-            // that carried it (`core-017`, answered — see [`LateStrata`]).
-            Dispatched::DeadlineExpired(late) => Answered::of(Ok(Outcome::Abstain {
+            // The outcome was dropped, by the hard cap or by an expiry during
+            // the conversion. The stratum it was asked under was not dropped
+            // with it: `core-017` settles that the prior's rule "reads only the
+            // query and the reference and never what the search found", so it
+            // "was never the outcome's to carry away" — which is what keeps
+            // §7's coverage denominator from moving by one query every time a
+            // deadline expires.
+            Dispatched::DeadlineExpired(classified) => Answered::of(Ok(Outcome::Abstain {
                 reason: shared::AbstainReason::Deadline,
-                strata: match late {
-                    LateStrata::Classified(strata) => strata,
-                    // Nothing classified anything, so there is no prior to
-                    // report and this is the same "for want of anywhere honest
-                    // to put it" the failure path is in — except that this one
-                    // is an *abstention*, which is what `Table::template`
-                    // reads. `core-024` is the question.
-                    // DECISION-core-024: provisional
-                    LateStrata::Unclassified => Strata::from_reference(Stratum::Unimplemented),
-                },
+                strata: classified.strata(),
                 trace: Trace::new(),
             })),
             // Served as an abstention on the wire — which here means silence —

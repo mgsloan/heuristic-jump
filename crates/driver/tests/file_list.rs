@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use driver::{Answer, DebounceMs, Dispatched, FileListCache, LateStrata};
+use driver::{Answer, Classified, DebounceMs, Dispatched, FileListCache};
 use shared::{
     AbstainReason, Clock, Confidence, Error, FileList, Generation, Outcome, ProjectError, Strata,
     Stratum, TestClock, Trace,
@@ -35,6 +35,122 @@ const DEBOUNCE: DebounceMs = DebounceMs::new(500);
 /// requested. It bounds a thread that would otherwise have finished walking a
 /// six-file fixture many times over.
 const QUIET: Duration = Duration::from_millis(250);
+
+/// `deps.md` §2: "`crossbeam-channel`, `unbounded()` everywhere" — with this
+/// file's subject as the one stated exception, "`driver/src/files.rs` uses
+/// `bounded(1)` and states why, and that remains correct".
+///
+/// It is asserted here, in the exception's own suite, because the exception is
+/// what makes the rule unenforceable by a lint: §2 withdrew
+/// `clippy.toml`'s ban on `unbounded` precisely because "the right answer
+/// genuinely differs per channel", which leaves the bound "a per-channel
+/// judgement" that nothing records. This is the record.
+///
+/// The trap it guards is not tidiness. In the transport a full channel does not
+/// apply backpressure, it **deadlocks**: the sender is a pipe-reader thread, so
+/// blocking it stops the fd being drained, which blocks the child's write, and
+/// `shim.md` §1 forbids a stalled reader outright. A `bounded` that appears
+/// there one day will look like ordinary care.
+#[test]
+fn the_only_bounded_channel_is_the_one_deps_md_names() {
+    let sources = crate_sources();
+    assert!(
+        sources.len() > 10,
+        "only {} source file(s) walked, so this scan would pass against almost anything",
+        sources.len()
+    );
+
+    let mut bounded_in = Vec::new();
+    let mut unbounded = 0_usize;
+    for (file, text) in &sources {
+        for line in text.lines() {
+            let code = line.trim_start();
+            // Doc comments quote both spellings — this file's subject explains
+            // its own `bounded(1)` twice — and a scan that read those would be
+            // measuring the prose beside the code rather than the code.
+            if code.starts_with("//") {
+                continue;
+            }
+            if code.contains("unbounded(") {
+                unbounded += 1;
+            } else if code.contains("bounded(") {
+                bounded_in.push(file.clone());
+            }
+        }
+    }
+
+    assert!(
+        unbounded > 0,
+        "no `unbounded()` anywhere in crates/*/src, so the scan is not reading what it \
+         thinks it is"
+    );
+    bounded_in.sort();
+    bounded_in.dedup();
+    assert_eq!(
+        bounded_in,
+        vec!["driver/src/files.rs".to_owned()],
+        "deps.md §2 names one bounded channel and gives one reason for it — at most one \
+         walk is ever outstanding. A second is either a channel whose bound nobody argued, \
+         or the transport's, where a full channel deadlocks the pipe reader instead of \
+         applying backpressure"
+    );
+}
+
+/// Every source file of every `crates/*` member, as `(crate/src/name.rs, text)`.
+///
+/// Reached by following each crate root's `mod` declarations rather than by
+/// walking the directory, which is `clippy.toml`'s rule — `std::fs::read_dir`
+/// bypasses gitignore semantics — and which is also what `seam.rs` does for its
+/// own scans. It reads what the crate actually compiles rather than what
+/// happens to be on disk, so a file left behind by a rename cannot make this
+/// pass or fail.
+///
+/// `vendor/` is out of scope: its channels are upstream's, and `deps.md` §2 is a
+/// rule about ours.
+fn crate_sources() -> Vec<(String, String)> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("crates/driver is two levels below the workspace root")
+        .to_owned();
+
+    let mut sources = Vec::new();
+    for member in workspace_members(&root) {
+        // `core.md` §9's convention, which `seam.rs` asserts: the library root
+        // is named for the crate rather than left as `lib.rs`.
+        let entry = format!("crates/{member}/src/{member}.rs");
+        let Ok(text) = fs::read_to_string(root.join(&entry)) else {
+            continue;
+        };
+        for line in text.lines() {
+            let declared = line
+                .trim()
+                .strip_prefix("mod ")
+                .or_else(|| line.trim().strip_prefix("pub mod "))
+                .and_then(|rest| rest.strip_suffix(';'));
+            if let Some(module) = declared {
+                let path = format!("crates/{member}/src/{module}.rs");
+                let source = fs::read_to_string(root.join(&path)).expect("a declared module");
+                sources.push((format!("{member}/src/{module}.rs"), source));
+            }
+        }
+        sources.push((format!("{member}/src/{member}.rs"), text));
+    }
+    sources
+}
+
+/// The `crates/*` entries of `[workspace] members`, by name.
+fn workspace_members(root: &Path) -> Vec<String> {
+    let manifest = fs::read_to_string(root.join("Cargo.toml")).expect("the workspace manifest");
+    manifest
+        .lines()
+        .filter_map(|line| {
+            let quoted = line.trim().trim_end_matches(',');
+            let member = quoted.strip_prefix('"')?.strip_suffix('"')?;
+            member.strip_prefix("crates/").map(str::to_owned)
+        })
+        .collect()
+}
 
 #[test]
 fn the_list_is_walked_once_on_first_need_and_handed_back_by_refcount_after() {
@@ -124,7 +240,7 @@ fn no_candidates_is_the_only_abstention_that_invalidates_the_list() {
         abstention(AbstainReason::External {
             name: "std::vec::Vec".into(),
         }),
-        Dispatched::DeadlineExpired(LateStrata::Unclassified),
+        Dispatched::DeadlineExpired(Classified::Nothing),
         Dispatched::Failed(Error::Project(ProjectError::NotUtf8 {
             path: root.join("notes.md"),
         })),
