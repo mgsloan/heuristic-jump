@@ -32,6 +32,7 @@
     reason = "`clippy.toml`'s allow-expect-in-tests and allow-panic-in-tests reach only `#[test]` bodies, and the fixture builders below are free functions in a file that is nothing but tests. Failing loudly is the point: a fixture that half-built would leave an empty corpus, and every assertion here passes against an empty corpus."
 )]
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -733,6 +734,79 @@ fn the_records_file_holds_every_replayed_query_and_not_only_the_failures() {
          can see",
         text.lines().count()
     );
+}
+
+/// §7's "the table is not enough" names the digest's key and says it is
+/// "available mechanically": abstentions by `(stratum_prior, reason, stages)`.
+///
+/// Two things about that key are the measurement's to hold, and neither was.
+/// The **reason** is not a column — `abstain_label` folds it into `stages`,
+/// because `stages` is the field §7 makes the handler's account of what it did
+/// and a second reason column would be two vocabularies for one question — so a
+/// digest that could not find it there would have no coverage key at all. And
+/// the grouping is "an exact string group-by rather than … anybody's judgement
+/// about similarity", which holds only if two queries that abstained the same
+/// way produce the *same* log and two that abstained differently produce
+/// different ones.
+///
+/// The template handler is what makes this assertable without a language: it
+/// abstains `NotAnIdentifier` where the cursor is not on an identifier and
+/// `UnsupportedRole` where it is, so one fixture produces exactly two clusters
+/// and the corpus enumerates both classes.
+#[test]
+fn the_digests_abstention_key_falls_out_of_an_exact_string_group_by() {
+    let corpus = fixture("abstention_key");
+    enumerate(&corpus);
+    write_truth(&corpus);
+
+    let records = corpus.scratch.join("records.jsonl");
+    replay(&corpus, Some(&records));
+
+    let text = fs::read_to_string(&records).expect("replay wrote the records file");
+    let mut clusters: BTreeMap<(&str, &str), usize> = BTreeMap::new();
+    for line in text.lines() {
+        let key = (
+            between(line, "\"stratum_prior\":\"", "\""),
+            between(line, "\"stages\":[", "]"),
+        );
+        *clusters.entry(key).or_default() += 1;
+    }
+
+    let found: Vec<(&str, &str, usize)> = clusters
+        .iter()
+        .map(|((stratum, stages), count)| (*stratum, *stages, *count))
+        .collect();
+
+    assert_eq!(
+        found.len(),
+        2,
+        "the template abstains for two reasons and an exact group-by found {} \
+         cluster(s). core.md §7 keys the coverage half of the digest on \
+         (stratum_prior, reason, stages) and says the clusters fall out \
+         mechanically; a key that collapses two reasons into one, or splits one \
+         into many, is a key that groups nothing.\nclusters: {found:?}",
+        found.len()
+    );
+
+    for (index, (stratum, stages, count)) in found.iter().enumerate() {
+        let expected = [
+            "\"abstain:not_an_identifier\"",
+            "\"abstain:unsupported_role\"",
+        ][index];
+        assert_eq!(
+            (*stratum, *stages),
+            ("unimplemented", expected),
+            "an abstention cluster is keyed on {stratum}/{stages}. §7 carries \
+             the reason inside `stages` rather than in a column of its own, so \
+             a reason that never reaches the record leaves the digest with \
+             nothing to group coverage loss by"
+        );
+        assert!(
+            *count > 1,
+            "the {stages} cluster holds one query, so this test would pass \
+             against a records file with no clusters in it at all"
+        );
+    }
 }
 
 /// The other half of that flag: "with no `--records` it **writes nothing**, so
