@@ -34,10 +34,12 @@
     reason = "`clippy.toml`'s allow-expect-in-tests and allow-panic-in-tests reach only `#[test]` bodies, and every comparison below is a free function. Failing loudly is the point: a corpus line one side cannot read is the finding, and swallowing it would leave the differential asserting agreement over the messages that happened to parse."
 )]
 
+use std::collections::BTreeMap;
 use std::sync::LazyLock;
 
 use lsp_types::{OneOf, TextDocumentSyncCapability};
 use serde::Deserialize;
+use serde::de::IgnoredAny;
 use serde_json::value::RawValue;
 use shared::proto::{
     ContentChange, DefinitionProvider, DefinitionResult, DidChangeTextDocumentParams,
@@ -62,6 +64,14 @@ struct Entry {
     /// test.
     source: Box<str>,
     message: Box<RawValue>,
+}
+
+/// How many capabilities a server advertised, without materializing the tree:
+/// the keys are counted and every value is discarded, which is the one thing
+/// this needs and the reason it is not a `serde_json::Value`.
+#[derive(Deserialize)]
+struct Advertised {
+    capabilities: BTreeMap<Box<str>, IgnoredAny>,
 }
 
 #[derive(Deserialize, Copy, Clone, PartialEq, Eq, Debug)]
@@ -141,6 +151,14 @@ fn the_corpus_exercises_every_kind_the_differential_can_compare() {
 /// The three kinds named are the server-to-client ones. The client half is
 /// composed by an editor nobody here runs, and a message this project wrote to
 /// look like VS Code's is hand-authored however it is labelled.
+///
+/// **Provenance itself cannot be asserted from inside the process** — the
+/// `CAPTURED` prefix selects the captured half and a relabelled line would be
+/// selected too. So the prefix only *selects*, and everything asserted below is
+/// read out of the messages: which union shapes the captured half covers, and
+/// whether a captured `InitializeResult` advertises the capabilities a real
+/// server advertises. Faking that is no longer relabelling a line, it is
+/// composing traffic — which is the cost this is meant to impose.
 #[test]
 fn the_corpus_holds_traffic_nobody_here_composed() {
     let corpus = corpus();
@@ -167,6 +185,81 @@ fn the_corpus_holds_traffic_nobody_here_composed() {
              finds a field nobody modelled"
         );
     }
+
+    let results: Vec<InitializeResult> = captured
+        .iter()
+        .filter(|entry| entry.kind == Kind::InitializeResult)
+        .map(|entry| read(entry.message.get(), "shared::proto::InitializeResult"))
+        .collect();
+    let syncs: Vec<Sync> = results
+        .iter()
+        .map(|result| our_sync(result.capabilities.text_document_sync.as_ref()))
+        .collect();
+    assert!(
+        syncs.iter().any(|sync| matches!(sync, Sync::Kind(_)))
+            && syncs
+                .iter()
+                .any(|sync| matches!(sync, Sync::Options { .. })),
+        "§8.5's second union has one captured shape and not the other. Both are real — pyright \
+         answers the integer, gopls and rust-analyzer answer the options object — so a corpus \
+         holding one of them tests the union by declaration order and calls it agreement: {syncs:?}"
+    );
+    let providers: Vec<Definition> = results
+        .iter()
+        .map(|result| our_definition(result.capabilities.definition_provider.as_ref()))
+        .collect();
+    assert!(
+        providers
+            .iter()
+            .any(|provider| matches!(provider, Definition::Plain(_)))
+            && providers
+                .iter()
+                .any(|provider| matches!(provider, Definition::Options { .. })),
+        "§8.5's third union has one captured shape and not the other: {providers:?}"
+    );
+
+    // §8.6's sentence, as an assertion: "a field that appears in no captured
+    // message is untested by construction, and that is exactly the long tail".
+    // A real server advertises far more than the three capability fields we
+    // project, so a captured `InitializeResult` whose `capabilities` is as
+    // small as ours is not one.
+    for entry in captured
+        .iter()
+        .filter(|entry| entry.kind == Kind::InitializeResult)
+    {
+        let advertised: Advertised = read(entry.message.get(), "an InitializeResult's key set");
+        let advertised = advertised.capabilities.len();
+        assert!(
+            advertised > 8,
+            "a captured InitializeResult advertising {advertised} capabilities: every server \
+             this corpus has met advertises more than a dozen, and the fields beyond the three \
+             we model are the long tail the capture is for.\n{}",
+            entry.source
+        );
+    }
+
+    let sites: Vec<Sites> = captured
+        .iter()
+        .filter(|entry| entry.kind == Kind::DefinitionResult)
+        .map(|entry| {
+            our_sites(&read(
+                entry.message.get(),
+                "shared::proto::DefinitionResult",
+            ))
+        })
+        .collect();
+    assert!(
+        sites.contains(&Sites::Null),
+        "no captured null definition result. A server declining to answer is not the empty \
+         array, and the difference is one §6 classifies differently"
+    );
+    assert!(
+        sites
+            .iter()
+            .any(|site| matches!(site, Sites::At(found) if found.len() > 1)),
+        "no captured definition result with more than one site, so §6's set-against-set rule is \
+         exercised only by messages this project composed"
+    );
 }
 
 fn corpus() -> Vec<Entry> {
@@ -621,7 +714,14 @@ fn our_position(position: WirePosition) -> (u32, u32) {
 }
 
 const COLUMNS: usize = 96;
-const ROWS: usize = 96;
+
+/// Deep enough for a captured position, which is the constraint a hand-authored
+/// corpus never had: pyright answers `print` with two overloads in typeshed's
+/// `builtins.pyi`, on lines 2075 and 2083. A corpus line that names a deeper
+/// row than this fails loudly rather than quietly, since `resolve` refuses a
+/// position outside the document instead of clipping — so raising this is the
+/// repair, and reading a captured position as "out of range" is not.
+const ROWS: usize = 4096;
 
 /// An ASCII document of known geometry: [`ROWS`] lines of exactly [`COLUMNS`]
 /// characters. Large enough to hold every position in the corpus, which is the
