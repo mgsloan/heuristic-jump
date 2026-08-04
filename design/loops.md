@@ -62,10 +62,25 @@ different oracle, which is [section 2](#2-two-loops-two-oracles).
 
 ## 1. Current state, and what it forces
 
-There is no code. There are the design documents, a `clippy.toml`, and
-a `CLAUDE.md`. Every loop described here is blocked on a bootstrap that
-is not itself loopable in any interesting sense, because there is
-nothing to measure yet.
+This document was written before there was any code, and the plan it
+describes is shaped by that. **Where the project has actually got to is
+deliberately not recorded here**: it is `state/phase.toml`'s `phase`, the
+workspace members in `Cargo.toml`, and the section ledger in
+`state/audit/`. A prose inventory of what exists would be stale within a
+week and would have to be re-verified at every audit — the cost
+[section 8](#8-sequencing-and-gates) already avoids by letting
+`phases.md` answer "what is in phase 1a" rather than a list maintained
+in this document.
+
+What the state of the code forces is a split, and it is the split
+[section 2](#2-two-loops-two-oracles) is about. **The metric loop is
+blocked on a bootstrap**: it has nothing to measure until there is a
+corpus, ground truth, and a handler that answers something, which is
+phases 1a through 1.5, and that bootstrap is not itself loopable in any
+interesting sense. **The conformance loop is not blocked.** Its oracle
+is the audit, which exists as soon as the documents do, so it can run
+from day one and against phase 1a itself — which is what
+[section 18](#18-scope-phases-1-and-15-first) has it do.
 
 **So most of this document is not yet in scope.** The initial
 implementation covers phases 1a through 1.5 and stops

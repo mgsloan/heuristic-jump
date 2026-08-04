@@ -82,3 +82,43 @@ regardless, and it should — the declaration is here so the flag has an
 answer next to it rather than an archaeology exercise.
 
 **Campaign:** 11b9c019-6714-4563-a97b-fd9a00c5819f
+
+## CHANGE-harness-003 — loops.md#1-current-state-and-what-it-forces — the section stops carrying an inventory of what exists
+
+**Contradiction:** §1 opened "There is no code. There are the design
+documents, a `clippy.toml`, and a `CLAUDE.md`. Every loop described here is
+blocked on a bootstrap that is not itself loopable in any interesting sense,
+because there is nothing to measure yet."
+
+Both halves are contradicted from inside this document. §18 ("Scope: phases 1
+and 1.5 first") runs the conformance loop *against* phase 1a — "this is the
+phase the loop machinery is built for and first run against" (§8) — so not
+every loop is blocked on the bootstrap, and the bootstrap is loopable, because
+it is being looped. And §2's whole point is that the two loops have different
+oracles: the conformance loop's is "the audit, plus the test suite", which
+needs no code at all to exist. The inventory half is stale as a matter of
+fact: seven workspace members exist.
+
+**Resolution:** §1 now says the document was written before there was any
+code, states that current state is deliberately *not* recorded here, and names
+where it is — `state/phase.toml`'s `phase`, `Cargo.toml`'s members,
+`state/audit/`. It then states the split the state of the code actually
+forces: the metric loop is blocked on the 1a–1.5 bootstrap, the conformance
+loop is not, because its oracle exists as soon as the documents do.
+
+This reading trades nothing off because it is the only one that is stable.
+Restating the inventory correctly — "seven crates exist" — buys one audit and
+is wrong again by the next campaign, and §8 already made exactly this call
+for exactly this reason: "'what is in phase 1a' is now a question with a file
+for an answer rather than a list to maintain here." The forcing content of the
+section, which §13 and §18 reason from, is unchanged: there is still no shared
+resolution crate, and there must not be one until working handlers exist to
+extract it from.
+
+**No code was changed in this campaign.** That cuts both ways and is worth
+saying plainly: nothing here was moved toward an implementation, and equally,
+nothing here can be checked by a test. The section's claims after this edit
+are checkable against `state/phase.toml`, `Cargo.toml` and `crates/` — none
+of which this loop may write except `design/loops.md` itself.
+
+**Campaign:** 3e637dcd-7552-460c-8eb4-fb41941ef14b
