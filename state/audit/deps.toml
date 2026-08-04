@@ -32,36 +32,72 @@ last_audited = "2026-08-03T23:07:08+00:00"
   where = "vendor/rope/src/rope.rs:2421"
 
 [section."deps.md#licensing-our-crates-are-mit-the-binary-is-gpl"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-04T00:27:32+00:00"
+
+  [[section."deps.md#licensing-our-crates-are-mit-the-binary-is-gpl".gap]]
+  claim = "the GPL commitment is stated plainly in high-level.md, and there are two GPL inputs, not one \u2014 similarity and lang_* are GPL, which closes the permissive exit"
+  found = "high-level.md still carries the superseded position: \"The crates in `crates/` are MIT\" and \"`rope` is the only GPL input, so replacing it would make the whole workspace permissively licensable\". The per-crate license fields themselves match the table. seam.rs already reads every manifest for expected_licence; comparing it against high-level.md's prose would make this exact"
+  where = "design/high-level.md:483"
 
 [section."deps.md#6-tree-sitter"]
-state = "unjudged"
+state = "clean"
+last_audited = "2026-08-04T00:27:32+00:00"
+
+  [[section."deps.md#6-tree-sitter".minor]]
+  claim = "driver depends on tree-sitter but on no grammar crate"
+  note = "driver's [dependencies] names no tree-sitter at all; Language/Tree/InputEdit arrive through shared's re-export, on core.md \u00a79's reading that driver has no tree-sitter edge \u2014 the two documents disagree and the manifest follows the other one"
+  where = "crates/driver/Cargo.toml:16"
+
+  [[section."deps.md#6-tree-sitter".minor]]
+  claim = "the grammars match Zed's pinned revisions"
+  note = "`tree-sitter-rust = \"0.24.2\"` is a caret range that cargo update may move to 0.24.3; the seam test's three-component rule accepts it as a pin, and only Cargo.lock actually holds the revision"
+  where = "crates/driver/tests/seam.rs:474"
 
 [section."deps.md#7-file-enumeration-and-watching"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-04T00:27:32+00:00"
+
+  [[section."deps.md#7-file-enumeration-and-watching".gap]]
+  claim = "notify is deferred behind a non-default `watch` feature and written into Cargo.toml as optional, so the decision is visible, not lost"
+  found = "notify appears in no manifest, no [features] table and not in Cargo.lock; the only record is a doc comment in a test noting it is declared by nobody"
+  where = "Cargo.toml:28"
 
 [section."deps.md#8-parse-cache"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-04T00:27:32+00:00"
+
+  [[section."deps.md#8-parse-cache".gap]]
+  claim = "lru, wrapped by driver to bound total bytes as well as entries, keyed by (uri, version) and (path, mtime, len)"
+  found = "the parse cache is an unbounded FxHashMap keyed by uri alone with no eviction and no byte accounting; lru is in neither Cargo.toml nor Cargo.lock, though clippy.toml:48 already bans lru::LruCache::put and points at a wrapper that does not exist"
+  where = "crates/driver/src/trees.rs:26"
 
 [section."deps.md#fxhashmap-and-fxhashset-are-the-default"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-04T00:27:32+00:00"
+
+  [[section."deps.md#fxhashmap-and-fxhashset-are-the-default".gap]]
+  claim = "a type alias, not a naked import: shared exports `pub type Map<K, V> = FxHashMap<K, V>` and `pub type Set<T> = FxHashSet<T>`"
+  found = "no `pub type` exists anywhere in the workspace; all five sites import rustc_hash::FxHashMap/FxHashSet directly. A scan for `rustc_hash::` outside shared would make this mechanical"
+  where = "crates/shared/src/shared.rs:49"
 
 [section."deps.md#9-logging-and-tracing"]
-state = "unjudged"
+state = "clean"
+last_audited = "2026-08-04T00:27:32+00:00"
+
+  [[section."deps.md#9-logging-and-tracing".minor]]
+  claim = "every line we emit gets a distinguishing prefix"
+  note = "nothing configures a prefix; what distinguishes our lines is tracing_subscriber::fmt's default timestamp/level/target, and the child's stderr forwarding does not exist yet to interleave with"
+  where = "crates/heuristic_jump/src/heuristic_jump.rs:84"
 
 [section."deps.md#10-errors-one-enumerated-type-no-anyhow"]
-state = "gaps"
-last_audited = "2026-08-03T23:07:08+00:00"
-
-  [[section."deps.md#10-errors-one-enumerated-type-no-anyhow".gap]]
-  claim = "every variant carries typed context, not a formatted string; foreign errors are wrapped as `#[source]` fields so the classification is ours and only the detail is theirs"
-  found = "ConfigError::ManifestMalformed carries the toml::de::Error's rendered message as `reason: Box<str>` instead of a #[source] field \u2014 the one place in the enum where a foreign error's detail is flattened to prose. Deliberate (the doc comment cites shared's dependency graph), so a human should rule."
-  where = "crates/shared/src/error.rs:77"
+state = "clean"
+last_audited = "2026-08-04T00:27:32+00:00"
 
   [[section."deps.md#10-errors-one-enumerated-type-no-anyhow".minor]]
-  claim = "an Error converted into an abstention is converted explicitly and logged"
-  note = "documents.rs:381 logs before marking untrusted; dispatch::classify converts HandlerError::DeadlineExpired into an abstention silently"
-  where = "crates/driver/src/dispatch.rs:405"
+  claim = "every variant carries typed context, not a formatted string; foreign errors are wrapped as #[source]"
+  note = "ConfigError::ManifestMalformed renders the TOML parser's message into a Box<str> instead of sourcing it, documented as avoiding a parser in shared's graph"
+  where = "crates/shared/src/error.rs:77"
 
 [section."deps.md#11-cli-parsing-clap"]
 state = "gaps"
@@ -74,16 +110,16 @@ last_audited = "2026-08-03T23:07:08+00:00"
 
 [section."deps.md#12-testing"]
 state = "gaps"
-last_audited = "2026-08-03T23:07:08+00:00"
+last_audited = "2026-08-04T00:27:32+00:00"
 
   [[section."deps.md#12-testing".gap]]
   claim = "the injected clock is a `trait Clock` with a `TestClock` impl in `shared`, not a dependency"
-  found = "shared exports only SystemClock; no TestClock exists, and five test files hand-roll their own impl (FrozenClock in driver/tests/snapshots.rs:55, shared/tests/document.rs:42, shared/tests/project.rs:320, driver/tests/deadline.rs:31; DrivenClock in driver/tests/file_list.rs:238). A check that no crates/*/tests file contains `impl Clock for` would hold this permanently."
-  where = "crates/shared/src/deadline.rs:19"
+  found = "shared defines the trait and SystemClock only; five test files each define their own clock impl. A scan asserting no `impl Clock for` outside shared/src/deadline.rs would hold it"
+  where = "crates/shared/src/deadline.rs:14"
 
   [[section."deps.md#12-testing".minor]]
-  claim = "tempfile is rejected; CARGO_TARGET_TMPDIR fixtures hold the property it was chosen for"
-  note = "clippy.toml's ban on std::env::temp_dir names `tempfile::tempdir` as its replacement, pointing whoever trips the lint at the declined crate"
+  claim = "tempfile is deliberately not added"
+  note = "clippy.toml still names tempfile::tempdir as the sanctioned replacement for std::env::temp_dir, so following the lint fails the seam test that enforces the declined list"
   where = "clippy.toml:38"
 
 [section."deps.md#13-explicitly-not-depended-on"]

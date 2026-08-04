@@ -113,17 +113,17 @@ last_audited = "2026-08-03T07:56:16+00:00"
 
 [section."core.md#7-observability-and-the-corpus-scan"]
 state = "gaps"
-last_audited = "2026-08-03T06:54:58+00:00"
+last_audited = "2026-08-04T00:27:32+00:00"
 
   [[section."core.md#7-observability-and-the-corpus-scan".gap]]
-  claim = "each query emits one JSONL record once both answers are known, with decision's three values, failure naming the Error sub-enum, stratum_prior and stratum_final, margin/considered, the four latency fields, bounded stages, a byte-offset position, ordered heuristic_locations with returned and truncated_list, and mode nulling server_health/lsp_latency_us/lsp_locations/agreement/severity in standalone"
-  found = "no record type, no serialization and no emission site exists: driver is `mod config; mod dispatch;` (driver.rs:10-14), grep across crates/ for stratum_prior, stages, bytes_scanned, queued_us and stage_us returns prose only, and measure_core is not a workspace member (Cargo.toml:3-10). MECHANICAL CHECK AVAILABLE: an insta snapshot of one serialized record pins the field set and the standalone-nulls rule, and deriving the failure string from an exhaustive match on Error's sub-enums (error.rs:27-38) makes a new sub-enum a compile error \u2014 Error already has five, where the section names three"
-  where = "crates/driver/src/driver.rs:10"
+  claim = "the driver owns the measurement and each query emits one JSONL record once both answers are known"
+  found = "QueryRecord is constructed and written only by measure_core's replay; nothing in crates/driver emits one. driver::run has no transport, so queued_us \u2014 the field marked driver-only \u2014 has no producer, and proxy-mode rows are written by replay rather than by the shim. Agreement/Severity classification is implemented driver-side, so the missing half is the emission"
+  where = "crates/driver/src/driver.rs:37"
 
-  [[section."core.md#7-observability-and-the-corpus-scan".gap]]
-  claim = "everything from stratum_prior through files_parsed is reported by the handler, and the stratum is two fields, not one"
-  found = "the seam carries none of it: Outcome::Committed is { locations, confidence, stratum } and Outcome::Abstain is { reason, stratum } \u2014 one stratum, and no margin, considered, stages, stage_us, bytes_scanned or files_parsed \u2014 so the driver cannot obtain the handler-reported half of the record nor recover stratum_prior and stratum_final from a single returned Stratum. This is inside the seam state/phase.toml:21-27 freezes"
-  where = "crates/shared/src/handler.rs:72"
+  [[section."core.md#7-observability-and-the-corpus-scan".minor]]
+  claim = "truncated_list says the ranked list hit the cap; in standalone five fields are null"
+  note = "replay writes truncated_list as a literal false and server_health as None while declaring mode = Proxy, which is a third case the section does not describe; truncated_list has no producer anywhere since the cap is the driver's"
+  where = "crates/measure_core/src/replay.rs:251"
 
 [section."core.md#the-corpus-scan-is-a-separate-program"]
 state = "clean"
@@ -200,7 +200,7 @@ last_audited = "2026-08-03T09:16:14+00:00"
 
 [section."core.md#8-protocol-types"]
 state = "clean"
-last_audited = "2026-08-03T06:54:58+00:00"
+last_audited = "2026-08-04T00:27:32+00:00"
 
 [section."core.md#81-why-not-lsp-types"]
 state = "clean"
@@ -294,13 +294,8 @@ last_audited = "2026-08-03T19:21:14+00:00"
   where = "crates/shared/src/project.rs:426"
 
 [section."core.md#why-shared-is-separate-from-driver"]
-state = "gaps"
-last_audited = "2026-08-03T06:33:47+00:00"
-
-  [[section."core.md#why-shared-is-separate-from-driver".gap]]
-  claim = "measure_core depends on shared only and takes its handler as &dyn LanguageHandler; measure_<lang> is a separate crate rather than a [[bin]], so heuristic_jump never links an LSP client"
-  found = "neither crate exists \u2014 no crates/measure_core or crates/measure_rust, and no workspace member for either. The shared/driver half of the section holds (driver depends on shared, shared has no driver edge). MECHANICAL CHECK AVAILABLE: the manifest scan in crates/driver/tests/seam.rs:29 extends to asserting measure_core names shared and neither driver nor any lang_*"
-  where = "Cargo.toml:3"
+state = "clean"
+last_audited = "2026-08-04T00:27:32+00:00"
 
 [section."core.md#adding-a-language"]
 state = "gaps"
