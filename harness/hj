@@ -2358,6 +2358,15 @@ def cmd_campaign_open(args: argparse.Namespace) -> int:
     return 0
 
 
+def is_code_path(path: str) -> bool:
+    """Is this path part of what the spec is judged against?
+
+    The complement of the spec and the record, not an allow-list of crates:
+    see `spec_drift`.
+    """
+    return not path.startswith(("design/", "state/"))
+
+
 def spec_drift(campaign_id: str, target: str | None) -> dict | None:
     """Did this campaign edit the spec and the code it is judged against?
 
@@ -2371,6 +2380,19 @@ def spec_drift(campaign_id: str, target: str | None) -> dict | None:
     route the audit cannot catch *by construction* — moving the spec removes
     the gap from the instrument that would have reported it — so the answer is
     to make it visible to a human, not to guess at intent here.
+
+    **Code is anything that is not the spec and not the record**, rather than
+    an allow-list of `crates/` and `vendor/`. That list silently exempted the
+    one loop whose implementation is `harness/`: campaign 11b9c019 edited
+    `design/loops.md` §4 and `harness/hj` in the same run, said in its own
+    record that it expected to be flagged for it, and recorded `spec_drift`
+    null. A detector that does not fire for the loop building the detector is
+    the failure §19 calls the thinnest defence in the design.
+
+    `state/` is excluded because it is where a campaign writes its journal,
+    its record and its changelog entry — every campaign touches it, so
+    counting it as code would flag all of them and the flag would mean
+    nothing. `harness/` is code: it is this loop's deliverable.
     """
     design_edits: set[str] = set()
     code_edits: set[str] = set()
@@ -2378,7 +2400,7 @@ def spec_drift(campaign_id: str, target: str | None) -> dict | None:
         for path in commit_paths(commit):
             if path.startswith("design/"):
                 design_edits.add(path)
-            elif path.startswith(("crates/", "vendor/")):
+            elif is_code_path(path):
                 code_edits.add(path)
     if not (design_edits and code_edits):
         return None
@@ -3657,6 +3679,16 @@ def selftest_cases() -> list[tuple[str, object]]:
         assert numbers["reverts"] == 1, numbers
         assert numbers["gate_seconds"] == 16.5, numbers
         assert numbers["usd"] == 1.5 and numbers["turns"] == 4
+
+    def the_harness_is_code_for_drift_purposes():
+        assert is_code_path("harness/hj"), "the loop building the detector is not exempt from it"
+        assert is_code_path("crates/shared/src/lib.rs") and is_code_path("vendor/rope/src/rope.rs")
+        assert is_code_path("Cargo.toml"), "a manifest is not the spec and not the record"
+
+    def the_spec_and_the_record_are_not_code():
+        assert not is_code_path("design/loops.md"), "the spec is the other side of the comparison"
+        assert not is_code_path("state/journal/harness.md"), "every campaign writes its record"
+        assert not is_code_path("state/spec-changelog/harness.md")
 
     def adapter_reports_nothing_without_a_result():
         assert _selftest_adapter_cost([{"type": "assistant", "message": {"content": []}}]) == {}
