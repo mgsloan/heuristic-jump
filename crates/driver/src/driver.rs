@@ -24,7 +24,7 @@ pub use config::{
     Mode, PrefixedWriter, ServerCommand,
 };
 pub use dispatch::{
-    Answer, Completed, Dispatched, ExpiredStrata, Parsed, Registry, Request, dispatch, hard_cap,
+    Answer, Classified, Completed, Dispatched, Parsed, Registry, Request, dispatch, hard_cap,
 };
 pub use documents::{Documents, Queried, SaveCheck, Saved, Synced, Trusted};
 pub use files::{DID_CHANGE_WATCHED_FILES, FileListCache, Rescan};

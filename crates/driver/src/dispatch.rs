@@ -16,7 +16,8 @@ use shared::proto::{PositionEncoding, WireLocation, WirePosition, WireRange};
 use shared::{
     ByteLen, CommitPolicy, Deadline, DocumentSnapshot, DocumentUri, DocumentVersion, EncodingError,
     Error, FileText, HandlerError, LanguageHandler, LanguageId, Map, Offset, Outcome, ProjectError,
-    ProjectPath, ProjectView, Query, RelPath, Rope, ServerProfile, SnapshotSeed, Strata, Tree,
+    ProjectPath, ProjectView, Query, RelPath, Rope, ServerProfile, SnapshotSeed, Strata, Stratum,
+    Tree,
 };
 
 /// The handler set, resolved once at startup. `heuristic_jump` is the one
@@ -136,39 +137,74 @@ pub enum Dispatched {
     /// propagation surfaces an expiry as `Err` — and a deadline expiry is the
     /// one latency-shaped abstention `high-level.md` allows. Recorded as an
     /// abstention, with `AbstainReason::Deadline`.
-    DeadlineExpired(ExpiredStrata),
+    DeadlineExpired(Classified),
     Failed(Error),
 }
 
-/// What is known about a query's stratum once its deadline has expired.
+/// What had classified a query at the moment the deadline took its answer
+/// away.
 ///
-/// `core-017` (answered): *a-priori* is about the **rule**, not about who
-/// evaluates it. The prior reads only the query and the reference, never what
-/// the search found, so it is knowable before the search finishes — and a
-/// query whose outcome the hard cap discards **has not thereby lost its
-/// prior**. It was never the outcome's to carry away.
-///
-/// An enum rather than an `Option<Strata>` because the two cases are different
-/// facts and the wrong one is expensive: `Unclassified` writes
-/// `Stratum::Unimplemented` into §7's record, and
-/// `measure_core`'s `Table::template` reads an *abstention* under that stratum
-/// as "the language crate template has not been replaced". Naming the case is
-/// what keeps a reader from filling it in with the convenient value, which is
-/// how the whole row got there.
-#[derive(Debug)]
-pub enum ExpiredStrata {
-    /// The handler classified the query and the cap dropped the answer
-    /// afterwards. §7's coverage denominator is fixed by the reference and
-    /// must not move because the implementation was slow, so the prior travels
-    /// with the drop.
-    Assigned(Strata),
-    /// Nothing ran that could classify it: the parse was abandoned on the
-    /// deadline before a handler saw the document, or the handler propagated
-    /// an expiry out of `ProjectView` with `?` before it reached a reference.
+/// It exists because `core.md` §7 reports coverage on `stratum_prior` "so the
+/// denominator is fixed by the reference and does not move when the
+/// implementation changes", and an expiry that lost the stratum moved it: the
+/// query was counted under `unimplemented` rather than under the class it was
+/// really asked about. `core-017` settles why it need not be lost — *a-priori*
+/// is about the rule, which "reads only the query and the reference and never
+/// what the search found", so the prior is knowable before the search finishes
+/// and "was never the outcome's to carry away".
+#[derive(Copy, Clone, Debug)]
+pub enum Classified {
+    /// A handler returned and something downstream of it discarded the answer:
+    /// the hard cap, or an expiry during §8.4's conversion. Either way the
+    /// strata it assigned are in hand.
+    By(Strata),
+    /// Nothing classified anything. The parse was abandoned before any handler
+    /// ran (`SnapshotSeed::realise`), or a read expired inside the handler
+    /// before it assigned a stratum.
+    Nothing,
+}
+
+impl Classified {
+    /// What §7's two stratum columns are written from.
+    pub fn strata(self) -> Strata {
+        match self {
+            Classified::By(strata) => strata,
+            // `core-022`: the prior exists — `core-017` says so, and says the
+            // reference and the query are all its rule needs — but the rule is
+            // per-language, so nothing here can evaluate it without the
+            // handler that owns it. Filed under the template's stratum for
+            // want of anywhere honest to put it, which is the same place
+            // `Answered::of` files a handler that returned `Err`.
+            // DECISION-core-022: provisional
+            Classified::Nothing => Strata::from_reference(Stratum::Unimplemented),
+        }
+    }
+}
+
+impl Dispatched {
+    /// The classification a handler already made, attached to an expiry that
+    /// arrived without one.
     ///
-    /// The seam gives an `Err` no way to carry a stratum out, so the driver has
-    /// none to record — see `core-025`.
-    Unclassified,
+    /// [`classify`] cannot know it: it is handed an `Error`, and the strata are
+    /// on the `Outcome` that error is instead of. So an expiry raised
+    /// *downstream* of a handler that classified — during §8.4's conversion,
+    /// which reads the target file — picks it back up here, and one raised
+    /// before any handler ran keeps the `Nothing` it was given.
+    fn or_classified_by(self, strata: Strata) -> Self {
+        match self {
+            Dispatched::DeadlineExpired(Classified::Nothing) => {
+                Dispatched::DeadlineExpired(Classified::By(strata))
+            }
+            Dispatched::DeadlineExpired(Classified::By(strata)) => {
+                Dispatched::DeadlineExpired(Classified::By(strata))
+            }
+            Dispatched::Decided(answer) => Dispatched::Decided(answer),
+            // A failure is not an abstention and carries no stratum: §7 records
+            // it as `failed`, and `Answered::of` files it under the same
+            // placeholder for the same reason.
+            Dispatched::Failed(error) => Dispatched::Failed(error),
+        }
+    }
 }
 
 /// A decided query, in **both** of the two forms `core.md` §8.4 keeps apart:
@@ -317,10 +353,19 @@ pub fn dispatch(
         server,
         policy,
     };
-    let dispatched = match call(handler, &query)
-        .and_then(|outcome| encode(outcome, encoding, &query).map_err(classify))
-    {
-        Ok(answer) => Dispatched::Decided(answer),
+    let dispatched = match call(handler, &query) {
+        // The strata are taken before the conversion because the conversion can
+        // end the query: §8.4's `encode` reads the target file, and
+        // `ProjectView` fails a read whose deadline has already expired. That
+        // expiry is downstream of a handler that *did* classify, so the
+        // classification survives it.
+        Ok(outcome) => {
+            let strata = strata_of(&outcome);
+            match encode(outcome, encoding, &query) {
+                Ok(answer) => Dispatched::Decided(answer),
+                Err(error) => classify(error).or_classified_by(strata),
+            }
+        }
         Err(dispatched) => dispatched,
     };
 
@@ -418,36 +463,37 @@ pub fn hard_cap(deadline: &Deadline, dispatched: Dispatched) -> Dispatched {
                     ?outcome,
                     "dropping an answer that arrived after its deadline"
                 );
-                // The *answer* is dropped and the classification is not. This
-                // is the whole of `core-017`: the row still belongs to the
-                // stratum the query was really asked about, so §7's coverage
-                // denominator does not move because the handler was slow.
-                Dispatched::DeadlineExpired(ExpiredStrata::Assigned(strata_of(outcome.outcome())))
+                // The answer is dropped. The stratum it was asked under is not:
+                // it is what §7's coverage denominator is grouped by, and a
+                // query does not change class by being late.
+                Dispatched::DeadlineExpired(Classified::By(strata_of(outcome.outcome())))
             } else {
                 Dispatched::Decided(outcome)
             }
         }
-        Dispatched::DeadlineExpired(strata) => Dispatched::DeadlineExpired(strata),
+        Dispatched::DeadlineExpired(classified) => Dispatched::DeadlineExpired(classified),
         Dispatched::Failed(error) => Dispatched::Failed(error),
     }
 }
 
-/// The classification an outcome carries, on either arm.
+/// The strata an outcome carries, on either arm — `core.md` §1 reports the
+/// stratum on both, "because coverage per stratum is meaningless without
+/// knowing which stratum the abstentions belonged to".
 ///
-/// `core.md` §1 reports the stratum on both, "because coverage per stratum is
-/// meaningless without knowing which stratum the abstentions belonged to" —
-/// which is exactly why the cap must read it off an abstention too.
+/// The fields are spelled out rather than elided so that a new one on either
+/// variant has to be looked at here, which is the rule the seam types are
+/// matched under everywhere else in this file.
 fn strata_of(outcome: &Outcome) -> Strata {
     match outcome {
         Outcome::Committed {
-            strata,
             locations: _,
             confidence: _,
+            strata,
             trace: _,
         }
         | Outcome::Abstain {
-            strata,
             reason: _,
+            strata,
             trace: _,
         } => *strata,
     }
@@ -461,9 +507,13 @@ fn realise(seed: SnapshotSeed, deadline: &Deadline) -> Result<DocumentSnapshot, 
     seed.realise(deadline).map_err(classify)
 }
 
-/// `Err` is the already-classified non-answer, which is what lets `dispatch`
-/// chain the call and the conversion: both fail in exactly the same currency,
-/// and neither can reach `Dispatched::Decided` without an `Answer`.
+/// `Err` is the already-classified non-answer: the call and the conversion fail
+/// in the same currency, and neither can reach `Dispatched::Decided` without an
+/// `Answer`.
+///
+/// A handler that gets as far as `Err` has classified nothing — the stratum is
+/// on the `Outcome` it did not return — which is why this one needs no
+/// classification handed to it and the conversion's does.
 fn call(handler: &dyn LanguageHandler, query: &Query<'_>) -> Result<Outcome, Dispatched> {
     handler.goto_definition(query).map_err(classify)
 }
@@ -476,7 +526,7 @@ fn classify(error: Error) -> Dispatched {
     // `Failed` by default.
     match &error {
         Error::Handler(HandlerError::DeadlineExpired) => {
-            Dispatched::DeadlineExpired(ExpiredStrata::Unclassified)
+            Dispatched::DeadlineExpired(Classified::Nothing)
         }
         // `Encoding` is a *failure*, and it is the wrapper's own rather than a
         // handler's: encoding stops at the dispatch wrapper and never crosses

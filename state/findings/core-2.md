@@ -1,70 +1,73 @@
 # Findings — core, worker 2
 
-## Do these two things before anything else
+## Open with these two, they cost one turn each
 
-1. **Run `harness/gate core`.** It has been red at a campaign's open before,
-   from a cross-branch race between two loops that were each green alone
-   (`state/decisions/core-002.md`). A red HEAD suspends green-or-revert.
-2. **Verify every assigned gap id against `state/audit/gap-log.jsonl`.** Last
-   round, three of four assigned ids were not in this branch's log at all: the
-   audit that produced them ran on a commit that is not an ancestor of this
-   branch, so the list describes a sibling tree, and what the branch's own
-   audit recorded for the same sections was already closed. This is now
-   `core-004` (harness-request, open). **An assignment is not evidence.**
+1. **`harness/gate core`** before writing anything. A red HEAD from a
+   cross-branch race has happened (`core-002`) and suspends green-or-revert.
+2. **Check each assigned gap against the code**: `git log -1` on its `where:`
+   file versus `last_audited` in `state/audit/core.toml` (UTC vs local -06:00),
+   plus a `grep` of `gap-log.jsonl` for the id. This round the assignment was
+   real and the check said so in one turn — the clean answer is what lets you
+   stop thinking about it.
 
-## Working a section whose ids you cannot resolve
+## The listed gaps that are stale. Do not spend a campaign rediscovering these
 
-This is the procedure that produced five commits last round, and it needs no
-ids. `harness/hj section-text <anchor>`, then enumerate the section's claims
-one at a time and grep for the test that reads each. §14 had fifteen bullets
-and six were read by nothing. It is mechanical, and it costs about ten turns.
+- `deps.md#8-parse-cache[ffcd948852]` — `trees.rs` is an `LruCache` with both
+  bounds and byte-ceiling eviction; `lru` is in `Cargo.toml` and `Cargo.lock`.
+- `core.md#7-observability[bd3003d0fb]` — all three particulars false since
+  `actor.rs`: it emits the record, produces `queued_us`, writes proxy rows.
+- `core.md#two-modes[6bd547104d]` — `4c50a45` appends every row, so the partial
+  file is a prefix and `done = rows.len()` is a sound position index.
+- `e83fd58b7a` (Map/Set aliases) — `seam.rs` has
+  `the_default_map_and_set_are_the_aliases_shared_exports`.
 
-## Where the gaps actually are
+Four of twelve. **The list over-reports; the code is the oracle.**
 
-`vendor/` is done. `deps.md` is done except `#11`'s missing `--trace=<path>`
-and `#15`, which no loop may close (`clippy.toml` is denied; `core-003` has
-the measured thresholds — do not take it, do not "fix" §15 by editing it).
-`core.md`'s manifest-shaped sections — §9's layout, `#adding-a-language`, the
-licensing subsection — are now scanned in both directions from the documents
-themselves.
+## Where the real work is
 
-What is left concentrates in **`crates/driver`, and it is one shape**: there
-is no run loop. `driver::run` logs a config and returns, so every gap saying
-"the driver owns X" — the deadline starting at request arrival, the JSONL
-emission, the pending-query record, divergence reporting — is the same missing
-transport seen from four sections. Classifiers, codecs and replay all exist.
-A campaign taking one of those four is building the run loop; say so in the
-hypothesis rather than discovering it.
+**The transport.** `driver::run` builds two channels and an `Actor` nothing
+sends to. `shim.md` §2's codec, §3's router and the child spawn are the missing
+piece behind every remaining "the driver owns X" gap — and `shim.md` is not
+audited this phase, so it buys almost no number and is a large campaign. Say
+that in the hypothesis rather than discovering it.
 
-## Ruled out, with the evidence
+## Traps that cost a red gate
 
-- **"The newtype sweep changed arithmetic."** It did not, where checked;
-  upstream at `90d024b8` has the same code. `curl raw.githubusercontent.com`
-  costs one turn and settles it.
-- **"Cargo rejects a profile override naming a package outside the graph."**
-  It warns and builds. Planted and measured.
-- **§14's "each `allow` carries a comment saying why" is not an open claim.**
-  The §15 test already enforces something stronger for `[workspace.lints.*]` —
-  every lint must be printed *and argued* in `deps.md` §15 — and `vendor/*` is
-  exempt by §14's next bullet. Every comment-proximity scan that holds for all
-  four allow sites is a heuristic that would pass a table with one comment and
-  three allows.
-- **§9's four phase-2 crates cannot be built by any loop** (`loops.md` decided
-  question 10; `phase.toml` names `lang_rust` rather than globbing). If
-  `ce5dfefab5` re-opens, the answer is `CHANGE-core-014`, not a campaign.
+- **Never quote a banned identifier in a comment.** `seam.rs`'s scans read
+  source *text*: a comment naming `std::sync::mpsc` fails the async-shape scan.
+  Say "the standard library's channel".
+- **`std::fs::read_dir` is disallowed** (gitignore semantics), and
+  `ignore::WalkBuilder` is unreachable from a test crate. Enumerate our sources
+  the way `seam.rs` does — read `crates/<n>/src/<n>.rs` and follow its `mod`
+  lines. It also reads what the crate compiles, so a file orphaned by a rename
+  cannot change the result.
+- **`driver` may not name `tracing_subscriber` in any file, tests included.** To
+  read a log line, hand-write a `tracing::Subscriber` (~35 lines; only
+  `record_debug` is required on the visitor) sending over a
+  `crossbeam_channel::Sender` — `Subscriber` records through `&self`, which is
+  exactly where a `Mutex` sneaks in.
 
-## Load-bearing spec claims
+## Method that keeps paying
 
-Documents-as-fixtures is the pattern that pays: `fenced_toml_of` (§15's
-lints), `fenced_block_of` (§9's tree), `section_of` (a markdown body). Compare
-the document to the tree in **both** directions and a third copy cannot drift.
+**Plant the negation and watch it fail.** Six plants, six failures this
+campaign, and one of them changed the design: planting `or_classified_by` proved
+the hard-cap test and the conversion-expiry test were *not* covering each
+other's path — which is how I found that the gap named one discard site when
+there were two. `encode` reads the target file and `ProjectView` refuses a read
+past the deadline, so a late answer whose definition is in another file never
+reaches the hard cap at all. Generalise it: **a gap that names one site is a
+hypothesis about how many there are.**
 
-A negative check on a wrong sentence fires on the paragraph that recants it —
-assert the corrected claim positively instead.
+The fixture detail that made it discriminating: `src/lib.rs` is the queried
+document, so the conversion short-circuits its read; `src/target.rs` is not.
 
 ## Decisions affecting you
 
-- core-001: Who writes `harness/measure`? [open]
-- core-002: Does `measure_core` install a log subscriber? [open]
-- core-003: Who writes the two `clippy.toml` thresholds? [open]
-- core-004: Can an assignment be computed from an audit of this branch? [open]
+- **core-022** (mine, open): a query no handler classified still lands in
+  `unimplemented`, because the a-priori rule is per-language and obtaining it
+  without the handler is a seam method. Provisional tagged in `dispatch.rs`, and
+  `the_template_check_reads_an_abstention_no_handler_classified` in
+  `pipeline.rs` **asserts the provisional and is meant to fail when this is
+  answered** — the message says so.
+- core-001, core-002, core-003, core-004: open, all need a human, `harness/` and
+  `clippy.toml` are denied. Do not take them.

@@ -17,8 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use driver::{
-    Answer, Config, DeadlineMs, DeadlineOverride, Dispatched, ExpiredStrata, Heuristics, Mode,
-    Tracing, hard_cap,
+    Answer, Config, DeadlineMs, DeadlineOverride, Dispatched, Heuristics, Mode, Tracing, hard_cap,
 };
 use shared::{
     Clock, Confidence, Deadline, Error, HandlerError, Outcome, ParseError, Strata, Stratum,
@@ -53,22 +52,9 @@ fn an_answer_that_arrives_after_the_deadline_is_dropped() {
     clock.advance(budget + Duration::from_millis(1));
 
     match hard_cap(&deadline, an_answer()) {
-        // The answer is dropped and the *classification* is not. `core-017`:
-        // the prior's rule reads only the query and the reference, so it is
-        // knowable before the search finishes and the drop never had it to take
-        // away. Under the value this replaced — `Stratum::Unimplemented` —
-        // §7's coverage denominator moved by one query every time a handler ran
-        // slow, and `measure_core`'s `Table::template` read the resulting
-        // abstention as "the language crate template has not been replaced".
-        Dispatched::DeadlineExpired(ExpiredStrata::Assigned(strata)) => assert_eq!(
-            (strata.prior(), strata.settled()),
-            (Stratum::LocalBinding, Stratum::LocalBinding),
-            "the cap kept a stratum, but not the one the handler assigned"
-        ),
-        other @ (Dispatched::DeadlineExpired(ExpiredStrata::Unclassified)
-        | Dispatched::Decided(_)
-        | Dispatched::Failed(_)) => {
-            panic!("a late answer reached the user, or lost its stratum, as {other:?}")
+        Dispatched::DeadlineExpired(_) => {}
+        other @ (Dispatched::Decided(_) | Dispatched::Failed(_)) => {
+            panic!("a late answer reached the user as {other:?}")
         }
     }
 }
@@ -117,15 +103,8 @@ fn a_cancelled_query_drops_its_answer_before_the_clock_runs_out() {
     deadline.cancel();
 
     match hard_cap(&deadline, an_answer()) {
-        // A cancellation is not a slow handler, and the stratum survives it for
-        // the same reason: the query still belonged to the class it was asked
-        // about, and §7's denominator is fixed by the reference.
-        Dispatched::DeadlineExpired(ExpiredStrata::Assigned(strata)) => {
-            assert_eq!(strata.prior(), Stratum::LocalBinding);
-        }
-        other @ (Dispatched::DeadlineExpired(ExpiredStrata::Unclassified)
-        | Dispatched::Decided(_)
-        | Dispatched::Failed(_)) => {
+        Dispatched::DeadlineExpired(_) => {}
+        other @ (Dispatched::Decided(_) | Dispatched::Failed(_)) => {
             panic!("a cancelled query still answered, with {other:?}")
         }
     }

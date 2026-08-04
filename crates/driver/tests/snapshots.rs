@@ -32,8 +32,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use driver::{
-    CacheBytes, CacheEntries, DebounceMs, Dispatched, Documents, ExpiredStrata, FileListCache,
-    OpenDocument, Queried, Registry, Request, Synced, TreeCache, dispatch,
+    CacheBytes, CacheEntries, DebounceMs, Dispatched, Documents, FileListCache, OpenDocument,
+    Queried, Registry, Request, Synced, TreeCache, dispatch,
 };
 use proptest::prelude::{Just, ProptestConfig, Strategy, prop_assert_eq};
 use proptest::prop_oneof;
@@ -82,15 +82,8 @@ fn a_parse_that_runs_out_of_time_never_reaches_the_handler() {
     );
 
     match completed.dispatched {
-        // `Unclassified` is the claim, not a hole to fill: no handler saw this
-        // document, so there is no reference and nothing that could have
-        // assigned a prior. The other arm of `ExpiredStrata` is the hard cap's,
-        // where a handler classified the query and only the *answer* was
-        // dropped (`core-017`, `tests/deadline.rs`).
-        Dispatched::DeadlineExpired(ExpiredStrata::Unclassified) => {}
-        other @ (Dispatched::DeadlineExpired(ExpiredStrata::Assigned(_))
-        | Dispatched::Decided(_)
-        | Dispatched::Failed(_)) => panic!(
+        Dispatched::DeadlineExpired(_) => {}
+        other @ (Dispatched::Decided(_) | Dispatched::Failed(_)) => panic!(
             "a parse abandoned on the deadline came back as {other:?}, where core.md §2 \
              pays it inside the deadline and §1 maps that one class back to an abstention"
         ),

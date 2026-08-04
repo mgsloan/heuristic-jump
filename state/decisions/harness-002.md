@@ -106,6 +106,14 @@ sandbox, since `.claude/**` is denied to every loop. `design/loops.md` §13's
 `allowWrite` paragraph still describes the narrower list and is the harness
 loop's to reconcile.
 
+**Reconciled** by campaign `3e637dcd`, `CHANGE-harness-007`. Layer 3 now
+describes the coarse list, names `failIfUnavailable`, states the limit option C
+accepts — a campaign can write another loop's files inside its own checkout,
+and layer 4 catches it at commit — and carries the finding this record said it
+did not predict: the list cannot be the session's own project root alone,
+because `harness/workers` fast-forwards every worker's worktree from the
+integration checkout.
+
 **What enabling it turned up, which the record did not predict.** The list
 cannot be "the worktree" in the singular. `harness/workers` runs in the
 integration checkout and writes into *each* worker's worktree — the

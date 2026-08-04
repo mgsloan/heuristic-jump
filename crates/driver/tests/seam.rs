@@ -716,6 +716,189 @@ fn the_gpl_inputs_are_the_two_the_documents_name() {
     }
 }
 
+/// `deps.md` §14's closing paragraph, and the one claim in the section that is
+/// about the resolved *graph* rather than about a file in this repository:
+///
+/// > A `cargo-deny` config asserting that `GPL` reaches the graph only through
+/// > `vendor/rope` and `crates/similarity` is worth having from the start.
+/// > Those two are the ruled-on inputs (§5); the check is what notices a
+/// > *third* arriving without anyone deciding, which is how a licence surface
+/// > grows — not by a decision but by a dependency.
+///
+/// `the_gpl_inputs_are_the_two_the_documents_name` above holds the half of
+/// that which is in the repository: what each workspace member declares. It
+/// cannot see the half the paragraph is actually about. A licence surface that
+/// grows "by a dependency" grows through a crate whose manifest lives in the
+/// registry cache, and no scan over `crates/*` and `vendor/*` will ever read
+/// one — which is why every check in this file was blind to it.
+///
+/// **The mechanism is not the one §14 names, and that is `core-021`.**
+/// `deny.toml` is outside every loop's owned paths and `cargo-deny` is not
+/// installed here, so a config committed now would be a file nothing runs —
+/// which is worse than no check, because the section would read as satisfied.
+/// `cargo metadata` carries `license` for every package in the graph, offline
+/// and in about a tenth of a second, so the property is asserted directly and
+/// on every gate instead.
+///
+/// The expected set is **derived rather than listed**: the copyleft packages
+/// in the graph must be exactly the copyleft workspace members, and which
+/// members those are is pinned to §5's table by the test above. Neither test
+/// repeats the other's list, and together they say the graph's copyleft
+/// surface is `rope`, `similarity`, and what §5's dependency rule marks
+/// downstream of them.
+#[test]
+#[expect(
+    clippy::disallowed_types,
+    clippy::disallowed_methods,
+    reason = "Two bans, neither of which reaches here. `serde_json::Value` is banned because \
+              it allocates a whole tree per frame and forwarded frames must not be \
+              materialized; there is no frame here, this is `cargo metadata`'s output read \
+              once in a test, and the typed struct the lint suggests would put a `serde` \
+              dev-dependency on `driver` for one deserialize. `Command::output` is banned so \
+              the shim polls its long-lived child cooperatively against a deadline; this \
+              child is `cargo metadata --offline`, which reads a lockfile and exits, and \
+              there is no deadline to poll against"
+)]
+fn no_third_copyleft_input_reaches_the_dependency_graph() {
+    // DECISION-core-021: provisional
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
+    let produced = std::process::Command::new(&cargo)
+        .args(["metadata", "--format-version", "1"])
+        // The gate has no network, and a licence check that needs one is a
+        // check that gets skipped. Nothing has to be fetched: every package is
+        // in the lockfile and in the registry cache already, because the
+        // workspace built before this test ran.
+        .arg("--offline")
+        .arg("--manifest-path")
+        .arg(workspace_path("Cargo.toml"))
+        .output();
+    let produced = match produced {
+        Ok(produced) => produced,
+        Err(error) => panic!(
+            "`{cargo} metadata` did not run ({error}), so the graph this test is about was \
+             never read"
+        ),
+    };
+    assert!(
+        produced.status.success(),
+        "`{cargo} metadata` failed, so the licence surface is unchecked rather than clean: {}",
+        String::from_utf8_lossy(&produced.stderr)
+    );
+
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&produced.stdout).unwrap_or(serde_json::Value::Null);
+    let packages = metadata["packages"]
+        .as_array()
+        .map_or(&[][..], Vec::as_slice);
+    assert!(
+        packages.len() > workspace_members().len(),
+        "cargo metadata reported {} package(s), which is no more than the workspace's own: the \
+         graph is the third-party half and reading none of it is how this passes vacuously",
+        packages.len()
+    );
+    let root = metadata["workspace_root"].as_str().unwrap_or_default();
+    let ours: Vec<&str> = metadata["workspace_members"]
+        .as_array()
+        .map_or(&[][..], Vec::as_slice)
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+
+    let mut members = Vec::new();
+    let mut third_parties = Vec::new();
+    let mut unreadable = Vec::new();
+    for package in packages {
+        let name = package["name"].as_str().unwrap_or("<unnamed>");
+        let manifest = package["manifest_path"].as_str().unwrap_or_default();
+        let is_ours = package["id"].as_str().is_some_and(|id| ours.contains(&id));
+        match package["license"].as_str() {
+            None => unreadable.push(format!("{name} ({manifest})")),
+            Some(licence) if leaves_no_permissive_option(licence) => {
+                if is_ours {
+                    members.push(
+                        manifest
+                            .strip_prefix(root)
+                            .unwrap_or(manifest)
+                            .trim_start_matches('/')
+                            .trim_end_matches("/Cargo.toml")
+                            .to_owned(),
+                    );
+                } else {
+                    third_parties.push(format!("{name} = {licence}"));
+                }
+            }
+            Some(_) => {}
+        }
+    }
+    members.sort_unstable();
+    third_parties.sort_unstable();
+    unreadable.sort_unstable();
+
+    assert!(
+        third_parties.is_empty(),
+        "a dependency outside this workspace carries a GPL-family licence: {third_parties:?}. \
+         deps.md §5 rules on two GPL inputs and this is a third — the shipped binary is a \
+         combined work, so an input arriving through the lockfile changes the project's \
+         licensing position without anybody deciding it, which is the growth §14 says the \
+         check exists to notice"
+    );
+    assert!(
+        unreadable.is_empty(),
+        "a package in the graph declares no `license`, so nothing here can say what it \
+         obliges: {unreadable:?}. Flagged rather than skipped, because a crate that ships \
+         only a `license-file` is the case where the answer is least likely to be the one \
+         assumed — read it, and if it is permissive, say so where this test can see it"
+    );
+
+    // Both directions, against the manifests the test above pins to §5's
+    // table: a graph read wrongly — a `license` field missed, a member counted
+    // as third-party — would otherwise show up as an empty `third_parties` and
+    // pass.
+    let mut declared: Vec<String> = workspace_members()
+        .into_iter()
+        .filter(|member| {
+            licence_of(&workspace_file(&format!("{member}/Cargo.toml")))
+                .is_some_and(|licence| leaves_no_permissive_option(&licence))
+        })
+        .collect();
+    declared.sort_unstable();
+    assert_eq!(
+        members, declared,
+        "the graph's own copyleft members are {members:?} and the manifests say {declared:?}. \
+         The two are read by different mechanisms — cargo's resolution and a line scan — and \
+         they disagreeing means one of them is being read wrong, which makes the third-party \
+         assertion above worth nothing"
+    );
+    assert!(
+        !declared.is_empty(),
+        "no workspace member declares a GPL-family licence at all: deps.md §5 names two, so \
+         either the manifests lost them or `licence_of` stopped parsing, and this test would \
+         then be asserting that a graph with no copyleft in it has no third copyleft input"
+    );
+}
+
+/// Whether an SPDX expression leaves a taker no permissive option: every
+/// top-level alternative names the GPL family.
+///
+/// Deliberately crude, and crude in the flagging direction. It splits on `OR`
+/// and on the historical `/` form and asks whether every alternative contains
+/// `GPL` — which catches `AGPL` and `LGPL` too, and that is intended. So
+/// `MIT OR Apache-2.0 OR LGPL-2.1-or-later`, which `r-efi` really carries in
+/// this graph, is not an input, while `GPL-3.0-or-later` is.
+///
+/// The family is the GPL one rather than copyleft generally, because §5's
+/// argument is about the *combination*: "everything links it transitively
+/// through `DocumentSnapshot`, and a distributed binary is a combined work".
+/// MPL-2.0 and its relatives put their obligation on the file rather than on
+/// the combination, so one of those arriving is a different question from the
+/// one §14's paragraph asks.
+fn leaves_no_permissive_option(expression: &str) -> bool {
+    expression
+        .split(" OR ")
+        .flat_map(|alternative| alternative.split('/'))
+        .all(|alternative| alternative.contains("GPL"))
+}
+
 /// The body of one markdown section, up to the next heading at the same
 /// level, so a document can be a fixture the way `fenced_toml_of` makes §15's
 /// `toml` block one. The heading is given with its leading newline, which is

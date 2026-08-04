@@ -489,10 +489,19 @@ def panel_decisions() -> str:
             "panel being empty means the loops are running on choices they were "
             "allowed to make."
         )
+    # `design/loops.md` §6's batch trigger, on the panel a batch is answered
+    # from. The count is records waiting on a human rather than the cards here,
+    # which also carry spec edits and flagged campaigns — the threshold in
+    # `state/phase.toml` is about escalations and nothing else.
+    due, reason = hj.batch_is_due(len(hj.waiting_decisions()), hj.load_phase().escalation_batch)
+    trigger = f"batch DUE — {reason}" if due else f"batch not due — {reason}"
     return panel(
         "Waiting on you",
         cards,
-        note="escalations, spec edits applied but unread, campaigns that touched both, and deleted tests",
+        note=(
+            "escalations, spec edits applied but unread, campaigns that touched both,"
+            f" and deleted tests · {trigger}"
+        ),
     )
 
 

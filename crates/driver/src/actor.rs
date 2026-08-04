@@ -40,11 +40,11 @@ use shared::proto::{
 use shared::record::{Answered, ChildAnswer, QueryContext, QueryRecord, definition_labels, micros};
 use shared::{
     Clock, CommitPolicy, Deadline, DocumentNotification, EditorRequestId, Error, InputEdit, Micros,
-    Outcome, Strata, Stratum, Trace,
+    Outcome, Trace,
 };
 
 use crate::config::{Config, DebounceMs, Heuristics};
-use crate::dispatch::{Answer, Completed, Dispatched, ExpiredStrata, Registry, Request, dispatch};
+use crate::dispatch::{Answer, Completed, Dispatched, Registry, Request, dispatch};
 use crate::documents::{Documents, Queried};
 use crate::files::FileListCache;
 use crate::pending::{PendingQueries, PendingQuery, Resolution};
@@ -239,6 +239,24 @@ impl Actor {
                 );
                 return Ok(());
             };
+            // `deps.md` §2: the inbox is unbounded because a bounded one would
+            // deadlock the transport rather than apply backpressure, so memory
+            // here is bounded only by `shim.md` §10's shed-load rule and the
+            // depth is "a number we should log and watch, not just assert
+            // about". This is the watching, and it is the only caller of
+            // `Receiver::len` — one of the two capabilities §1 names as its
+            // reason for choosing crossbeam over the standard library's
+            // channel.
+            //
+            // Read before the event is handled, so it is the queue as of
+            // dispatch rather than as of the return; and logged only when it is
+            // non-empty, because an empty inbox is the whole of normal
+            // operation and a line per event would bury the one thing this
+            // exists to surface — `core` falling behind what feeds it.
+            let depth = events.len();
+            if depth > 0 {
+                tracing::debug!(depth, "core is behind its inbox");
+            }
             self.handle(event)?;
         }
     }
@@ -571,27 +589,16 @@ impl Actor {
                 }
                 Answered::of(Ok(outcome))
             }
-            // The outcome was dropped by the hard cap; the classification was
-            // not. `core-017`: the prior's rule reads only the query and the
-            // reference, so it is knowable before the search finishes and the
-            // drop never had it to take away. Recording it keeps §7's coverage
-            // denominator fixed by the reference, which is the one thing the
-            // two-field split exists for — under the old value a handler that
-            // merely ran slow moved a query out of its real stratum and into
-            // the counter `measure_core`'s `Table::template` reads as "the
-            // language crate template has not been replaced".
-            //
-            // `Unclassified` is the residue and is a narrower claim than the
-            // one this replaced: nothing ran that could classify the query at
-            // all. See `core-025` for why the driver still has nothing better
-            // to write there.
-            Dispatched::DeadlineExpired(strata) => Answered::of(Ok(Outcome::Abstain {
+            // The outcome was dropped, by the hard cap or by an expiry during
+            // the conversion. The stratum it was asked under was not dropped
+            // with it: `core-017` settles that the prior's rule "reads only the
+            // query and the reference and never what the search found", so it
+            // "was never the outcome's to carry away" — which is what keeps
+            // §7's coverage denominator from moving by one query every time a
+            // deadline expires.
+            Dispatched::DeadlineExpired(classified) => Answered::of(Ok(Outcome::Abstain {
                 reason: shared::AbstainReason::Deadline,
-                strata: match strata {
-                    ExpiredStrata::Assigned(strata) => strata,
-                    // DECISION-core-025: provisional
-                    ExpiredStrata::Unclassified => Strata::from_reference(Stratum::Unimplemented),
-                },
+                strata: classified.strata(),
                 trace: Trace::new(),
             })),
             // Served as an abstention on the wire — which here means silence —
