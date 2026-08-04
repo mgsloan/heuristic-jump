@@ -367,6 +367,48 @@ fn a_conversion_that_expires_keeps_the_stratum_too() {
     );
 }
 
+/// `deps.md` §10: "Some `driver` code will convert an `Error` into an
+/// abstention; that conversion is explicit and logged."
+///
+/// The deadline is the one class mapped back that way. `ProjectView` fails a
+/// read whose deadline has already expired, so a handler doing the ordinary `?`
+/// propagation `CLAUDE.md` asks for surfaces an expiry as `Err` — and §10 keeps
+/// `Result` off the abstention path, so something has to convert it. `classify`
+/// is that something, and it did it silently: a query the clock ended and a
+/// handler that declined on its own left the same trace, which is the
+/// distinction the whole of §7's `decision` column exists to preserve.
+///
+/// The second half is what makes this a test of the *conversion* rather than of
+/// expiry in general. Both fixtures expire, and they differ only in which file
+/// the definition is in: a same-file answer takes `target_text`'s free path, so
+/// no read happens, no `Error` is ever built, and nothing is converted — it is
+/// `hard_cap` that drops it, under its own line. A conversion line on that path
+/// would mean the message is attached to lateness rather than to the
+/// conversion, and §10's claim would be unbacked with this test still green.
+#[test]
+fn converting_an_expiry_into_an_abstention_is_logged() {
+    let converted = expiring_in("src/target.rs", "actor_expiry_converted");
+    let merely_late = expiring_in("src/lib.rs", "actor_expiry_capped");
+
+    assert_eq!(
+        lines_saying(&converted, CONVERSION).len(),
+        1,
+        "an `Error` became an abstention and said nothing: {converted:?}"
+    );
+    assert_eq!(
+        lines_saying(&merely_late, HARD_CAP).len(),
+        1,
+        "the same-file fixture was not dropped as a late answer, so the assertion below \
+         is about a query that never expired: {merely_late:?}"
+    );
+    assert_eq!(
+        lines_saying(&merely_late, CONVERSION).len(),
+        0,
+        "a query whose answer needed no read reported a conversion, so the line is about \
+         the deadline rather than about the `Error` there was none of: {merely_late:?}"
+    );
+}
+
 /// `core.md` §2: "text and tree can never disagree", which the parse cache is
 /// the one thing that can break — and `core.md` §8.6 makes `didOpen` a resync
 /// rather than a continuation, so the document behind a URI can be replaced by
@@ -708,6 +750,39 @@ fn queued_by(queued: Duration) -> Queued {
             .any(|outbound| matches!(outbound, Outbound::Definition { .. })),
         row: row.clone(),
     }
+}
+
+/// `classify`'s line, and `hard_cap`'s. Substrings of the message rather than
+/// the whole of it, for the reason [`field`] is a scan: what is being asserted
+/// is that the conversion is legible in the log, not its exact wording.
+const CONVERSION: &str = "converting an expiry into an abstention";
+const HARD_CAP: &str = "dropping an answer that arrived after its deadline";
+
+/// One query answered too late, with every line it logged.
+///
+/// `relative` is the whole of the difference between the two paths that discard
+/// a late answer, so it is the only parameter: the handler, the clock and the
+/// budget are the same on both.
+fn expiring_in(relative: &str, name: &str) -> Vec<String> {
+    let fixture = Fixture::new(name, Proxying::No);
+    let target = fixture.definition_in(relative);
+    let mut actor = fixture.actor(Arc::new(Slow {
+        clock: Arc::clone(&fixture.clock),
+        locations: vec![target],
+    }));
+
+    let (logged, lines) = crossbeam_channel::unbounded();
+    // The `didOpen` is inside the capture too: a line it emitted that happened
+    // to match would be a false positive, and excluding it would hide one.
+    tracing::subscriber::with_default(Capturing { events: logged }, || {
+        fixture.open(&mut actor);
+        fixture.request(&mut actor, 1);
+    });
+    lines.try_iter().collect()
+}
+
+fn lines_saying<'a>(lines: &'a [String], message: &str) -> Vec<&'a String> {
+    lines.iter().filter(|line| line.contains(message)).collect()
 }
 
 /// Whether there is a child to be an oracle. `Mode` carries the argv and the
