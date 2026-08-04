@@ -2170,15 +2170,20 @@ any workspace. `sum_tree` is unaffected; it does not depend on `util` at all.
 and the attribution rules.
 
 `ztracing` is not vendored. Its `instrument` is either `tracing::instrument`
-or a no-op passthrough depending on a cfg, and `rope` already depends on
-`tracing`, so the one import is redirected there. That is a single-line patch
-to `rope`, recorded as such.
+or a no-op passthrough depending on a cfg, and both crates already depend on
+`tracing`, so each import is redirected there. That is one line in `rope` and
+one line in each of `sum_tree`'s two instrumented files — three in all,
+recorded as such.
 
-`sum_tree` needs no patching, and the newtype work in
-`rope-modifications.md` does not change that: `sum_tree::Dimension` is
-generic over the summary type, so `Offset`'s impls live in `rope`. Its
-`tree_map.rs` is unused here and can be dropped; a whole-file deletion still
-leaves a clean diff.
+**`sum_tree` is patched, minimally, and the newtype work is not why.**
+`sum_tree::Dimension` is generic over the summary type, so `Offset`'s impls
+live in `rope` and `rope-modifications.md` costs `sum_tree` nothing — that is
+the claim that matters here and it holds. What the crate does carry is the
+mechanical fix-ups every vendored copy needs: the two `ztracing` redirects
+above, the `#[ctor::ctor]` logging initialiser deleted along with `ctor` and
+`zlog`, and `tree_map.rs` dropped as unused. Each is a whole-line or
+whole-file change that still leaves a clean diff, and `vendor/README.md` lists
+them.
 
 `vendor/README.md` records, per crate, the upstream revision it was taken at,
 the exact patches applied, and — for the items lifted out of `util` — where

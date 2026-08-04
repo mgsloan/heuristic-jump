@@ -2142,6 +2142,139 @@ fn manifest_text(crate_name: &str) -> String {
 /// `unwrap_or_default` rather than a panic, because `panic` is denied outside a
 /// `#[test]` — and it is not a silent pass: every caller asserts that something
 /// is *present* in what comes back, so an empty string fails them all.
+/// `core.md` §9 makes two counting claims about the `ztracing` redirect, and
+/// they were wrong in the same way: "That is a single-line patch to `rope`" is
+/// right, but "`sum_tree` needs no patching" is not — the same redirect is in
+/// both of `sum_tree`'s instrumented files, beside a `ctor`/`zlog` deletion and
+/// a dropped `tree_map.rs` (CHANGE-core-004).
+///
+/// The section is where the claim was, and `vendor/README.md` is where the
+/// answer already was — it lists all three under "Patches to `sum_tree`". So
+/// what failed was not the record but the absence of anything comparing the
+/// two. That is what this is: the crates `vendor/` holds, the crates the
+/// README records patches for, and the redirect's actual site count, all
+/// checked against each other.
+///
+/// It sits here rather than in `vendor/rope/tests/` because it is a claim
+/// about `vendor/` as a whole and about a document that describes the
+/// workspace, and because the vendored crates are not linted — this file is.
+#[test]
+fn every_vendored_crate_records_the_patches_it_carries() {
+    let readme = workspace_file("vendor/README.md");
+    let vendored: Vec<String> = workspace_members()
+        .into_iter()
+        .filter_map(|member| Some(member.strip_prefix("vendor/")?.to_owned()))
+        .collect();
+
+    assert_eq!(
+        vendored.len(),
+        2,
+        "core.md §9 vendors `rope` and `sum_tree` and rope-modifications.md §4 \
+         says `vendor/util` does not exist, so a third here is a crate arriving \
+         without either document saying so: {vendored:?}"
+    );
+
+    for crate_name in &vendored {
+        assert!(
+            readme.contains(&format!("## Patches to `{crate_name}`")),
+            "vendor/README.md has no `## Patches to \\`{crate_name}\\`` section. \
+             §9: the README records, per crate, the upstream revision and the \
+             exact patches applied, \"so that a future re-sync can tell at a \
+             glance whether upstream changed anything that matters\" -- a \
+             vendored crate with no such section is patched by nobody's account"
+        );
+    }
+
+    // §9, after CHANGE-core-004: "one line in `rope` and one line in each of
+    // `sum_tree`'s two instrumented files -- three in all". The count is the
+    // claim, so the count is what is asserted.
+    let redirects: Vec<(String, usize)> = vendored
+        .iter()
+        .map(|crate_name| {
+            let sites = vendored_sources(crate_name)
+                .iter()
+                .filter(|source| source.contains("use tracing::instrument;"))
+                .count();
+            (crate_name.clone(), sites)
+        })
+        .collect();
+
+    assert_eq!(
+        redirects,
+        vec![("rope".to_owned(), 1), ("sum_tree".to_owned(), 2)],
+        "the `ztracing` -> `tracing` redirect is not where §9 says it is. It is \
+         the one patch the section counts rather than describes, and counting \
+         it wrong is what made the section claim `sum_tree` needs no patching \
+         at all"
+    );
+
+    let surviving: Vec<&String> = vendored
+        .iter()
+        .filter(|crate_name| {
+            vendored_sources(crate_name)
+                .iter()
+                .any(|source| source.contains("ztracing"))
+                || workspace_file(&format!("vendor/{crate_name}/Cargo.toml")).contains("ztracing")
+        })
+        .collect();
+    assert!(
+        surviving.is_empty(),
+        "§9: `ztracing` is not vendored, and its `instrument` is redirected to \
+         `tracing` because both crates already depend on it. A surviving \
+         reference is a dependency on a crate that is not here: {surviving:?}"
+    );
+}
+
+/// Every source file of a vendored crate, as text: its `[lib] path` root and
+/// the modules that root declares. `sources_of` above reads one file, and
+/// these claims are about all of them.
+///
+/// Reached through the `mod` declarations rather than by listing the
+/// directory, because `clippy.toml` disallows `std::fs::read_dir` — and the
+/// substitute is the better answer anyway: a `.rs` file the crate root does
+/// not declare is not compiled, so a patch hiding in one would not be a patch
+/// to the crate at all.
+fn vendored_sources(crate_name: &str) -> Vec<String> {
+    let manifest = workspace_file(&format!("vendor/{crate_name}/Cargo.toml"));
+    let root = manifest
+        .lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix("path = "))
+        .map(|path| path.trim_matches('"').to_owned())
+        .unwrap_or_default();
+    assert!(
+        root.ends_with(".rs"),
+        "vendor/{crate_name}/Cargo.toml names no [lib] path, so nothing below reaches its sources"
+    );
+
+    let root_text = workspace_file(&format!("vendor/{crate_name}/{root}"));
+    let mut sources = vec![root_text.clone()];
+    for line in root_text.lines() {
+        let line = line.trim();
+        let Some(module) = line
+            .strip_prefix("mod ")
+            .or_else(|| line.strip_prefix("pub mod "))
+            .and_then(|rest| rest.strip_suffix(';'))
+        else {
+            continue;
+        };
+        let source = workspace_file(&format!("vendor/{crate_name}/src/{module}.rs"));
+        assert!(
+            !source.is_empty(),
+            "vendor/{crate_name}/src/{module}.rs is declared by the crate root and is empty or \
+             unreadable, so a scan over it would pass vacuously"
+        );
+        sources.push(source);
+    }
+
+    assert!(
+        sources.len() > 1,
+        "vendor/{crate_name}'s root declares no modules, so the scans over them would pass \
+         vacuously"
+    );
+    sources
+}
+
 fn workspace_file(relative: &str) -> String {
     std::fs::read_to_string(workspace_path(relative)).unwrap_or_default()
 }

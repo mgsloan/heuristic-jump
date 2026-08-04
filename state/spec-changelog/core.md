@@ -65,6 +65,37 @@ than arguable.
 
 **Campaign:** 37a6d098-e7c7-4fb3-af7a-5f1562728e56
 
+## CHANGE-core-004 — core.md#vendoring-the-zed-crates — `sum_tree` is patched, and the redirect is three lines not one
+
+**Contradiction:** §9 says of the `ztracing` redirect "That is a single-line
+patch to `rope`, recorded as such", and then "**`sum_tree` needs no
+patching**" — two sentences before conceding "Its `tree_map.rs` is unused here
+and can be dropped", which is a patch.
+
+`vendor/README.md` has held the answer the whole time, under "Patches to
+`sum_tree`": the same `ztracing` redirect in `src/sum_tree.rs` and
+`src/cursor.rs`, the `#[ctor::ctor]` logger deleted, and `tree_map.rs`
+deleted. `deps.md` §5 already names all three redirect sites. So the code is
+right, the record is right, and it is this section's count that is wrong.
+
+**Resolution:** §9 now says the redirect is "one line in `rope` and one line
+in each of `sum_tree`'s two instrumented files — three in all", and that
+`sum_tree` is patched minimally, listing the three fix-ups and deferring to
+`vendor/README.md`. What it no longer says is that the crate is unpatched.
+
+The claim that was doing the work is kept and is untouched: `sum_tree`'s
+`Dimension` is generic over the summary type, so `Offset`'s impls live in
+`rope` and the newtype sweep costs `sum_tree` nothing. That is what the
+section needed to be true, and it is — "needs no patching" was a stronger
+statement made in passing, and nothing rests on it.
+
+Held by `every_vendored_crate_records_the_patches_it_carries` in
+`crates/driver/tests/seam.rs`, which compares the three against each other:
+the crates `vendor/` holds, the crates the README records patches for, and the
+redirect's actual site count. Both halves fail under a planted change.
+
+**Campaign:** 37a6d098-e7c7-4fb3-af7a-5f1562728e56
+
 ## CHANGE-core-002 — rope-modifications.md#the-dimension-impls — four line references that the sweep moved
 
 **Contradiction:** §1 cites the bare-`usize` dimension impls at `rope.rs:1492`
