@@ -545,11 +545,10 @@ impl Actor {
             }
             // The outcome was dropped by the hard cap, and with it the stratum
             // the handler had assigned — so this row lands in `unimplemented`
-            // rather than in the stratum it was really asked about. That is a
-            // known hole in §7's coverage denominator and closing it means
-            // `Dispatched::DeadlineExpired` carrying the strata it discarded,
-            // which is the open gap on §7's stratum columns rather than this
-            // one.
+            // rather than in the stratum it was really asked about, and §7's
+            // coverage denominator moves by one query. The alternatives both
+            // change something else's shape.
+            // DECISION-core-017: provisional
             Dispatched::DeadlineExpired => Answered::of(Ok(Outcome::Abstain {
                 reason: shared::AbstainReason::Deadline,
                 strata: Strata::from_reference(Stratum::Unimplemented),
@@ -601,6 +600,17 @@ impl Actor {
     /// `$/cancelRequest`, and the two records that die with the query. The
     /// shim must not answer a cancelled request, which is what dropping the
     /// pending record buys: a handler that returns afterwards finds no id.
+    ///
+    /// **What it does not do is signal `Deadline::cancel`**, which `shim.md`
+    /// §7 asks for beside the drop. It cannot, and the reason is worth writing
+    /// down rather than rediscovering: dispatch is in-line on this thread, so
+    /// a cancel is only ever handled *between* queries and there is no handler
+    /// running to signal. `Deadline` is cancellable already and `core` would
+    /// have to hold one per pending query to use it — state with no reader
+    /// until `shim.md` §10's worker pool makes a dispatch outlive the event
+    /// that started it. That is the campaign that closes it; a cancellation
+    /// token wired up now would be unreachable code with a test that cannot
+    /// fail.
     fn cancelled(&mut self, editor_id: &EditorRequestId) {
         match self.pending.cancelled(editor_id) {
             Some(_) => tracing::debug!("a pending query was cancelled"),

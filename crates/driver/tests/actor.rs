@@ -34,8 +34,8 @@ use driver::{
 use serde_json::value::RawValue;
 use shared::proto::{DefinitionResult, PositionEncoding, WireLocation, WirePosition, WireRange};
 use shared::{
-    Clock, Confidence, Deadline, DocumentNotification, DocumentUri, EditorRequestId, Error,
-    FileExtension, LanguageHandler, LanguageId, Location, Micros, Outcome, ProjectError,
+    AbstainReason, Clock, Confidence, Deadline, DocumentNotification, DocumentUri, EditorRequestId,
+    Error, FileExtension, LanguageHandler, LanguageId, Location, Micros, Outcome, ProjectError,
     ProjectPath, ProjectRoot, ProjectView, Query, RelPath, Strata, Stratum, TestClock, Trace,
 };
 use tree_sitter::Language;
@@ -221,6 +221,90 @@ fn a_standalone_row_is_complete_without_an_oracle() {
              be about: {row}"
         );
     }
+}
+
+/// §7's third decision, reached the way a handler reaches it rather than
+/// through the hard cap: the query ran, found nothing it would commit to, and
+/// said so.
+///
+/// The reason is asserted because §7 puts it in `stages` — "a second reason
+/// column would be two vocabularies for one question" — so an abstention whose
+/// reason went nowhere is a row that cannot be grouped by why it happened.
+#[test]
+fn an_abstention_is_recorded_with_its_reason_in_the_stages() {
+    let fixture = Fixture::new("trace_abstention", Proxying::No);
+    let mut actor = fixture.actor(Arc::new(Declining));
+
+    fixture.open(&mut actor);
+    fixture.request(&mut actor, 1);
+
+    let rows = fixture.rows();
+    let [row] = rows.as_slice() else {
+        panic!("{} rows for one abstained query", rows.len());
+    };
+    assert_eq!(field(row, "decision"), "\"abstained\"", "{row}");
+    assert_eq!(
+        field(row, "failure"),
+        "null",
+        "an abstention named a failure class, which is what §7 keeps `decision`'s three \
+         values apart to prevent: {row}"
+    );
+    assert_eq!(
+        field(row, "stages"),
+        "[\"abstain:no_candidates\"]",
+        "the abstention reason did not reach the record, so nothing downstream can group \
+         the abstentions by why they happened: {row}"
+    );
+    assert_eq!(
+        field(row, "returned"),
+        "0",
+        "an abstention returned locations: {row}"
+    );
+    assert!(
+        fixture.outbound().is_empty(),
+        "an abstention answered the editor, where `shim.md` §8 makes it silence"
+    );
+}
+
+/// The loop rather than the state machine: the same query, delivered over the
+/// channel `shim.md` §2's reader thread will send on.
+///
+/// Every other test here calls `handle` directly, which leaves `run`'s
+/// `select!` — the part `driver::run` actually drives — asserted by nothing.
+/// What this pins is that events are taken in order and that the loop ends when
+/// the wire closes, which is the whole of what `driver::run` does today.
+#[test]
+fn the_loop_drains_its_channel_and_ends_when_the_wire_closes() {
+    let fixture = Fixture::new("actor_loop", Proxying::Yes);
+    let target = fixture.definition_in("src/target.rs");
+    let actor = fixture.actor(Arc::new(Committing {
+        locations: vec![target.clone()],
+    }));
+
+    let (events, incoming) = crossbeam_channel::unbounded();
+    for event in fixture.session(1) {
+        events.send(event).expect("a queued event");
+    }
+    events
+        .send(Event::ChildAnswered {
+            editor_id: EditorRequestId::from_number(1),
+            result: child_answer(&target, TARGET),
+            latency: Micros(1_000),
+        })
+        .expect("a queued event");
+    // The transport going away, which is the only thing that ends the loop.
+    drop(events);
+
+    actor.run(&incoming).expect("the actor loop");
+
+    let rows = fixture.rows();
+    let [row] = rows.as_slice() else {
+        panic!(
+            "{} rows from a query delivered over the channel, where one arrived",
+            rows.len()
+        );
+    };
+    assert_eq!(field(row, "agreement"), "\"match_top1\"", "{row}");
 }
 
 /// §6: "divergence is reported to the user on `mismatch` only", through the
@@ -445,35 +529,47 @@ impl Fixture {
         .expect("an actor")
     }
 
-    /// The negotiation and the `didOpen`, which are what every query needs to
-    /// have happened: `shim.md` §4 answers nothing before the first, and §8.6
-    /// gives no query a document before the second.
-    fn open(&self, actor: &mut Actor) {
-        actor
-            .handle(Event::Negotiated {
+    /// Everything that has to have happened before a query can be answered,
+    /// in order: `shim.md` §4 answers nothing before the negotiation, and §8.6
+    /// gives no query a document before the `didOpen`.
+    ///
+    /// A list rather than three calls, so that the same session can be handed
+    /// to `handle` one at a time or sent down the channel `run` reads.
+    fn session(&self, id: i64) -> Vec<Event> {
+        vec![
+            Event::Negotiated {
                 roots: vec![self.root.clone()],
                 encoding: PositionEncoding::Utf16,
-            })
-            .expect("the negotiation");
-        actor
-            .handle(Event::Notified {
+            },
+            Event::Notified {
                 notification: DocumentNotification::DidOpen,
                 params: raw(&format!(
                     r#"{{"textDocument":{{"uri":"{}","languageId":"rust","version":1,"text":{}}}}}"#,
                     self.uri("src/lib.rs"),
                     json_string(DOCUMENT),
                 )),
-            })
-            .expect("a didOpen");
+            },
+            self.definition(id),
+        ]
+    }
+
+    fn definition(&self, id: i64) -> Event {
+        Event::Requested {
+            editor_id: EditorRequestId::from_number(id),
+            params: definition_params(&self.uri("src/lib.rs")),
+            arrived: self.clock.now(),
+        }
+    }
+
+    fn open(&self, actor: &mut Actor) {
+        for event in self.session(0).into_iter().take(2) {
+            actor.handle(event).expect("the session's opening events");
+        }
     }
 
     fn request(&self, actor: &mut Actor, id: i64) {
         actor
-            .handle(Event::Requested {
-                editor_id: EditorRequestId::from_number(id),
-                params: definition_params(&self.uri("src/lib.rs")),
-                arrived: self.clock.now(),
-            })
+            .handle(self.definition(id))
             .expect("a definition request");
     }
 
@@ -687,5 +783,32 @@ impl LanguageHandler for Failing {
             uri: query.doc.uri.clone(),
         }
         .into())
+    }
+}
+
+/// A handler that ran and would not commit. Distinct from `Failing` in exactly
+/// the way §7 keeps `abstained` and `failed` distinct: this one is a hard
+/// query, not a broken handler.
+struct Declining;
+
+impl LanguageHandler for Declining {
+    fn language_ids(&self) -> &'static [LanguageId] {
+        LANGUAGE_IDS
+    }
+
+    fn file_extensions(&self) -> &'static [FileExtension] {
+        FILE_EXTENSIONS
+    }
+
+    fn grammar(&self) -> Language {
+        grammar()
+    }
+
+    fn goto_definition(&self, _query: &Query<'_>) -> Result<Outcome, Error> {
+        Ok(Outcome::Abstain {
+            reason: AbstainReason::NoCandidates,
+            strata: Strata::from_reference(Stratum::LocalBinding),
+            trace: Trace::new(),
+        })
     }
 }
