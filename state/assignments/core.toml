@@ -1,18 +1,18 @@
 # One round's assignments, written by `hj plan-merge` from the planner's
 # answer. Regenerated every round; not history.
-planned = "2026-08-04T20:36:31+00:00"
+planned = "2026-08-04T21:14:39+00:00"
 
 [worker.1]
-targets = ["core.md#83-the-wire-position-type-is-inert[f9ad1766b7]", "core.md#the-trait[218a36571e]", "core.md#two-modes-collect-and-replay[a6251d1926]"]
-reading = "design/core.md (\u00a78.3, \u00a76, the-trait, two-modes-collect-and-replay), state/spec-changelog/core.md, crates/shared/src/proto.rs, crates/shared/src/handler.rs, crates/driver/src/agreement.rs, crates/measure_core/src/cli.rs, crates/shared/tests/proto.rs, crates/measure_core/tests/pipeline.rs"
-why = "all three are stale printed spec against standing code (line() accessor, Strata/Trace/4-arg decide, three subcommands), so all three land in design/core.md plus state/spec-changelog/core.md \u2014 sole holder of both; code files are read-only for it"
+targets = ["core.md#4-project-file-enumeration[d41389f7fe]", "core.md#the-trait[218a36571e]", "core.md#two-modes-collect-and-replay[a6251d1926]"]
+reading = "design/core.md, state/spec-changelog/core.md, crates/driver/src/files.rs, crates/driver/src/project.rs, crates/driver/src/dispatch.rs, crates/driver/tests/file_list.rs, crates/shared/src/handler.rs, crates/measure_core/src/cli.rs"
+why = "sole owner of design/core.md: all three open core.md claims in one hand so no second worker rewrites that doc or its changelog; its test lands in tests/file_list.rs, not seam.rs"
 
 [worker.2]
-targets = ["deps.md#10-errors-one-enumerated-type-no-anyhow[d50e2285d0]", "deps.md#2-channels[8e707386b4]"]
-reading = "crates/driver/src/dispatch.rs, crates/driver/src/actor.rs, crates/driver/tests/deadline.rs, crates/driver/tests/actor.rs, crates/driver/tests/seam.rs"
-why = "both are driver-internal logging with one reading (dispatch.rs:528 silent deadline\u2192abstention, actor.rs:203 inbox depth); sole holder of seam.rs this round, and \u00a72 is likely already closed at actor.rs:256 \u2014 verify and say so rather than re-add"
+targets = ["deps.md#14-workspace-cargotoml-shape[d822e97954]", "deps.md#14-workspace-cargotoml-shape[7d21b547b7]"]
+reading = "Cargo.toml, Cargo.lock, deny.toml (absent), design/deps.md \u00a714, crates/driver/tests/seam.rs"
+why = "both \u00a714 anchors close in seam.rs + root Cargo.toml, so this is the only worker holding seam.rs and it can take the section clean"
 
 [worker.3]
-targets = ["deps.md#8-parse-cache[fb0aa10250]"]
-reading = "crates/shared/src/project.rs, crates/shared/tests/project.rs, design/deps.md \u00a78, state/spec-changelog/deps.md, state/decisions/conformance-005.md, design/core.md:1650-1690 (read-only)"
-why = "one gap but a real one \u2014 the disk-file cache key contradicts conformance-005, so it needs either the cache or a CHANGE- record; sole holder of design/deps.md and spec-changelog/deps.md, and must not edit design/core.md, which worker 1 holds"
+targets = ["deps.md#2-channels[8e707386b4]", "deps.md#10-errors-one-enumerated-type-no-anyhow[d50e2285d0]"]
+reading = "crates/driver/src/actor.rs, crates/driver/src/dispatch.rs (classify), crates/driver/tests/actor.rs, crates/driver/tests/deadline.rs, design/deps.md \u00a72 and \u00a710"
+why = "both code fixes already landed (actor.rs:256 depth, dispatch.rs:548 log) so the work is the mechanising test in tests/actor.rs \u2014 deps.md prose and seam.rs stay worker 2's"

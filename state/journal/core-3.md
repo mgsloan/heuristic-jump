@@ -450,3 +450,103 @@ the gap has simply never been re-audited since.
 
 That is the round's cost lesson: a granted claim is not evidence the gap is
 live. The claim ledger knows who is working on what, not what is true.
+
+## Campaign ef46c8da — an assignment that was already done, and the sentence past it
+
+Assigned `deps.md#2-channels[8e707386b4]` and
+`deps.md#10-errors[d50e2285d0]`, with a planner note saying both code fixes had
+landed and the work left was "the mechanising test in tests/actor.rs".
+
+**The tests were already there too.** `the_inbox_depth_is_logged_when_core_falls_behind`
+(actor.rs, from `d1ccba7`) and `converting_an_expiry_into_an_abstention_is_logged`
+(from `9c30b0f`) both predate the assignment. `9c30b0f` landed at 20:41 UTC
+against an audit that ran at 20:33 — eight minutes, which is the tightest stale
+assignment this loop has seen and is worth knowing about: the `git log -1`
+staleness check is still the right first turn, but *minutes* is the resolution
+you need, not days.
+
+### What was actually left, and why it took re-reading rather than re-searching
+
+`classify` is the only place an `Error` stops being a failure, and it is reached
+three ways: `realise` (the parse abandoned), `call` (a handler's own `?`), and
+§8.4's conversion inside `encode`. Its own comment says "logging here covers all
+three callers". Only the third had a fixture. So §10's sentence — "that
+conversion is explicit and logged" — was pinned on one route and asserted by
+prose on two, which is the docstring-describing-behaviour shape this loop keeps
+finding.
+
+Two fixtures, one per route, plus an exact **zero** on `hard_cap`'s line for all
+three. The zero is the half that would have been easy to leave out: `Actor::answer`
+builds the `Outcome::Abstain` all three end as and deliberately logs nothing,
+because every expiry reaching it has been reported once already. Without the
+zero, a route that double-reported would still pass.
+
+### The trap in route 1, which cost the most and is the thing to remember
+
+**A five-line fixture cannot test a parse abandoned on the deadline.**
+`SnapshotSeed::realise` polls the deadline from tree-sitter's progress callback,
+which fires once per 100 parser operations — `document.rs` says so in as many
+words — so the `DOCUMENT` every other test in the file uses finishes inside a
+single interval and *observes no deadline at all*. Route 1 needs a document of
+its own; `large_document()` is 2,000 filler functions, deliberately far past the
+boundary rather than tuned to it, because a fixture sitting on 100 operations
+would be decided by which tree-sitter revision is vendored.
+
+I planted this rather than trusting it: with `DOCUMENT`, the test fails on the
+*hard cap* and prints the dropped `Committed { locations: [] }`. So the
+fixture's handler commits **no** locations on purpose — if the parse were not
+abandoned, the query would need no read, would reach the cap, and the failure
+says which route it really took instead of passing on the wrong one.
+
+An earlier journal entry says this route "expires in the *parse*, in front of the
+handler". That is true of the queued-past-the-cap fixture only because
+`the_deadline_is_measured_from_arrival_...` commits a location in *another* file,
+so it expires in `target_text`'s read — route 3, not route 1. Worth correcting
+here because the sentence reads like route 1 is free.
+
+### `clippy::panic_in_result_fn` is not covered by `#![expect(clippy::panic)]`
+
+`Propagating::goto_definition` returns `Result`, so its vacuity guard could not
+be a `panic!` even with the file-level expect. It returns
+`ProjectError::Unresolvable` instead, and the driver logs a failure under its own
+line — which the fixture collects anyway, so the guard is *more* legible than a
+panic would have been. Confirmed by planting: with the clock not advanced, the
+read succeeds and the captured log names the failure.
+
+### The one provisional tag in the driver named a closed record
+
+`core-022` is `status: duplicate`, closed in favour of `core-025`, which is
+**accepted** and says reconciling its tag is the core loop's next ordinary
+campaign. The tree had exactly the inverse: one `DECISION-core-022: provisional`
+in `dispatch.rs` and no `core-025` tag anywhere. A campaign grepping for
+`core-025`'s work would have found nothing and concluded there was none.
+
+Retagged, with the ruling written into the comment so the next campaign does not
+have to re-derive it: **C then B** — `ProjectView`'s expiry carries the strata
+out as a change to `Error`, which empties the second of the two routes into
+`Classified::Nothing`, and `stratum_prior` then becomes nullable for the residue.
+So that arm does not get a better `Stratum`; it stops returning one. Note the
+record talks about `ExpiredStrata::Assigned`/`Unclassified` and the code has
+`Classified::By`/`Nothing` — same thing, renamed since.
+
+### Two things deliberately not built, so nobody rebuilds them
+
+* **A scan for §10's word "explicit"** (that the conversion happens at one named
+  site). The only available shape is a source scan for `AbstainReason::` outside
+  `actor.rs`, and a legitimate future change repairs that by weakening it. What
+  §10 actually leans on is already compiler-held: `classify` is an exhaustive
+  match on `Error` with no wildcard.
+* **A guard on §2's withdrawn `crossbeam_channel::unbounded` lint** — §2's last
+  unmechanised sentence. Measured rather than assumed: `Cargo.toml:182` sets
+  `disallowed_methods = "deny"` and `driver/src/driver.rs:66` calls `unbounded()`,
+  so re-adding the entry fails the build. A test would be strictly weaker.
+
+### `Co-Authored-By` after a blank line silently unmakes every trailer
+
+`harness/hj record` walks back for the last commit whose `loop:` trailer is
+`core`, using `git interpret-trailers`, which reads **only the last paragraph**.
+Putting `Co-Authored-By` in its own paragraph after the `audit:`/`loop:`/`campaign:`
+block left `interpret-trailers --parse` printing one line, so `record` skipped
+past my commit to the previous loop commit and said "already recorded". Amended
+with the co-author line inside the same block. Every prior loop commit simply
+omits it.

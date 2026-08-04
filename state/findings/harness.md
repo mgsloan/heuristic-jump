@@ -1,59 +1,56 @@
 # Findings — harness loop
 
-Theory after five campaigns. Rewritten, not appended.
+Theory after six campaigns. Rewritten, not appended.
 
 ## Falsified — act on these directly
 
-* **"Judge whether the code looks right" finds nothing.** Take the section's
-  literal nouns and grep for each. `tokei`, `master`, `dispatch` fell in a
-  minute that way.
+* **"Judge whether the code looks right" finds nothing.** Grep the section's
+  literal nouns. `tokei`, `master`, `merge-blocked` fell in a minute that way.
 * **A docstring describing behaviour the function does not have is where the
-  bug is.** Third campaign running.
+  bug is.** Fourth campaign running.
 * **A glob over `state/findings/` matches `core-1.md`..`core-3.md`.** Anything
-  meaning "per loop" must read `phase.loops`. Same trap in `state/journal/`.
-* **A computed prompt value can be spliced nowhere and nothing complains.**
-  Check `grep -o "{{[a-z_]*}}"` on templates against `prompt_values`.
+  meaning "per loop" reads `phase.loops`. Same trap in `state/journal/`.
 * **Do not rename a section heading.** The anchor is in
-  `harness/section-baseline.toml`, denied to every loop — a rename is
-  permanent drift no campaign can clear.
-* **The audit list is mostly stale.** Of sixteen "open" gaps, two were real;
-  §1, §2, §5, §6, §7, §11's tokei and both §13 entries were already fixed.
-  Verify with one grep before taking one.
-* **A selftest that reads `HARNESS / "hj"` is not hermetic.** `HARNESS`
-  resolves through `HJ_REPO`, so it inspects the *worktree's* copy and fails
-  every branch that predates it. The gate went red mid-campaign this way, from
-  a hand-authored commit on `main`. You cannot fix it in your tree — the
-  pinned copy runs first and fails before yours is consulted. Merge `main`:
-  `git stash push -u -- <files>`, `git merge --no-edit main`, `git stash pop`.
+  `harness/section-baseline.toml`, denied to every loop — permanent drift.
+* **The audit list lags; verify with one grep.** But its *one-line* list is the
+  best target-picker there is: sections one gap from clean, twice running.
+* **A closed gap's section cannot be derived from its id.** `gap_id` is
+  `sha256(section|claim)[:10]` and a closed gap is gone from the audit. It must
+  be recorded when it closes — that is what `closed_gaps` is for.
+* **A selftest reading `HARNESS / x` is not hermetic.** `HARNESS` resolves
+  through `HJ_REPO`, so a pinned assertion judges *your* tree. This has now cost
+  two campaigns. **Before reverting, measure:** stash your work, run the gate at
+  HEAD, unstash. If HEAD is red the breakage is not yours and "revert to green"
+  has no green — `main` may not carry the fix either, because the counterpart
+  can be sitting uncommitted in the integration checkout. `harness-011`.
 
 ## Confirmed — candidates, test on your own evidence
 
-* **What is left is deferred mechanisms, not wrong words.** §11 and §12 were
-  each one gap from clean and were one thing seen twice: a number computed at
-  an iteration versus at a phase gate. Both had been deferred wholesale as
-  "phase 2a work", which took their computable-today halves with them.
-* **Where the code and `loops.md` disagree, it favours this loop.** Twice this
-  campaign: §18 says `harness/prompts/` stays denied and the code denies only
-  `auditor.md`; `harness/gate` step 5 hard-fails in the phase it exists for.
-  Both are escalations (`harness-008`, `harness-009`) and neither was closed by
-  editing the document. **Do not close them that way** — this loop is the
-  beneficiary of the grant.
-* **`decisions_reconciled` still reads tag *removals*,** so reconciling a
-  decision whose choice lived in a file the loop may not write scores nothing.
-  Counting a `decision:` trailer that names an already-*answered* record fixes
-  it. It is a metric redefinition, so Class B.
-
-## For the core loop specifically
-
-`crates/lang_rust` already depends on `tree-sitter-rust`, so the workspace
-`Cargo.toml` comment "no grammar crate is in the graph yet" is stale — that is
-`deps.md`, which is yours. And `hj link-delta` exits 1 until `heuristic_jump`
-carries one optional dependency per language behind a `lang-<x>` feature;
-without it §11's authoritative size number cannot be taken at all.
+* **What is left is deferred mechanisms, not wrong words.** Six sections now:
+  each had a cheap mechanical half deferred along with an expensive one.
+* **Where the code and `loops.md` disagree, it favours this loop.**
+  `harness-008`, `harness-009` still open. **Do not close them by editing the
+  document** — this loop is the beneficiary.
+* **Never reconcile a decision whose `status:` is still `open` in your tree**,
+  even when a gate check demands it. That is ruling on your own escalation.
+* **Backtest before believing a metric change.** `hj progress-replay --rule N`.
+  My first rule-3 draft was *looser* than rule 2, and its headline number was an
+  artifact of the replay modelling only half of what the live code ORs together.
+* **`decisions_reconciled` still reads tag *removals***, so reconciling a
+  decision whose site is in a file the loop may not write scores nothing.
+  Counting a `decision:` trailer naming an already-*answered* record fixes it.
+  Class B.
 
 ## Load-bearing
 
-* Run `harness/hj selftest` after every edit to `hj` (68 → 92 here).
+* `harness/hj selftest` after every edit to `hj` (92 → 101 here).
 * A syntax error in `hj` blocks every Edit and Write. Use bash.
+* The shell/`hj` seam now has two scans (`--kind` literals, `"$hj" <sub>`).
+  Both read the worktree deliberately — see the falsified note above.
 * Never add a per-campaign write to a shared single-valued file.
-* `gate_runs` counts any command mentioning `harness/gate`.
+
+## For the core loop
+
+`crates/lang_rust` already depends on `tree-sitter-rust`, so the workspace
+`Cargo.toml` comment "no grammar crate is in the graph yet" is stale — that is
+`deps.md`, which is yours.

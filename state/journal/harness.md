@@ -479,3 +479,88 @@ gap list in the prompt are already fixed text, and a merge does not swap them.
   readme means, even though it reads no repository *state*. `HARNESS` goes
   through `HJ_REPO`. Any new check of that shape should assert something every
   branch already satisfies, or it fails everyone else first.
+
+## 2e588730 — three stopping-machinery gaps, and a gate red from someone else's working tree
+
+Target: `loops.md#branches-exist-for-one-commit-at-a-time[967e89de52]`,
+`loops.md#5-...[02f06f3aad]`, `loops.md#7-...[3dbde1bbd3]`. Three commits, no
+reverts, `hj selftest` 92 → 101.
+
+### How the targets were picked, which worked again
+
+Same method as `78bbbbc4`: read the audit's *one-line* gap list and ask which
+sections are one gap from clean. All three were, and all three turned out to be
+the same machinery — what counts as progress, what happens when there is none,
+and what happens when a merge blocks a worker. The shared-context test was
+honest rather than retrofitted: every one of them is read out of `harness/hj`
+and `harness/loop`, and two of them hang off `trailing_without_progress`.
+
+### Approaches considered and not taken
+
+* **Letting the stalled campaign write `state/handoff.md` directly**, which is
+  what the old stall notice told it to do. Rejected once `hj handoff` existed:
+  two writers for one file, and the harness's copy has to overwrite, because a
+  stale handoff from an answered stall renders on the dashboard as a live
+  request. A campaign that followed the old notice would have had its account
+  destroyed by the loop stopping. The notice now says where to write *and why
+  not there*, and there is a selftest on the "why not" sentence, because a
+  notice that only says "don't" gets ignored.
+* **Making `hj stall` return 0 while stalled-but-no-handoff-yet**, so the
+  runner would naturally take one more campaign. Rejected: it overloads an exit
+  code the operator's scripts read, and termination then depends on the handoff
+  file appearing — a campaign that crashes before writing it loops forever. The
+  shell flag in `harness/loop` is uglier and cannot fail to terminate.
+* **Deriving a closed gap's section from its id.** Impossible and worth writing
+  down so nobody tries: `gap_id` is `sha256(f"{section}|{claim}")[:10]`, and a
+  gap that has closed is gone from the audit, so there is nothing to look it up
+  in. The section has to be recorded at the moment it closes, which is what
+  `closed_gaps` does. `closed` is left exactly as it was — old rows are the
+  record and are not rewritten.
+* **Unioning the audit window before attributing.** My first rule-3 draft did,
+  and it made rule 3 *looser* than rule 2 in one case: a section reached by one
+  audit and a gap closed by a later one is not that campaign's gap. Rule 2 was
+  per-audit; rule 3 has to be too. Caught only because `3e637dcd` flipped to
+  `True` in the backtest, which is the backtest doing its job.
+* **Believing the first backtest.** Rule 3 initially showed the longest
+  no-progress run going 4 → 10, which looked like a rule that would stall the
+  fleet. It was an artifact: `replay_progress` modelled only the audit-side
+  term, while `settle_progress` ORs in what the close row already decided.
+  Rules 1 and 2 had the same hole and it did not show while the audit-side term
+  was loose. Rule 3's arm now reads the close row — the *close* row
+  specifically, not `merged`, which also carries the settled row's answer and
+  would make it circular. Final numbers: term moves on 13 of 50, verdict on
+  none.
+* **Reconciling `harness-008` to clear the red gate.** The pinned check
+  `the_size_ratchet_has_one_route` demands `harness/hj` drop the
+  `check-metrics` route, and `harness/hj` is mine — so it looked fixable. It is
+  not: that *is* the answer to `harness-008`, which in this tree still reads
+  `status: open`, and a loop ruling on its own escalation has escalated
+  nothing. Left alone deliberately.
+
+### The gate, and the thing that has now cost two campaigns
+
+Mid-campaign the pinned selftest went 92 → 94 → 95 checks *while I was
+running*, and two of them failed. They read `HARNESS / "gate"` and
+`HARNESS / "hj"` — this worktree's copies — while the assertion comes from the
+pinned copy. They encode the answer to `harness-008`, and the paired
+`harness/gate` edit is **uncommitted in the integration checkout**: not on
+`main`, not on any branch. Merging `main` did nothing.
+
+`78bbbbc4`'s entry describes the identical shape from `c047b4c`, and
+`harness/readme.md` already warns about it. Twice is a pattern, so it is
+`harness-011` now rather than another journal paragraph.
+
+**The thing to do, if it happens again, is measure before deciding.** Stash the
+campaign's work and run the gate at HEAD:
+
+    git stash push -u -- <your files>
+    <gate> harness
+    git stash pop
+
+HEAD was red. That converts "revert to green" from an instruction into a
+question with no answer — there was no green to revert to, and reverting would
+have destroyed three verified commits' worth of work while leaving the gate
+exactly as red. I committed, and said so in the commit body rather than letting
+a later reader infer a green gate from a commit that exists. If a future
+campaign finds this and disagrees, the measurement is the part to repeat; the
+judgement is the part to argue with.

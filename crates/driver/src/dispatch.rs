@@ -169,13 +169,29 @@ impl Classified {
     pub fn strata(self) -> Strata {
         match self {
             Classified::By(strata) => strata,
-            // `core-022`: the prior exists — `core-017` says so, and says the
-            // reference and the query are all its rule needs — but the rule is
-            // per-language, so nothing here can evaluate it without the
-            // handler that owns it. Filed under the template's stratum for
-            // want of anywhere honest to put it, which is the same place
-            // `Answered::of` files a handler that returned `Err`.
-            // DECISION-core-022: provisional
+            // The prior exists — `core-017` says so, and says the reference and
+            // the query are all its rule needs — but the rule is
+            // `resolution.md` §8's and is per-language by construction, so
+            // nothing here can evaluate it without the handler that owns it.
+            // Filed under the template's stratum for want of anywhere honest to
+            // put it, which is the same place `Answered::of` files a handler
+            // that returned `Err`.
+            //
+            // `core-025` is accepted and this is its site. It rules **C then
+            // B**: `ProjectView`'s expiry carries out the strata the handler
+            // had, as a change to `Error` — which empties the second of the two
+            // routes into `Nothing` above, leaving only the abandoned parse —
+            // and `stratum_prior` then becomes nullable for that residue,
+            // because "nothing ever looked at this reference" is the absence of
+            // a measurement rather than a kind of reference. So this arm does
+            // not get a better `Stratum`; it stops returning one.
+            //
+            // Tagged for `core-025` and not for `core-022`, which asked the same
+            // question from the driver's side and is closed as its duplicate:
+            // the ruling, and the work it leaves, are only in `core-025`, and a
+            // tag naming the closed record is one a search for the open work
+            // does not find.
+            // DECISION-core-025: provisional
             Classified::Nothing => Strata::from_reference(Stratum::Unimplemented),
         }
     }

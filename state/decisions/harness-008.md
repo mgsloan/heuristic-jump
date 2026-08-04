@@ -1,6 +1,6 @@
 ---
 id: harness-008
-status: open
+status: accepted
 opened: 2026-08-04T20:41:00+00:00
 campaign: 78bbbbc4-9003-447e-9139-61389562ceb5
 kind: harness-request
@@ -49,7 +49,32 @@ false — that the ratchets are not implemented.
 
 ## Decision
 
-Undecided — waiting on a human.
+**accepted: the first option — step 5 calls `hj check-ratchets`**, answered
+2026-08-04 and logged as a `decision-answered` intervention, which is what makes
+it answered — `design/loops.md` §16 derives the status from the log rather than
+from this line.
+
+A check that rejects something correct is worse than no check, and the `fail`
+message compounds it by asserting something that stopped being true when this
+campaign built `hj size`, the re-baselining and the ratchet itself. The risk the
+record names — a red gate reachable in a phase nobody has run, on a path
+exercised only by the selftest — is real and is unchanged by the alternative,
+which has the same path behind the same phases and additionally cannot go green.
+
+`check-metrics` no longer runs the size ratchet, so there is one route again.
+The *test-count* ratchet stays there, because it is a different mechanism: §4
+scopes the gate's ratchets step to §11's size ratchets in phase 3, and §7's test
+count is a per-commit check belonging with the metrics row it is computed from.
+
+### Done in the same commit as this ruling
+
+`harness/gate` step 5, `cmd_check_metrics`, and `cmd_check_ratchets`'s docstring,
+which described a step that no longer hard-fails. Two selftest cases were added
+against the way this would silently come back: one asserts step 5 still names
+`check-ratchets` and that the false message is gone, since `harness/gate`
+reaches `hj` by name and a rename would surface as the first cost-phase
+campaign's gate dying on an unrecognised subcommand; the other asserts the size
+ratchet has exactly one call site outside the selftest.
 
 ## Provisional choice in force
 
