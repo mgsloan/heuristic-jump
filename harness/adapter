@@ -338,11 +338,21 @@ progress)
 	# `num_turns` likewise only exists at the end, but the count of `user`
 	# events is exactly one less than it on every campaign checked, so turns
 	# are reported as that plus one rather than left blank.
+	#
+	# The gate counters are here as well as in `cost` because the experiments
+	# so far are what `design/loops.md` section 16 asks the loop panel for, and
+	# a campaign that is thrashing is worth seeing at turn forty rather than at
+	# its close. They are counted from tool calls, which needs no result event
+	# — unlike the token totals, which is why `cost` cannot answer this.
 	python3 - "${1:?transcript}" <<-'PY'
 		import json, sys
 
+		REVERTS = ("reset --hard", "git checkout --", "git restore", "git stash")
+
 		usage_by_message = {}
 		user_events = 0
+		pending = set()       # tool_use ids that were a gate run
+		gate_runs = gate_failed = reverts = 0
 		for line in open(sys.argv[1], errors="replace"):
 		    line = line.strip()
 		    if not line:
@@ -354,10 +364,38 @@ progress)
 		    kind = event.get("type")
 		    if kind == "user":
 		        user_events += 1
+		        content = event.get("message", {}).get("content", [])
+		        for block in content if isinstance(content, list) else []:
+		            if block.get("type") != "tool_result":
+		                continue
+		            # Only a result that answers a gate run counts. Matched on
+		            # the tool_use id rather than on the text, because the
+		            # string appears in transcripts and journals a campaign
+		            # reads, and `cost` pairs the same way — two numbers with
+		            # one name must not disagree. Measured: they differed by
+		            # one on campaign 11b9c019 before this.
+		            if block.get("tool_use_id") not in pending:
+		                continue
+		            body = block.get("content")
+		            if isinstance(body, list):
+		                text = "\n".join(p.get("text", "") for p in body if isinstance(p, dict))
+		            else:
+		                text = str(body or "")
+		            if "GATE FAILED" in text:
+		                gate_failed += 1
 		    elif kind == "assistant":
 		        message = event.get("message") or {}
 		        if message.get("id"):
 		            usage_by_message[message["id"]] = message.get("usage") or {}
+		        for block in message.get("content", []):
+		            if block.get("type") != "tool_use":
+		                continue
+		            command = str((block.get("input") or {}).get("command", ""))
+		            if "harness/gate" in command:
+		                gate_runs += 1
+		                pending.add(block.get("id"))
+		            if any(marker in command for marker in REVERTS):
+		                reverts += 1
 
 		def total(key):
 		    return sum(usage.get(key) or 0 for usage in usage_by_message.values())
@@ -368,6 +406,9 @@ progress)
 		    "cache_creation_tokens": total("cache_creation_input_tokens"),
 		    "input_tokens": total("input_tokens"),
 		    "messages": len(usage_by_message),
+		    "gate_runs": gate_runs,
+		    "gate_failed": gate_failed,
+		    "reverts": reverts,
 		}, sort_keys=True))
 	PY
 	;;
