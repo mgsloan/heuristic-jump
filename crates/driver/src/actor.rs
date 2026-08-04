@@ -44,7 +44,7 @@ use shared::{
 };
 
 use crate::config::{Config, DebounceMs, Heuristics};
-use crate::dispatch::{Answer, Completed, Dispatched, Registry, Request, dispatch};
+use crate::dispatch::{Answer, Completed, Dispatched, ExpiredStrata, Registry, Request, dispatch};
 use crate::documents::{Documents, Queried};
 use crate::files::FileListCache;
 use crate::pending::{PendingQueries, PendingQuery, Resolution};
@@ -571,15 +571,27 @@ impl Actor {
                 }
                 Answered::of(Ok(outcome))
             }
-            // The outcome was dropped by the hard cap, and with it the stratum
-            // the handler had assigned — so this row lands in `unimplemented`
-            // rather than in the stratum it was really asked about, and §7's
-            // coverage denominator moves by one query. The alternatives both
-            // change something else's shape.
-            // DECISION-core-017: provisional
-            Dispatched::DeadlineExpired => Answered::of(Ok(Outcome::Abstain {
+            // The outcome was dropped by the hard cap; the classification was
+            // not. `core-017`: the prior's rule reads only the query and the
+            // reference, so it is knowable before the search finishes and the
+            // drop never had it to take away. Recording it keeps §7's coverage
+            // denominator fixed by the reference, which is the one thing the
+            // two-field split exists for — under the old value a handler that
+            // merely ran slow moved a query out of its real stratum and into
+            // the counter `measure_core`'s `Table::template` reads as "the
+            // language crate template has not been replaced".
+            //
+            // `Unclassified` is the residue and is a narrower claim than the
+            // one this replaced: nothing ran that could classify the query at
+            // all. See `core-025` for why the driver still has nothing better
+            // to write there.
+            Dispatched::DeadlineExpired(strata) => Answered::of(Ok(Outcome::Abstain {
                 reason: shared::AbstainReason::Deadline,
-                strata: Strata::from_reference(Stratum::Unimplemented),
+                strata: match strata {
+                    ExpiredStrata::Assigned(strata) => strata,
+                    // DECISION-core-025: provisional
+                    ExpiredStrata::Unclassified => Strata::from_reference(Stratum::Unimplemented),
+                },
                 trace: Trace::new(),
             })),
             // Served as an abstention on the wire — which here means silence —

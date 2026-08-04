@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use driver::{Answer, DebounceMs, Dispatched, FileListCache};
+use driver::{Answer, DebounceMs, Dispatched, ExpiredStrata, FileListCache};
 use shared::{
     AbstainReason, Clock, Confidence, Error, FileList, Generation, Outcome, ProjectError, Strata,
     Stratum, TestClock, Trace,
@@ -124,7 +124,14 @@ fn no_candidates_is_the_only_abstention_that_invalidates_the_list() {
         abstention(AbstainReason::External {
             name: "std::vec::Vec".into(),
         }),
-        Dispatched::DeadlineExpired,
+        // Both arms, because both are evidence about nothing and `observe`
+        // must not start reading a stratum it now has: a cut-off search says
+        // nothing about what a complete one would have found, whether or not
+        // the handler had classified the query before the cap took it.
+        Dispatched::DeadlineExpired(ExpiredStrata::Unclassified),
+        Dispatched::DeadlineExpired(ExpiredStrata::Assigned(Strata::from_reference(
+            Stratum::LocalBinding,
+        ))),
         Dispatched::Failed(Error::Project(ProjectError::NotUtf8 {
             path: root.join("notes.md"),
         })),

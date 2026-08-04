@@ -270,6 +270,76 @@ fn an_abstention_is_recorded_with_its_reason_in_the_stages() {
     );
 }
 
+/// `core-017` (answered), and the only place the whole of it is observable:
+/// **a query whose outcome the hard cap discards has not thereby lost its
+/// prior.** §7 makes `stratum_prior` the coverage denominator "so the
+/// denominator is fixed by the reference and does not move when the
+/// implementation changes", and *a-priori* is about the rule rather than about
+/// who evaluates it — the rule reads only the query and the reference, so the
+/// prior is knowable before the search finishes and was never the outcome's to
+/// carry away.
+///
+/// What this replaced wrote `unimplemented` into the field, which is worse than
+/// a wrong label twice over. It moves the query out of the stratum it was
+/// really asked about, which is the movement the two-field split exists to
+/// prevent; and `core.md` §1 makes `Stratum::Unimplemented` self-identifying —
+/// "its presence in a metrics table means the template has not been replaced" —
+/// which `measure_core`'s `Table::template` reads as an *abstention* under that
+/// stratum. A deadline expiry is exactly an abstention, so every real handler
+/// that ran slow reported the language crate's template as unwritten.
+///
+/// [`tests/deadline.rs`] holds the cap in isolation. This is the end of the
+/// path: the handler classified the query, answered too late, and the row that
+/// reaches §7 still says which stratum it belonged to. `Slow` advances the
+/// fixture's clock from inside `goto_definition`, which is the one way to reach
+/// `hard_cap`'s drop rather than the parse expiry in front of it — that is what
+/// [`the_deadline_is_measured_from_arrival_and_not_from_dispatch`]'s queued half
+/// produces, and it is `ExpiredStrata::Unclassified` for the good reason that
+/// no handler ever saw the document.
+#[test]
+fn a_capped_answer_is_recorded_under_the_stratum_it_was_asked_about() {
+    let fixture = Fixture::new("trace_capped", Proxying::No);
+    let mut actor = fixture.actor(Arc::new(Slow {
+        clock: Arc::clone(&fixture.clock),
+        by: Duration::from_millis(751),
+    }));
+
+    fixture.open(&mut actor);
+    fixture.request(&mut actor, 1);
+
+    let rows = fixture.rows();
+    let [row] = rows.as_slice() else {
+        panic!("{} rows for one capped query", rows.len());
+    };
+    assert_eq!(
+        field(row, "decision"),
+        "\"abstained\"",
+        "a capped answer is an abstention on §5's one latency-shaped reason: {row}"
+    );
+    assert_eq!(
+        field(row, "stages"),
+        "[\"abstain:deadline\"]",
+        "the capped query does not say the deadline is why: {row}"
+    );
+    assert_eq!(
+        (field(row, "stratum_prior"), field(row, "stratum_final")),
+        (
+            "\"local_binding\"".to_owned(),
+            "\"local_binding\"".to_owned()
+        ),
+        "the stratum the handler assigned did not survive the cap. Under \
+         `unimplemented` this query leaves its own coverage denominator — the \
+         movement §7 chose two stratum fields to prevent — and lands in the \
+         counter `core.md` §1 makes self-identifying, so a handler that is \
+         merely slow reports its language crate as an unreplaced template: {row}"
+    );
+    assert!(
+        fixture.outbound().is_empty(),
+        "the late answer reached the editor, which is what the hard cap exists \
+         to stop (`core.md` §5)"
+    );
+}
+
 /// `core.md` §2: "text and tree can never disagree", which the parse cache is
 /// the one thing that can break — and `core.md` §8.6 makes `didOpen` a resync
 /// rather than a continuation, so the document behind a URI can be replaced by
@@ -837,6 +907,45 @@ impl LanguageHandler for Failing {
 /// A handler that ran and would not commit. Distinct from `Failing` in exactly
 /// the way §7 keeps `abstained` and `failed` distinct: this one is a hard
 /// query, not a broken handler.
+/// A handler that classifies the query, takes too long, and answers anyway.
+///
+/// The clock moves *inside* `goto_definition`, which is what puts the expiry
+/// behind the handler rather than in front of it: a deadline already expired at
+/// dispatch is caught by the parse (`tests/snapshots.rs`), and never reaches
+/// `hard_cap` with an outcome to drop.
+struct Slow {
+    clock: Arc<TestClock>,
+    by: Duration,
+}
+
+impl LanguageHandler for Slow {
+    fn language_ids(&self) -> &'static [LanguageId] {
+        LANGUAGE_IDS
+    }
+
+    fn file_extensions(&self) -> &'static [FileExtension] {
+        FILE_EXTENSIONS
+    }
+
+    fn grammar(&self) -> Language {
+        grammar()
+    }
+
+    fn goto_definition(&self, query: &Query<'_>) -> Result<Outcome, Error> {
+        // Not `?` on a `ProjectView` read, deliberately: that is the *other*
+        // path, where the expiry leaves as an `Err` and the strata with it.
+        // This handler finishes and hands back a classified outcome, which is
+        // the only input `hard_cap` has a stratum to keep.
+        self.clock.advance(self.by);
+        Ok(query.policy.decide(
+            Strata::from_reference(Stratum::LocalBinding),
+            Confidence::ONE,
+            Vec::new(),
+            Trace::new(),
+        ))
+    }
+}
+
 struct Declining;
 
 impl LanguageHandler for Declining {
