@@ -986,6 +986,10 @@ KINDS_IN_USE = (
     "rotation-changed",
     "audit-cadence-changed",
     "harness-command-run-mid-campaign",
+    # One per deleted test, from the dashboard. `design/loops.md` §7 asks for
+    # deletions to be flagged for review regardless of count, and a review
+    # that leaves no trace is indistinguishable from nobody looking.
+    "test-deletion-reviewed",
 )
 
 KNOWN_KINDS = INTERVENTION_KINDS + KINDS_IN_USE
@@ -1130,7 +1134,12 @@ RECURRING_KIND = 3
 # worth it*" — where the repetition is of the same question, not of the same
 # event type. Flagging the routine three would make the flag mean nothing,
 # which is how a signal gets ignored; their counts are still reported.
-ROUTINE_KINDS = ("decision-answered", "spec-change-reviewed", "spec-drift-reviewed")
+ROUTINE_KINDS = (
+    "decision-answered",
+    "spec-change-reviewed",
+    "spec-drift-reviewed",
+    "test-deletion-reviewed",
+)
 
 
 def intervention_stats() -> dict:

@@ -426,6 +426,27 @@ def drift_card(campaign: dict) -> str:
     </article>"""
 
 
+def deletion_card(owner: str, row: dict) -> str:
+    """`design/loops.md` §7: "test *deletions* are flagged for review
+    regardless of count". Regardless of count is the whole of it — the ratchet
+    catches the count falling, and one test deleted while another is added
+    leaves it flat with a name gone. The gate prints this too, into a
+    transcript nobody opens twice; this is the half that is a review."""
+    commit = row.get("commit", "")
+    names = "".join(f"<li><code>{esc(name)}</code></li>" for name in row.get("tests_removed", []))
+    return f"""
+    <article class="decision drift" id="deleted-{esc(commit[:12])}">
+      <h3>{len(row.get('tests_removed', []))} test(s) deleted by {esc(owner)}</h3>
+      <p class="meta">commit {esc(commit[:12])} · campaign {esc((row.get('campaign') or '—')[:8])}</p>
+      <p>Flagged, not failed. A rename is legitimate and a replacement may be
+      stronger than what it replaced — but the count ratchet cannot tell either
+      of those from a test that was in the way, because all three leave the
+      number where it was.</p>
+      <div class="field"><h4>removed</h4><ul class="sites">{names}</ul></div>
+      {review_form('test-deletion-reviewed', commit, 'Mark read')}
+    </article>"""
+
+
 def reviewed_targets(kind: str) -> set[str]:
     return {
         row.get("target")
@@ -447,10 +468,19 @@ def panel_decisions() -> str:
         if campaign.get("spec_drift") and campaign.get("campaign") not in seen
     ]
 
+    read_deletions = reviewed_targets("test-deletion-reviewed")
+    deletions = [
+        (owner, row)
+        for owner in hj.load_phase().loops
+        for row in hj.read_jsonl(hj.metrics_path(owner))
+        if row.get("tests_removed") and row.get("commit") not in read_deletions
+    ]
+
     cards = (
         handoff_card()
         + "".join(decision_card(d) for d in waiting)
         + "".join(drift_card(c) for c in flagged)
+        + "".join(deletion_card(owner, row) for owner, row in deletions)
         + "".join(spec_change_card(e) for e in unread)
     )
     if not cards:
@@ -462,7 +492,7 @@ def panel_decisions() -> str:
     return panel(
         "Waiting on you",
         cards,
-        note="escalations, spec edits applied but unread, and campaigns that touched both",
+        note="escalations, spec edits applied but unread, campaigns that touched both, and deleted tests",
     )
 
 
@@ -2363,7 +2393,7 @@ def answer_decision(fields: dict[str, str]) -> tuple[int, str]:
     return 303, "/"
 
 
-REVIEW_KINDS = ("spec-change-reviewed", "spec-drift-reviewed")
+REVIEW_KINDS = ("spec-change-reviewed", "spec-drift-reviewed", "test-deletion-reviewed")
 
 
 def record_review(fields: dict[str, str]) -> tuple[int, str]:
