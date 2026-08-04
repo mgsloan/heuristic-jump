@@ -763,6 +763,13 @@ fn section_of(document: &str, heading: &str) -> String {
 ///
 /// `[dev-dependencies]` are out of it, as they are in §9's graph tests: what a
 /// licence is about is what the shipped binary combines.
+// DECISION-core-023: provisional. §14's last bullet asks for a `cargo-deny`
+// config "because it is what notices a third arriving without anyone
+// deciding", and this is what notices it meanwhile. The two are not equal: a
+// manifest scan cannot see a GPL crate arriving *transitively* through a
+// permissive direct dependency, which cargo-deny reads off the resolved graph.
+// Nothing reaches that case today — every GPL input in the graph is a
+// workspace member — and the record is where that stops being true.
 #[test]
 fn the_permissive_surface_is_exactly_what_does_not_reach_similarity() {
     let members = workspace_members();
