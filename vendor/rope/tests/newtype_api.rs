@@ -693,6 +693,132 @@ gpui = { path = \"../gpui\" }
     );
 }
 
+/// §4's conversion tables, read out of the document and checked against the
+/// crate. "**The conversion list is hand-audited, not grepped**" — so the list
+/// is a list, and a list in prose is the kind of thing that goes stale without
+/// anything happening.
+///
+/// Two failures this catches that nothing else does. An upstream re-sync
+/// renames or drops a function the table names, and the table silently
+/// describes a crate that no longer has it — §6 is explicit that signature
+/// changes conflict but says nothing about a *rename*, which applies cleanly
+/// on one side and leaves the document wrong on the other. And it makes the
+/// document the fixture: quietly deleting a row to make the code fit is a
+/// failing test rather than an edit nobody sees, which matters because moving
+/// the spec toward the code is the one way of faking progress that reading the
+/// diff cannot catch.
+#[test]
+fn every_function_section_4_names_is_still_a_public_function() {
+    // The table, transcribed. This is deliberately a second copy: with only a
+    // floor on the count, deleting a row to make the code fit still passes,
+    // which is the failure this test claims to catch. A row is one claim about
+    // one function, so adding or removing one means saying so twice.
+    //
+    // Deduplicated and in the document's order. `len` is two rows -- `Rope`'s
+    // and `ChunkSlice`'s -- and `new`, `seek`, `slice` and `offset` are each
+    // several cursors and iterators.
+    let expected = [
+        "slice",
+        "replace",
+        "chunks_in_range",
+        "bytes_in_range",
+        "offset_to_point",
+        "offset_to_point_utf16",
+        "offset_to_offset_utf16",
+        "point_to_offset",
+        "point_utf16_to_offset",
+        "unclipped_point_utf16_to_offset",
+        "offset_utf16_to_offset",
+        "clip_offset",
+        "is_char_boundary",
+        "assert_char_boundary",
+        "floor_char_boundary",
+        "ceil_char_boundary",
+        "len",
+        "new",
+        "seek_forward",
+        "summary",
+        "offset",
+        "seek",
+        "set_range",
+        "chars_at",
+        "reversed_chars_at",
+        "slice_rows",
+        "line_len",
+        "first_line_chars",
+        "last_line_chars",
+        "longest_row",
+        "last_line_len_utf16",
+    ];
+
+    let parsed = functions_named_in_the_signature_tables();
+    let mut named: Vec<&str> = parsed.iter().map(String::as_str).collect();
+    named.sort_unstable();
+    named.dedup();
+    let mut expected: Vec<&str> = expected.to_vec();
+    expected.sort_unstable();
+
+    assert_eq!(
+        named, expected,
+        "§4's conversion tables no longer name the functions this test was \
+         written against. A row that disappeared is a claim withdrawn without \
+         anything noticing, and a row that arrived is a function newly claimed \
+         to be converted -- either way, say it here too"
+    );
+
+    let sources: String = sources()
+        .into_iter()
+        .map(|path| fs::read_to_string(path).expect("reading a source file of this crate"))
+        .collect();
+
+    let missing: Vec<&&str> = named
+        .iter()
+        .filter(|name| !sources.contains(&format!("pub fn {name}")))
+        .collect();
+
+    assert!(
+        missing.is_empty(),
+        "`design/rope-modifications.md` §4 names a converted function that is \
+         no longer a `pub fn` in this crate. Either a re-sync renamed it -- \
+         which applies cleanly and leaves the document describing a crate that \
+         does not exist -- or the table was edited to fit the code:\n{missing:?}"
+    );
+}
+
+/// The control for the parser above. It is the one check here whose fixture is
+/// a *document*, so the way it fails silently is by matching nothing at all,
+/// and the `>= 30` assertion is only half an answer to that.
+#[test]
+fn the_table_parser_reads_the_shape_the_document_writes() {
+    let planted = "
+### The signatures
+
+| Area | Examples |
+|---|---|
+| Cursors | `Cursor::{new, seek_forward}`, `chars_at`, and the `reversed_*` variants |
+| Rows | `line_len(row: LineIndex) -> ByteColumn` |
+| `ChunkSlice` | All 27 of its public functions, and a bare-`usize` island |
+
+Not converted, because these are not byte offsets:
+
+| Function | Unit |
+|---|---|
+| `ChunkSlice::longest_row(&mut total_chars) -> (u32, u32)` | `(LineIndex, CharCount)`; `total_chars` is a `CharCount` |
+
+### The next heading
+";
+
+    assert_eq!(
+        functions_in_signature_tables(planted),
+        vec!["new", "seek_forward", "chars_at", "line_len", "longest_row"],
+        "the parser must expand a `Type::{{a, b}}` group, drop the \
+         qualification and the parameters, skip a `reversed_*` wildcard and a \
+         bare `usize`, and take the *first* column of the not-converted table \
+         where it takes the second of the converted one -- since that is where \
+         each puts its function names"
+    );
+}
+
 /// §4: "**The constructors take newtypes.**" The declared bindings above hold
 /// that `Point::new(LineIndex(3), ByteColumn(4))` compiles, which is not the
 /// same claim — it compiles just as well against the `impl Into<LineIndex>`
@@ -922,6 +1048,79 @@ fn the_dependency_plan_is_the_one_section_7_settled() {
          and the reason `test_support.rs` is a file rather than an inline \
          module (§4)"
     );
+}
+
+/// The function names in §4's two conversion tables, from the document itself.
+fn functions_named_in_the_signature_tables() -> Vec<String> {
+    let document = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("design")
+        .join("rope-modifications.md");
+    let text = fs::read_to_string(document).expect("reading design/rope-modifications.md");
+    let section = text
+        .split("### The signatures")
+        .nth(1)
+        .and_then(|rest| rest.split("\n### ").next())
+        .expect("§4's signature section");
+    functions_in_signature_tables(section)
+}
+
+/// Both tables in `section`, as function names. The converted table puts them
+/// in its *Examples* column and the not-converted one in its *Function*
+/// column, so which cell to read depends on which table the row is in — and
+/// the sentence between the two is what separates them.
+fn functions_in_signature_tables(section: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut converted = true;
+
+    for line in section.lines() {
+        if line.starts_with("Not converted") {
+            converted = false;
+        }
+        let Some(row) = line.strip_prefix('|') else {
+            continue;
+        };
+        let cells: Vec<&str> = row.split('|').collect();
+        let Some(cell) = cells.get(usize::from(converted)) else {
+            continue;
+        };
+        for span in cell.split('`').skip(1).step_by(2) {
+            names.extend(function_names_in(span));
+        }
+    }
+    names
+}
+
+/// The function names in one code span. A span may be a `Type::{a, b}` group,
+/// a qualified name, a whole signature, or none of those — `CharCount` is a
+/// type and `reversed_*` is a wildcard standing for three functions the table
+/// declines to list.
+fn function_names_in(span: &str) -> Vec<String> {
+    // A code span in these tables that is a bare primitive is the *subject* of
+    // the sentence around it -- "a bare-`usize` island inside an otherwise
+    // converted crate" -- rather than something to look for a `pub fn` of.
+    const NOT_FUNCTIONS: [&str; 2] = ["usize", "u32"];
+
+    let unqualified = span.rsplit("::").next().unwrap_or(span);
+    let group = unqualified
+        .strip_prefix('{')
+        .and_then(|rest| rest.split('}').next());
+
+    group
+        .unwrap_or(unqualified)
+        .split(',')
+        .filter_map(|name| {
+            let name = name.trim().split(['(', ' ']).next()?;
+            let plausible = !name.is_empty()
+                && !NOT_FUNCTIONS.contains(&name)
+                && name.starts_with(|character: char| character.is_ascii_lowercase())
+                && name
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || character == '_');
+            plausible.then(|| name.to_owned())
+        })
+        .collect()
 }
 
 /// The crates §7 removed, in the order it names them, so a failure reads the
