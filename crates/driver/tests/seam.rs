@@ -1496,6 +1496,66 @@ fn awaits(source: &str) -> bool {
     })
 }
 
+/// `deps.md` §10's closing sentence, which is the one that makes every rule
+/// above it reachable from outside the enum:
+///
+/// > `heuristic_jump::main` returns `Result<(), shared::Error>` (or exits with
+/// > the child's status), so the top-level match is exhaustive.
+///
+/// The rest of §10 is scanned inside `shared/src/error.rs` — no `Other(String)`,
+/// no `Box<dyn`, every foreign error sourced beside context of ours. None of it
+/// survives a `main` that widens on the way out. `-> Result<(), Box<dyn Error>>`
+/// compiles, needs no new dependency, reads as ordinary, and makes the closed
+/// set an implementation detail of a program whose exit type is open: it is the
+/// escape hatch §10 bans as a *variant*, one frame further out, where the scan
+/// for it was not looking.
+///
+/// Every `fn main` is checked and not only the shim's, because `core.md`'s
+/// adding-a-language price makes the four-line `measure_<x>` a thing that is
+/// *copied* per language — so the version that spreads is whichever one exists
+/// when the second language arrives. The template printed in `measure_core`'s
+/// own doc comment is caught by the same scan, deliberately: a code example is
+/// exactly the copy that gets made.
+#[test]
+fn every_main_returns_the_total_error() {
+    const SIGNATURE: &str = "fn main() -> Result<(), shared::Error> {";
+
+    let mut mains: Vec<String> = Vec::new();
+    for member in crate_members() {
+        for (file, source) in sources_of(&member) {
+            for line in source.lines() {
+                let code = line.trim_start();
+                // Doc comments are read as the code they print, which is what
+                // reaches the template. Prose naming `fn main` in backticks
+                // does not start with the paren and is skipped.
+                let code = code.strip_prefix("///").unwrap_or(code).trim_start();
+                if !code.starts_with("fn main(") {
+                    continue;
+                }
+                assert_eq!(
+                    code, SIGNATURE,
+                    "{file} declares `{code}`. deps.md §10 makes every failure in the system a \
+                     variant of one enum so shim.md §11's table can match on it exhaustively, \
+                     and a binary whose exit type is wider than `shared::Error` reopens the set \
+                     at the only frame where nothing is left to match"
+                );
+                mains.push(file.clone());
+            }
+        }
+    }
+
+    for required in [
+        "crates/heuristic_jump/src/heuristic_jump.rs",
+        "crates/measure_rust/src/measure_rust.rs",
+    ] {
+        assert!(
+            mains.iter().any(|file| file == required),
+            "no `fn main` found in {required}, so the scan is reading something other than the \
+             sources and would pass against a workspace of `anyhow`"
+        );
+    }
+}
+
 /// `deps.md` §2, and what the withdrawn lint left behind:
 ///
 /// > So the bound is a per-channel judgement rather than a repository-wide
