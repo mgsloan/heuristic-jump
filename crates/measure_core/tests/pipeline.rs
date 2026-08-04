@@ -1371,14 +1371,59 @@ fn every_non_identifier_position_is_one_the_handler_also_declines() {
         "the fixture declares alpha, beta, u32 and a call, and enumerate found \
          {identifiers} identifier positions in it"
     );
-    // The claim is that the corpus's notion of "a query" and the handler's are
-    // one function. The positions file is written by `shared::identifiers` and
-    // the `other` rows by `shared::identifier_at`; a second implementation
-    // would show up as a row of one class the other class also matches.
     assert!(
         text.contains("\"class\":\"other\""),
         "no non-identifier positions were enumerated, so the NotAnIdentifier \
          path has nothing in the corpus to fire on (data-collection.md §2)"
+    );
+
+    // The claim the test is named for. `core.md`'s template section: "That rule
+    // is one function in `shared`, not two implementations that agree… and if
+    // those two ever disagree, the corpus contains positions the tool does not
+    // consider queries, or the reverse, and the resulting miscount looks like a
+    // resolution failure rather than a definitional one."
+    //
+    // One function, two entry points, and they do *not* look alike: enumeration
+    // walks the tree with `shared::identifiers` and the handler asks
+    // `named_descendant_for_byte_range` through `shared::identifier_at`. That
+    // they share a private predicate is not enough on its own — the lookups
+    // could still select different nodes at the same offset — so this is the
+    // join, position by position: the corpus wrote a class and the handler
+    // reached an abstention reason, at the same offset, through the other door.
+    write_truth(&corpus);
+    let records = corpus.scratch.join("records.jsonl");
+    replay(&corpus, Some(&records));
+    let replayed = fs::read_to_string(&records).expect("replay wrote the records file");
+
+    let mut checked = 0;
+    for line in text.lines() {
+        let offset = between(line, "\"offset\":", ",");
+        let class = between(line, "\"class\":\"", "\"");
+        let record = replayed
+            .lines()
+            .find(|record| between(record, "\"position\":", ",") == offset)
+            .unwrap_or_else(|| panic!("position {offset} was enumerated and never replayed"));
+
+        let expected = match class {
+            "identifier" => "abstain:unsupported_role",
+            "other" => "abstain:not_an_identifier",
+            unknown => panic!("position {offset} was enumerated as {unknown}"),
+        };
+        assert!(
+            record.contains(expected),
+            "the corpus enumerated position {offset} as `{class}` and the \
+             handler reached it through the other entry point and disagreed. \
+             The two are meant to be one function: a disagreement puts \
+             positions in the corpus the tool does not consider queries, and \
+             the miscount reads as a resolution failure rather than a \
+             definitional one.\nrecord: {record}"
+        );
+        checked += 1;
+    }
+    assert_eq!(
+        checked,
+        text.lines().count(),
+        "the join skipped positions, so it holds less than it reads as"
     );
 }
 
