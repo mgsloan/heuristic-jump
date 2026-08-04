@@ -38,7 +38,7 @@ pin that is a design constraint rather than a resolution detail.
 | `lru` | driver | chosen, with a caveat — see §8 |
 | `thiserror` | shared | chosen; `anyhow` explicitly rejected — see §10 |
 | `tracing` | all | chosen |
-| `tracing-subscriber` | heuristic_jump, measure_core | chosen — §9, DECISION-core-002: provisional |
+| `tracing-subscriber` | heuristic_jump, measure_core | **chosen** in both, on the ruling on `state/decisions/core-002.md` — §9 |
 | `rustc-hash` | driver, shared | chosen — the default map/set, see §8 |
 | `heapless` | vendored rope/sum_tree | forced by rope |
 | `unicode-segmentation` | vendored rope | forced by rope |
@@ -546,7 +546,7 @@ Alternative: `log` + `env_logger`. Simpler, but `tracing` is already in the
 graph and its spans are the natural way to attribute the per-stratum latency
 `high-level.md` asks for.
 
-**Who installs the subscriber** — `DECISION-core-002: provisional`. The rule is
+**Who installs the subscriber.** The rule is
 that a crate the shim *links* has no opinion about where logs go: `driver` and
 `shared` emit through the facade and nothing else. That leaves the crate which
 owns the process, and there are two processes, not one. `heuristic_jump` is the
@@ -559,9 +559,15 @@ disagreement with it: the shim is quiet because its stderr is an editor panel
 with the child's output interleaved, and a `measure` run has neither a child
 nor an editor while §7 requires it to report its own wall clock.
 
-The trade is a library that installs a global subscriber, and it is why this is
-a decision record rather than a fix. `state/decisions/core-002.md` has the
-option that does not.
+The trade is a library that installs a global subscriber, which is why it was a
+decision record rather than a fix. It is answered — `state/decisions/core-002.md`
+— and the reasoning is that the rule this looks like a breach of is not the rule
+it breaches: `measure_core` is a binary body under a library's name, linked only
+by the four-line `measure_<lang>` binaries, so "a library a handler links must
+have no opinion about where logs go" is about `driver` and `shared` and does not
+reach it. `try_init` leaves a test's scoped subscriber winning. The option not
+taken — the same twenty lines in every language's `main` — is the drift
+`core.md` §7 gives as the reason `clap` lives here at all.
 
 ## 10. Errors: one enumerated type, no `anyhow`
 
