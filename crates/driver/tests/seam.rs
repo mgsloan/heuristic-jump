@@ -2495,23 +2495,73 @@ fn every_foreign_error_is_wrapped_beside_context_of_ours() {
          because an exhaustive match on the nine classes is what makes shim.md §11's table a \
          table"
     );
-    for arm in [
-        "ConfigError",
-        "CodecError",
-        "ChildError",
-        "ProtocolError",
-        "DocumentError",
-        "ParseError",
-        "ProjectError",
-        "HandlerError",
-        "EncodingError",
-    ] {
+    // The tree is the fixture, in both directions. What this replaced was the
+    // nine names transcribed here, which checks the code against a copy of the
+    // document rather than against the document: a tenth sub-enum, or one
+    // renamed, drifts the section away from the code with every assertion still
+    // green. The count is load-bearing enough that `ConfigError`'s own doc
+    // comment cites it — `measure_core`'s corpus failures share that arm rather
+    // than taking a tenth "because `deps.md` §10 fixes the arm count at nine so
+    // `shim.md` §11's table stays a table".
+    let mut printed = error_arms(&fenced_block_of(
+        &workspace_file("design/deps.md"),
+        "## 10. Errors: one enumerated type",
+    ));
+    assert_eq!(
+        printed.len(),
+        9,
+        "deps.md §10's tree yielded {printed:?} rather than the nine classes it prints, so the \
+         comparison below is reading something other than the tree"
+    );
+    // Bounded to the total enum's own body, so the forty-odd leaf variants
+    // below it are not read as classes.
+    let mut declared = error_arms(sub_enums.split_once("\n}").map_or("", |(body, _)| body));
+    printed.sort();
+    declared.sort();
+    assert_eq!(
+        printed, declared,
+        "deps.md §10's tree and `shared::Error` name different classes. The tree is not a \
+         description of the enum — it is the enum's specification, and `shim.md` §11's failure \
+         table is an exhaustive match on exactly these arms, so a class in one and not the \
+         other is a failure mode with no row or a row with no failure mode"
+    );
+
+    for (_, sub) in &printed {
         assert!(
-            sub_enums.contains(&format!("#[non_exhaustive]\npub enum {arm} {{")),
-            "{arm} is not #[non_exhaustive]: deps.md §10 marks every sub-enum, so that adding \
+            sub_enums.contains(&format!("#[non_exhaustive]\npub enum {sub} {{")),
+            "{sub} is not #[non_exhaustive]: deps.md §10 marks every sub-enum, so that adding \
              a leaf is not a breaking change to the class table above it"
         );
     }
+}
+
+/// The `Name(NameError)` pairs of a block, whether it is `deps.md` §10's tree
+/// or the `pub enum Error` that tree specifies.
+///
+/// One reader for both sides, for the reason [`lint_entries`] is one: a
+/// difference is then a difference and not a parsing artefact. Both halves are
+/// required to look like type names, which is what keeps `#[error(transparent)]`
+/// — a line that is `something(something)` and nothing else here is — from
+/// being read as a tenth class.
+fn error_arms(text: &str) -> Vec<(String, String)> {
+    fn is_type_name(name: &str) -> bool {
+        name.starts_with(|first: char| first.is_ascii_uppercase())
+            && name
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric())
+    }
+
+    text.lines()
+        .filter_map(|line| {
+            let (before, rest) = line.split_once('(')?;
+            // The last token either side of the paren: the tree draws `├─ `
+            // in front of the arm and the enum writes `#[from] ` in front of
+            // the sub-enum, and neither is part of a name.
+            let arm = before.split_whitespace().next_back()?;
+            let sub = rest.split_once(')')?.0.split_whitespace().next_back()?;
+            (is_type_name(arm) && is_type_name(sub)).then(|| (arm.to_owned(), sub.to_owned()))
+        })
+        .collect()
 }
 
 /// `deps.md` §9, whose three claims are each about something that is invisible
