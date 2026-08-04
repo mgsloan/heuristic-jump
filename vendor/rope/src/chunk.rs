@@ -372,13 +372,17 @@ impl<'a> ChunkSlice<'a> {
     /// Get number of chars in first line
     #[inline(always)]
     pub fn first_line_chars(&self) -> CharCount {
-        CharCount((self.chars & saturating_shl_mask(self.newlines.trailing_zeros())).count_ones())
+        CharCount(
+            (self.chars & saturating_shl_mask(self.newlines.trailing_zeros())).count_ones() as usize,
+        )
     }
 
     /// Get number of chars in last line
     #[inline(always)]
     pub fn last_line_chars(&self) -> CharCount {
-        CharCount((self.chars & saturating_shr_mask(self.newlines.leading_zeros())).count_ones())
+        CharCount(
+            (self.chars & saturating_shr_mask(self.newlines.leading_zeros())).count_ones() as usize,
+        )
     }
 
     /// Get number of UTF-16 code units in last line
@@ -408,7 +412,7 @@ impl<'a> ChunkSlice<'a> {
         while newlines > 0 {
             let newline_ix = newlines.trailing_zeros();
             let row_chars = (chars & ((1 << newline_ix) - 1)).count_ones() as u8;
-            total_chars.0 += u32::from(row_chars);
+            total_chars.0 += usize::from(row_chars);
             if row_chars > longest_row_chars {
                 longest_row = row;
                 longest_row_chars = row_chars;
@@ -423,11 +427,11 @@ impl<'a> ChunkSlice<'a> {
         }
 
         let row_chars = chars.count_ones() as u8;
-        total_chars.0 += u32::from(row_chars);
+        total_chars.0 += usize::from(row_chars);
         if row_chars > longest_row_chars {
-            (LineIndex(row), CharCount(row_chars as u32))
+            (LineIndex(row), CharCount(usize::from(row_chars)))
         } else {
-            (LineIndex(longest_row), CharCount(longest_row_chars as u32))
+            (LineIndex(longest_row), CharCount(usize::from(longest_row_chars)))
         }
     }
 
@@ -768,7 +772,7 @@ impl Iterator for Tabs {
 
         let tab_offset = self.tabs.trailing_zeros() as usize;
         let chars_mask = (1 << tab_offset) - 1;
-        let char_offset = (self.chars & chars_mask).count_ones();
+        let char_offset = (self.chars & chars_mask).count_ones() as usize;
 
         // Since tabs are 1 byte the tab offset is the same as the byte offset
         let position = TabPosition {
@@ -1172,7 +1176,7 @@ mod tests {
             if c == '\t' {
                 expected_tab_positions.push(TabPosition {
                     byte_offset: Offset(offset),
-                    char_offset: CharCount(char_offset as u32),
+                    char_offset: CharCount(char_offset),
                 });
             }
 
@@ -1284,13 +1288,13 @@ mod tests {
             let first_line = text.split('\n').next().unwrap();
             assert_eq!(
                 chunk.first_line_chars(),
-                CharCount(first_line.chars().count() as u32)
+                CharCount(first_line.chars().count())
             );
 
             let last_line = text.split('\n').next_back().unwrap();
             assert_eq!(
                 chunk.last_line_chars(),
-                CharCount(last_line.chars().count() as u32)
+                CharCount(last_line.chars().count())
             );
             assert_eq!(
                 chunk.last_line_len_utf16(),
@@ -1301,9 +1305,9 @@ mod tests {
         // Verify longest row
         let mut total_chars = CharCount::ZERO;
         let (longest_row, longest_chars) = chunk.longest_row(&mut total_chars);
-        let mut max_chars = 0;
+        let mut max_chars: usize = 0;
         let mut current_row = 0;
-        let mut current_chars = 0;
+        let mut current_chars: usize = 0;
         let mut max_row = 0;
 
         for c in text.chars() {
@@ -1325,7 +1329,7 @@ mod tests {
         }
 
         assert_eq!(
-            (LineIndex(max_row), CharCount(max_chars as u32)),
+            (LineIndex(max_row), CharCount(max_chars)),
             (longest_row, longest_chars)
         );
         assert_eq!(chunk.tabs().collect::<Vec<_>>(), expected_tab_positions);

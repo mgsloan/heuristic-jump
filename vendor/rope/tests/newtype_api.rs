@@ -482,10 +482,16 @@ fn every_newtype_has_its_bounds_and_prints_as_a_bare_number() {
             LineIndex(u32::MAX),
             ByteColumn(u32::MAX),
             Utf16Column(u32::MAX),
-            CharCount(u32::MAX),
+            CharCount(usize::MAX),
         ),
-        "the byte pair is `usize`-shaped and the line-shaped four are `u32`, \
-         which is the bound `Point.row` already imposed"
+        "the byte pair is `usize`-shaped, the *line*-shaped three are `u32`, \
+         and `CharCount` is the one member of the family that goes with the \
+         byte pair instead. §2: it is \"the width of the widest thing it has \
+         to hold rather than a preference\" -- `TextSummary.chars` accumulates \
+         across the whole rope and is a `usize` upstream, so a `u32` here \
+         would cap a summary at 4G scalar values, which §3 forbids as an edit \
+         to the arithmetic. The bound `Point.row` imposes on itself is not an \
+         argument for imposing another one here"
     );
 
     // The consequence §4 names, and the reason `Display` could not simply be
@@ -537,6 +543,54 @@ fn add_newline_agrees_with_the_summary_of_the_same_text_plus_a_newline() {
             "add_newline disagrees with the summary of the same text plus a \
              newline (seed {seed}, {} bytes)",
             text.len()
+        );
+    }
+}
+
+/// §2 makes `CharCount` the one member of the family backed by `usize` rather
+/// than `u32`, and the reason is this type: `TextSummary.chars` "accumulates
+/// across the whole rope" and is a `usize` upstream, so narrowing it "would
+/// have silently capped a summary at 4G scalar values -- which is an edit to
+/// the *arithmetic*, exactly what §3 says a hunk may never be".
+///
+/// The crate carried the narrowed version until this test arrived, recorded in
+/// `vendor/README.md` as deliberate and attributed to §4 -- which prints
+/// `chars: CharCount, // usize before and after`, so the attribution was to a
+/// section saying the opposite. A repr is not the sort of thing a re-sync diff
+/// makes obvious, and the whole file is otherwise about *which* newtype a
+/// signature carries rather than how wide it is.
+///
+/// A 4G-character rope cannot be built in a test and does not have to be: the
+/// accumulation is `AddAssign`, which is what the sum tree runs at every
+/// internal node, so summing two summaries is the same arithmetic.
+#[test]
+fn a_summary_accumulates_scalar_values_across_the_whole_usize_range() {
+    let mut total = TextSummary::default();
+    total.chars = CharCount(usize::MAX - 1);
+    let mut one = TextSummary::default();
+    one.chars = CharCount(1);
+    total += &one;
+    assert_eq!(
+        total.chars, CharCount(usize::MAX),
+        "a summary's char count is bounded by `usize` and not by anything \
+         narrower, which is upstream's own bound and is what §2 means by \
+         \"the width of the widest thing it has to hold\""
+    );
+
+    // The bound `usize` imposes on a 32-bit target *is* `u32`'s, and is still
+    // upstream's, so the straddle below degrades rather than becoming false.
+    if usize::BITS > 32 {
+        let four_billion = CharCount(u32::MAX as usize);
+        let mut straddling = TextSummary::default();
+        straddling.chars = four_billion;
+        let mut again = TextSummary::default();
+        again.chars = four_billion;
+        straddling += &again;
+        assert_eq!(
+            straddling.chars,
+            CharCount(2 * (u32::MAX as usize)),
+            "two summaries that each fill a `u32` add to one that does not, \
+             and this is the case §2 says a narrowed `chars` would have capped"
         );
     }
 }
