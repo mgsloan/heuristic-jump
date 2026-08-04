@@ -1164,6 +1164,118 @@ fn a_resume_refuses_every_provenance_field_that_moved() {
     }
 }
 
+/// §7: "**a truth file is regenerated, never edited**", and "a partially
+/// collected truth file is marked incomplete and is never consumed by replay".
+///
+/// The window between those two sentences is what this holds. `collect`
+/// appends every answer as it arrives and rewrites the header last, so a run
+/// killed after its final row — in a window that spans the child's whole
+/// shutdown handshake — holds *every* answer and still says `complete: false`.
+/// [`a_replay_refuses_a_truth_file_it_cannot_trust`] is what then refuses it,
+/// and that refusal is right. The resume is the only thing that can lift it,
+/// and returning "already collected" without doing so left `--restart` as the
+/// sole remedy: re-collecting a repository the corpus had already paid hours
+/// for, which is exactly the regeneration the first sentence wants to be rare.
+///
+/// **Both directions, and the second is the one that matters.** A seal that
+/// fired unconditionally passes every assertion in the first half and marks a
+/// half-collected file as ground truth — the case §7 calls the worst, because
+/// a corpus whose rows stop where the run died does not read as a broken
+/// corpus. It reads as coverage that regressed.
+#[test]
+fn a_resume_with_nothing_left_to_ask_seals_the_file_rather_than_leaving_it_unreadable() {
+    let corpus = fixture("resume_seals");
+    enumerate(&corpus);
+    let path = truth_path(&corpus, "oracle");
+    let positions = positions_of(&corpus).lines().count();
+    assert!(
+        positions > 1,
+        "the second half of this test takes one answer away, so a one-position \
+         corpus would make the two halves the same case"
+    );
+
+    write_truth_headed(&corpus, "oracle", &header("oracle", &corpus.commit, false));
+    let before = fs::read_to_string(&path).expect("the truth file");
+    assert_eq!(
+        before.lines().count(),
+        positions + 1,
+        "this is the case it claims to be only if the file holds an answer for \
+         every position, beside the header that does not say so"
+    );
+
+    let refused = replay_result(&corpus, measure_core::Format::Json)
+        .expect_err("a truth file whose header was never rewritten was replayed");
+    assert!(
+        matches!(
+            refused,
+            Error::Config(shared::ConfigError::ArtifactIncomplete { .. })
+        ),
+        "a finished collection with an unfinished header was refused as \
+         {refused}"
+    );
+
+    let resumed = measure_core::resume_collection(&path, &fixture_provenance(&corpus), positions)
+        .expect("the header on disk is the one this run would write");
+    assert_eq!(
+        (resumed.answered(), resumed.is_complete()),
+        (positions, true),
+        "a resume that finds every position answered has nothing left to ask \
+         and everything left to close"
+    );
+
+    let after = fs::read_to_string(&path).expect("the truth file");
+    assert_eq!(
+        after.lines().next(),
+        Some(&*header("oracle", &corpus.commit, true)),
+        "`complete` is the only field of the header a seal may move. The other \
+         seven describe the collection that gathered the rows, not the run \
+         that finished the file"
+    );
+    assert_eq!(
+        after.lines().skip(1).collect::<Vec<&str>>(),
+        before.lines().skip(1).collect::<Vec<&str>>(),
+        "sealing rewrote an answer. The rows are the oracle's and this call \
+         never spoke to a server — a truth file is regenerated and never \
+         edited, and a seal that touches a row is an edit"
+    );
+    replay_result(&corpus, measure_core::Format::Json)
+        .expect("a sealed truth file was still refused, which is the whole of what sealing is for");
+
+    // One answer short, with everything else identical.
+    let partial = fixture("resume_partial");
+    enumerate(&partial);
+    let path = truth_path(&partial, "oracle");
+    let positions = positions_of(&partial).lines().count();
+    write_truth_headed(
+        &partial,
+        "oracle",
+        &header("oracle", &partial.commit, false),
+    );
+    let short: String = fs::read_to_string(&path)
+        .expect("the truth file")
+        .lines()
+        .take(positions)
+        .map(|line| format!("{line}\n"))
+        .collect();
+    fs::write(&path, &short).expect("a truth file one answer short");
+
+    let resumed = measure_core::resume_collection(&path, &fixture_provenance(&partial), positions)
+        .expect("the header on disk is the one this run would write");
+    assert_eq!(
+        (resumed.answered(), resumed.is_complete()),
+        (positions - 1, false),
+        "a resume one answer short of its corpus has a position left to ask, \
+         and a file it must not call finished"
+    );
+    assert_eq!(
+        fs::read_to_string(&path).expect("the truth file"),
+        short,
+        "a resume that still has positions to ask rewrote the file anyway. \
+         Until the last answer is in, the only honest header is the one \
+         already there"
+    );
+}
+
 /// §7: "**replay refuses to run against a truth file whose repository commit
 /// does not match the checkout**, rather than silently reporting metrics for
 /// positions that have since moved", and "a partially collected truth file is
@@ -2034,7 +2146,7 @@ fn the_printed_table_and_the_json_report_are_one_table() {
 #[test]
 fn a_digest_group_names_a_case_a_person_can_open() {
     let corpus = fixture_of(
-        "digest_sample",
+        "digest_group",
         &[("src/lib.rs", SOURCE), ("src/other.rs", OTHER_SOURCE)],
     );
     enumerate(&corpus);
@@ -2347,8 +2459,69 @@ struct Fixture {
     commit: String,
 }
 
+/// Two tests naming one fixture is a race and not a duplicate, which is why it
+/// is worth a test rather than a convention.
+///
+/// The name is the whole identity of the corpus root, and [`fixture_of`] clears
+/// that root before it builds — so under `cargo nextest`, which runs each test
+/// in its own process and several at once, two tests sharing a name delete each
+/// other's checkout mid-run. It fails as `ProjectError::Read` on a source file
+/// that was there a moment ago, in whichever test lost, and it does not fail
+/// every time: `cargo test`'s threads-in-one-process happen to interleave less.
+/// So the same suite is green on one runner and intermittently red on the one
+/// the gate uses, which is a day of somebody's time and no information at all.
+///
+/// The clash this caught was not even a naming slip. Both fixtures were
+/// `digest_sample`, and one wanted a two-file repository for exactly the reason
+/// [`a_digest_group_names_a_case_a_person_can_open`] gives — so whichever ran
+/// second replaced the other's corpus with a different one, and the join under
+/// test was being asserted against whichever checkout survived.
+#[test]
+fn no_two_tests_build_a_fixture_under_the_same_name() {
+    // `file!()` is workspace-relative and a test's working directory is the
+    // crate root, so the manifest directory is what joins the two.
+    let text = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("pipeline.rs"),
+    )
+    .expect("reading this test file");
+    let mut named: Vec<&str> = Vec::new();
+    let mut clashing: Vec<&str> = Vec::new();
+
+    for call in ["fixture(\"", "fixture_of(\""] {
+        for (index, _) in text.match_indices(call) {
+            let rest = &text[index + call.len()..];
+            let Some(end) = rest.find('"') else { continue };
+            let name = &rest[..end];
+            if named.contains(&name) {
+                clashing.push(name);
+            } else {
+                named.push(name);
+            }
+        }
+    }
+
+    assert!(
+        clashing.is_empty(),
+        "two tests build a corpus fixture under the same name, so they share a \
+         root that each of them clears: {clashing:?}"
+    );
+    assert!(
+        named.len() > 20,
+        "the scan found {} fixture names, which is too few to be reading the \
+         calls this file makes -- a literal moved into a variable would empty \
+         it out silently",
+        named.len()
+    );
+}
+
 /// A corpus root with the layout `data-collection.md` §0 describes, holding
 /// one repository at a known commit with a clean tree.
+///
+/// **The name has to be unique across the file** — it is the corpus root, and
+/// the root is cleared here. [`no_two_tests_build_a_fixture_under_the_same_name`]
+/// is what says so mechanically.
 fn fixture(name: &str) -> Fixture {
     fixture_of(name, &[("src/lib.rs", SOURCE)])
 }

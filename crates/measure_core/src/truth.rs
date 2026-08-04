@@ -131,6 +131,89 @@ pub fn check_resumable(path: &Path, wanted: &Provenance) -> Result<(), Error> {
     }
 }
 
+/// What a resume found on disk: the answers already collected, and whether
+/// the file now says the collection finished.
+///
+/// The rows are carried rather than counted because the run appends them to
+/// the file it is about to rewrite, and the count is what decides how many
+/// positions to skip — two readings of one fact, which is the pair
+/// [`Writer`]'s own doc comment says must not be able to disagree.
+#[derive(Debug)]
+pub struct Resumption {
+    rows: Vec<Row>,
+    complete: bool,
+}
+
+impl Resumption {
+    /// How many of the corpus's positions are answered on disk, which is how
+    /// many the run skips.
+    pub fn answered(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// Whether the file on disk is now one replay will read. True only when
+    /// every position is answered, and [`resume_collection`] is what made it
+    /// so.
+    pub fn is_complete(&self) -> bool {
+        self.complete
+    }
+
+    pub(crate) fn into_rows(self) -> Vec<Row> {
+        self.rows
+    }
+}
+
+/// The decision a resume makes before it starts a server, and the point at
+/// which a truth file that already holds every answer becomes one replay will
+/// read.
+///
+/// Three things happen here and they are one decision. The header on disk must
+/// be the header this run would write ([`check_resumable`]'s rule, so half a
+/// file from one provenance and half from another cannot happen). The answers
+/// already collected are handed back, so the run continues after them. And a
+/// file whose rows already cover every position is *sealed*.
+///
+/// That last part is the reason this is a function rather than three lines in
+/// `collect`. Every answer is appended as it arrives and the header is
+/// rewritten last, so a run killed in between — a window that spans the child's
+/// whole shutdown handshake — leaves a file holding every answer that still
+/// says `complete: false`. [`Truth::read`] refuses that, and the resume used to
+/// return "already collected" without touching it, which left `--restart` as
+/// the only remedy: discarding the machine-hours those rows already paid for
+/// and spending them again. `core.md` §7 says a truth file is regenerated and
+/// never edited, and a collection that cannot be finished is one an operator
+/// has every reason to edit.
+///
+/// Public for the reason [`check_resumable`] is: `collect` cannot be driven
+/// from a test without a language server, and this is the whole of what it does
+/// before it starts one.
+pub fn resume_collection(
+    path: &Path,
+    wanted: &Provenance,
+    positions: usize,
+) -> Result<Resumption, Error> {
+    // Nothing on disk is a fresh collection, which has no rows to skip and
+    // nothing to seal.
+    let Some(existing) = Truth::read_partial(path)? else {
+        return Ok(Resumption {
+            rows: Vec::new(),
+            complete: false,
+        });
+    };
+    if let Some(drift) = existing.provenance.drift(wanted) {
+        return Err(drift.at(path));
+    }
+
+    let complete = existing.rows.len() >= positions;
+    if complete && !existing.provenance.complete {
+        rewrite_complete(path, existing.provenance, &existing.rows)?;
+    }
+    Ok(Resumption {
+        rows: existing.rows,
+        complete,
+    })
+}
+
 /// `data-collection.md` §4's four outcomes, kept distinct. Collapsing `Error`
 /// or `Timeout` into `None` is the mistake that quietly inflates precision
 /// later, because the heuristic gets credit for abstaining where the oracle
@@ -305,24 +388,8 @@ impl Writer {
         self.rows.len()
     }
 
-    /// Rewrites the whole file with `complete: true`. A rewrite rather than an
-    /// in-place header patch because the header's length changes, and a
-    /// truncated header is a file nothing can read at all.
     pub(crate) fn finish(self) -> Result<(), Error> {
-        let mut provenance = self.provenance;
-        provenance.complete = true;
-
-        let mut text = encode(&provenance, "a truth file's provenance header")?;
-        text.push('\n');
-        for row in &self.rows {
-            text.push_str(&encode(row, "a truth row")?);
-            text.push('\n');
-        }
-        fs::write(&self.path, text).map_err(|source| ConfigError::ManifestUnreadable {
-            path: self.path,
-            source,
-        })?;
-        Ok(())
+        rewrite_complete(&self.path, self.provenance, &self.rows)
     }
 
     fn write_line(&mut self, line: &str) -> Result<(), Error> {
@@ -332,6 +399,31 @@ impl Writer {
         })?;
         Ok(())
     }
+}
+
+/// Rewrites the whole file with `complete: true`. A rewrite rather than an
+/// in-place header patch because the header's length changes, and a truncated
+/// header is a file nothing can read at all.
+///
+/// One `fs::write` and not a truncate followed by a re-append, which matters on
+/// the path [`resume_collection`] reaches it by: there the rows being written
+/// back are the only copy of them there is, and a crash between the truncate
+/// and the last append would lose a whole collection to a call whose only job
+/// was to flip one field.
+fn rewrite_complete(path: &Path, mut provenance: Provenance, rows: &[Row]) -> Result<(), Error> {
+    provenance.complete = true;
+
+    let mut text = encode(&provenance, "a truth file's provenance header")?;
+    text.push('\n');
+    for row in rows {
+        text.push_str(&encode(row, "a truth row")?);
+        text.push('\n');
+    }
+    fs::write(path, text).map_err(|source| ConfigError::ManifestUnreadable {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    Ok(())
 }
 
 /// The answer stored for every outcome but `Resolved`.

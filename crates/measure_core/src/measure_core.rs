@@ -44,7 +44,7 @@ pub use corpus::{ServerEntry, grammar_pin, locked_grammar, resolve_server};
 // Re-exported rather than reached through `shared::record` at every call site,
 // so a `measure_<lang>` binary keeps naming one crate.
 pub use shared::record::{Decision, Mode, QueryRecord, StratumName};
-pub use truth::{Provenance, check_resumable};
+pub use truth::{Provenance, Resumption, check_resumable, resume_collection};
 
 /// The whole of a `measure_<lang>` binary, after `Cli::parse()`.
 ///
