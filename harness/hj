@@ -2600,6 +2600,48 @@ def cmd_campaign_open(args: argparse.Namespace) -> int:
     return 0
 
 
+PROVISIONAL_TAG = re.compile(r"DECISION-(?P<id>[A-Za-z0-9_-]+): provisional")
+
+
+def reconciled_in_diff(diff: str) -> list[str]:
+    """Decision ids whose provisional tags a diff removes and does not put
+    back. A tag that moves — the site was rewritten, the choice still stands —
+    is removed and added in the same diff, and is not a reconciliation."""
+    removed: set[str] = set()
+    added: set[str] = set()
+    for line in diff.splitlines():
+        if line.startswith("---") or line.startswith("+++"):
+            continue
+        match = PROVISIONAL_TAG.search(line)
+        if not match:
+            continue
+        if line.startswith("-"):
+            removed.add(match.group("id"))
+        elif line.startswith("+"):
+            added.add(match.group("id"))
+    return sorted(removed - added)
+
+
+def decisions_reconciled(campaign_id: str) -> list[str]:
+    """Provisional choices this campaign retired.
+
+    The fourth of §7's five forms of progress, and the one that was missing:
+    a campaign that takes an answered decision and reconciles the sites it was
+    tagged at can move no section and add no test — §6 calls that "a normal
+    campaign target" — and it was closing as no-progress and counting toward
+    the stall.
+
+    Answering is not resolving, deliberately. A record's `status` is a human's
+    to change and a loop is told not to rule on its own escalation, so credit
+    is given for the work in the tree rather than for a line in the record.
+    """
+    ids: set[str] = set()
+    for commit in commits_for_campaign(campaign_id):
+        diff = git("show", "--format=", "-U0", commit, check=False)
+        ids.update(reconciled_in_diff(diff))
+    return sorted(ids)
+
+
 def is_code_path(path: str) -> bool:
     """Is this path part of what the spec is judged against?
 
@@ -2790,10 +2832,18 @@ def cmd_campaign_close(args: argparse.Namespace) -> int:
     tests_before = opened.get("tests")
     tests_after = metrics[-1].get("tests") if metrics else None
 
+    reconciled = decisions_reconciled(args.id)
+
+    # Four of §7's five forms. The fifth is a frontier point that is not
+    # dominated by an existing one, and there is no frontier before phase 2a:
+    # it is produced by the corpus run, which is what `measure_<lang>` will
+    # write and no loop writes yet. Adding a term that reads a file nobody
+    # produces would make this look complete while behaving identically.
     progress = (
         after["sections_clean"] > before["sections_clean"]
         or after["open_gaps"] < before["open_gaps"]
         or (tests_before is not None and tests_after is not None and tests_after > tests_before)
+        or bool(reconciled)
     )
     drift = spec_drift(args.id, args.target)
     audits = read_jsonl(GAP_LOG)
@@ -2820,6 +2870,7 @@ def cmd_campaign_close(args: argparse.Namespace) -> int:
             "transcript": transcript or None,
             "tokens": tokens,
             "progress": progress,
+            "decisions_reconciled": reconciled,
             "audited": audited,
             "spec_drift": drift,
             "lines": line_counts(),
@@ -2828,6 +2879,8 @@ def cmd_campaign_close(args: argparse.Namespace) -> int:
     )
     commit_harness_state([sessions_path()], f"close campaign {args.id[:8]} ({args.outcome})")
     print(f"campaign {args.id[:8]} closed: {args.outcome}, {len(commits)} commit(s), progress={progress}")
+    if reconciled:
+        print(f"campaign: reconciled the provisional sites of {', '.join(reconciled)}")
     if drift:
         print(
             "campaign: flagged — this campaign edited design/ and code in the same run"
@@ -3921,6 +3974,22 @@ def selftest_cases() -> list[tuple[str, object]]:
         assert numbers["reverts"] == 1, numbers
         assert numbers["gate_seconds"] == 16.5, numbers
         assert numbers["usd"] == 1.5 and numbers["turns"] == 4
+
+    def reconciling_a_tag_is_progress():
+        diff = "-    // DECISION-harness-002: provisional\n-    let sandbox = None;\n+    let sandbox = configured();\n"
+        assert reconciled_in_diff(diff) == ["harness-002"]
+
+    def a_tag_that_only_moves_is_not_reconciled():
+        diff = "-// DECISION-core-007: provisional\n+    // DECISION-core-007: provisional\n"
+        assert reconciled_in_diff(diff) == [], "the choice still stands; the line moved"
+
+    def adding_a_tag_is_not_progress():
+        diff = "+// DECISION-harness-003: provisional\n"
+        assert reconciled_in_diff(diff) == [], "escalating is not resolving"
+
+    def the_diff_header_is_not_a_tag():
+        diff = "--- a/decisions/DECISION-x: provisional\n+++ b/x.rs\n"
+        assert reconciled_in_diff(diff) == []
 
     def a_deleted_test_is_named():
         diff = textwrap.dedent("""\
