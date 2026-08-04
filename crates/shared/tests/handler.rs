@@ -147,6 +147,92 @@ fn the_printed_trait_has_the_methods_a_language_implements() {
     );
 }
 
+/// The three enums §1 prints that a `lang_*` crate has to *name*, rather than
+/// merely receive: a stratum and an abstention reason are what a handler
+/// returns, and a refinement is the only thing `Strata::refine` accepts.
+///
+/// Held for the reason the two tests above are (CHANGE-core-018): the block is
+/// the only description of the seam a language author reads. A variant printed
+/// here and absent there is a handler that does not compile; a variant present
+/// there and unprinted is one nobody knows to return — and for `Stratum` that
+/// is a `high-level.md` stratification row with no coverage in any table, which
+/// reads as a resolution failure rather than as a class nobody classified.
+///
+/// `Stratum` specifically is the one where the count is load-bearing beyond the
+/// seam: §7 groups coverage by it, so the denominator is the variant list, and
+/// `Unimplemented` is the gate check that the template has been replaced.
+#[test]
+fn the_printed_enums_a_handler_returns_have_the_variants_it_may_return() {
+    let block = printed(&document());
+    let source = source();
+
+    for header in [
+        "pub enum Stratum {",
+        "pub enum AbstainReason {",
+        "pub enum Refinement {",
+    ] {
+        let documented = variants(&block, header);
+        let declared = variants(&source, header);
+        assert!(
+            !documented.is_empty(),
+            "§1 prints no variants under `{header}`, so this comparison is vacuous"
+        );
+        assert_eq!(
+            documented, declared,
+            "§1's printed `{header}` and `shared::handler`'s disagree"
+        );
+    }
+}
+
+/// Variant names of the enum introduced by `header`, in declaration order.
+///
+/// Scanning rather than parsing, for the reason [`members`] gives — but the
+/// body is delimited by counting braces rather than by looking for a `}` in
+/// column one. The document prints `Refinement` on a single line and the source
+/// spreads it over four, and `AbstainReason::External` carries a braced field:
+/// a line rule gets one of those three wrong whichever way it is written, and
+/// the failure is silent, because swallowing the *next* enum still yields a
+/// list of plausible variant names.
+fn variants(text: &str, header: &str) -> Vec<String> {
+    let start = text
+        .find(header)
+        .unwrap_or_else(|| panic!("no `{header}` in this side of the comparison"));
+    let body = enclosed(&text[start + header.len() - 1..]);
+
+    body.split(',')
+        // The last line, so that the doc comments both sides carry are behind
+        // the name rather than in front of it. Their own commas split the body
+        // too and leave pieces ending in a `///` line, which the capital below
+        // drops.
+        .filter_map(|piece| piece.lines().next_back())
+        .map(str::trim)
+        .filter_map(|line| line.split([' ', '(', '{', ':']).next())
+        .filter(|name| {
+            name.starts_with(|first: char| first.is_ascii_uppercase())
+                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The text between `text`'s leading `{` and the `}` that closes it.
+fn enclosed(text: &str) -> &str {
+    let mut depth = 0_usize;
+    for (index, character) in text.char_indices() {
+        match character {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &text[1..index];
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("an unclosed body in {text:.60}")
+}
+
 /// §1's "handlers never construct `Outcome::Committed`; every path ends
 /// through `policy.decide(..)`", which is the one claim in the section that the
 /// types deliberately do not hold.
