@@ -692,11 +692,27 @@ the newtype work in `rope-modifications.md` (which folds Zed's `util`
 items into rope rather than vendoring a third crate), `shared` (seam,
 vocabulary, `ProjectView`, the client-side subset of `proto`), the
 framing codec, and `measure_core` itself. Explicitly **not** the router,
-the health model, the actor, dispatch, standalone, or divergence
-reporting — all of which are [`shim.md`](shim.md) and phase 2b. The two
-documents were split along exactly this line, so "what is in phase 1a" is
-now a question with a file for an answer rather than a list to maintain
-here.
+the health model, the actor, parallel dispatch, standalone, or divergence
+reporting — all of which are [`shim.md`](shim.md) and phase 2b. Parallel
+dispatch and **not** the handler registry: `shim.md` §13 puts both under
+`dispatch/`, but the registry is `core.md` §1's — "the driver resolves an
+incoming LSP `languageId` against the registry and gets
+`Option<LanguageId>`", which is what keeps `driver` free of a build
+dependency on every grammar crate — so `core.md` in its entirety includes
+it, and what 2b holds is `shim.md` §10's bounded pool and its fan-out to
+several servers.
+
+**Where the rest of that line falls is not settled, and the phase 1a tree
+already crosses it.** `core.md` §5's deadline, §6's agreement predicate
+and §7's per-query record are `core.md`'s claims, and each needs a single
+owner of the state it reads — which is the file `shim.md` §13 calls
+`actor.rs`. The tree contains that file, and a `Mode::Standalone`, and a
+`Divergence`, all three excluded by name above and none of them covered
+by a document the phase 1a audit reads. That is
+`state/decisions/harness-007.md`; until it is answered this list stands
+as written rather than being widened to fit what was built. So "what is
+in phase 1a" is a question with a file for an answer *except* at that
+seam, which is the one place it is still a list maintained here.
 Gate: workspace builds, upstream rope tests pass unchanged,
 position-encoding property tests pass, `measure_core` drives a real
 server end to end on one repository.
@@ -719,11 +735,15 @@ where the irreversibility is rather than over the whole phase.
 it starts on day one. C, C++, Go, JavaScript, TypeScript/TSX, Rust,
 Python; medium-sized, popular, trustworthy, spread across domains and
 styles.
-Gate: repositories checked out at pinned commits, **and the tune /
-select / final split decided and physically separated**
-([section 12](#12-held-out-integrity)). The split has to be made here,
+Gate: repositories checked out at pinned commits, **and the tuning /
+held-out split decided and physically separated**
+([section 12](#12-held-out-integrity)). That split has to be made here,
 not later: once a repository has been in the tuning corpus, moving it to
-held-out does not un-teach it.
+held-out does not un-teach it. Carving a *final* set out of the held-out
+half is deliberately **not** part of this gate — §12 leaves it until the
+first phase gates say how much leakage selection actually causes, and it
+stays available to be made then precisely because a finer split comes out
+of held-out and never out of tuning.
 
 **Phase 1c — LSP installation**, concurrently. Every trustworthy server
 Zed supports for these languages, installed, pinned, and documented in

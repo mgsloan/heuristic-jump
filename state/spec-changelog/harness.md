@@ -169,3 +169,91 @@ then sets `workers = 3` twelve lines later. That is the same stale sentence
 in a file this loop is denied.
 
 **Campaign:** 3e637dcd-7552-460c-8eb4-fb41941ef14b
+
+## CHANGE-harness-005 — loops.md#8-sequencing-and-gates — phase 1b's gate is the tuning / held-out split, and the final carve-out is deferred
+
+**Contradiction:** §8's phase 1b gate required
+
+> repositories checked out at pinned commits, **and the tune / select /
+> final split decided and physically separated** ([section 12](#12-held-out-integrity))
+
+while §12, the section it cites for that requirement, argues the opposite
+about the third of those three:
+
+> The remedy, if it starts to matter, is to stop selecting on part of it:
+> carve a final set out of the five, evaluate it once at the end, and never
+> let it choose anything. [...] **the split can be made finer later and never
+> coarser.** Deciding it now would mean guessing how much leakage ten gates
+> actually cause, which the first few gates will say.
+
+`harness/corpus` implements two splits, `training` and `test`, and
+`harness/corpus-selection.toml` records five and five per language — which is
+what §12 specifies and what §8's gate, read literally, fails.
+
+**Resolution:** the gate now requires the **tuning / held-out** split decided
+and physically separated, and says in a following sentence that carving a
+*final* set out of the held-out half is deliberately not part of it, with
+§12's reason.
+
+This trades nothing off, and the reason is structural rather than a
+preference between two sections. §12's argument for making the split at 1b —
+"once a repository has been in the tuning corpus, moving it to held-out does
+not un-teach it" — applies to the tuning boundary and only to it. The final
+set is carved *out of held-out*, which has never been tuned on, so deferring
+it costs nothing that can later be recovered, while deciding it now costs a
+guess about leakage that the first few gates will measure. The irreversible
+half still lands at 1b's gate; only the half that stays available is moved
+out of it. §8's own sentence "the split has to be made here, not later" is
+kept and now attaches to the split it is an argument about.
+
+**Campaign:** 3e637dcd-7552-460c-8eb4-fb41941ef14b
+
+## CHANGE-harness-006 — loops.md#8-sequencing-and-gates — the handler registry is phase 1a's; only parallel dispatch is 2b's
+
+**Contradiction:** §8's phase 1a paragraph says, in one sentence,
+
+> [`core.md`](core.md) in its entirety, which is the document's whole scope
+
+and in the next,
+
+> Explicitly **not** the router, the health model, the actor, dispatch,
+> standalone, or divergence reporting
+
+but `core.md` §1 requires the thing "dispatch" excludes:
+
+> `LanguageId` and `FileExtension` are interned, not strings. A handler
+> declares its ids as consts; **the driver resolves an incoming LSP
+> `languageId` against the registry** and gets `Option<LanguageId>`.
+
+and §1 elsewhere makes `grammar()` "what keeps `driver` language-free",
+which is a property of the registry and of nothing else. `shim.md` §13's
+module layout is where the ambiguity comes from: it puts two unrelated things
+under one directory name —
+
+```
+  dispatch/
+    pool.rs         bounded worker pool, deadline enforcement
+    registry.rs     languageId / extension -> handler, grammar lookup
+```
+
+— so "dispatch" on an exclusion list excludes both.
+
+**Resolution:** the list now says **parallel dispatch**, and a following
+clause states that the handler registry is `core.md` §1's and therefore phase
+1a's, while what 2b holds is `shim.md` §10's bounded pool and its fan-out to
+several servers.
+
+This trades nothing off: it resolves a name collision in favour of the
+reading that the same paragraph already requires. "core.md in its entirety"
+and "not the registry" cannot both hold, and no phase-1a work is possible
+without the registry, since `measure_core` and `driver` both need a
+`languageId` to reach a handler at all.
+
+**Not resolved here, deliberately:** the other name on that list with the
+same problem is "the actor", and it does not have a tradeoff-free answer. It
+is escalated as `state/decisions/harness-007.md` and the exclusion list is
+left standing, so `loops.md#8-sequencing-and-gates` keeps an open gap it
+could have been made to lose. §8 now states the overlap and names the three
+files that cross it instead of being widened to fit them.
+
+**Campaign:** 3e637dcd-7552-460c-8eb4-fb41941ef14b
