@@ -143,11 +143,24 @@ def decisions() -> list[dict]:
 
 def version_token() -> str:
     """Moves when anything the page shows moves. Cheap enough to compute on a
-    two-second poll: a stat of every tracked state file, and HEAD."""
+    two-second poll: a stat of every tracked state file, the live transcript,
+    and HEAD.
+
+    The transcript is in the list because it is not under `state/` and is the
+    only thing here that moves continuously. Without it the Live panel — the
+    one panel whose whole purpose is to be watched while a campaign runs —
+    updated only when the campaign next committed, which is minutes apart and
+    is exactly the interval it exists to fill.
+    """
     stamps = []
     for path in sorted(STATE.rglob("*")):
         if path.is_file():
             stamps.append(f"{path}:{path.stat().st_mtime_ns}")
+    current = current_campaign()
+    if current:
+        live = Path(adapter("transcript-path", *current).strip() or "/nonexistent")
+        if live.exists():
+            stamps.append(f"{live}:{live.stat().st_size}")
     try:
         stamps.append(hj.head_sha())
     except SystemExit:
