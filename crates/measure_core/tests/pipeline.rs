@@ -91,6 +91,10 @@ const WORKSPACE_MANIFEST: &str =
 /// about.
 const REPLAY_SOURCE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/replay.rs"));
 
+/// The document, as the fixture for the claims that are a *list*: §7's command
+/// line prints one usage line per stage, and the set of flags is the claim.
+const CORE_MD: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../design/core.md"));
+
 /// Two lockfiles differing only in which revision of the grammar they pin.
 /// Written out rather than generated, so what the pin has to distinguish is
 /// visible: the same crate at two versions, with the checksums cargo records
@@ -555,6 +559,170 @@ fn a_replay_enforces_no_deadline_at_all() {
          silently — the row is dropped rather than abstained, and the metric \
          moves with whatever else the machine was doing"
     );
+}
+
+/// §7's command line, parsed out of the document and compared against the one
+/// `clap` builds.
+///
+/// The section prints three usage lines and then says of them: "**There is no
+/// `--held-out` flag**, and there must not be. Held-out is selected by passing
+/// a different `--corpus` path, so a session that is not given the path cannot
+/// reach the data. A flag is something a loop can set; a path it was never told
+/// is not." That is a claim about a flag's *absence*, and the only honest way
+/// to hold one is to pin the whole set: a test naming `--held-out` would pass
+/// while any other reachable flag was added.
+///
+/// The document is the fixture rather than a transcription, because this is one
+/// of the two shapes where editing the *document* has to fail — the way of
+/// faking progress the audit cannot catch. A flag added to `cli.rs` and not to
+/// §7 fails here, and so does the reverse.
+#[test]
+fn the_command_line_is_section_7s_and_admits_no_flag_it_does_not_name() {
+    let section = &CORE_MD[CORE_MD
+        .find("### The command line")
+        .expect("core.md §7 prints the command line")..];
+    let usage = between(section, "```\n", "```");
+
+    let mut documented: Vec<(String, Vec<String>)> = Vec::new();
+    for line in usage.lines() {
+        if let Some(rest) = line.split_once("measure-<lang> ") {
+            let name = rest.1.split_whitespace().next().unwrap_or_default();
+            documented.push((name.to_owned(), Vec::new()));
+        }
+        let Some((_, flags)) = documented.last_mut() else {
+            continue;
+        };
+        flags.extend(
+            line.split_whitespace()
+                // `[--repo <name>]...` and `[--restart]`: the brackets are the
+                // usage line saying optional, not part of the flag.
+                .filter_map(|word| word.trim_start_matches('[').strip_prefix("--"))
+                .map(|flag| {
+                    flag.trim_end_matches(|scalar: char| {
+                        !scalar.is_ascii_lowercase() && scalar != '-'
+                    })
+                    .to_owned()
+                }),
+        );
+    }
+    for (_, flags) in &mut documented {
+        flags.sort();
+        flags.dedup();
+    }
+    assert_eq!(
+        documented.len(),
+        3,
+        "§7 prints one usage line per stage of data-collection.md and this \
+         found {}: {documented:?}",
+        documented.len()
+    );
+
+    let command = <measure_core::Cli as clap::CommandFactory>::command();
+    let mut built: Vec<(String, Vec<String>)> = command
+        .get_subcommands()
+        .map(|sub| {
+            let mut flags: Vec<String> = sub
+                .get_arguments()
+                .filter_map(clap::Arg::get_long)
+                // `clap` adds this one; §7 is about the flags that decide what
+                // a run reads and writes.
+                .filter(|long| *long != "help")
+                .map(str::to_owned)
+                .collect();
+            flags.sort();
+            (sub.get_name().to_owned(), flags)
+        })
+        .collect();
+    built.sort();
+    documented.sort();
+
+    assert_eq!(
+        built, documented,
+        "the binary's flags and §7's usage lines disagree. The section's rule \
+         that held-out is a path and never a flag holds only if the flag set is \
+         exactly the printed one — a loop can set any flag it can see, and it \
+         cannot set a corpus path it was never told"
+    );
+}
+
+/// The rest of what §7's flags are chosen to give, which is about their
+/// defaults rather than their names: "**`--corpus <dir>` is required and has no
+/// default.** A defaulted corpus path is one that eventually points at the
+/// wrong one"; `--limit` defaults to 20 000; "Resuming is the default;
+/// `--restart` discards a partial truth file, which is the destructive option
+/// and therefore the explicit one"; and with no `--records` a replay "**writes
+/// nothing**".
+#[test]
+fn the_flags_defaults_are_the_ones_section_7_argues_for() {
+    for stage in ["enumerate", "collect", "replay"] {
+        let missing = measure_core::Cli::try_parse_from(["measure-test", stage])
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_else(|| format!("`{stage}` parsed with no --corpus at all"));
+        assert!(
+            missing.contains("--corpus"),
+            "`{stage}` did not require --corpus: {missing}. A defaulted corpus \
+             path is one that eventually points at the wrong one, and held-out \
+             isolation is that path being one a session was never given"
+        );
+    }
+
+    let enumerate = measure_core::Cli::parse_from(["measure-test", "enumerate", "--corpus", "x"]);
+    match enumerate.command {
+        measure_core::Command::Enumerate(arguments) => {
+            assert_eq!(
+                arguments.limit, 20_000,
+                "data-collection.md §3's default sample size"
+            );
+        }
+        measure_core::Command::Collect(_) | measure_core::Command::Replay(_) => {
+            panic!("`enumerate` parsed as another subcommand")
+        }
+    }
+
+    let collect = measure_core::Cli::parse_from([
+        "measure-test",
+        "collect",
+        "--corpus",
+        "x",
+        "--server",
+        "oracle",
+    ]);
+    match collect.command {
+        measure_core::Command::Collect(arguments) => {
+            assert!(
+                !arguments.restart,
+                "resuming is the default, because discarding a partial truth \
+                 file is the destructive option and therefore the explicit one"
+            );
+        }
+        measure_core::Command::Enumerate(_) | measure_core::Command::Replay(_) => {
+            panic!("`collect` parsed as another subcommand")
+        }
+    }
+
+    let replay = measure_core::Cli::parse_from([
+        "measure-test",
+        "replay",
+        "--corpus",
+        "x",
+        "--server",
+        "oracle",
+    ]);
+    match replay.command {
+        measure_core::Command::Replay(arguments) => {
+            assert_eq!(arguments.format, measure_core::Format::Table);
+            assert!(
+                arguments.records.is_none(),
+                "with no --records a replay writes nothing, which is what keeps \
+                 the default a pure function of its inputs and measure_core \
+                 ignorant of where a harness would put a digest"
+            );
+        }
+        measure_core::Command::Enumerate(_) | measure_core::Command::Collect(_) => {
+            panic!("`replay` parsed as another subcommand")
+        }
+    }
 }
 
 /// §7's command line: "`collect` drives the server named in `servers.toml`,
