@@ -1,6 +1,6 @@
 ---
 id: core-024
-status: open
+status: duplicate
 opened: 2026-08-04T20:45:00+00:00
 campaign: 5cc94daa-a1bb-476a-9255-e10177487c15
 kind: class-b
@@ -68,7 +68,21 @@ not choose it.
 
 ## Decision
 
-Undecided — waiting on a human.
+**Closed as a duplicate of `core-025`**, which carries the answer. Logged as a
+`decision-answered` intervention on 2026-08-04 so §16's status derives from the
+log rather than from this line.
+
+This record and `core-025` are the same question, raised independently by
+different workers of round 1 because the claim system was granting every request
+— `campaign_is_alive` asked the process table, which the OS sandbox had made
+private, so from inside any campaign every live sibling read as dead and no
+claim was ever refused (fixed in `c047b4c`). Campaign `5cc94daa` wrote this
+one.
+
+Nothing here is wrong and nothing is discarded: the framing differs and the
+reasoning is worth keeping, which is why this is closed rather than deleted. The
+ruling, its argument, and the work it leaves are in `core-025`.
+
 
 ## Provisional choice in force
 
