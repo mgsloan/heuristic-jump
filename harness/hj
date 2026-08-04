@@ -3710,6 +3710,45 @@ def spec_drift(campaign_id: str, target: str | None) -> dict | None:
     }
 
 
+def prompt_drift(campaign_id: str, config: LoopConfig) -> dict | None:
+    """Did this campaign edit the prompt that generates it?
+
+    Only reachable for a loop with `writes_harness`, and only because
+    `DENIED_ALWAYS` stops at `harness/prompts/auditor.md` — so today the
+    harness loop may rewrite `harness/prompts/conformance.md`, which is both
+    its own instructions and the core loop's.
+
+    That is not obviously wrong: two gaps have been closed exactly that way,
+    §13's digest asymmetry and §4's journal tail, and `design/loops.md` §18
+    gives this loop the job of writing the tuning and optimisation prompts.
+    But a loop editing the text that generates it is the strongest form
+    available of the thing `harness/readme.md` is about, and §16 calls a prompt
+    revision the one intervention that cannot be replayed — the metrics either
+    side of it are not comparable, and nothing was recording it as an
+    intervention at all.
+
+    So it is made visible rather than impossible, which is the same answer
+    `spec_drift` gives to the same shape of problem for the same stated reason,
+    and `harness-009` asks a human whether visible is enough here.
+    """
+    own = f"harness/prompts/{config.prompt}"
+    edits = {
+        path
+        for commit in commits_for_campaign(campaign_id)
+        for path in commit_paths(commit)
+        if path.startswith("harness/prompts/")
+    }
+    if not edits:
+        return None
+    return {
+        "prompts": sorted(edits),
+        # The sharper case, and the one §16 is about: the file edited is the
+        # template this campaign's own prompt was rendered from.
+        "touches_own_prompt": own in edits,
+        "own": own,
+    }
+
+
 PYTHON_SHEBANG = re.compile(rb"^#!.*python")
 
 # `design/loops.md` section 7's better ralph heuristic, and its constant.
@@ -4264,6 +4303,7 @@ def cmd_campaign_close(args: argparse.Namespace) -> int:
         or bool(reconciled)
     )
     drift = spec_drift(args.id, args.target)
+    prompts = prompt_drift(args.id, config)
     audits = read_jsonl(GAP_LOG)
     audited = bool(audits) and audits[-1]["ts"] > (opened.get("started") or "")
 
@@ -4291,6 +4331,7 @@ def cmd_campaign_close(args: argparse.Namespace) -> int:
             "decisions_reconciled": reconciled,
             "audited": audited,
             "spec_drift": drift,
+            "prompt_drift": prompts,
             "lines": line_counts(),
             # This campaign's own diff, split by kind. `lines` above is a
             # whole-tree snapshot and under workers carries whatever the
@@ -4317,6 +4358,19 @@ def cmd_campaign_close(args: argparse.Namespace) -> int:
             "campaign: flagged — this campaign edited design/ and code in the same run"
             + (", in the document its own target names" if drift["touches_target_document"] else "")
             + ". Not a failure; it goes to the dashboard for a human to read."
+        )
+    if prompts:
+        print(
+            "campaign: flagged — this campaign edited "
+            + ", ".join(prompts["prompts"])
+            + (
+                ", which is the template its own prompt was rendered from"
+                if prompts["touches_own_prompt"]
+                else ""
+            )
+            + ". design/loops.md section 16 calls a prompt revision the one "
+            "intervention that cannot be replayed, so the metrics either side of "
+            "it are not comparable. Not a failure; see harness-009."
         )
     return 0
 
@@ -5527,6 +5581,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         )
         for campaign in campaigns[-5:]:
             flag = "  [spec drift]" if campaign.get("spec_drift") else ""
+            flag += "  [prompt drift]" if campaign.get("prompt_drift") else ""
             print(
                 f"      {campaign.get('campaign', '?')[:8]}  "
                 f"{(campaign.get('target') or '-'):<48.48}  {campaign.get('outcome') or 'open'}{flag}"
@@ -5565,6 +5620,25 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(
             f"  campaigns that edited design/ and code together: {len(flagged)} recorded, "
             f"{len(unread)} not yet read by a human"
+        )
+    prompt_flagged = [
+        campaign
+        for owner in phase.loops
+        for campaign in campaigns_of(owner)
+        if campaign.get("prompt_drift")
+    ]
+    prompt_reviewed = {
+        row.get("target")
+        for row in read_jsonl(INTERVENTIONS)
+        if row.get("kind") == "prompt-drift-reviewed"
+    }
+    prompt_unread = [
+        campaign for campaign in prompt_flagged if campaign.get("campaign") not in prompt_reviewed
+    ]
+    if prompt_flagged:
+        print(
+            f"  campaigns that edited a prompt: {len(prompt_flagged)} recorded, "
+            f"{len(prompt_unread)} not yet read by a human (harness-009)"
         )
     return 0
 
@@ -6110,6 +6184,13 @@ def selftest_cases() -> list[tuple[str, object]]:
         assert stratum_gaps({"strata": {"A": {"tuning": 0.9}}}) == {}
         assert stratum_gaps({"strata": {"A": "0.9"}}) == {}
         assert stratum_gaps({}) == {}, "no evaluation is not a gap of zero"
+
+    def the_auditors_prompt_is_denied_and_the_rest_is_only_flagged():
+        # The asymmetry harness-009 is about. If a later campaign denies the
+        # loop's own prompt, this is the assertion that has to change, which
+        # is where the record should be re-read.
+        assert "harness/prompts/auditor.md" in DENIED_ALWAYS
+        assert not any(p.startswith("harness/prompts/") and p.endswith("**") for p in DENIED_ALWAYS)
 
     def the_held_out_results_are_denied_to_every_loop():
         assert "state/heldout/**" in DENIED_ALWAYS, (
