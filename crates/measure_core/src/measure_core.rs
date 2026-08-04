@@ -27,7 +27,6 @@ mod client;
 mod collect;
 mod corpus;
 mod positions;
-mod record;
 mod replay;
 mod table;
 mod truth;
@@ -40,7 +39,11 @@ use shared::{Error, FileList, LanguageHandler, ProjectPath, SystemClock};
 pub use cli::{Cli, Command, Format, Replay};
 pub use client::{MAX_FRAME_BYTES, MAX_HEADER_BYTES, read_frame};
 pub use corpus::{ServerEntry, grammar_pin, locked_grammar, resolve_server};
-pub use record::{Decision, Mode, QueryRecord, StratumName};
+// §7's record type is `shared`'s, because `deps.md` §9's graph gives
+// `driver` no edge to this crate and the shim has to emit the same shape.
+// Re-exported rather than reached through `shared::record` at every call site,
+// so a `measure_<lang>` binary keeps naming one crate.
+pub use shared::record::{Decision, Mode, QueryRecord, StratumName};
 pub use truth::{Provenance, check_resumable};
 
 /// The whole of a `measure_<lang>` binary, after `Cli::parse()`.

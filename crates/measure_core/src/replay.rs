@@ -17,17 +17,15 @@
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 
 use shared::proto::DefinitionResult;
+use shared::record::{Answered, ChildAnswer, Mode, QueryContext, QueryRecord};
 use shared::{
     Agreement, Clock, CommitPolicy, DefinitionSite, DocumentUri, DocumentVersion, Error, FileList,
-    LanguageHandler, Location, Offset, Outcome, ProjectView, Query, Rope, ServerProfile,
-    SnapshotSeed, Strata, Stratum, Trace,
+    LanguageHandler, Offset, ProjectView, Query, Rope, ServerProfile, SnapshotSeed,
 };
 
 use crate::corpus::{Corpus, Repository, verify_checkout};
-use crate::record::{self, Decision, Mode, QueryRecord, StratumName};
 use crate::table::Table;
 use crate::truth::{self, Truth};
 
@@ -181,144 +179,47 @@ impl Replay<'_> {
         let child = serde_json::from_str::<DefinitionResult>(row.answer.get())
             .unwrap_or(DefinitionResult::Null);
 
-        // `answered` is consumed here rather than borrowed: a `Trace` is
-        // write-only until it is taken apart, and taking it apart is what
-        // `into_parts` does — so the record can only be assembled from an
-        // outcome nobody is going to read again.
-        let (decision, failure, strata, locations, confidence, parts, extra) = match answered {
-            Ok(Outcome::Committed {
-                locations,
-                confidence,
-                strata,
-                trace,
-            }) => (
-                Decision::Committed,
-                None,
-                strata,
-                locations,
-                Some(confidence.get()),
-                trace.into_parts(),
-                None,
-            ),
-            Ok(Outcome::Abstain {
-                reason,
-                strata,
-                trace,
-            }) => (
-                Decision::Abstained,
-                None,
-                strata,
-                Vec::new(),
-                None,
-                trace.into_parts(),
-                // The reason goes into `stages` rather than into a column of
-                // its own, because `stages` is the field §7 makes the
-                // handler's account of what it did and a second reason column
-                // would be two vocabularies for one question.
-                Some(record::abstain_label(&reason)),
-            ),
-            // A failure is served as an abstention on the wire and recorded as
-            // a failure here, or the per-stratum table cannot tell a hard
-            // stratum from a broken handler. There is no outcome and therefore
-            // no trace: a handler that returned `Err` reported nothing, and an
-            // empty account is the honest record of that.
-            Err(error) => (
-                Decision::Failed,
-                Some(failure_class(&error)),
-                Strata::from_reference(Stratum::Unimplemented),
-                Vec::new(),
-                None,
-                Trace::new().into_parts(),
-                None,
-            ),
-        };
-        let mut stages = record::stage_labels(parts.stages);
-        stages.extend(extra);
+        // `answered` is consumed rather than borrowed, and the classification
+        // is `shared`'s rather than this crate's: the shim emits the same
+        // record from the same three endings, and a second copy of this match
+        // is exactly where "a replay row is byte comparable with a field row"
+        // would quietly stop being true (`core.md` §7).
+        let answered = Answered::of(answered);
+        let (decision, strata) = (answered.decision, answered.strata);
 
-        let ours: Vec<DefinitionSite<'_>> = locations.iter().map(DefinitionSite::of).collect();
+        let ours: Vec<DefinitionSite<'_>> =
+            answered.locations.iter().map(DefinitionSite::of).collect();
         let agreement = Agreement::classify(&ours, &child);
-        let (agreement_label, severity) = record::agreement_labels(agreement);
 
         // `elapsed` is not offered to the table: §7's command line makes the
         // table byte-identical across runs, and it goes into the record below
         // instead, which is the one field §7 says a replay does not reproduce.
         table.observe(strata, decision, agreement);
 
-        Ok(QueryRecord {
-            uri: document.uri.to_string().into(),
-            position: record::position_of(Offset(row.offset)),
-            language: self.corpus.language().as_str().into(),
-            mode: Mode::Proxy,
-            server_health: None,
-            decision,
-            failure,
-            stratum_prior: StratumName(strata.prior()),
-            stratum_final: StratumName(strata.settled()),
-            confidence,
-            margin: parts.margin.map(shared::Margin::get),
-            considered: parts.considered.map(|considered| considered.0),
-            stages,
-            bytes_scanned: parts.bytes_scanned.0,
-            files_parsed: record::file_count(parts.files_parsed),
-            queued_us: 0,
-            stage_us: record::stage_timings(parts.stage_us),
-            heuristic_latency_us: micros(elapsed),
-            heuristic_locations: locations.iter().map(label).collect(),
-            returned: locations.len(),
-            truncated_list: false,
-            lsp_latency_us: Some(row.latency_us),
-            lsp_locations: Some(child_labels(&child)),
-            agreement: Some(agreement_label),
-            severity,
-        })
+        let mut record = QueryRecord::new(
+            &QueryContext {
+                uri: &document.uri,
+                position: Offset(row.offset),
+                language: self.corpus.language(),
+                mode: Mode::Proxy,
+                server_health: None,
+                // Replay has no queue. The field is §5's, and §5's deadline is
+                // the one thing a replay does not enforce.
+                queued: shared::Micros(0),
+                elapsed: shared::record::micros(elapsed),
+            },
+            answered,
+        );
+        // Frozen rather than raced, which is what makes replay's oracle half
+        // present at all: the truth file already holds the latency and the
+        // answer, so there is no second round trip to wait for.
+        record.answered_by(ChildAnswer {
+            latency: shared::Micros(row.latency_us),
+            locations: shared::record::definition_labels(&child),
+            agreement: Some(agreement),
+        });
+        Ok(record)
     }
-}
-
-/// The `Error` sub-enum that was converted. Written as an exhaustive match
-/// rather than a `Display` string, so a new sub-enum has to be given a name
-/// here instead of appearing in the metrics as whatever `thiserror` produced.
-fn failure_class(error: &Error) -> Box<str> {
-    match error {
-        Error::Config(_) => "Config".into(),
-        Error::Codec(_) => "Codec".into(),
-        Error::Child(_) => "Child".into(),
-        Error::Protocol(_) => "Protocol".into(),
-        Error::Document(_) => "Document".into(),
-        Error::Parse(_) => "Parse".into(),
-        Error::Project(_) => "Project".into(),
-        Error::Handler(_) => "Handler".into(),
-        Error::Encoding(_) => "Encoding".into(),
-    }
-}
-
-fn label(location: &Location) -> Box<str> {
-    record::location_label(location.uri(), location.line())
-}
-
-fn child_labels(child: &DefinitionResult) -> Vec<Box<str>> {
-    match child {
-        DefinitionResult::Null => Vec::new(),
-        DefinitionResult::One(location) => {
-            vec![record::location_label(
-                location.uri(),
-                location.range().start.line(),
-            )]
-        }
-        DefinitionResult::Many(locations) => locations
-            .iter()
-            .map(|location| record::location_label(location.uri(), location.range().start.line()))
-            .collect(),
-        DefinitionResult::Links(links) => links
-            .iter()
-            .map(|link| {
-                record::location_label(&link.target_uri, link.target_selection_range.start.line())
-            })
-            .collect(),
-    }
-}
-
-fn micros(elapsed: Duration) -> u64 {
-    u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX)
 }
 
 /// `--records <path>`: the per-query JSONL of §7's record, unchanged and

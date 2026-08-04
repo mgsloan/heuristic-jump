@@ -28,7 +28,7 @@ use serde::Serialize;
 use shared::{Agreement, Strata, Stratum};
 
 use crate::cli::Format;
-use crate::record::{Decision, StratumName};
+use shared::record::{Decision, StratumName};
 
 /// The nine strata, in the order `high-level.md` lists them, so two runs print
 /// the same rows in the same order whatever the corpus contained.

@@ -18,11 +18,16 @@ mod identifier;
 mod project;
 mod vocabulary;
 
-// The one public module rather than a re-export: `core.md` §8.3 and §8.7 name
-// the path `shared::proto`, and the wire types are a namespace rather than
-// vocabulary — `proto::WirePosition` is meant to read as "the wire's idea of a
-// position" at every use site.
+// Modules rather than re-exports: `core.md` §8.3 and §8.7 name the path
+// `shared::proto`, and the wire types are a namespace rather than vocabulary —
+// `proto::WirePosition` is meant to read as "the wire's idea of a position" at
+// every use site. `record` is the same shape of thing for §7's metric row, and
+// needs the namespace more than `proto` does: its `Mode` is proxy-or-standalone
+// as the *record spells it*, and `driver::Mode` is the resolved configuration
+// that carries the child's argv. Two bare `Mode`s in one prelude is how a
+// record ends up saying `"standalone"` about a proxied query.
 pub mod proto;
+pub mod record;
 
 pub use agreement::{Agreement, DefinitionSite, Severity};
 pub use deadline::{Clock, Deadline, SystemClock, TestClock};
