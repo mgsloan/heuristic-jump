@@ -22,6 +22,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1191,25 +1192,84 @@ def owned_members(config: LoopConfig) -> list[str]:
     return sorted({m for m in members if matches_any(m, config.crates)})
 
 
-def loc_per_crate() -> dict[str, int]:
-    """Non-test Rust only. `tokei` when it is installed, a line count when it
-    is not — LOC is reported and never gated (`design/loops.md` section 11), so
-    an approximate number is not load-bearing."""
+NON_SOURCE_DIRECTORIES = ("tests", "target")
+
+
+def parse_tokei_rust(output: str) -> int | None:
+    """Rust code lines out of `tokei --output json`.
+
+    Two shapes, because the field moved: tokei 10 wraps every language in
+    `inner`, tokei 12 and later put them at the top level. Anything else — a
+    future rename, an error on stderr, a language table with no Rust in it —
+    returns None, and the caller falls back rather than recording a zero that
+    would read as "the crate was deleted".
+    """
+    try:
+        table = json.loads(output)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(table, dict):
+        return None
+    if isinstance(table.get("inner"), dict):
+        table = table["inner"]
+    rust = table.get("Rust")
+    if not isinstance(rust, dict):
+        return None
+    code = rust.get("code")
+    return code if isinstance(code, int) else None
+
+
+def counted_lines(crate: Path) -> int:
+    """The fallback counter: non-blank lines of non-test Rust.
+
+    Comments are in it, which `tokei` excludes, so the two numbers are not the
+    same measurement — which is why the row records `loc_counter` beside them.
+    """
+    total = 0
+    for source in crate.rglob("*.rs"):
+        relative = source.relative_to(crate).parts
+        if any(part in NON_SOURCE_DIRECTORIES for part in relative):
+            continue
+        total += sum(1 for line in source.read_text(errors="replace").splitlines() if line.strip())
+    return total
+
+
+def loc_per_crate() -> tuple[dict[str, int], str]:
+    """Non-test Rust only, per crate, and which counter produced it.
+
+    `tokei` is what `design/loops.md` section 11 specifies; the line count is
+    what runs when it is not installed, and it was the only thing this function
+    ever did. The two disagree by the comment lines, so a machine that installs
+    `tokei` puts a step in the series — hence the counter name in the row: the
+    discontinuity is then visible instead of looking like the loop deleted a
+    thousand lines. LOC is reported and never gated, so neither number is
+    load-bearing; being able to tell them apart is.
+    """
     roots = [REPO / "crates", REPO / "vendor"]
+    have_tokei = shutil.which("tokei") is not None
+    excludes = [argument for directory in NON_SOURCE_DIRECTORIES for argument in ("-e", directory)]
     counts: dict[str, int] = {}
+    counters: set[str] = set()
     for root in roots:
         if not root.exists():
             continue
         for crate in sorted(p for p in root.iterdir() if p.is_dir()):
-            total = 0
-            for source in crate.rglob("*.rs"):
-                relative = source.relative_to(crate).parts
-                if "tests" in relative or "target" in relative:
-                    continue
-                total += sum(1 for line in source.read_text(errors="replace").splitlines() if line.strip())
+            total: int | None = None
+            if have_tokei:
+                result = subprocess.run(
+                    ["tokei", "--output", "json", *excludes, str(crate)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if result.returncode == 0:
+                    total = parse_tokei_rust(result.stdout)
+            counters.add("tokei" if total is not None else "lines")
+            if total is None:
+                total = counted_lines(crate)
             if total:
                 counts[crate.name] = total
-    return counts
+    return counts, "mixed" if len(counters) > 1 else (counters.pop() if counters else "lines")
 
 
 def test_count(members: list[str]) -> int | None:
@@ -1654,6 +1714,7 @@ def cmd_record(args: argparse.Namespace) -> int:
         print(f"metrics: {target[:12]} is already recorded; nothing appended")
         return 0
     members = owned_members(config)
+    loc, loc_counter = loc_per_crate()
     row = {
         "commit": target,
         "ts": now(),
@@ -1661,7 +1722,8 @@ def cmd_record(args: argparse.Namespace) -> int:
         "loop": config.owner,
         "campaign": trailers_of(target).get("campaign"),
         **audit_counts(config.docs),
-        "loc": loc_per_crate(),
+        "loc": loc,
+        "loc_counter": loc_counter,
         "tests": test_count(members),
         "provisional_decisions": provisional_decisions(),
     }
@@ -3698,6 +3760,18 @@ def selftest_cases() -> list[tuple[str, object]]:
         assert numbers["reverts"] == 1, numbers
         assert numbers["gate_seconds"] == 16.5, numbers
         assert numbers["usd"] == 1.5 and numbers["turns"] == 4
+
+    def tokei_json_is_read_in_both_shapes():
+        modern = '{"Rust":{"blanks":9,"code":413,"comments":57,"reports":[]},"Markdown":{"code":8}}'
+        legacy = '{"inner":{"Rust":{"blanks":9,"code":413,"comments":57}}}'
+        assert parse_tokei_rust(modern) == 413, "tokei 12 puts languages at the top level"
+        assert parse_tokei_rust(legacy) == 413, "tokei 10 wraps them in `inner`"
+
+    def an_unreadable_tokei_falls_back_rather_than_recording_zero():
+        assert parse_tokei_rust("error: no such option") is None
+        assert parse_tokei_rust('{"Markdown":{"code":8}}') is None, "a crate with no Rust is not 0 LOC"
+        assert parse_tokei_rust('{"Rust":{"code":"413"}}') is None, "a string is not a count"
+        assert parse_tokei_rust("[]") is None
 
     def a_provisional_tag_in_the_harness_counts():
         assert ":!harness" not in DECISION_TAG_NOT_A_SITE, (
