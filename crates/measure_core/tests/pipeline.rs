@@ -1686,6 +1686,76 @@ fn a_replay_refuses_a_position_whose_file_it_cannot_read() {
     );
 }
 
+/// The fifth way, and the only one that is not about *which* file was read:
+/// a row this checkout can open, at a position that still exists, whose stored
+/// answer is not one the deserializer reads.
+///
+/// §7 keeps the oracle's answer as "the raw JSON the server sent" precisely so
+/// that a replay hands those bytes to "the same deserializer the shim reads a
+/// live answer with" — which makes bytes that deserializer refuses a corrupt
+/// artifact, not an oracle that answered nothing. Reading them as `null` is the
+/// substitute that looks harmless and is not: §6 calls two empty sides a match,
+/// so a corrupt row scores as the mutual "no definition here" wherever the
+/// handler abstained and as a mismatch wherever it committed. Either way the
+/// table carries a verdict about a handler that was invented from a file
+/// holding nothing about it — and unlike every refusal above, nothing about the
+/// run looks wrong.
+///
+/// The refusal names `(file, offset)` rather than a line: a truth file is
+/// regenerated and never edited (§7), so what an operator does with it is
+/// re-collect that position.
+#[test]
+fn a_replay_refuses_a_truth_row_whose_answer_it_cannot_read() {
+    let corpus = fixture("unreadable_answer");
+    enumerate(&corpus);
+    write_truth(&corpus);
+
+    let path = truth_path(&corpus, "oracle");
+    let text = fs::read_to_string(&path).expect("the truth file");
+    let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+    // Row one, not the header, and corrupted in place rather than appended: the
+    // position has to be one this checkout holds, so that the run reaches the
+    // answer at all instead of failing earlier on the file.
+    let row = lines.get_mut(1).expect("a truth file with rows");
+    let file = between(row, "\"file\":\"", "\"").to_owned();
+    let offset: usize = between(row, "\"offset\":", ",")
+        .parse()
+        .expect("a truth row's offset");
+    // A bare number matches none of `DefinitionResult`'s four shapes: `null`
+    // is the unit variant, a location is a map, and the two list variants are
+    // arrays.
+    let corrupted = row.replace("\"answer\":null", "\"answer\":42");
+    assert_ne!(
+        &corrupted, row,
+        "the fixture row carries no `answer` field to corrupt, so this test \
+         would pass against a replay that never reads one"
+    );
+    *row = corrupted;
+    fs::write(&path, format!("{}\n", lines.join("\n"))).expect("a truth row with a corrupt answer");
+
+    let Err(refused) = replay_result(&corpus, measure_core::Format::Json) else {
+        panic!(
+            "a truth row whose answer will not deserialize was replayed, and \
+             scored against the handler as though the oracle had answered"
+        );
+    };
+    let Error::Config(shared::ConfigError::AnswerMalformed {
+        file: named,
+        offset: at,
+        ..
+    }) = &refused
+    else {
+        panic!("an unreadable oracle answer was refused as {refused}");
+    };
+    assert_eq!(
+        (&**named, *at),
+        (&*file, offset),
+        "the refusal names another position. The repair is to re-collect this \
+         one, and a refusal that does not say which row is corrupt sends an \
+         operator to re-collect the repository"
+    );
+}
+
 /// §7's "the table is not enough": `replay --records <path>` writes the
 /// per-query JSONL "unchanged and unfiltered", and digesting those into
 /// something readable is the harness's job — the same split that keeps

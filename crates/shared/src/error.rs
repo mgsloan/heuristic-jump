@@ -120,6 +120,23 @@ pub enum ConfigError {
         #[source]
         source: serde_json::Error,
     },
+    /// A truth row whose stored answer is not one `DefinitionResult` reads.
+    /// `core.md` §7 has a replay hand the oracle's frozen bytes to the same
+    /// deserializer the shim reads a live answer with, so a row that will not
+    /// deserialize is a corrupt artifact rather than an oracle that answered
+    /// nothing — and reading it as `null` scores the corruption as the mutual
+    /// "no definition here" §6 calls a match. Named by `(file, offset)`, which
+    /// is the corpus's own identity for a position and the key §7's join uses,
+    /// rather than by a line number: a truth file is regenerated and never
+    /// edited, so what an operator needs is the position to re-collect.
+    #[error("{path} holds an answer for {file} at {offset} that is not a definition result")]
+    AnswerMalformed {
+        path: PathBuf,
+        file: Box<str>,
+        offset: usize,
+        #[source]
+        source: serde_json::Error,
+    },
     /// `data-collection.md` §4: resuming a truth file whose provenance has
     /// moved underneath it is refused, because half a file from one commit —
     /// or one server version, or one grammar — and half from another is the
