@@ -335,3 +335,99 @@ its own history is one the next reader re-derives the mistake from.
 - **`core.md#9`'s four phase-2 crates.** Cannot be built by any loop. If a
   future audit re-opens `ce5dfefab5`, the answer is `CHANGE-core-014` and not
   a campaign.
+
+## Campaign 2dca52ce — the two `actor.rs` gaps, and three stale ones
+
+Four commits: `d1ccba7`, `5e6ebb9`, `ef775ad`, `9602df2`. Both assigned gaps
+closed, one escalation filed (`core-022`), one answered decision reconciled
+(`core-017`).
+
+### The stale-gap check finally paid off in the other direction
+
+For once the assigned gaps were **real**: `actor.rs` last changed at 01:05 UTC
+and the audit stamps are 04:57/05:37, so the audit saw the current file. One
+`git log -1` on the `where:` file plus a `grep` of `gap-log.jsonl` settled it in
+one turn, and that is the whole of the ritual — it is worth doing even when it
+comes back clean, because the clean answer is what lets you stop thinking about
+it.
+
+Three *other* listed gaps were verified stale, each in one grep, and they should
+not be picked up again:
+
+- `deps.md#8-parse-cache[ffcd948852]` — `trees.rs` is an `LruCache` with
+  `CacheEntries` **and** `CacheBytes`, byte-ceiling eviction, keyed by a
+  `ParseKey`. `lru` is in `Cargo.toml` and `Cargo.lock`. The gap describes an
+  unbounded `FxHashMap` that no longer exists.
+- `core.md#7-observability[bd3003d0fb]` — all three particulars are false.
+  `actor.rs` emits the record (`traces.finished` / `awaiting_child`), produces
+  `queued_us` from the `arrived` instant, and writes proxy rows itself;
+  `tests/actor.rs` asserts `queued_us` is `800000` on the queued half of the
+  deadline test. What is left of that gap is the transport, which is a separate
+  campaign and is not what the gap text says.
+- `core.md#two-modes-collect-and-replay[6bd547104d]` — I *claimed* this one, so
+  it is worth being explicit: `4c50a45` appends every row rather than every
+  `CHECKPOINT_EVERY`th, the partial file is therefore a prefix, and
+  `done = rows.len()` is a sound position index. The code carries a comment
+  naming the old bug. `PROGRESS_EVERY` is now only a log cadence.
+
+### The gap named one discard site and there were two
+
+`core-017` is answered and its "work left" paragraph is an ordinary target: make
+the prior reachable without a completed outcome. The gap points at
+`Actor::answer`'s `DeadlineExpired` arm and the hard cap behind it. **That is
+not the only place a classification is thrown away.** `dispatch` was written as
+`call(..).and_then(|outcome| encode(..).map_err(classify))`, and `encode` reads
+the target file — so `ProjectView`, which refuses a read whose deadline has
+already expired, ends the query *inside the conversion*, after the handler
+classified and after the outcome was moved into `encode`. A late answer whose
+definition is in another file never reaches the hard cap at all.
+
+The discriminating experiment is worth repeating on any "N sites construct this
+variant" claim: I planted `or_classified_by` returning `Nothing` and the hard-cap
+test still passed, which is how each test is *known* to exercise the path it
+names rather than the other one. The two tests differ only in which fixture file
+the definition is in (`src/lib.rs` short-circuits the second read; `src/target.rs`
+does not).
+
+### Two red gates, both from scans reading text rather than code
+
+1. A comment I wrote in `actor.rs` quoted `std::sync::mpsc` — the identifier
+   `seam.rs`'s async-shape scan greps for. The scan reads source *text*, so
+   naming a banned thing in prose trips it. Reworded to "the standard library's
+   channel". **Do not quote a banned identifier in a comment**, anywhere in
+   `crates/`; say what it is instead.
+2. `std::fs::read_dir` is in `clippy.toml`'s disallowed methods (it bypasses
+   gitignore semantics) and the suggested replacement, `ignore::WalkBuilder`, is
+   not a dependency any test crate can reach. The sanctioned way to enumerate
+   our own sources is `seam.rs`'s: read `crates/<name>/src/<name>.rs` and follow
+   its `mod` declarations. It is also better — it reads what the crate compiles,
+   so a file orphaned by a rename cannot change the result.
+
+### `driver` may not name `tracing_subscriber`, and that includes its tests
+
+`seam.rs` scans every source file of every member for the string, exempting only
+`heuristic_jump` and `measure_core`. So a driver test that wants to read a log
+line cannot use `tracing_subscriber::fmt`. A hand-written `tracing::Subscriber`
+is about 35 lines: `enabled`/`new_span`/`record`/`record_follows_from`/`event`/
+`enter`/`exit`, plus a `field::Visit` whose only required method is
+`record_debug`. Fields come out as `name=value`. It sends over a
+`crossbeam_channel::Sender` rather than a `Mutex<Vec<_>>` — `Subscriber` is
+`Send + Sync` and records through `&self`, which is the one shape in a test that
+tempts a lock.
+
+### Not taken, and why
+
+- **A concurrency test for §1's "handlers are re-entrant".** The `Send + Sync`
+  half is compile-enforced by the supertrait, and a passing concurrency test
+  proves nothing about re-entrancy. Left alone deliberately rather than
+  overlooked.
+- **A scan for "no `lang_*` crate names `Outcome::Committed`"** (§1's "handlers
+  never construct `Committed`"). The natural home is `seam.rs`, which another
+  worker held this round. It is a good target for whoever holds it.
+- **Driving `collect`.** `Collection::run` returns before `Client::start` when
+  the truth file already answers every position, so an "already collected"
+  test needs no server — but the header would have to carry the *installed*
+  `rust-analyzer` version to survive the drift check, and the test would then
+  fail on a machine without it. Left as a decision for someone taking the
+  resume arithmetic deliberately; the prefix invariant itself is unreachable
+  from an integration test, since `Truth`, `Writer` and `Row` are `pub(crate)`.
