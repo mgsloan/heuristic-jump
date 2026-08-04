@@ -502,6 +502,40 @@ fn the_printed_table_is_byte_identical_across_runs() {
     }
 }
 
+/// §7: "**Only the heuristic side is re-measured, and its timing is an
+/// observation, not a control input.** … `lsp_latency_us` comes from `collect`
+/// and is a property of the frozen truth — which is exactly what
+/// `high-level.md`'s value weighting wants, since it is a fact about how slow
+/// the real server was, not about this run."
+///
+/// The two latencies sit side by side in the record and one of them is a
+/// measurement of the machine the replay ran on. A replay that filled the
+/// oracle's column from its own clock — or from nothing — would weight every
+/// query by a number that says how fast this laptop is, and the weighting is
+/// the whole reason the field is carried.
+#[test]
+fn the_oracles_latency_is_the_frozen_truths_and_never_this_runs() {
+    let corpus = fixture("frozen_latency");
+    enumerate(&corpus);
+    write_truth(&corpus);
+
+    let records = corpus.scratch.join("records.jsonl");
+    replay(&corpus, Some(&records));
+
+    let text = fs::read_to_string(&records).expect("replay wrote the records file");
+    assert!(text.lines().count() > 1, "the fixture replayed nothing");
+    for line in text.lines() {
+        assert!(
+            line.contains("\"lsp_latency_us\":1234"),
+            "the oracle's latency is not the one the truth file recorded. It is \
+             a fact about how slow the real server was on this repository at \
+             this commit, and a replay that re-measured it would weight every \
+             query by how fast the machine that replayed it happened to \
+             be.\nrecord: {line}"
+        );
+    }
+}
+
 /// §7: "**Replay enforces no deadline at all.** This is the constraint that
 /// makes replay worth having, and it is easy to get wrong by doing the obvious
 /// thing. A wall-clock deadline makes abstention depend on machine load: the
