@@ -733,7 +733,10 @@ def one_live_row(identifier: str, row: dict, diffs: dict) -> str:
 
     return (
         '<tr class="live">'
-        f'<td><a href="/record/{quoted_owner}/{quoted}"><code>{esc(identifier[:8])}</code></a></td>'
+        # The worker, then the id. Three rows that differ only by a hex prefix
+        # are three rows nobody can tell apart at a glance.
+        f'<td><a href="/record/{quoted_owner}/{quoted}"><code>{esc(identifier[:8])}</code></a>'
+        f'<br><span class="dim">{esc(row.get("worker") or owner)}</span></td>'
         f"<td>{shown}</td>"
         f'<td class="num"><span class="{state_css}">{esc(state)}</span> '
         f'<span class="dim">{esc(elapsed(row.get("started") or ""))}</span></td>'
