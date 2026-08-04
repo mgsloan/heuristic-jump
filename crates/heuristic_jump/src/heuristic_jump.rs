@@ -13,9 +13,13 @@ use std::ffi::OsString;
 use std::sync::Arc;
 
 use clap::{CommandFactory, Parser, error::ErrorKind};
-use driver::{Config, DeadlineMs, DeadlineOverride, Heuristics, Mode, Registry};
+use driver::{
+    Config, DEFAULT_LOG_FILTER, DeadlineMs, DeadlineOverride, Heuristics, Mode, PrefixedWriter,
+    Registry,
+};
 use shared::LanguageHandler;
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::fmt::MakeWriter;
 
 /// `deps.md` §11. The usage form is what makes a parser viable here at all:
 ///
@@ -75,7 +79,7 @@ fn main() -> Result<(), shared::Error> {
             .exit();
     }
 
-    let filter = match EnvFilter::try_new(cli.log.as_deref().unwrap_or("warn")) {
+    let filter = match EnvFilter::try_new(cli.log.as_deref().unwrap_or(DEFAULT_LOG_FILTER)) {
         Ok(filter) => filter,
         Err(error) => Cli::command()
             .error(ErrorKind::InvalidValue, format!("--log: {error}"))
@@ -86,7 +90,7 @@ fn main() -> Result<(), shared::Error> {
         // The editor's log panel is not a terminal, and the child's stderr is
         // forwarded into the same stream (`shim.md` §2).
         .with_ansi(false)
-        .with_writer(stderr_for_logging)
+        .with_writer(PrefixedStderr)
         .init();
 
     let config = Config::new(
@@ -115,6 +119,19 @@ fn main() -> Result<(), shared::Error> {
     ]);
 
     driver::run(registry, config)
+}
+
+/// `deps.md` §9's destination, wrapped in §9's prefix. The wrapper is
+/// `driver`'s so that it can be asserted on; installing the subscriber is this
+/// crate's, which is where §9 puts it and where `--log` is parsed.
+struct PrefixedStderr;
+
+impl MakeWriter<'_> for PrefixedStderr {
+    type Writer = PrefixedWriter<std::io::Stderr>;
+
+    fn make_writer(&self) -> Self::Writer {
+        PrefixedWriter::new(stderr_for_logging())
+    }
 }
 
 /// The single sanctioned `stderr` handle. `clippy.toml` bans the rest because

@@ -72,6 +72,13 @@ ignore = "0.4.31"
 # limiters and would need no wrapper; §8 declines it on maturity grounds and
 # says the choice is worth revisiting if the wrapper gets awkward.
 lru = "0.16"
+# `deps.md` §7's watcher, deferred: `core.md` §4 gives the file list two
+# invalidation paths that do not need it, and in proxy mode the editor is
+# already watching — its `workspace/didChangeWatchedFiles` notifications cross
+# the shim, so a `notify` watcher would be a second, worse copy of a signal
+# already on the wire. Declared anyway, behind `driver`'s non-default `watch`
+# feature, because §7 asks for the decision to be visible rather than lost.
+notify = "8"
 # `deps.md` §0's table and §1: chosen over tokio, and over `std::sync::mpsc`
 # because `core`'s loop needs `select!` over several receivers and std has
 # none. Arrives with its first user, which is `core.md` §4's background rescan.

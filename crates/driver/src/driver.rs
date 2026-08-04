@@ -15,7 +15,8 @@ mod pending;
 mod trees;
 
 pub use config::{
-    Config, DeadlineMs, DeadlineOverride, DebounceMs, Heuristics, Mode, ServerCommand,
+    Config, DEFAULT_LOG_FILTER, DeadlineMs, DeadlineOverride, DebounceMs, Heuristics, LOG_PREFIX,
+    Mode, PrefixedWriter, ServerCommand,
 };
 pub use dispatch::{Answer, Completed, Dispatched, Parsed, Registry, Request, dispatch, hard_cap};
 pub use documents::{Documents, Queried, SaveCheck, Saved, Synced, Trusted};

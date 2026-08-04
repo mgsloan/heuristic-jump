@@ -1432,6 +1432,220 @@ fn sources_of(crate_name: &str) -> Vec<(String, String)> {
     sources
 }
 
+/// `deps.md` §9, whose three claims are each about something that is invisible
+/// from inside the process.
+///
+/// > The thing to be careful about: the child's stderr is forwarded verbatim to
+/// > our stderr (`shim.md` §2), so our own log lines interleave with
+/// > rust-analyzer's in the editor's log panel. Every line we emit gets a
+/// > distinguishing prefix, and the default filter is `warn` so we are quiet
+/// > unless asked.
+///
+/// The prefix was absent, and its absence produces no failure anywhere: the
+/// logs are correct, well-formatted and indistinguishable from the child's. The
+/// cost is paid by a user reading one editor panel who reports our warning
+/// against rust-analyzer.
+///
+/// It is asserted per *line* rather than per event, which is the part a
+/// hand-rolled prefix gets wrong: a multi-line message prefixed once carries it
+/// on the first line only, and the continuation lines are exactly the ones that
+/// look like somebody else's output.
+///
+/// > The JSONL metric records of `core.md` §7 are **not** tracing output. They
+/// > go to their own file via `serde_json`, because they are structured data
+/// > with a fixed schema that `measure_core` also writes, and routing them
+/// > through a log subscriber would make the schema a formatting concern.
+///
+/// The mechanism for that one is the subscriber being installed in exactly one
+/// place: a metrics writer routed through a log subscriber needs to reach
+/// `tracing_subscriber`, and only the binary can.
+#[test]
+fn our_log_lines_are_distinguishable_and_the_subscriber_is_installed_once() {
+    assert_eq!(
+        driver::DEFAULT_LOG_FILTER,
+        "warn",
+        "deps.md §9 makes `warn` the default so that we are quiet unless asked — our lines \
+         share a panel with the child's, and a chatty default spends the user's attention on \
+         a tool they did not ask to hear from"
+    );
+
+    let mut written = Vec::new();
+    let mut writer = driver::PrefixedWriter::new(&mut written);
+    let event = "a warning\nwith a second line\n";
+    assert_eq!(
+        std::io::Write::write(&mut writer, event.as_bytes()).expect("a write to a Vec"),
+        event.len(),
+        "PrefixedWriter reported a length that counted its own prefix: a Write that claims \
+         more than it was given makes every caller's loop arithmetic wrong"
+    );
+    let text = String::from_utf8(written).expect("the prefix and the event are both UTF-8");
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(
+        lines.len(),
+        2,
+        "a two-line event came out as {} line(s): {text:?}",
+        lines.len()
+    );
+    for line in lines {
+        assert!(
+            line.starts_with(driver::LOG_PREFIX),
+            "the line {line:?} carries no prefix: deps.md §9 wants every line distinguishable \
+             from the child's, and a continuation line is the one most easily read as the \
+             child's"
+        );
+    }
+
+    let members = crate_members();
+    assert!(
+        !members.is_empty(),
+        "no crates/* workspace member, so this test would pass vacuously"
+    );
+
+    let mut installs = Vec::new();
+    for member in &members {
+        let manifest = manifest_text(member);
+        assert!(
+            !manifest.is_empty(),
+            "no manifest for {member}, so every assertion below is vacuous"
+        );
+        for (table, key, _) in dependency_entries(&manifest) {
+            let name = key.strip_suffix(".workspace").unwrap_or(&key);
+            if name == "tracing-subscriber" {
+                installs.push(format!("{member} in [{table}]"));
+            }
+        }
+        for (file, source) in sources_of(member) {
+            assert!(
+                !source.is_empty(),
+                "{file} is missing or empty, so the scan below would pass vacuously"
+            );
+            assert!(
+                member == "heuristic_jump" || !source.contains("tracing_subscriber"),
+                "{file} names tracing_subscriber: deps.md §9 installs the subscriber in the \
+                 binary and nowhere else — a library with an opinion about where logs go is \
+                 one that fights whoever links it, and §7's JSONL records stay out of the log \
+                 subscriber by not being able to reach one"
+            );
+        }
+    }
+    assert_eq!(
+        installs,
+        vec!["heuristic_jump in [dependencies]".to_owned()],
+        "deps.md §9 gives tracing-subscriber to the binary alone: driver and shared emit \
+         through the tracing facade and have no opinion about where it goes"
+    );
+
+    let declared = table_of(&workspace_file("Cargo.toml"), "workspace.dependencies")
+        .into_iter()
+        .find(|line| line.starts_with("tracing-subscriber"))
+        .unwrap_or_default();
+    assert!(
+        declared.contains("\"env-filter\""),
+        "tracing-subscriber is declared as `{declared}` without env-filter: deps.md §9 names \
+         it as one of the two features, and it is what --log is a string for"
+    );
+}
+
+/// `deps.md` §7, whose two claims are both about a manifest and neither about
+/// any code.
+///
+/// > **It is a dependency of `shared`, not `driver`.** `ProjectView` is a
+/// > concrete struct in `shared` (`core.md` §1), because `measure_core` needs
+/// > the same scope rules the shim uses and gets them a whole phase earlier.
+///
+/// The cost of getting that backwards is not a build error. `driver` walking
+/// with its own `ignore` and `shared` walking with another is two
+/// implementations of the rules that decide what a search can find, and §7
+/// states what that costs: "the corpus scores a tool that is not the one that
+/// ships."
+///
+/// > **`notify`** — **deferred behind a non-default `watch` feature.** … The
+/// > dependency is written into `Cargo.toml` as optional so the decision is
+/// > visible, not lost.
+///
+/// That sentence is the whole assertion, and it is unusual in being about a
+/// dependency that must be *declared and not used*. A deferral recorded only in
+/// prose is one the next person re-decides from scratch, and §7's reasons —
+/// the editor is already watching in proxy mode, inotify runs out of
+/// descriptors on large repos — are not re-derivable from an absence.
+///
+/// **`optional = true` has no negative control**, for the reason
+/// `the_workspace_lints_reach_our_crates_and_not_the_vendored_ones` records
+/// about `vendor/rope`: the mutation is rejected before a test runs. Dropping
+/// it while `watch = ["dep:notify"]` stands makes cargo refuse to parse the
+/// manifest — "feature `watch` includes `dep:notify`, but `notify` is not an
+/// optional dependency" — and a control that produces no test result is not a
+/// control. The assertion is kept because cargo's enforcement is incidental to
+/// it: delete the feature and the optionality stops being checked by anything,
+/// which is the state §7 is guarding against rather than a separate one.
+#[test]
+fn the_walker_belongs_to_shared_and_the_watcher_is_declared_but_off() {
+    assert!(
+        dependencies_in(&manifest_text("shared"))
+            .iter()
+            .any(|name| name == "ignore"),
+        "shared does not depend on ignore: deps.md §7 puts the walker there because \
+         ProjectView is shared's, so that measure_core scores the same scope rules the shim \
+         ships — two walkers would mean the corpus scores a tool that is not the one shipped"
+    );
+    assert!(
+        !dependencies_in(&manifest_text("driver"))
+            .iter()
+            .any(|name| name == "ignore"),
+        "driver depends on ignore directly: deps.md §7 says it is shared's, and a driver that \
+         can walk is one that can grow a second set of exclusion rules nobody compares to the \
+         first"
+    );
+
+    let manifest = manifest_text("driver");
+    let notify = dependency_entries(&manifest)
+        .into_iter()
+        .find(|(_, key, _)| key.strip_suffix(".workspace").unwrap_or(key) == "notify");
+    let Some((table, _, value)) = notify else {
+        panic!(
+            "driver declares no notify: deps.md §7 defers the watcher and asks for the \
+             dependency to be written in as optional \"so the decision is visible, not lost\" \
+             — an absent crate records no decision, and the next person re-derives it"
+        )
+    };
+    assert_eq!(
+        table, "dependencies",
+        "driver declares notify in [{table}]: §7 defers it behind a feature rather than \
+         moving it to the tests, which is a different decision"
+    );
+    assert!(
+        value.contains("optional = true"),
+        "driver declares notify as `{value}`, not optional: §7's deferral is the whole entry, \
+         and a non-optional notify is the watcher built rather than recorded"
+    );
+
+    let features = table_of(&manifest, "features");
+    assert!(
+        features.iter().any(|line| line.starts_with("watch")),
+        "driver has no `watch` feature: §7 names it, and an optional dependency no feature \
+         gates is one nothing can turn on"
+    );
+    assert!(
+        !features.iter().any(|line| line.starts_with("default")),
+        "driver declares a default feature set: §7 keeps `watch` non-default, because in \
+         proxy mode the editor is already watching and a notify watcher would be a second, \
+         worse copy of a signal already on the wire"
+    );
+
+    for member in crate_members() {
+        if member == "driver" {
+            continue;
+        }
+        for (table, key, _) in dependency_entries(&manifest_text(&member)) {
+            assert!(
+                key.strip_suffix(".workspace").unwrap_or(&key) != "notify",
+                "{member} declares notify in [{table}]: §7 places the watcher behind driver's \
+                 feature, and a second declaration is a watcher nobody deferred"
+            );
+        }
+    }
+}
+
 /// `deps.md` §12's last line, which is the one row of its table that names no
 /// crate: "The injected clock for `shim.md` §12's protocol race tests is a
 /// `trait Clock` with a `TestClock` impl in `shared`, not a dependency."
