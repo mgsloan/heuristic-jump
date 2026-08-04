@@ -806,3 +806,38 @@ and commits cite the id, and an id that resolves to nothing is worse than one
 that says what happened.
 
 **Campaign:** 9110a409-f685-4569-ba82-fbf938928727
+
+## CHANGE-core-025 — deps.md#6-tree-sitter — the grammar ban is on `[dependencies]`, and `driver` reaches the runtime through `shared`
+
+**Contradiction:** §6 said, in one sentence, two things the manifests do not
+support.
+
+> `driver` depends on `tree-sitter` but on **no** grammar crate — that is the
+> rule `core.md` §9 exists to enforce
+
+`crates/driver/Cargo.toml` declares `tree-sitter` in no table; it reaches
+`Language`, `Tree` and `InputEdit` through `shared`'s re-export
+(`crates/shared/src/shared.rs:61`), which §0's table anticipates by placing the
+runtime at "shared, driver". And it *does* declare a grammar crate:
+`tree-sitter-rust` is in `[dev-dependencies]`, as it is for `shared`.
+
+**Resolution:** the paragraph now says `driver` "takes **no** grammar crate
+into its shipped graph", and carries the two refinements. Neither is a new
+decision — both are already what the code does and what other sections say:
+
+* §12 states the same `[dependencies]`-only exemption for `lsp-types`, so §6 is
+  being brought in line with an exemption the document already grants.
+* `core.md` §9's graph is defined as the graph the shipped binary has, and
+  `crates/driver/Cargo.toml` already argues its dev-dependency grammar in a
+  comment citing that. `neither_driver_nor_shared_depends_on_a_language` in
+  `crates/driver/tests/seam.rs` has read `[dependencies]` alone since it was
+  written, and bans a `lang_*` edge in every table.
+
+Nothing trades off: the rule the sentence exists to state is unchanged, the
+test that enforces it is unchanged, and no code was edited for this. The one
+site that could have drifted — `shared`'s re-export — turned out to be held by
+the compiler (`driver/src/trees.rs` imports all three names), which is recorded
+in the bullet rather than asserted in a test that would pass for the wrong
+reason.
+
+**Campaign:** 340b4361-1c73-4b85-a5c8-0de27852ea8d

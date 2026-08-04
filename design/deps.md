@@ -414,9 +414,31 @@ out of scope here, except to note that the old repo's pins
 that must stay as git revs: `tree-sitter-typescript` (zed-industries fork) and
 `tree-sitter-cpp`.
 
-`driver` depends on `tree-sitter` but on **no** grammar crate — that is the
-rule `core.md` §9 exists to enforce, and `LanguageHandler::grammar()` returning
-a runtime `tree_sitter::Language` is what makes it possible.
+`driver` parses with `tree-sitter` and takes **no** grammar crate into its
+shipped graph — that is the rule `core.md` §9 exists to enforce, and
+`LanguageHandler::grammar()` returning a runtime `tree_sitter::Language` is
+what makes it possible. Two refinements, neither of which softens it:
+
+* **`driver` reaches the runtime through `shared`'s re-export rather than
+  declaring `tree-sitter` itself.** §0's table places the crate at both, and
+  that is where it is *placed*; where it is *declared* is `shared`, which
+  re-exports `Language`, `Tree` and `InputEdit` alongside the text vocabulary
+  `core.md` §1 lists. A second declaration would be a second path to one
+  runtime, which is the thing §14's single `[workspace.dependencies]` version
+  exists to make harmless and not a thing to arrange deliberately. Nothing
+  asserts this and nothing needs to: `driver`'s `trees.rs` imports
+  `InputEdit`, `Language` and `Tree` from `shared`, so a dropped re-export is
+  a build failure rather than a drift. It is written down because the *repair*
+  a compiler suggests for that failure is `driver` declaring `tree-sitter`
+  itself, which is the state this bullet describes as not being the case.
+* **The ban is on `[dependencies]`, exactly as §12 states it for
+  `lsp-types`.** `driver` and `shared` each take `tree-sitter-rust` in
+  `[dev-dependencies]`, because a `tree_sitter::Language` cannot be
+  constructed without a grammar crate and neither crate could otherwise test
+  the seam it defines. `core.md` §9's graph is the graph the shipped binary
+  has, and a dev-dependency grammar is not in it. What stays banned in *every*
+  table is a `lang_*` edge — that is the one that would let one language's
+  behaviour be written into the driver and pass.
 
 `[profile.dev.package.tree-sitter] opt-level = 3`, per the profile conventions
 in §14. Parsing in a debug build is otherwise slow enough to distort every
