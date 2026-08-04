@@ -162,6 +162,7 @@ write = [
   "state/decisions/conformance-*.md",
   "state/metrics/core.jsonl",
   "state/findings/core.md",
+  "state/findings/core-*.md",
   # Both, for now. The per-loop file is where new entries go; the flat one
   # stays writable because a campaign whose prompt was rendered before the
   # split would otherwise fail the gate on a path it was told to use, and

@@ -1449,6 +1449,34 @@ def assignment_block(owner: str, worker: str) -> str:
     return "\n".join(lines)
 
 
+def worker_findings(owner: str, worker: str) -> str:
+    """This worker's digest, followed by its siblings'.
+
+    The digest started shared between workers, on the argument that three
+    theories of one implementation is the same synthesis done three times. The
+    argument is right and the mechanism was wrong: three branches rewriting one
+    capped file conflict on every merge, and "last write wins" is a thing git
+    does not do — it stops and asks.
+
+    So each worker keeps its own and reads the others'. That is honest about
+    what is actually true — three workers do have three views — and it keeps
+    the cross-worker learning the shared file was for, at the cost of splicing
+    two more capped files.
+    """
+    directory = STATE / "findings"
+    own = directory / f"{worker}.md"
+    parts = []
+    if own.exists():
+        parts.append(own.read_text().strip())
+    for path in sorted(directory.glob(f"{owner}-*.md")):
+        if path.stem == worker:
+            continue
+        body = path.read_text().strip()
+        if body:
+            parts.append(f"### What {path.stem} concluded\n\n{body}")
+    return "\n\n".join(parts)
+
+
 def prompt_values(
     phase: Phase,
     config: LoopConfig,
@@ -1649,9 +1677,10 @@ def prompt_values(
             else ""
         ),
         "other_findings": "\n\n".join(findings) or "(no other loop has published a digest)",
+        "findings_path": f"state/findings/{os.environ.get('HJ_WORKER') or config.owner}.md",
         "self_summary": (
-            (STATE / "findings" / f"{config.owner}.md").read_text().strip()
-            if (STATE / "findings" / f"{config.owner}.md").exists()
+            worker_findings(config.owner, os.environ.get("HJ_WORKER") or config.owner)
+            if worker_findings(config.owner, os.environ.get("HJ_WORKER") or config.owner)
             else "(none yet)"
         ),
     }

@@ -133,7 +133,7 @@ worked through in sequence.
      being rediscovered three campaigns from now — approaches abandoned and
      the reason are worth more than a summary of what worked, which the diff
      already says.
-   - **Rewrite `state/findings/{{loop}}.md`, in at most 512 words.** Your
+   - **Rewrite `{{findings_path}}`, in at most 512 words.** Your
      current theory of this implementation: where the gaps are concentrated
      and why, what you have ruled out and on what evidence, which claims in
      the spec have turned out to be load-bearing, and what the next campaign
