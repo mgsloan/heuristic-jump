@@ -1,6 +1,6 @@
 ---
 id: harness-006
-status: open
+status: accepted
 opened: 2026-08-04T07:10:00+00:00
 campaign: (none — raised by hand, enabling layer 3 for harness-002)
 kind: class-b
@@ -66,8 +66,35 @@ runs after it.
 
 ## Decision
 
-Undecided — waiting on a human, and cheap to defer only until the fleet next
-runs.
+**accepted: say it in the campaign prompt**, answered 2026-08-04 and logged as
+a `decision-answered` intervention, which is what makes it answered —
+`design/loops.md` §16 derives the status from the log rather than from this
+line.
+
+It is the only option that leaves git's own semantics alone, and the only one
+that explains *why* rather than hiding the symptom. Gitignoring is the obvious
+move and the one worth being careful about: it would make `.gitmodules`,
+`.claude/skills/` and `.claude/commands/` silently unaddable if this project
+adds them later, which is this same class of quiet failure moved somewhere
+less obvious — and this failure's being loud is the reason it was found at all.
+`.git/info/exclude` is the untracked-shared-state problem the fleet has already
+been bitten by four times. Narrowing the masks was never established to be
+possible, and the property they buy — a session that cannot read the operator's
+shell configuration — is worth keeping.
+
+### What is left, and what is done
+
+Done in the same commit as this ruling: `harness/trailer-format.md` gains a
+**Staging** section naming the error text, since that is what a session will
+search for. That file is the single source spliced into every loop prompt as
+`{{trailer_format}}`, so one edit reaches both loops and every worker, and it
+lands under the heading a session is already reading when it goes to commit.
+It is in `harness/`, which is denied to every loop, so this is a human edit
+like the sandbox itself.
+
+Still the harness loop's: `design/loops.md` §13's isolation section should say
+that layer 3 is on and what it costs, which it does not — the same reconciling
+`harness-002` left behind.
 
 ## Provisional choice in force
 

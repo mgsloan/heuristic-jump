@@ -1,8 +1,33 @@
-# Commit trailers
+# Committing
 
 The single source of this convention. It is spliced into the loop prompts at
 launch (`design/loops.md` section 14), so there is one copy and it is this
 one.
+
+## Staging
+
+**`git add -A` and `git add .` fail. Stage the paths you changed by name.**
+The error is
+
+```
+error: .bash_profile: can only add regular files, symbolic links or git-directories
+fatal: adding files failed
+```
+
+and it is not about your change. The OS sandbox (`design/loops.md` section 13,
+layer 3) hides the operator's dotfiles by bind-mounting `/dev/null` over each
+one, and inside the sandbox those mounts are visible at the project root as
+character devices, which `git add` refuses to stage. There are twenty-two of
+them and they exist in no checkout.
+
+`git commit -a` is unaffected — it stages tracked modifications only — and so
+is any path-limited `git add`. This is `state/decisions/harness-006.md`,
+answered in favour of saying it here rather than gitignoring the names,
+because `.gitmodules` and `.claude/skills/` are things this project could
+legitimately add later and ignoring them would make *that* failure quiet
+where this one is loud.
+
+## Trailers
 
 Trailers are parseable with stock `git interpret-trailers`, which is what
 makes `git log` the journal and lets stall detection work without separate
