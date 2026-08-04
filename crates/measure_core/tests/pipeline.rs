@@ -1139,21 +1139,48 @@ fn a_replay_refuses_a_truth_file_it_cannot_trust() {
 }
 
 /// The replay-side half of "a truth file is never silently merged with
-/// another's" (§7). `truth/<server>/` is a path and not a check: a file copied
-/// into it replays under a server name it was never collected against, and
-/// every metric is then attributed to the wrong oracle.
+/// another's" (§7). The corpus layout puts a truth file at
+/// `truth/<server>/<repository>.jsonl`, and every component of that path is a
+/// path rather than a check: a file copied or hand-moved into it replays under
+/// a server, a language and a repository it was never collected against, and
+/// every metric is then attributed to the wrong one.
+///
+/// All three, because only one of them was compared and the argument covers
+/// them equally. The repository is the one the commit check appears to cover
+/// and does not: two checkouts of the same upstream at the same commit pass it
+/// while the recorded offsets describe neither.
 #[test]
-fn a_replay_refuses_a_truth_file_collected_against_another_server() {
-    let corpus = fixture("provenance_mismatch");
-    enumerate(&corpus);
-    write_truth_as(&corpus, "oracle", "other");
+fn a_replay_refuses_a_truth_file_whose_header_names_another_run() {
+    // One field of the header moved per case, with the other two left as this
+    // run's, so what each case holds is that *this* field is compared.
+    for (field, repository, language, server) in [
+        ("server", "one", "rust", "other"),
+        ("language", "one", "python", "oracle"),
+        ("repository", "two", "rust", "oracle"),
+    ] {
+        let corpus = fixture(&format!("provenance_mismatch_{field}"));
+        enumerate(&corpus);
+        write_truth_headed(
+            &corpus,
+            "oracle",
+            &header_of(repository, language, server, &corpus.commit, true),
+        );
 
-    let refused = replay_result(&corpus, measure_core::Format::Json)
-        .expect_err("a truth file whose header names another server was replayed");
-    let Error::Config(shared::ConfigError::ProvenanceDrift { field, .. }) = &refused else {
-        panic!("the wrong oracle's truth file was refused as {refused}");
-    };
-    assert_eq!(*field, "server");
+        let Err(refused) = replay_result(&corpus, measure_core::Format::Json) else {
+            panic!("a truth file whose header names another {field} was replayed");
+        };
+        let Error::Config(shared::ConfigError::ProvenanceDrift { field: named, .. }) = &refused
+        else {
+            panic!("a truth file naming another {field} was refused as {refused}");
+        };
+        assert_eq!(
+            *named, field,
+            "a truth file whose {field} is not this run's was refused for \
+             {named}. Which field disagrees is what says whether the file is \
+             the wrong file or the checkout is the wrong checkout, and the two \
+             have opposite repairs"
+        );
+    }
 }
 
 /// §7's "the table is not enough": `replay --records <path>` writes the
@@ -1826,12 +1853,27 @@ fn write_truth_as(corpus: &Fixture, directory: &str, recorded: &str) {
     write_truth_headed(corpus, directory, &header(recorded, &corpus.commit, true));
 }
 
-/// The provenance header as a line, so a test can move the two fields a replay
+/// The provenance header as a line, so a test can move the fields a replay
 /// checks for itself — the commit, and whether the collection ever finished.
 fn header(server: &str, commit: &str, complete: bool) -> String {
+    header_of("one", "rust", server, commit, complete)
+}
+
+/// The same, with the three fields that say *which run wrote this file* free
+/// to move. Written as text rather than through `Provenance` because a replay
+/// reads a file: a header built from the type could not carry a language this
+/// binary has no handler for, which is one of the cases.
+fn header_of(
+    repository: &str,
+    language: &str,
+    server: &str,
+    commit: &str,
+    complete: bool,
+) -> String {
     format!(
-        "{{\"repository\":\"one\",\"commit\":\"{commit}\",\"language\":\"rust\",\
-         \"server\":\"{server}\",\"server_version\":\"0\",\"grammar\":\"fixture\",\
+        "{{\"repository\":\"{repository}\",\"commit\":\"{commit}\",\
+         \"language\":\"{language}\",\"server\":\"{server}\",\
+         \"server_version\":\"0\",\"grammar\":\"fixture\",\
          \"measure_version\":\"0\",\"complete\":{complete}}}"
     )
 }

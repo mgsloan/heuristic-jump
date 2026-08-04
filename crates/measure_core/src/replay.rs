@@ -47,20 +47,35 @@ impl Replay<'_> {
     ) -> Result<(), Error> {
         let path = self.corpus.truth(self.server, &repository.name);
         let truth = Truth::read(&path)?;
-        verify_checkout(repository, Some(&truth.provenance.commit))?;
         // §7: the header "names exactly one server and version", which is what
         // makes a truth file comparable to itself over time and never silently
-        // merged with another's. The commit check above is about the *corpus*
-        // having moved; this one is about the file being the wrong file, and
-        // the `truth/<server>/` path is not a check — a file copied or hand-
-        // moved into it would be replayed under a name it was not collected
-        // under, and every metric would be attributed to the wrong oracle.
+        // merged with another's. Neither `truth/<server>/` nor
+        // `<repository>.jsonl` is a check — a file copied or hand-moved into
+        // either is replayed under a name it was not collected under, and
+        // every metric is then attributed to the wrong oracle or the wrong
+        // checkout.
+        //
+        // All three identity fields, not the two a reader would think of. The
+        // commit check below refuses a misfiled *repository* only when the two
+        // happen to sit at different commits, which is a coincidence and not a
+        // check; two checkouts of the same upstream at one commit are exactly
+        // where a corpus wants this to fire.
+        //
+        // Before the checkout is verified, and in that order deliberately:
+        // asking whether the corpus has moved under a file that was never
+        // about this repository reports a commit mismatch, which sends an
+        // operator to `git checkout` for a file that needs re-collecting.
         for (field, recorded, found) in [
             ("server", &truth.provenance.server, self.server),
             (
                 "language",
                 &truth.provenance.language,
                 self.corpus.language().as_str(),
+            ),
+            (
+                "repository",
+                &truth.provenance.repository,
+                &*repository.name,
             ),
         ] {
             if &**recorded != found {
@@ -73,6 +88,7 @@ impl Replay<'_> {
                 .into());
             }
         }
+        verify_checkout(repository, Some(&truth.provenance.commit))?;
 
         // One `FileList` per repository, and a `ProjectView` per query over
         // it: the walk is the expensive part and the scope rules are what the
