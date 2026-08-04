@@ -1632,6 +1632,11 @@ fn our_log_lines_are_distinguishable_and_the_subscriber_is_installed_once() {
         "no crates/* workspace member, so this test would pass vacuously"
     );
 
+    /// The crates that own a process, in sorted order so the comparison below
+    /// does not depend on how the workspace lists its members
+    /// (`DECISION-core-002: provisional`).
+    const INSTALLS_A_SUBSCRIBER: [&str; 2] = ["heuristic_jump", "measure_core"];
+
     let mut installs = Vec::new();
     for member in &members {
         let manifest = manifest_text(member);
@@ -1650,20 +1655,33 @@ fn our_log_lines_are_distinguishable_and_the_subscriber_is_installed_once() {
                 !source.is_empty(),
                 "{file} is missing or empty, so the scan below would pass vacuously"
             );
+            // DECISION-core-002: provisional. The permitted set is the crates
+            // that own a process, not the one crate that is a `[[bin]]`:
+            // `core.md` §7 makes a `measure_<lang>` main four lines and puts
+            // the rest — `clap`, and with it the log setup — in `measure_core`.
+            // What the assertion still holds is the half of §9's reason that
+            // survives either answer: `driver` and `shared`, the crates the
+            // shim links, have no opinion about where logs go.
             assert!(
-                member == "heuristic_jump" || !source.contains("tracing_subscriber"),
-                "{file} names tracing_subscriber: deps.md §9 installs the subscriber in the \
-                 binary and nowhere else — a library with an opinion about where logs go is \
-                 one that fights whoever links it, and §7's JSONL records stay out of the log \
-                 subscriber by not being able to reach one"
+                INSTALLS_A_SUBSCRIBER.contains(&member.as_str())
+                    || !source.contains("tracing_subscriber"),
+                "{file} names tracing_subscriber: deps.md §9 leaves the subscriber to the \
+                 crate that owns the process — a library the shim links with an opinion \
+                 about where logs go is one that fights whoever links it, and §7's JSONL \
+                 records stay out of the log subscriber by not being able to reach one"
             );
         }
     }
+    installs.sort();
     assert_eq!(
         installs,
-        vec!["heuristic_jump in [dependencies]".to_owned()],
-        "deps.md §9 gives tracing-subscriber to the binary alone: driver and shared emit \
-         through the tracing facade and have no opinion about where it goes"
+        INSTALLS_A_SUBSCRIBER
+            .iter()
+            .map(|member| format!("{member} in [dependencies]"))
+            .collect::<Vec<String>>(),
+        "deps.md §9 gives tracing-subscriber to the crates that own a process: driver and \
+         shared emit through the tracing facade and have no opinion about where it goes \
+         (DECISION-core-002: provisional)"
     );
 
     let declared = table_of(&workspace_file("Cargo.toml"), "workspace.dependencies")

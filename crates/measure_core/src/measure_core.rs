@@ -167,6 +167,10 @@ pub fn replay_table(
 /// line is a closed set (`tests/pipeline.rs`), and a flag is a thing a run can
 /// be misconfigured by where an environment variable is a thing an operator
 /// reaches for.
+// DECISION-core-002: provisional. A library installing a global subscriber is
+// the thing `deps.md` §9 warns about, and this one is here because a
+// `measure_<lang>` main is four lines. The alternative — the install in each
+// language binary — is the option that record leaves open.
 fn install_logging() {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
