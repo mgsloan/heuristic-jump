@@ -688,7 +688,11 @@ def elapsed(since: str) -> str:
 
 
 def live_campaign_row(opened: dict, closed: dict, diffs: dict) -> str:
-    """The campaign running right now, as the first row of the ledger.
+    """Every campaign running right now, one row each, above the ledger.
+
+    It rendered exactly one — `running[-1]` — which was right when a loop was
+    one campaign at a time and silently wrong from the moment there were three
+    workers: the other two were running, recorded, and invisible.
 
     Without it the page looks idle for the twenty-odd minutes a campaign
     takes, which is exactly the window in which someone is most likely to be
@@ -702,8 +706,10 @@ def live_campaign_row(opened: dict, closed: dict, diffs: dict) -> str:
     running = [key for key in opened if key not in closed]
     if not running:
         return ""
-    identifier = running[-1]
-    row = opened[identifier]
+    return "".join(one_live_row(identifier, opened[identifier], diffs) for identifier in running)
+
+
+def one_live_row(identifier: str, row: dict, diffs: dict) -> str:
     owner = row.get("loop") or next(iter(hj.load_phase().loops), "core")
     state, state_css = campaign_state(identifier)
     progress = {}
