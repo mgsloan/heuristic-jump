@@ -475,3 +475,49 @@ check weakened, and the one number that was ambiguous was resolved toward the
 reading that does not fire on correct work.
 
 **Campaign:** 3e637dcd-7552-460c-8eb4-fb41941ef14b
+
+## CHANGE-harness-011 — loops.md#what-is-deliberately-not-built-yet — the list is stale, and the corpus split is two-way
+
+**Contradiction:** two, in one short section.
+
+The first is between the section and the repository. It says "The supervisor,
+the dashboard, campaigns and their digests, the frontier, held-out selection,
+per-language billing, cost accounting, worktree parallelism, and the findings
+protocol" are deliberately not built yet. Six of those nine exist:
+`harness/dashboard/serve`, `state/campaigns/`, `state/findings/`,
+`state/cost/` with `hj cost`, and `harness/workers` with `worktree`/`workers`
+in `state/phase.toml`. Section 18 says who was to build them — "point that
+same loop at this document and have it build the phase-2 machinery" — so the
+list going stale is the mechanism working, not a surprise.
+
+The second is internal. The same section: "**The corpus split** — tune,
+select, and final decided at 1b and physically separated". Section 12: "The
+remedy, if it starts to matter, is to stop selecting on part of it: carve a
+final set out of the five, evaluate it once at the end... Deciding it now
+would mean guessing how much leakage ten gates actually cause, which the first
+few gates will say." Section 8's own 1b gate says "the tuning / held-out split
+decided and physically separated" — two-way, and it is the sentence the
+harness implements (`SPLITS = ("training", "test")` in `harness/corpus`).
+
+**Resolution:** the not-built list now names what is not built — the
+supervisor, the frontier, the evaluation half of held-out selection, the
+per-language link delta, and the tuning and optimisation prompts — with a
+paragraph saying that this list shortens as the followup is built and that the
+*argument* is what stays fixed. The corpus bullet now says tuning and held-out,
+decided at 1b, matching section 8; the third *final* set is named as section
+12's remedy held in reserve, with section 12's own reason for not deciding it
+now, and the irreversibility claim is attached to the coarse split where it
+belongs. "The split can be made finer later and never coarser" is section 12's
+sentence and it is what makes this the reading that trades nothing off: taking
+the three-way version as settled would spend an option the document says to
+keep.
+
+**This campaign edited this document and the code it describes**, which is the
+shape `harness/readme.md` says is watched for, so: the campaign built §11's
+size proxy and §12's held-out separation and verdict, and then struck
+"per-language billing" and part of "held-out selection" off the list of things
+that do not exist. The list is accurate either way — the six stale entries
+were stale before this campaign opened, and the two it touched are recorded as
+*half*-built in both this document and the readme rather than as done.
+
+**Campaign:** 78bbbbc4-9003-447e-9139-61389562ceb5

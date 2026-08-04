@@ -396,10 +396,18 @@ a stop lands between campaigns where the tree is committed.
 
 ## What is not built
 
-The supervisor, the frontier tool, held-out selection, worktree parallelism,
-and the tuning and optimisation prompts. `design/loops.md` section 18 is the
-argument: they exist to serve tuning loops, and there are none until phase
-2a. With one loop, one bash loop is not a fleet.
+The supervisor, the frontier tool, the evaluation half of held-out selection,
+the per-language link delta, and the tuning and optimisation prompts.
+`design/loops.md` section 18 is the argument: they exist to serve tuning
+loops, and there are none until phase 2a. With one loop, one bash loop is not
+a fleet.
+
+The two half-built entries are half-built on purpose and say so where it
+matters. `hj heldout` renders the verdict and stops the loop on a widening
+gap; what is missing is the thing that *produces* the rows, which is a corpus
+run over candidate commits and therefore needs the frontier. `hj link-delta`
+computes the per-language number and exits non-zero naming the cargo feature
+`heuristic_jump` would need for it to be measurable at all.
 
 `design/loops.md` section 18 also says who builds them — this same
 conformance loop, pointed at `loops.md`, during the ~100 machine-hours of
