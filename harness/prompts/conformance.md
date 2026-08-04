@@ -318,8 +318,10 @@ not helpfully move them back.
 
 ## Your campaigns so far
 
-One line each. Coverage, not depth: enough to know whether something has been
-tried, not why it failed. The journal has the why.
+One entry each: what it targeted, the hypothesis it opened with, and how it
+closed. Coverage rather than depth — enough to know whether an idea has been
+tried, not how it went wrong. When a line is worth more than that, the full
+record is `state/campaigns/{{loop}}/<id>.md` and the journal has what failed.
 
 {{campaigns_so_far}}
 

@@ -2763,6 +2763,55 @@ def render(template: str, values: dict[str, str]) -> str:
     return out
 
 
+# `design/loops.md` §14: "Every past campaign as one line — target,
+# hypothesis, outcome." The first and the last are in the session row; the
+# hypothesis is only ever in the campaign record, because it is the one part a
+# campaign writes in prose. Long enough to say which idea was tried and short
+# enough that forty of them are still a list rather than a document.
+HYPOTHESIS_CAP = 200
+HYPOTHESIS_HEADING = re.compile(r"^#{2,3}\s+Hypothesis\s*$", re.MULTILINE)
+NEXT_HEADING = re.compile(r"^#{1,3}\s+\S", re.MULTILINE)
+HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+
+
+def hypothesis_of(record: str) -> str:
+    """The first paragraph under a campaign record's `## Hypothesis`.
+
+    Empty when the section is missing or still holds the template's comment,
+    and that is the useful answer rather than a defect: a campaign that wrote
+    no hypothesis has none to report, and inventing one from its target would
+    put words in its mouth that the next campaign would read as evidence.
+    """
+    heading = HYPOTHESIS_HEADING.search(record)
+    if heading is None:
+        return ""
+    rest = record[heading.end() :]
+    following = NEXT_HEADING.search(rest)
+    body = HTML_COMMENT.sub("", rest[: following.start()] if following else rest).strip()
+    if not body:
+        return ""
+    paragraph = " ".join(body.split("\n\n")[0].split())
+    if len(paragraph) <= HYPOTHESIS_CAP:
+        return paragraph
+    cut = paragraph[:HYPOTHESIS_CAP].rsplit(" ", 1)[0]
+    return f"{cut}…"
+
+
+def campaign_hypothesis(owner: str, campaign: dict) -> str:
+    """`hypothesis_of` against the record a session row points at.
+
+    The row carries the path, so a record that moved is followed rather than
+    guessed at; the fallback is the layout `campaign-open` writes, for rows
+    written before the field existed.
+    """
+    identifier = str(campaign.get("campaign") or "")
+    relative = campaign.get("record") or f"state/campaigns/{owner}/{identifier}.md"
+    path = REPO / str(relative)
+    if not path.is_file():
+        return ""
+    return hypothesis_of(path.read_text())
+
+
 def judged_campaigns(owner: str) -> list[dict]:
     """Closed campaigns that actually ran.
 
@@ -3053,10 +3102,13 @@ def prompt_values(
 
     campaign_lines = []
     for campaign in campaigns_of(config.owner):
-        campaign_lines.append(
-            f"- {campaign.get('campaign', '?')[:8]} {campaign.get('target') or '(no target recorded)'} "
+        identifier = str(campaign.get("campaign") or "?")
+        line = (
+            f"- {identifier[:8]} {campaign.get('target') or '(no target recorded)'} "
             f"-> {campaign.get('outcome') or 'open'}"
         )
+        why = campaign_hypothesis(config.owner, campaign)
+        campaign_lines.append(f"{line}\n  why: {why}" if why else line)
 
     # Open records, and answered ones whose sites are still tagged. The second
     # kind matters as much as the first: `design/loops.md` section 6 makes
@@ -6572,6 +6624,27 @@ def selftest_cases() -> list[tuple[str, object]]:
         for text in ("no such sentence here", "stay denied to it\n\nstay denied to it"):
             found, problem = documented_harness_denials(text)
             assert found == set() and problem, text
+
+    def a_one_liner_carries_the_hypothesis_it_was_written_with():
+        record = (
+            "# Campaign x\n\n## Target\n\nloops.md#one\n\n## Hypothesis\n\n"
+            "The gap is open because a decision was answered and nobody came back\nfor it.\n\n"
+            "A second paragraph that the one-liner does not need.\n\n## Outcome\n\ndone\n"
+        )
+        assert hypothesis_of(record) == (
+            "The gap is open because a decision was answered and nobody came back for it."
+        )
+
+    def an_unwritten_hypothesis_is_not_invented():
+        template = "## Hypothesis\n\n<!-- Why the target is in the state it is in. -->\n\n## Outcome\n"
+        assert hypothesis_of(template) == "", "the template's own comment is not a hypothesis"
+        assert hypothesis_of("# Campaign\n\n## Target\n\nx\n") == "", "no section, no line"
+
+    def a_long_hypothesis_is_cut_at_a_word():
+        record = "## Hypothesis\n\n" + "word " * 100
+        cut = hypothesis_of(record)
+        assert len(cut) <= HYPOTHESIS_CAP + 1 and cut.endswith("…"), cut
+        assert not cut.endswith(" …"), "cutting mid-word would misquote it"
 
     def the_estimate_table_parses():
         rows = parse_estimate_table([
