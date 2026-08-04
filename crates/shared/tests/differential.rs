@@ -258,6 +258,31 @@ fn the_corpus_holds_traffic_nobody_here_composed() {
          exercised only by messages this project composed"
     );
 
+    // §6 reads a link at its `targetSelectionRange` and not its `targetRange`,
+    // on the grounds that the second is the whole item and would put the row on
+    // the doc comment above it. That is asserted in `tests/agreement.rs`
+    // against a composed message, which leaves the *premise* unevidenced: if
+    // every real link had its two ranges on one row, the choice would not
+    // matter and the test would be pinning an invented distinction.
+    let links_disagree = captured
+        .iter()
+        .filter(|entry| entry.kind == Kind::DefinitionResult)
+        .filter_map(|entry| {
+            match read::<DefinitionResult>(entry.message.get(), "shared::proto::DefinitionResult") {
+                DefinitionResult::Links(links) => Some(links),
+                DefinitionResult::Null | DefinitionResult::One(_) | DefinitionResult::Many(_) => {
+                    None
+                }
+            }
+        })
+        .flatten()
+        .any(|link| link.target_range.start.line() != link.target_selection_range.start.line());
+    assert!(
+        links_disagree,
+        "no captured LocationLink whose targetRange and targetSelectionRange start on different \
+         rows, so nothing here shows that §6's choice between them is a choice at all"
+    );
+
     // §8.5's fifth union, which is the one it spends its longest section on and
     // the one whose failure destroys the document. What a composed corpus keeps
     // getting wrong about it is not the common case but the edges: a deletion
