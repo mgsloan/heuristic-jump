@@ -526,6 +526,26 @@ fn classify(error: Error) -> Dispatched {
     // `Failed` by default.
     match &error {
         Error::Handler(HandlerError::DeadlineExpired) => {
+            // `deps.md` §10: "Some `driver` code will convert an `Error` into
+            // an abstention; that conversion is explicit and logged." This is
+            // that code, and this is the log. It is the *only* site where an
+            // `Error` stops being a failure — everything else here stays
+            // `Failed` — so logging here covers all three callers: a parse
+            // abandoned in `realise`, a handler's own `?` propagation through
+            // `call`, and an expiry raised inside §8.4's conversion.
+            //
+            // Deliberately not repeated in `Actor::answer`, which is where the
+            // `Outcome::Abstain` is finally built. Every `DeadlineExpired` that
+            // reaches it has been logged exactly once already: this arm for the
+            // ones converted from an `Error`, and `hard_cap`'s line for the one
+            // that never was an `Error` at all — an answer that was merely
+            // late. A second line there would report both twice and say nothing
+            // the record does not.
+            //
+            // `debug`, the level `hard_cap` drops a late answer at: an expiry
+            // is what §5's budget is *for*, so it is normal operation and not a
+            // fault. The rate is §7's to report; this is for reading one query.
+            tracing::debug!(%error, "converting an expiry into an abstention");
             Dispatched::DeadlineExpired(Classified::Nothing)
         }
         // `Encoding` is a *failure*, and it is the wrapper's own rather than a

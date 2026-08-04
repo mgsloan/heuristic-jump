@@ -503,6 +503,85 @@ wrong sentence is absent: the members that depend on `similarity` are exactly
 
 **Campaign:** 20bbc1bf-03c5-4d3c-afda-a5c5791d47ce
 
+## CHANGE-core-017 — deps.md#8-parse-cache — one of the two keys is a cache that `conformance-005` refused
+
+**Contradiction:** §8's last paragraph said, in the present tense, "the cache
+is keyed by `(uri, version)` for open docs and `(path, mtime, len)` for disk
+files, so it is a map keyed by our own types, not by attacker-controlled
+strings."
+
+`state/decisions/conformance-005.md` is answered, by a human, the other way for
+the second half: "**Ruling:** accepted. Option A stands: no read cache", on the
+grounds that a cache reached through the `Sync` `&Query` "is not implementable
+behind a Sync &Query without a primitive this project does not have", and that
+"`CLAUDE.md` line 112 decides it: no new caching or indexing until the corpus
+harness shows the change is worth it and there is a benchmark ... There is no
+corpus."
+
+The only route to a disk-file parse is `ProjectView::parse`, which is behind
+that same `&Query`. So the disk-file half of §8's key is the key of a cache the
+ruling says this phase does not get, and `crates/shared/src/project.rs`'s
+module doc and `crates/driver/src/trees.rs`'s `ParseKey` doc both already say
+so — "the disk-file half ... has no cache to be a key of yet".
+
+**Resolution:** the paragraph now separates the two keys, says which one is a
+cache today (`driver::TreeCache`, `(uri, version)`, which is what the `lru`
+wrapper the rest of §8 chooses is for), and says the disk-file half has no
+cache and why, citing the ruling.
+
+This trades nothing off in either direction. It does not weaken the point the
+sentence was making — both keys are still our own types, and that is now the
+paragraph's opening claim rather than its trailing one. It does not settle
+`open-questions.md` question 5, which asks whether second-granularity `mtime`
+makes `(path, mtime, len)` unsound: the key is kept written down as the one
+that would be used, and the section says explicitly that deferring the cache
+defers the question with it. Answering it here would have been the Class B
+edit, and is not what this is.
+
+The one thing to be plain about, since the spec and the code are both touched
+in this campaign: **§8 moved toward the code, and it moved toward an answered
+decision record rather than toward a convenience.** Nothing in
+`crates/shared/` changed except a test. That test —
+`a_second_parse_of_the_same_path_is_a_fresh_parse` — asserts the corrected
+claim positively, by rewriting a fixture file to a different text *of the same
+length* and requiring both the read and the parse to follow it. That is
+precisely the rewrite a `(path, mtime, len)` key cannot notice, so the test
+fails against the cache the old sentence described.
+
+**Campaign:** 636bbd45-e572-46de-9078-ab09897c68da
+
+## CHANGE-core-023 — deps.md#10-errors-one-enumerated-type-no-anyhow — the `#[source]` rule yields to §9's dependency list, and says so
+
+**Contradiction:** §10 says foreign errors are wrapped as `#[source]` fields
+"always alongside our own context (which path, which frame)". `core.md` §9
+fixes `shared`'s dependency list and is authoritative about it — and `shared`
+is where the enum lives, so a `#[source]` on a parser's error is a declaration
+of that parser by every crate that names an `Error`. The two cannot both hold
+for `ConfigError::ManifestMalformed`, which is handed a `toml::de::Error` by
+`measure_core/src/corpus.rs:222` and stores it as `reason: Box<str>`.
+
+**Resolution:** §10 now states the exception, bounds it, and names what decides
+it: the rule yields exactly when `shared` may not name the carrier's type, and
+the message is rendered into context of ours instead — path kept, class kept,
+graph unmoved. Rendering an error whose type `shared` *already* names stays
+forbidden, which is the half that keeps the rule's teeth.
+
+This trades nothing off because the boundary is not an author's judgement. It
+is decided by `shared_declares_only_the_dependencies_section_9_lists` in
+`crates/driver/tests/seam.rs`, which already fails if `toml` is added to
+`shared` — so the exception cannot widen without a test going red first. The
+alternative reading, adding `toml` to `shared` so the chain can be carried, is
+the one that trades: it puts a parser behind the seam to preserve a line and
+column in one variant.
+
+**No code moved with it, and nothing to move.** The variant's own doc comment
+has stated this reasoning since before this campaign; what was missing was the
+document agreeing with it. This closes an audit *minor* and not a gap, so the
+section count does not move either way — which is worth saying plainly, since
+editing a design document toward the code is the one way of faking progress the
+audit cannot catch, and here there is no progress to fake.
+
+**Campaign:** 88d25014-0b38-4185-9614-59cdeed27840
 ## CHANGE-core-019 — core.md#two-modes-collect-and-replay — three subcommands, and enumeration is not `collect`'s first half
 
 **Contradiction:** `#two-modes-collect-and-replay` said "`measure` therefore
@@ -710,50 +789,20 @@ survives the corpus being relocatable, and relocatability is the mechanism
 
 ## CHANGE-core-022 — deps.md#8-parse-cache — there is one cache, and the disk-file key describes one that was refused
 
-**Contradiction:** §8 closed with "Note the cache is keyed by `(uri, version)`
-for open docs and **`(path, mtime, len)` for disk files**, so it is a map keyed
-by our own types".
+**Superseded by `CHANGE-core-017`, which made the same edit.** Campaign
+`9110a409` and campaign `636bbd45` both resolved §8's disk-file parse-cache key
+against `conformance-005`, in the same round. `636bbd45` held the assignment —
+the planner gave `deps.md#8-parse-cache[fb0aa10250]` to worker 3 alone — and
+`9110a409` reached it as a step-4 extension without taking the claim the prompt
+requires for one, so nothing refused it and the rebase was the backstop.
 
-`state/decisions/conformance-005.md` is `status: accepted` and rules the second
-one out. It asked "How does `ProjectView` cache reads per query without a
-lock?", because the view is held behind a `Sync` `&Query` that
-[`core.md` §1](../../design/core.md#the-trait) fans out across threads, so any
-cache on it is "shared mutable state reached through `&self` from several
-threads at once, which is the definition of the thing `CLAUDE.md` says does not
-exist here". The ruling: "**Option A stands: no read cache**", with the
-rationale "`CLAUDE.md` line 112 decides it: no new caching or indexing until the
-corpus harness shows the change is worth it and there is a benchmark, and ask
-before adding caching. There is no corpus, so nothing could justify B or C yet."
+`CHANGE-core-017` is the version in the document. It is the more complete of the
+two: it names both keys as a list, and it carries the `open-questions.md`
+question 5 paragraph on whether second-granularity `mtime` is sound at all,
+which this one did not. Nothing is lost by taking it.
 
-A disk-file *parse* cache is that same question about that same struct — it
-would live on `ProjectView`, be filled during a fan-out, and be reached through
-`&self` — and `crates/shared/src/project.rs:521` says so in as many words:
-"No LRU … the cache would be shared mutable state behind the `Sync` `&Query`
-several fan-out threads hold, which is a lock, and `conformance-005` already
-ruled that question the same way for reads."
-
-The open-document half is real and unaffected: `crates/driver/src/trees.rs:81`
-is "an LRU of tree-sitter trees, keyed by `(uri, version)` and bounded twice",
-which is the same line's other clause and the caveat the whole section is about.
-
-**Resolution:** §8 now names one cache, and a paragraph says the disk-file one
-was refused rather than postponed, why the refusal follows from `CLAUDE.md`
-rather than from taste, and that `parse` takes the `ProjectPath` such a cache
-would be keyed by anyway — so the sentence's key survives as the key it *would*
-have, which is the honest version of what it was recording.
-
-Nothing is traded off here because the trade was made in `conformance-005` and
-answered by a human. The sentence's own argument — the map is keyed by our own
-types and not by attacker-controlled strings, which is what leads into
-`#fxhashmap-and-fxhashset-are-the-default` — needs one key and not two.
-
-**Left for a separate campaign, deliberately:** `resolution.md` §3 carries the
-same expectation from the other side ("from the parse LRU when possible", and
-"each file is read at most once"), and conformance-005's answer names that
-correction explicitly — "resolution.md section 3 is what is wrong … it should
-say what it means instead". `resolution.md` is not in this phase's audit scope,
-and one document per correction is what keeps the changelog readable.
-
-**No code moved with it.**
+This entry is kept as a stub rather than deleted because this campaign's record
+and commits cite the id, and an id that resolves to nothing is worse than one
+that says what happened.
 
 **Campaign:** 9110a409-f685-4569-ba82-fbf938928727

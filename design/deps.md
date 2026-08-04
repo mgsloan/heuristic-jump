@@ -489,21 +489,27 @@ Alternatives:
   If the `lru` API fights the byte accounting, dropping to `HashMap` + a
   `VecDeque` of keys is not a large loss.
 
-Note the cache is keyed by `(uri, version)`, so it is a map keyed by our own
-types, not by attacker-controlled strings.
+Note the keys are our own types rather than attacker-controlled strings, which
+is the reason to write them down here. `shim.md` §5 names two, and **only the
+first of them is a cache anything has today**:
 
-**There is one cache, and it is the open-document one.** An earlier revision of
-this sentence named a second keyed `(path, mtime, len)`, for the files a search
-reads off disk. That one is not built, and it is not deferred work: it would
-have to live on `ProjectView`, which several fan-out threads hold at once
-behind a `Sync` `&Query`, so filling it means mutating through `&self` — a
-lock, which `CLAUDE.md` does not have, and a new cache, which `CLAUDE.md` says
-to ask about rather than add. `conformance-005` asked exactly that question for
-`ProjectView::read` and was answered *no corpus, no benchmark, no cache*; the
-parse half is the same question about the same struct, and
-`crates/shared/src/project.rs`'s `parse` records it where the cache would go.
-It takes the `ProjectPath` it would be keyed by regardless, so the day a corpus
-justifies one, the key is the one named here and the signature already has it.
+* Open documents: `(uri, version)`. This is `driver::TreeCache`, and it is the
+  cache the `lru` wrapper above is for.
+* Disk files: `(path, mtime, len)`, with `didSave` letting the disk entry take
+  over. **No such cache exists, and adding one is not this phase's to do.** The
+  only route to a disk-file parse is `ProjectView::parse`, reached through a
+  `Sync` `&Query` several fan-out threads hold at once — so a cache on it is
+  shared mutable state behind `&self`, which is a lock in a design that has
+  none. `conformance-005` asked and was answered **no**: `CLAUDE.md` withholds
+  caching and indexing until the corpus harness shows the change is worth it
+  and there is a benchmark, and there is no corpus. A repeat parse is a fresh
+  parse, and `crates/shared/tests/project.rs` asserts it.
+
+  The key stays written down because it is the one that would be used, and
+  because `open-questions.md` question 5 is about whether it is sound —
+  second-granularity `mtime` serves a stale tree for a same-second rewrite of
+  the same length. Nothing here answers that; deferring the cache defers the
+  question with it.
 
 ### `FxHashMap` and `FxHashSet` are the default
 
@@ -625,6 +631,24 @@ Rules, so this stays a real closed set rather than `anyhow` with extra steps:
   `#[source]` fields on our own variants, always alongside our own context
   (which path, which frame), so the *classification* is ours even though the
   detail is theirs.
+
+  **Carrying one requires naming its type, and that is a dependency.** The
+  enum lives in `shared`, whose dependency list is fixed by
+  [`core.md` §9](core.md#9-workspace-layout) and is authoritative — so a
+  `#[source]` on a parser's error puts that parser in the graph of every crate
+  that so much as names an `Error`. Where the two rules meet, §9 wins and the
+  message is *rendered* into context of ours instead: the detail survives as
+  text, the path and the classification stay ours, and the graph does not move.
+  `ConfigError::ManifestMalformed` is the only one, holding a `toml::de::Error`
+  as a `reason: Box<str>` because `toml` is `measure_core`'s and not
+  `shared`'s.
+
+  The exception is narrow on purpose, and it is not a matter of judgement:
+  it applies exactly when `shared` may not name the type, which
+  `shared_declares_only_the_dependencies_section_9_lists` decides rather than
+  an author. Rendering an error whose type `shared` already names is not
+  permitted — there the `#[source]` costs nothing and dropping the chain
+  discards a line and column nobody kept a copy of.
 * **`Result` is not the abstention path.** `Outcome::Abstain` /
   `AbstainReason` stay entirely separate, per `core.md` §1 — abstention is a
   correct outcome and must not share a type with failure. Some `driver` code

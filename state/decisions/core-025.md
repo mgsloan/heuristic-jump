@@ -1,6 +1,6 @@
 ---
 id: core-025
-status: open
+status: accepted
 opened: 2026-08-04T20:11:57+00:00
 campaign: 20bbc1bf-03c5-4d3c-afda-a5c5791d47ce
 kind: class-b
@@ -69,7 +69,50 @@ to the abandoned parse and does not empty it.
 
 ## Decision
 
-Undecided — waiting on a human.
+**accepted: C plus B — the seam carries the prior out with the failure, and
+`stratum_prior` becomes nullable for what is left**, answered 2026-08-04 and
+logged as a `decision-answered` intervention, which is what makes it answered —
+`design/loops.md` §16 derives the status from the log rather than from this
+line.
+
+C first, and C in its first form only: `ProjectView`'s expiry carries the strata
+the handler had, as a change to `Error`. Not the second form. Requiring handlers
+to return `Ok(Abstain { reason: Deadline, .. })` instead of `?` is the
+convention `core.md` §1 declines to require, and it declines for a reason that
+this record does not overturn — the `?`-propagation argument that section makes
+is undone the moment a handler has to remember not to use it.
+
+C is chosen because this record identifies the common case correctly: §8 assigns
+the prior from the reference *before* the search, and the search is where the
+I/O is, so the shape that will actually occur in the field is a handler that
+knew the stratum and returned `Err` from an expired read. Fixing only the
+residue would leave that case losing information at the seam, which is
+`core-017`'s defect one layer down.
+
+Then B rather than A for the residue. `Stratum` is meant to be one row per
+`high-level.md` stratum plus the template placeholder, and "nothing ever looked
+at this reference" is not a kind of reference — it is the absence of a
+measurement. Putting it in `Stratum` makes every `lang_*` match a case it can
+never produce and creates a bucket that appears in every coverage table as
+though references of that kind existed. `null` says the true thing in the place
+the absence actually lives, and it forces each consumer to decide what to do
+with it rather than letting it be grouped away silently.
+
+B is the largest of the three changes and that is accepted knowingly. It is
+paid once, and it is cheapest now: the corpus is small, and every later day adds
+producers and consumers of §7's record.
+
+### What is left
+
+The core loop's, as an ordinary campaign. `ExpiredStrata` is already where the
+answer lands either way, which is what this campaign got right — the enum with a
+named case rather than an `Option<Strata>` with a convenient default is what
+makes this a one-arm change rather than a rewrite. Reconcile the
+`DECISION-core-025: provisional` tag at `crates/driver/src/actor.rs` when the
+arm is implemented.
+
+`core-022` and `core-024` are the same question and are closed as duplicates of
+this record.
 
 ## Provisional choice in force
 

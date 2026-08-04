@@ -379,6 +379,49 @@ while :; do
 		exit 1
 	fi
 
+	# §12's separation, checked before a campaign is launched rather than after
+	# it has read something. It is about the configuration a campaign is handed,
+	# not about a diff, which is why it is here and not in the gate — and the
+	# mistake it guards against is made once, in whichever campaign first writes
+	# a tuning prompt, and is invisible from then on.
+	if ! "$hj" check-heldout; then
+		echo
+		echo "loop: the held-out split is reachable or named; stopping before a campaign sees it." >&2
+		echo "      design/loops.md section 12: the separation is physical, and a rule the" >&2
+		echo "      loop is never told about is one it cannot weigh against its own number." >&2
+		log_stop "the held-out split was named in something a campaign is shown" \
+			"design/loops.md section 12 makes the separation physical rather than rule-based; once a campaign has seen the held-out corpus, no later rule un-sees it."
+		exit 1
+	fi
+
+	# §12's last bullet. The file only grows at a phase gate, so this reads the
+	# same verdict every campaign until one happens — which is the point: the
+	# evaluation is rare and the *consequence* of it is not.
+	if ! "$hj" heldout; then
+		echo
+		echo "loop: the held-out gap widened; stopping." >&2
+		echo "      design/loops.md section 12 calls this the one signal that means the" >&2
+		echo "      last several iterations were probably net negative. A human has to" >&2
+		echo "      look at the diff; the loop is shown where, and not by how much." >&2
+		log_stop "the held-out gap widened at the last phase gate" \
+			"design/loops.md section 12 stops the loop on a widening held-out gap because it means the last several iterations were probably net negative, and the loop is shown a verdict rather than the numbers so it cannot hill-climb its way out."
+		exit 1
+	fi
+
+	# §11's standing ceilings, which are not the phase-3 ratchet: crossing one
+	# does not mean the last change was wrong, it means the loop has wandered
+	# somewhere no legitimate experiment goes. So it stops here rather than
+	# failing a gate — the gate would blame whichever campaign was running.
+	if ! "$hj" guardrail "$loop"; then
+		echo
+		echo "loop: a standing guardrail is crossed; stopping rather than continuing quietly." >&2
+		echo "      design/loops.md section 11 puts these an order of magnitude above" >&2
+		echo "      anything legitimate, so this needs looking at rather than raising." >&2
+		log_stop "a standing guardrail was crossed" \
+			"design/loops.md section 11 sets the guardrails an order of magnitude above anything legitimate, so crossing one means the loop wandered rather than that the last change was wrong."
+		exit 1
+	fi
+
 	if ! git diff --quiet || ! git diff --cached --quiet; then
 		echo "loop: the working tree is dirty. Green-or-revert means a campaign starts" >&2
 		echo "      from a committed tree; the next session cannot tell deliberate" >&2

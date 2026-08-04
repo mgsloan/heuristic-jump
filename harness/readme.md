@@ -237,6 +237,108 @@ A check belongs in `selftest` only if it is hermetic — in-memory fixtures, or
 files resolved relative to `hj` itself. Nothing that reads repository state:
 a campaign is usually mid-flight in one of those trees.
 
+## Held-out is separate, rare, and shown as a verdict
+
+`design/loops.md` §12, in three commands:
+
+```sh
+harness/hj check-heldout      # the separation, before a campaign is launched
+harness/hj heldout [<lang>]   # the verdict, and never the numbers
+```
+
+**Nothing here evaluates anything.** That is the third bullet rather than an
+omission: a number reported every iteration is a number that gets optimised
+against whatever it is labelled, so the evaluation belongs to a phase gate and
+these read what it left in `state/heldout/<language>.jsonl` — one row per gate,
+per language, carrying the candidate commit and per-stratum tuning/held-out
+pairs. The file is in `DENIED_ALWAYS`: a loop that could write what the verdict
+is computed from would be shown whatever it wrote.
+
+**`check-heldout` is the separation, and it runs before a campaign starts.**
+The corpus root must be outside the checkout, the held-out split must be a
+sibling of the tuning one rather than inside it, and nothing a campaign is
+shown — any prompt, any fragment, the runner, `state/phase.toml` — may name
+it. It matches the corpus root's directory name joined to the split rather
+than a bare `test`, because these files say `nextest` and `selftest`
+constantly and a check with that false-positive rate gets suppressed instead
+of fixed. The mistake it guards against is made once, in whichever campaign
+first writes a tuning prompt, and is invisible afterwards.
+
+**The verdict carries stratum names and no values** — "gap widened on
+`ExplicitImport`" — and the selftest asserts that by looking for the fixture's
+own digits in the output. Widening is measured against the previous gate, not
+against a threshold, and only widening stops the loop: an over-threshold gap
+has been wrong for a while, where a widened one means the last several
+iterations were probably net negative. `[heldout] gap_threshold` in
+`state/phase.toml` sets the weaker of the two and is absent by default.
+
+Two things §18 defers and this does not pretend to have: the frontier over a
+phase's commits, and the evaluation itself. The row carries a `commit` so that
+selecting among candidate points is expressible when the frontier tool exists.
+
+## Binary size is two numbers, and only one of them is cheap
+
+`design/loops.md` §11 keeps them apart and so does the harness.
+
+```sh
+harness/hj size                 # the proxy: stripped measure_<lang>, per crate where it can
+harness/hj link-delta           # the authoritative one, per language, at a phase gate
+harness/hj check-ratchets core  # the ratchet, which is silent outside phases 3 and 7
+```
+
+**The proxy is the stripped release size of `measure_<lang>`**, and it goes in
+the metrics row of any loop that declares a `language`. Stripping is the whole
+of the measurement: the workspace release profile carries `debug = "limited"`,
+so the artifact on disk is about five times the number the section means — 26.3
+MB against 5.4 MB for `measure-rust`. No `strip` on `PATH` records nothing
+rather than the unstripped figure, because the series is ratcheted in a cost
+phase and one unstripped row in it would fail a loop over a missing tool.
+`cargo bloat --crates` supplies the per-crate half when it is installed, which
+is what separates the handler from the grammar sitting beside it.
+
+It is not recorded for a loop with no language, and that is a choice rather
+than an omission: a release build with `lto = "thin"` and `codegen-units = 1`
+is minutes of machine time per row, and §11's bullet sits under *Per-language
+billing*. `hj size` measures on demand for anyone who wants it anyway — which
+is the useful command for a conformance campaign that has just changed
+`shared`, since that is the constant every language loop will carry.
+
+**The ratchet re-baselines when `shared` or `measure_core` moves.** §10 is
+explicit that a language loop must not be failed for a step somebody else's
+diff put in its series, so the baseline is the lowest value recorded *since*
+the last commit to either — found by reachability, not by position in the
+append-ordered file, because a worker's branch merges out of order. And unlike
+the test ratchet, an increase here needs an *approved* escalation: it is the
+one gate failure a provisional choice does not clear.
+
+**The phase-2a guardrail is a different instrument from the ratchet**, and
+§11 is emphatic about it: crossing a standing ceiling "does not mean the last
+change was wrong, it means the loop has wandered somewhere no legitimate
+experiment goes". So it never fails a gate — that would blame whichever
+campaign happened to be running — and `harness/loop` stops between campaigns
+instead, the way it does for a budget. `hj record` says it too, because being
+an order of magnitude out is worth knowing inside a campaign.
+
+```toml
+[guardrail]
+measure_binary_bytes = 60000000   # both optional, both absent by default
+query_micros = 5000
+```
+
+Absent by default, and the section supplies the argument: the ceiling is only
+harmless because it sits an order of magnitude clear of anything legitimate,
+and nobody knows where that is until a handler exists. `query_micros` is
+listed with nothing measuring it yet, on purpose — a guardrail table that
+silently covers half of what §11 asks for looks, from outside, exactly like
+one that covers all of it.
+
+**`link-delta` exits non-zero until the manifests allow it.** Measuring what a
+language costs the shipped binary means building `heuristic_jump` with and
+without it, which needs one optional dependency per language behind a
+`lang-<x>` feature. Today the dependency is unconditional, so the command says
+exactly which feature is missing rather than reporting a zero that would read
+as a language that costs nothing.
+
 ## Cost, and the three budget scopes
 
 One row per campaign in `state/cost/<loop>.jsonl`, joined on the session id
@@ -294,10 +396,18 @@ a stop lands between campaigns where the tree is committed.
 
 ## What is not built
 
-The supervisor, the frontier tool, held-out selection, worktree parallelism,
-and the tuning and optimisation prompts. `design/loops.md` section 18 is the
-argument: they exist to serve tuning loops, and there are none until phase
-2a. With one loop, one bash loop is not a fleet.
+The supervisor, the frontier tool, the evaluation half of held-out selection,
+the per-language link delta, and the tuning and optimisation prompts.
+`design/loops.md` section 18 is the argument: they exist to serve tuning
+loops, and there are none until phase 2a. With one loop, one bash loop is not
+a fleet.
+
+The two half-built entries are half-built on purpose and say so where it
+matters. `hj heldout` renders the verdict and stops the loop on a widening
+gap; what is missing is the thing that *produces* the rows, which is a corpus
+run over candidate commits and therefore needs the frontier. `hj link-delta`
+computes the per-language number and exits non-zero naming the cargo feature
+`heuristic_jump` would need for it to be measurable at all.
 
 `design/loops.md` section 18 also says who builds them — this same
 conformance loop, pointed at `loops.md`, during the ~100 machine-hours of

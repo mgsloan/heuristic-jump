@@ -1721,7 +1721,7 @@ not a claim.
 With code and state both partitioned, nothing two loops write ever
 overlaps.
 
-### Branches exist for one commit at a time
+### Branches exist for one campaign at a time
 
 The goal is that everything lands on `main` and no long-lived
 branches accumulate. That is right — divergent branches are where
@@ -1911,7 +1911,7 @@ setting should be re-read when N changes rather than carried over.
   falls as N rises, the workers are picking worse targets because the good
   ones are claimed.
 * **Latency measurement is unaffected**, for the reason
-  [above](#branches-exist-for-one-commit-at-a-time) — it is not measured
+  [above](#branches-exist-for-one-campaign-at-a-time) — it is not measured
   during iterations at all.
 
 Three is a starting point, not a derived number.
@@ -2804,11 +2804,20 @@ with no model in it at all.
 
 ### What is deliberately not built yet
 
-The supervisor, the dashboard, campaigns and their digests, the
-frontier, held-out selection, per-language billing, cost accounting,
-worktree parallelism, and the findings protocol. Each is specified here
-because the specification is what makes the followup cheap — but every
-one of them exists to serve tuning loops, and there are none until 2a.
+The supervisor, the frontier, the evaluation half of held-out selection,
+the per-language link delta, and the tuning and optimisation prompts.
+Each is specified here because the specification is what makes the
+followup cheap — but every one of them exists to serve tuning loops, and
+there are none until 2a.
+
+**This list shortens as the followup is built, and it is the list rather
+than the argument that moves.** The argument is unchanged: a thing that
+only serves tuning loops is not built before there are tuning loops. What
+changes is which things are still on the far side of that line, and
+[section 18](#the-conformance-loop-builds-the-followup) points the
+conformance loop at this document precisely so that they cross it during
+phase 1.5. Anything crossed off here has a section that now describes
+something real, which is what an audit is for.
 
 Two exceptions worth starting early because retrofitting them is
 expensive:
@@ -2816,10 +2825,17 @@ expensive:
 * **The metrics history** ([section 10](#the-metrics-history)), even
   though nothing consumes it during phase 1. It is recoverable later by
   a replay sweep, so this is a preference rather than a requirement.
-* **The corpus split** — tune, select, and final decided at 1b and
-  physically separated ([section 12](#12-held-out-integrity)). This one
-  is *not* recoverable: once a repository has been in the tuning corpus,
-  moving it to held-out does not un-teach it.
+* **The corpus split** — tuning and held-out decided at 1b and
+  physically separated ([section 12](#12-held-out-integrity)), which is
+  the same two-way split [section 8](#8-sequencing-and-gates) gates 1b
+  on. A third, *final* set is deliberately not decided here:
+  [section 12](#12-held-out-integrity) keeps carving one out of the
+  held-out five as a remedy held in reserve, on the argument that
+  deciding it now would mean guessing how much leakage ten gates cause.
+  The split can be made finer later and never coarser, so only the
+  coarse decision is irreversible — and it is the one that is *not*
+  recoverable: once a repository has been in the tuning corpus, moving
+  it to held-out does not un-teach it.
 
 ### The conformance loop builds the followup
 

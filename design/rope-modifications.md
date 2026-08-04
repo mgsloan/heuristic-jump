@@ -8,7 +8,7 @@ than a mechanical fix-up:
 
 > **The rope's public API speaks in newtypes: `Offset`, `ByteLen`, and
 > `ByteRange` instead of bare `usize` and `Range<usize>`, and `LineIndex`,
-> `ByteColumn`, `Utf16Column`, and `CharCount` instead of the bare `u32`s in
+> `ByteColumn`, `Utf16Column`, and `CharCount` instead of the bare integers in
 > `Point`, `PointUtf16`, and `TextSummary`. The newtypes are opaque — no
 > operators against bare integers, and positions and lengths are distinct.**
 
@@ -69,7 +69,7 @@ pub struct ByteRange { pub start: Offset, pub end: Offset }
 pub struct LineIndex(pub u32);
 pub struct ByteColumn(pub u32);     // Point.column: bytes into the line
 pub struct Utf16Column(pub u32);    // PointUtf16.column: UTF-16 code units
-pub struct CharCount(pub u32);      // Unicode scalar values -- the fourth unit
+pub struct CharCount(pub usize);    // Unicode scalar values -- the fourth unit
 
 pub struct Point       { pub row: LineIndex, pub column: ByteColumn }
 pub struct PointUtf16  { pub row: LineIndex, pub column: Utf16Column }
@@ -93,8 +93,23 @@ says `Utf16` is the exception.** Outside rope the types arrive through
 `ByteColumn` and `Utf16Column` being distinct types is most of the value here.
 They are the pair that is currently interchangeable and must not be —
 and `CharCount` is a third way of measuring the same span
-([section 4](#the-signatures)), which the crate currently spells `u32` as
-well.
+([section 4](#the-signatures)), which the crate currently spells as a bare
+integer as well.
+
+**`CharCount` is the one member of the family backed by `usize` rather than
+`u32`**, and it is the width of the widest thing it has to hold rather than a
+preference. Of the five sites [section 4](#the-signatures) gives it, three are
+`u32` upstream — the chunk-level counts, bounded by a 128-byte chunk — but two
+are `usize`: `TextSummary.chars`, which accumulates across the whole rope, and
+`ChunkSlice::longest_row`'s `total_chars` out-parameter. Widening the three is
+lossless; narrowing the two is not. An earlier revision of this document
+printed `u32` here and would have silently capped a summary at 4G scalar
+values — which is an edit to the *arithmetic*, exactly what
+[section 3](#3-what-keeps-this-safe) says a hunk may never be, and the class
+`cast_possible_truncation` is denied to catch. The bound `Point.row` happens to
+impose is not an argument for imposing another: a row count and a scalar count
+are different quantities, and one being narrow is not a reason to narrow the
+other.
 
 `shared` re-exports both, so every other crate says `shared::Offset` and
 never knows or cares that the definition sits in the vendored crate. That
@@ -274,9 +289,9 @@ the slice:
 
 | Function | Unit |
 |---|---|
-| `ChunkSlice::first_line_chars() -> u32` | `CharCount` |
-| `ChunkSlice::last_line_chars() -> u32` | `CharCount` |
-| `ChunkSlice::longest_row(&mut total_chars) -> (u32, u32)` | `(LineIndex, CharCount)`; `total_chars` is a `CharCount` |
+| `ChunkSlice::first_line_chars() -> u32` | `CharCount`, widening |
+| `ChunkSlice::last_line_chars() -> u32` | `CharCount`, widening |
+| `ChunkSlice::longest_row(&mut total_chars) -> (u32, u32)` | `(LineIndex, CharCount)`; `total_chars` is already a `usize` and is a `CharCount` |
 | `ChunkSlice::last_line_len_utf16() -> u32` | `Utf16Column` |
 
 These get the *correct* newtype rather than being left bare — which is the
@@ -296,7 +311,7 @@ be the worst of both.
 ```rust
 pub struct TextSummary {
     pub len: ByteLen,
-    pub chars: CharCount,
+    pub chars: CharCount,          // `usize` before and after
     pub len_utf16: OffsetUtf16,
     pub lines: Point,                    // typed already, via Point
     pub first_line_chars: CharCount,
