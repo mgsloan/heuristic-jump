@@ -75,6 +75,16 @@ pub enum ConfigError {
     /// graph of every crate that names an error.
     #[error("{path} is not a server manifest: {reason}")]
     ManifestMalformed { path: PathBuf, reason: Box<str> },
+    /// A `measure_<lang>` binary whose handler declares no `languageId`.
+    ///
+    /// `core.md` §7 makes the binary per-language and the language the
+    /// handler's — "there is no flag that could disagree with it" — so a
+    /// handler that names none leaves the run with no corpus directory to
+    /// read and nothing to write into a provenance header. It is a
+    /// build-time mistake in four lines of `main`, which is why it is
+    /// `Config` and not `Handler`: nothing about a query has happened yet.
+    #[error("the handler this binary was built with declares no language")]
+    HandlerDeclaresNoLanguage,
     #[error("{manifest} names no server {name:?} for {language_id}")]
     UnknownServer {
         manifest: PathBuf,

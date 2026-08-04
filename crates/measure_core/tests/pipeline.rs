@@ -332,6 +332,34 @@ impl LanguageHandler for FailingHandler {
     }
 }
 
+/// A handler that declares no `languageId`, which is the one thing a
+/// `measure_<lang>` binary cannot recover from: §7 makes the language the
+/// handler's and gives the command line no flag that could supply it.
+struct LanguagelessHandler;
+
+impl LanguageHandler for LanguagelessHandler {
+    fn language_ids(&self) -> &'static [LanguageId] {
+        &[]
+    }
+
+    fn file_extensions(&self) -> &'static [FileExtension] {
+        const EXTENSIONS: &[FileExtension] = &[FileExtension::new("rs")];
+        EXTENSIONS
+    }
+
+    fn grammar(&self) -> Language {
+        tree_sitter_rust::LANGUAGE.into()
+    }
+
+    fn goto_definition(&self, _query: &Query<'_>) -> Result<Outcome, Error> {
+        Ok(Outcome::Abstain {
+            reason: AbstainReason::UnsupportedRole,
+            strata: Strata::from_reference(Stratum::Unimplemented),
+            trace: Trace::new(),
+        })
+    }
+}
+
 /// `core.md`: the placeholder "reports `Stratum::Unimplemented`, which no real
 /// handler may return, and its presence in a metrics table means the template
 /// has not been replaced — **a gate check** rather than something anybody has
@@ -1482,6 +1510,48 @@ fn the_digests_precision_key_separates_every_way_an_answer_can_be_wrong() {
              grouping would hold against a records file with no groups in it"
         );
     }
+}
+
+/// §7: "The binary is per-language, so the language is never an argument" —
+/// which language a run is about comes from the handler, "and there is no flag
+/// that could disagree with it".
+///
+/// The case that leaves is a handler that names none, and it was answered
+/// twice: `run` refused with `HandlerError::DeadlineExpired`, which is not what
+/// happened, while `positions::enumerate` recovered the language for itself and
+/// fell back to `LanguageId::new("unknown")` — a corpus directory, a
+/// `languageId` on every `didOpen`, and a provenance header, all under a
+/// language nothing declares. The second was unreachable only because the first
+/// happened to run earlier.
+#[test]
+fn a_handler_that_declares_no_language_is_refused_before_a_corpus_is_read() {
+    let corpus = fixture("no_language");
+
+    let cli = measure_core::Cli::parse_from([
+        "measure-test",
+        "enumerate",
+        "--corpus",
+        &corpus.split.to_string_lossy(),
+    ]);
+    let Err(refused) = measure_core::run(&LanguagelessHandler, cli) else {
+        panic!("a binary built with a handler that declares no language enumerated a corpus");
+    };
+    assert!(
+        matches!(
+            refused,
+            Error::Config(shared::ConfigError::HandlerDeclaresNoLanguage)
+        ),
+        "a handler with no language was refused as {refused}, which says \
+         something else happened. It is four lines of `main` wired wrong, and \
+         the error is what somebody reads at the top of a hundred-machine-hour \
+         run"
+    );
+    assert!(
+        !corpus.split.join("unknown").exists()
+            && !corpus.split.join("rust").join("positions").exists(),
+        "the run wrote positions before refusing, so the language it could not \
+         determine still named a directory"
+    );
 }
 
 /// Two claims about a corpus of more than one repository, which every other
