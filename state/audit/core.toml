@@ -17,18 +17,23 @@ last_audited = "2026-08-04T04:57:16+00:00"
 
 [section."core.md#the-trait"]
 state = "gaps"
-last_audited = "2026-08-04T05:37:37+00:00"
+last_audited = "2026-08-04T20:33:33+00:00"
 
   [[section."core.md#the-trait".gap]]
-  claim = "Stratum::Unimplemented is the unmodified template's; no real handler may return it, and its presence in a metrics table means the template has not been replaced"
-  found = "the driver synthesises it: a hard-capped late answer is recorded as Abstain{Deadline} under Strata::from_reference(Stratum::Unimplemented), so a real handler that misses its deadline writes an `unimplemented` abstention into \u00a77's record \u2014 the exact counter Table::template reads as \"unreplaced\" (measure_core/src/table.rs:158). Marked DECISION-core-017 provisional in the code. Mechanisable: assert a recorded row never carries stratum_prior \"unimplemented\" when the handler reported a stratum"
-  where = "crates/driver/src/actor.rs:582"
-  found_at = "dd846068c786ddbbfe01f8970d7bd0914b1c1742"
+  claim = "Outcome's arms carry `stratum: Stratum` and `CommitPolicy::decide(&self, stratum, confidence, locations)` takes three arguments"
+  found = "both arms carry `strata: Strata` plus a fourth member `trace: Trace`, and `decide` takes four arguments; \u00a77 requires the two-field stratum, so the printed block is stale and no CHANGE- record covers this anchor"
+  where = "crates/shared/src/handler.rs:120"
+  found_at = "187307eeed4c196ebb471f4a3e8d46f60e18a53a"
 
   [[section."core.md#the-trait".minor]]
-  claim = "handlers run the literal scan on the bounded pool from shim.md \u00a710 rather than on threads a handler spawned"
-  note = "ProjectView::new takes (files, deadline, grammar) and scan runs sequentially on the calling thread; deliberate and documented, but the pool the section says is handed at construction does not exist"
-  where = "crates/shared/src/project.rs:426"
+  claim = "`pub struct ServerProfile { pub id: Option<ServerId> }`"
+  note = "the field is private with three constructors and an `id()` accessor \u2014 a strengthening, but a second unrecorded divergence from the same printed block"
+  where = "crates/shared/src/handler.rs:73"
+
+  [[section."core.md#the-trait".minor]]
+  claim = "handlers never construct `Outcome::Committed`; the policy is the only way to build an Outcome"
+  note = "held only by the single handler abstaining; `Outcome::Committed` is a public variant with public fields, so a `lang_*` crate can build one. The seam's existing wire-vocabulary source scan is the shape a mechanical check would take"
+  where = "crates/shared/src/handler.rs:120"
 
 [section."core.md#2-document-snapshots"]
 state = "clean"
@@ -68,19 +73,13 @@ state = "clean"
 last_audited = "2026-08-04T04:57:16+00:00"
 
 [section."core.md#7-observability-and-the-corpus-scan"]
-state = "gaps"
-last_audited = "2026-08-04T00:27:32+00:00"
-
-  [[section."core.md#7-observability-and-the-corpus-scan".gap]]
-  claim = "the driver owns the measurement and each query emits one JSONL record once both answers are known"
-  found = "QueryRecord is constructed and written only by measure_core's replay; nothing in crates/driver emits one. driver::run has no transport, so queued_us \u2014 the field marked driver-only \u2014 has no producer, and proxy-mode rows are written by replay rather than by the shim. Agreement/Severity classification is implemented driver-side, so the missing half is the emission"
-  where = "crates/driver/src/driver.rs:37"
-  found_at = "3dba8fae70beafb43851557f5d67a54115d53791"
+state = "clean"
+last_audited = "2026-08-04T20:33:33+00:00"
 
   [[section."core.md#7-observability-and-the-corpus-scan".minor]]
-  claim = "truncated_list says the ranked list hit the cap; in standalone five fields are null"
-  note = "replay writes truncated_list as a literal false and server_health as None while declaring mode = Proxy, which is a third case the section does not describe; truncated_list has no producer anywhere since the cap is the driver's"
-  where = "crates/measure_core/src/replay.rs:251"
+  claim = "`stages` is bounded \u2014 a small fixed maximum number of short labels, truncated rather than grown"
+  note = "the abstention label is appended after `Trace::MAX_STAGES` truncation, so an abstaining query emits up to 33 labels where the named bound is 32"
+  where = "crates/shared/src/record.rs:206"
 
 [section."core.md#the-corpus-scan-is-a-separate-program"]
 state = "clean"
@@ -92,18 +91,18 @@ last_audited = "2026-08-04T04:57:16+00:00"
 
 [section."core.md#two-modes-collect-and-replay"]
 state = "gaps"
-last_audited = "2026-08-04T05:37:37+00:00"
+last_audited = "2026-08-04T20:33:33+00:00"
 
   [[section."core.md#two-modes-collect-and-replay".gap]]
-  claim = "collect's output is a frozen artifact and a truth file is regenerated, never edited \u2014 a partially refreshed corpus is the worst case, because it looks like a regression"
-  found = "the checkpoint appends only the single latest row every CHECKPOINT_EVERY positions, so a crashed run leaves a sparse file that is not a prefix; the resume then uses that row count as a position index (done = existing.rows.len()), skipping the first `done` enumerated positions and duplicating the checkpoint rows. The finished file is marked complete:true and replay consumes it"
-  where = "crates/measure_core/src/collect.rs:113"
-  found_at = "dd846068c786ddbbfe01f8970d7bd0914b1c1742"
+  claim = "`measure` has two subcommands, and `collect` enumerates identifiers before asking the LSP"
+  found = "three subcommands, with identifier enumeration split into `enumerate`; `collect` reads `positions/<repo>.jsonl` instead. `core.md#the-command-line` already says three, and no CHANGE- record reconciles this section"
+  where = "crates/measure_core/src/cli.rs:19"
+  found_at = "187307eeed4c196ebb471f4a3e8d46f60e18a53a"
 
   [[section."core.md#two-modes-collect-and-replay".minor]]
-  claim = "the record in this section is the join: collect writes rows with the lsp_* fields populated and the heuristic side null"
-  note = "collect writes a separate compact schema (truth::Row) and replay builds \u00a77's record from it; the byte-comparability property holds and is tested, but the stated mechanism is not the one implemented"
-  where = "crates/measure_core/src/truth.rs:160"
+  claim = "replay hands the oracle's stored bytes to the same deserializer the shim reads a live answer with"
+  note = "a stored answer that will not deserialize becomes `DefinitionResult::Null` silently, so an unreadable oracle row scores as `the oracle returned nothing`"
+  where = "crates/measure_core/src/replay.rs:208"
 
 [section."core.md#the-table-is-not-enough-a-replay-has-to-show-its-failures"]
 state = "clean"
@@ -128,7 +127,7 @@ last_audited = "2026-08-04T04:57:16+00:00"
 
 [section."core.md#8-protocol-types"]
 state = "clean"
-last_audited = "2026-08-04T00:27:32+00:00"
+last_audited = "2026-08-04T20:33:33+00:00"
 
 [section."core.md#81-why-not-lsp-types"]
 state = "clean"
