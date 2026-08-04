@@ -474,13 +474,31 @@ possibly as an extension if Zed's extension API is greatly expanded.
 
 ## License
 
-The crates in `crates/` are MIT.
+The shipped binary is GPL-3.0-or-later. That is a project-level
+commitment rather than a consequence to be engineered around, and
+`LICENSE-GPL` ships alongside it.
 
-The shipped binary is GPL-3.0-or-later, because it links a vendored
-copy of Zed's `rope` (`vendor/rope`), which is GPL-3.0-or-later.
-`vendor/sum_tree` is Apache-2.0.
+**There are two GPL inputs, not one.** `vendor/rope` is Zed's, unchanged,
+and everything reaches it through `DocumentSnapshot`. `crates/similarity`
+is ported from the prior implementation (`../heuristic_jump_old`), whose
+`text_similarity` came out of Zed's `edit_prediction_context`, and every
+`crates/lang_*` depends on it — so the handler layer is GPL too.
+`vendor/sum_tree` is Apache-2.0, which is one-way compatible into GPL-3.0
+and is not the constraint here.
 
-Keeping our own crates MIT is deliberate: `rope` is the only GPL
-input, so replacing it would make the whole workspace permissively
-licensable without relicensing anything. See `deps.md`
-section 5.
+An earlier version of this section said `rope` was the only GPL input and
+treated replacing it as an exit: relicense nothing, and the whole workspace
+could go permissive. `similarity` closes that exit for the handler layer,
+and it was taken deliberately rather than discovered — the binary links
+`rope` and is GPL-3.0-or-later either way, so nothing about what ships
+changed. What changed is that going permissive would now mean replacing two
+things instead of one, and the second is the piece that is genuinely hard to
+rewrite well.
+
+The crates that depend on neither are MIT: `shared`, `driver`,
+`heuristic_jump`, `measure_core` and each `measure_<lang>`. Vendoring GPL
+code does not transfer copyright in code we wrote and MIT is
+GPL-3.0-compatible, so an MIT crate combines into a GPL binary with no extra
+grant needed — and the permissive surface is then the seam and the
+measurement program, which is the part a third party would want anyway. See
+`deps.md` section 5.

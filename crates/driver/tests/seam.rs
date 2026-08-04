@@ -359,6 +359,129 @@ fn every_member_declares_the_licence_section_5_assigns_it() {
     }
 }
 
+/// The one claim in §5's licensing subsection that is not about a manifest
+/// field:
+///
+/// > That is a project-level commitment and it should be stated plainly in
+/// > `high-level.md`, with `rope`'s license text shipped alongside.
+///
+/// > **There are two GPL inputs, not one.** An earlier revision of this section
+/// > said `rope` was the only one, and treated keeping everything else
+/// > permissive as an exit: replace `rope`, relicense nothing, and the
+/// > workspace could go permissive. `crates/similarity` closes that exit for
+/// > the handler layer.
+///
+/// Three documents have to agree for that to be true — `high-level.md`'s
+/// licence section, §5's own table, and `expected_licence` above, which is
+/// what the manifests are held to — and until this test they were compared by
+/// nobody. `high-level.md` still carried the superseded position verbatim,
+/// two campaigns after §5 recorded it as superseded (CHANGE-core-007). That is
+/// the failure this catches, and the direction that matters is the *next* one:
+/// a third GPL input arriving is a licence surface that grew by a dependency
+/// rather than by a decision, and the crate that carries it would be correct
+/// on its own while every summary of the project's position stayed wrong.
+///
+/// The GPL *inputs* are not the GPL *members*. `crates/lang_*` is GPL and is
+/// not an input — §5 marks it by the dependency rule, downstream of
+/// `similarity` — so the inputs are the GPL members that are not language
+/// crates, which is the set this compares. `heuristic_jump` is the reverse
+/// case and is why "reaches GPL" is not the rule: it depends on every `lang_*`
+/// and is MIT, because a `license` field describes copyright in that crate's
+/// own text (`conformance-014`).
+#[test]
+fn the_gpl_inputs_are_the_two_the_documents_name() {
+    let members = workspace_members();
+    assert!(
+        !members.is_empty(),
+        "no workspace members parsed out of Cargo.toml, so this test would pass vacuously"
+    );
+
+    let inputs: Vec<String> = members
+        .into_iter()
+        .filter(|member| !member.starts_with("crates/lang_"))
+        .filter(|member| {
+            licence_of(&workspace_file(&format!("{member}/Cargo.toml")))
+                .is_some_and(|licence| licence.starts_with("GPL"))
+        })
+        .collect();
+    assert_eq!(
+        inputs,
+        vec!["crates/similarity".to_owned(), "vendor/rope".to_owned()],
+        "the GPL inputs are {inputs:?}, and deps.md §5 names exactly two — vendor/rope, which \
+         everything reaches through DocumentSnapshot, and crates/similarity, which is a port. \
+         A third is the licence surface growing by a dependency rather than by a decision, \
+         which is the shape §5 says the check exists to notice"
+    );
+
+    let commitment = section_of(&workspace_file("design/high-level.md"), "\n## License");
+    assert!(
+        commitment.contains("GPL-3.0-or-later"),
+        "high-level.md's licence section does not name GPL-3.0-or-later, so either the section \
+         moved or this test is reading nothing: deps.md §5 calls the binary's licence a \
+         project-level commitment that should be stated plainly there"
+    );
+    for input in &inputs {
+        assert!(
+            commitment.contains(input.as_str()),
+            "high-level.md's licence section does not name {input}: §5 has two GPL inputs and \
+             not one, and the revision that named only rope treated replacing it as an exit to \
+             a permissively licensable workspace — an exit that has not existed since \
+             similarity was ported"
+        );
+    }
+    // Positive rather than a ban on the superseded sentence. The section that
+    // supersedes it quotes it — "an earlier version of this section said `rope`
+    // was the only GPL input" — so a scan for that phrase fires on the fix as
+    // readily as on the fault, which is how a check gets deleted rather than
+    // repaired.
+    assert!(
+        commitment.contains("two GPL inputs, not one"),
+        "high-level.md's licence section does not state that there are two GPL inputs and not \
+         one: the superseded revision said rope was the only one and treated replacing it as \
+         an exit to a permissively licensable workspace — an exit that has not existed since \
+         similarity was ported, and the claim is what a reader deciding whether the permissive \
+         part is liftable would act on"
+    );
+
+    let subsection = section_of(&workspace_file("design/deps.md"), "\n### Licensing:");
+    assert!(
+        subsection.contains("two GPL inputs, not one"),
+        "deps.md §5's licensing subsection no longer states that there are two GPL inputs: it \
+         is the source both the manifests and high-level.md are checked against here, and a \
+         comparison whose fixture moved compares nothing"
+    );
+    for input in &inputs {
+        assert!(
+            subsection.contains(input.as_str()),
+            "deps.md §5's licensing subsection does not name {input} while its manifest \
+             declares GPL: the per-crate table is the whole content of the claim, so a crate \
+             the section never placed is one nobody decided to make GPL"
+        );
+    }
+}
+
+/// The body of one markdown section, up to the next heading at the same
+/// level, so a document can be a fixture the way `fenced_toml_of` makes §15's
+/// `toml` block one. The heading is given with its leading newline, which is
+/// what keeps `## License` from matching a link to it in a paragraph above.
+fn section_of(document: &str, heading: &str) -> String {
+    let Some((_, after)) = document.split_once(heading) else {
+        return String::new();
+    };
+    let level = heading.trim_start().split(' ').next().unwrap_or("#").len();
+
+    let mut body = String::new();
+    for line in after.lines().skip(1) {
+        let depth = line.len() - line.trim_start_matches('#').len();
+        if depth > 0 && depth <= level && line.get(depth..).is_some_and(|r| r.starts_with(' ')) {
+            break;
+        }
+        body.push_str(line);
+        body.push('\n');
+    }
+    body
+}
+
 /// The other half of §14's licensing convention, and the half that was
 /// actually missing: "License texts live once at the workspace root and are
 /// symlinked into each crate. Zed does this without exception — 245 symlinks

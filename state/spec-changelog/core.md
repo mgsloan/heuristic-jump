@@ -182,3 +182,39 @@ the sentence that described them, and
 than listing them.
 
 **Campaign:** c601eeec-b30f-479c-8a7d-49e19e4c166d
+
+## CHANGE-core-007 — deps.md#licensing-our-crates-are-mit-the-binary-is-gpl — high-level.md carried the position §5 records as superseded
+
+**Contradiction:** `deps.md` §5 says "**There are two GPL inputs, not one.** An
+earlier revision of this section said `rope` was the only one, and treated
+keeping everything else permissive as an exit: replace `rope`, relicense
+nothing, and the workspace could go permissive. `crates/similarity` closes
+that exit for the handler layer." `design/high-level.md:483` was that earlier
+revision, still standing: "Keeping our own crates MIT is deliberate: `rope` is
+the only GPL input, so replacing it would make the whole workspace
+permissively licensable without relicensing anything." §5 also names
+`high-level.md` as the place the commitment "should be stated plainly", so the
+two are not independent statements that happen to differ — one is the other's
+designated summary.
+
+**Resolution:** `high-level.md`'s licence section now says what §5 says: two
+GPL inputs, `vendor/rope` and `crates/similarity`; every `crates/lang_*` GPL
+through the second; the binary GPL-3.0-or-later as a project-level commitment;
+and the permissive surface named as what it now is — `shared`, `driver`,
+`heuristic_jump`, `measure_core` and each `measure_<lang>`, which is the seam
+and the measurement program rather than the whole workspace. The superseded
+exit is kept as history rather than deleted, because "replace rope and go
+permissive" is a conclusion a reader can reach again from the remaining text
+if nothing says why it stopped being available.
+
+This trades nothing off: the manifests, `expected_licence` in
+`crates/driver/tests/seam.rs`, and §5's table already agreed with each other
+and disagreed with `high-level.md` alone.
+
+**This edits a design document.** No code moved to meet it — every `license`
+field is untouched and was already what §5's table assigns — and the same
+commit adds `the_gpl_inputs_are_the_two_the_documents_name`, which compares
+the three sources against each other rather than trusting any of them, and
+fails if a third GPL input arrives in any one of them.
+
+**Campaign:** c601eeec-b30f-479c-8a7d-49e19e4c166d
