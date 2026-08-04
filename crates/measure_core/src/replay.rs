@@ -19,7 +19,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use shared::proto::DefinitionResult;
-use shared::record::{Answered, ChildAnswer, Mode, QueryContext, QueryRecord};
+use shared::record::{Answered, ChildAnswer, Decision, Mode, QueryContext, QueryRecord};
 use shared::{
     Agreement, Clock, CommitPolicy, DefinitionSite, DocumentUri, DocumentVersion, Error, FileList,
     LanguageHandler, Offset, ProjectView, Query, Rope, ServerProfile, SnapshotSeed,
@@ -189,7 +189,22 @@ impl Replay<'_> {
 
         let ours: Vec<DefinitionSite<'_>> =
             answered.locations.iter().map(DefinitionSite::of).collect();
-        let agreement = Agreement::classify(&ours, &child);
+        // Minted only for a commit, and only here, so the table and the record
+        // cannot end up holding different verdicts for the same row. §6 makes
+        // `agreement` the classification of *the shim's answer* against the
+        // child's, and an abstention is not an answer — "a query the shim never
+        // answered has no answer of ours to compare, which is a different fact
+        // from the two sides disagreeing" (`shared::record::ChildAnswer`).
+        //
+        // Classifying one anyway reads as `mismatch` wherever the oracle
+        // answered, which is wrong in both directions at once: §7 counts an
+        // abstention as coverage loss and never as precision loss, so the
+        // precision denominator would move with coverage; and §6 reports
+        // divergence to the user "on `mismatch` only", so the shim would be
+        // telling somebody it sent them to the wrong place when it sent them
+        // nowhere at all.
+        let agreement =
+            (decision == Decision::Committed).then(|| Agreement::classify(&ours, &child));
 
         // `elapsed` is not offered to the table: §7's command line makes the
         // table byte-identical across runs, and it goes into the record below
@@ -216,7 +231,7 @@ impl Replay<'_> {
         record.answered_by(ChildAnswer {
             latency: shared::Micros(row.latency_us),
             locations: shared::record::definition_labels(&child),
-            agreement: Some(agreement),
+            agreement,
         });
         Ok(record)
     }

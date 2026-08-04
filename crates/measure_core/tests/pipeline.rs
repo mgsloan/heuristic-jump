@@ -78,6 +78,28 @@ const RECORD_FIELDS: &[&str] = &[
 const SOURCE: &str =
     "pub fn alpha() -> u32 {\n    7\n}\n\npub fn beta() -> u32 {\n    alpha()\n}\n";
 
+/// A second file whose identifiers sit at the *same* byte offsets as
+/// [`SOURCE`]'s and spell something else — `alpha`/`gamma` both begin at byte
+/// 7. That is what makes a join on `(file, offset)` distinguishable from one on
+/// `offset` alone, which a single-file repository cannot show.
+const OTHER_SOURCE: &str =
+    "pub fn gamma() -> u64 {\n    3\n}\n\npub fn delta() -> u64 {\n    gamma()\n}\n";
+
+/// The nine strata as the record and the report spell them, which is
+/// `StratumName`'s spelling and not `Stratum`'s. Transcribed rather than
+/// derived, so a renamed variant has to be renamed here too.
+const STRATUM_NAMES: [&str; 9] = [
+    "local_binding",
+    "same_file_module",
+    "explicitly_imported",
+    "wildcard_imported",
+    "ambiguous_name",
+    "external_dependency",
+    "macro_generated",
+    "type_inference_required",
+    "unimplemented",
+];
+
 /// The grammar the workspace pins, read from the manifest rather than from the
 /// lockfile the implementation embeds: asserting a value against the file it
 /// was computed from asserts nothing.
@@ -1352,6 +1374,268 @@ fn the_digests_precision_key_separates_every_way_an_answer_can_be_wrong() {
     }
 }
 
+/// §7's "the table is not enough": each group carries "its count, its **share
+/// of that stratum**". The count is the digest's, computed from the records
+/// file; the denominator is the stratum's, and the stratum's numbers are the
+/// table's. So a share means something only if the two artifacts a replay
+/// writes are two accounts of the *same* run.
+///
+/// Nothing joined them, and every way they can drift is silent: a `--records`
+/// that dropped a decision, a `Table::observe` that counted a row into the
+/// wrong half, a `stratum_prior`/`stratum_final` swap applied to one side only.
+/// Each leaves a table that reads fine sitting beside a digest whose every
+/// share is wrong, and the digest is the artifact a tuning campaign acts on.
+///
+/// Three handlers, because no one run reaches all seven counters: the template
+/// only abstains, [`MismatchingHandler`] commits into all three agreement
+/// counters, and a handler that returns `Err` is the only source of `failed`.
+#[test]
+fn the_records_and_the_table_are_the_same_run_counted_twice() {
+    let corpus = fixture("records_reconcile");
+    enumerate(&corpus);
+    write_truth_answered(&corpus);
+
+    // A reconciliation of zero against zero holds trivially, so every counter
+    // has to be reached by at least one of the three runs.
+    let mut exercised: BTreeMap<&str, u64> = BTreeMap::new();
+
+    for handler in [
+        &TestHandler as &dyn LanguageHandler,
+        &MismatchingHandler,
+        &FailingHandler,
+    ] {
+        let records = corpus.scratch.join("records.jsonl");
+        replay_with(handler, &corpus, Some(&records));
+        let report = replay_report(handler, &corpus, measure_core::Format::Json);
+        let text = fs::read_to_string(&records).expect("replay wrote the records file");
+
+        // The rule that makes the reconciliation above possible at all, and the
+        // one a replay got wrong: §6 classifies *the shim's answer* against the
+        // child's, so a query the shim never answered "has no answer of ours to
+        // compare, which is a different fact from the two sides disagreeing".
+        // Classifying one anyway reads as `mismatch` on every abstention the
+        // oracle answered — a precision loss where §7 counts a coverage loss,
+        // and a divergence report to a user who was sent nowhere at all.
+        assert_eq!(
+            tally(&text, |line| decision_of(line) != "committed"
+                && !(agreement_of(line).is_empty()
+                    && between(line, "\"severity\":\"", "\"").is_empty())),
+            0,
+            "a record the handler did not answer carries an oracle verdict. \
+             core.md §6 makes agreement and severity properties of an answer, \
+             and a table that judges only commits beside a records file that \
+             judges everything is two accounts of one run that cannot both be \
+             right\n{text}"
+        );
+
+        for stratum in STRATUM_NAMES {
+            for (field, counted) in [
+                ("queries", tally(&text, |line| prior_of(line) == stratum)),
+                (
+                    "committed",
+                    tally(&text, |line| {
+                        prior_of(line) == stratum && decision_of(line) == "committed"
+                    }),
+                ),
+                (
+                    "abstained",
+                    tally(&text, |line| {
+                        prior_of(line) == stratum && decision_of(line) == "abstained"
+                    }),
+                ),
+                (
+                    "failed",
+                    tally(&text, |line| {
+                        prior_of(line) == stratum && decision_of(line) == "failed"
+                    }),
+                ),
+                (
+                    "match_top1",
+                    tally(&text, |line| {
+                        settled_of(line) == stratum && agreement_of(line) == "match_top1"
+                    }),
+                ),
+                (
+                    "match_contained",
+                    tally(&text, |line| {
+                        settled_of(line) == stratum && agreement_of(line) == "match_contained"
+                    }),
+                ),
+                (
+                    "mismatch",
+                    tally(&text, |line| {
+                        settled_of(line) == stratum && agreement_of(line) == "mismatch"
+                    }),
+                ),
+            ] {
+                assert_eq!(
+                    counted,
+                    reported(&report, stratum, field),
+                    "the records file counts {counted} for {stratum}/{field} and \
+                     the table reports {}. core.md §7's digest gives every group \
+                     its count and its share of that stratum: the count comes \
+                     from the records and the denominator from the table, so two \
+                     artifacts of one replay that disagree make every share in \
+                     the digest wrong with nothing downstream able to see it",
+                    reported(&report, stratum, field)
+                );
+                *exercised.entry(field).or_default() += counted;
+            }
+        }
+    }
+
+    for (field, total) in &exercised {
+        assert!(
+            *total > 0,
+            "no run reached {field}, so the equality asserted for it above was \
+             zero against zero and holds against a records file and a table that \
+             share nothing at all.\ncounters: {exercised:?}"
+        );
+    }
+}
+
+/// §7's "the table is not enough" on what a group shows after its count and its
+/// share: "a **small seeded sample** of concrete cases — repository, file, line,
+/// the identifier, what we returned, what the server said".
+///
+/// Not one of those six is a column of the record, and the line deliberately
+/// cannot be: §7 makes `position` a byte offset so that the two halves of the
+/// metric join exactly, and says a line/column pair "would need a conversion in
+/// the one place the two halves of the metric have to line up exactly". So what
+/// the measurement owes the digest here is not a column but a *reachability* —
+/// all six assemblable from the records file, the corpus artifacts beside it,
+/// and the checkout a replay already refuses to run against unless it is clean.
+///
+/// The repository holds two files whose identifiers sit at the same byte
+/// offsets and spell different things, so the join that produces the identifier
+/// has to be on `(file, offset)`. Every other fixture here is one file, and a
+/// one-file repository cannot tell that join from one on the offset alone —
+/// which would name a real identifier from the wrong file, and read as a
+/// finding rather than as a bug.
+#[test]
+fn a_digest_group_names_a_case_a_person_can_open() {
+    let corpus = fixture_of(
+        "digest_sample",
+        &[("src/lib.rs", SOURCE), ("src/other.rs", OTHER_SOURCE)],
+    );
+    enumerate(&corpus);
+    write_truth_answered(&corpus);
+
+    let records = corpus.scratch.join("records.jsonl");
+    replay_with(&MismatchingHandler, &corpus, Some(&records));
+
+    let text = fs::read_to_string(&records).expect("replay wrote the records file");
+    let positions = positions_of(&corpus);
+    let repositories = corpus.split.join("rust").join("repos");
+
+    let mut groups: BTreeMap<(&str, &str), usize> = BTreeMap::new();
+    let mut sampled: BTreeMap<String, usize> = BTreeMap::new();
+
+    for line in text.lines() {
+        // Repository and file. The record names an absolute uri; the corpus
+        // layout is `<split>/<language>/repos/<name>/<file>`, which is what a
+        // digest already has and what the record therefore does not repeat.
+        let uri =
+            shared::DocumentUri::parse(between(line, "\"uri\":\"", "\"")).expect("a record's uri");
+        let path = uri.to_file_path().expect("a record naming a file");
+        let inside = path
+            .strip_prefix(&repositories)
+            .expect("a record naming a file outside the corpus it was replayed from");
+        let repository = inside
+            .components()
+            .next()
+            .expect("a repository directory")
+            .as_os_str()
+            .to_string_lossy()
+            .into_owned();
+        let file = inside
+            .strip_prefix(&repository)
+            .expect("a file inside its repository")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(
+            repository, "one",
+            "the record named a repository the corpus does not hold"
+        );
+
+        // What we returned and what the server said, both already spelled
+        // `uri:line` by `shared::record` so the two sides of a sample case
+        // cannot describe different things.
+        for (field, answer) in [
+            ("heuristic_locations", "what we returned"),
+            ("lsp_locations", "what the server said"),
+        ] {
+            assert!(
+                !between(line, &format!("\"{field}\":["), "]").is_empty(),
+                "a sample case has no {answer}. §7's digest shows both sides of \
+                 every case it names, and a group whose examples show one side \
+                 is a count with an anecdote attached\nrecord: {line}"
+            );
+        }
+
+        // The identifier, joined to the corpus on (file, offset): the position
+        // file recorded the text at enumeration and the record carries the
+        // offset it was queried at.
+        let offset: usize = between(line, "\"position\":", ",")
+            .parse()
+            .expect("a byte offset");
+        let joined = positions
+            .lines()
+            .find(|position| {
+                between(position, "\"file\":\"", "\"") == file
+                    && between(position, "\"offset\":", ",") == offset.to_string()
+            })
+            .unwrap_or_else(|| panic!("no corpus position for {file} at {offset}"));
+
+        // A non-identifier probe's `text` is one escaped scalar and the field
+        // §7 names is "the identifier", so the join is asserted where the
+        // corpus says there is one to name.
+        if between(joined, "\"class\":\"", "\"") != "identifier" {
+            continue;
+        }
+        let identifier = between(joined, "\"text\":\"", "\"");
+
+        // The line, counted in the checkout — which is sound because a replay
+        // refuses a dirty one, so the bytes the offsets describe are the bytes
+        // on disk.
+        let source = fs::read_to_string(&path).expect("the file the record names");
+        let number = source[..offset].matches('\n').count();
+        let opened = source
+            .lines()
+            .nth(number)
+            .expect("the line the offset falls on");
+        assert!(
+            opened.contains(identifier),
+            "a sample case names {file}:{number} and `{identifier}`, and that \
+             line reads `{opened}`. §7's sample exists to make a group concrete, \
+             and a case whose file, line and identifier do not describe one place \
+             is worse than no case at all — the offset is the record's and the \
+             identifier is the corpus's, so a join on the offset alone finds a \
+             real identifier from the wrong file"
+        );
+
+        *groups
+            .entry((settled_of(line), agreement_of(line)))
+            .or_default() += 1;
+        *sampled.entry(file).or_default() += 1;
+    }
+
+    assert_eq!(
+        sampled.len(),
+        2,
+        "the cases came from {} of the repository's two files, so the join that \
+         produced them is not distinguishable from one on the offset alone — \
+         which is what this fixture's second file exists to distinguish.\n\
+         files: {sampled:?}",
+        sampled.len()
+    );
+    assert!(
+        groups.len() > 1,
+        "every case fell in one group, so `each group carries … a sample` is \
+         asserted over a single group.\ngroups: {groups:?}"
+    );
+}
+
 /// The other half of that flag: "with no `--records` it **writes nothing**, so
 /// the default stays a pure function of its inputs and `measure_core` still
 /// needs no knowledge of `state/`".
@@ -1547,6 +1831,15 @@ struct Fixture {
 /// A corpus root with the layout `data-collection.md` §0 describes, holding
 /// one repository at a known commit with a clean tree.
 fn fixture(name: &str) -> Fixture {
+    fixture_of(name, &[("src/lib.rs", SOURCE)])
+}
+
+/// The same, with the repository's files spelled out.
+///
+/// A parameter for one test: a digest's sample joins a record back to the
+/// corpus on `(file, offset)`, and a single-file repository cannot tell that
+/// join from one on `offset` alone.
+fn fixture_of(name: &str, sources: &[(&str, &str)]) -> Fixture {
     let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
     if root.exists() {
         fs::remove_dir_all(&root).expect("clearing a previous run");
@@ -1554,8 +1847,12 @@ fn fixture(name: &str) -> Fixture {
 
     let split = root.join("training");
     let repository = split.join("rust").join("repos").join("one");
-    fs::create_dir_all(repository.join("src")).expect("the fixture repository");
-    fs::write(repository.join("src").join("lib.rs"), SOURCE).expect("the fixture source");
+    for (relative, text) in sources {
+        let path = repository.join(relative);
+        fs::create_dir_all(path.parent().expect("a source directory"))
+            .expect("the fixture repository");
+        fs::write(&path, text).expect("the fixture source");
+    }
 
     let scratch = root.join("scratch");
     fs::create_dir_all(&scratch).expect("the scratch directory");
@@ -1659,6 +1956,22 @@ fn replay_result(corpus: &Fixture, format: measure_core::Format) -> Result<Strin
         &shared::SystemClock,
         &replay_arguments(corpus, format),
     )
+}
+
+/// The rendered table for a handler other than the template's, which is what a
+/// reconciliation against the records file needs: the table and the records
+/// have to be two accounts of the *same* run.
+fn replay_report(
+    handler: &dyn LanguageHandler,
+    corpus: &Fixture,
+    format: measure_core::Format,
+) -> String {
+    measure_core::replay_table(
+        handler,
+        &shared::SystemClock,
+        &replay_arguments(corpus, format),
+    )
+    .expect("replay")
 }
 
 fn replay_arguments(corpus: &Fixture, format: measure_core::Format) -> measure_core::Replay {
@@ -1887,6 +2200,52 @@ fn field_order(line: &str) -> Vec<&str> {
         rest = &tail[1..];
     }
     found
+}
+
+/// The four columns a records file is aggregated on, spelled once so that the
+/// reconciliation and the sample read them the same way.
+fn prior_of(line: &str) -> &str {
+    between(line, "\"stratum_prior\":\"", "\"")
+}
+
+fn settled_of(line: &str) -> &str {
+    between(line, "\"stratum_final\":\"", "\"")
+}
+
+fn decision_of(line: &str) -> &str {
+    between(line, "\"decision\":\"", "\"")
+}
+
+/// `""` for a row with no oracle verdict, since there is no `"agreement":"` in
+/// `"agreement":null`. That is the right answer rather than a coincidence: an
+/// unjudged row belongs in none of the three agreement counters.
+fn agreement_of(line: &str) -> &str {
+    between(line, "\"agreement\":\"", "\"")
+}
+
+fn tally(text: &str, wanted: impl Fn(&str) -> bool) -> u64 {
+    u64::try_from(text.lines().filter(|line| wanted(line)).count()).expect("a count of rows")
+}
+
+/// One counter out of `--format json`, which is the format the harness
+/// consumes. Read forward from the named row, which is sound because `Row`
+/// writes `stratum` first and all seven counters after it.
+fn reported(report: &str, stratum: &str, field: &str) -> u64 {
+    let row = report
+        .find(&format!("\"stratum\": \"{stratum}\""))
+        .map(|at| &report[at..])
+        .unwrap_or_else(|| panic!("the report names no {stratum} row:\n{report}"));
+    let marker = format!("\"{field}\": ");
+    let at = row
+        .find(&marker)
+        .unwrap_or_else(|| panic!("the {stratum} row has no {field}:\n{row}"))
+        + marker.len();
+    row[at..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .unwrap_or_else(|error| panic!("{stratum}/{field} is not a count: {error}\n{row}"))
 }
 
 fn between<'a>(line: &'a str, open: &str, close: &str) -> &'a str {
