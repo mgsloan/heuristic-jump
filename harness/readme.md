@@ -233,6 +233,14 @@ campaign's commits from git, `reverted` is revert commands seen in the
 stream, and `empty` is the residual. A campaign that is mostly empty is
 thrashing regardless of what it spent, which is the signal the mix is for.
 
+`hj prompt-prefix [<loop>]` measures section 15's first token lever: how much
+of a loop's prompt is byte-identical from one campaign to the next. Caching
+is prefix-based, so the first differing byte ends the saving for everything
+after it, and cache reads are most of what a campaign costs. It reports and
+never fails — revising a prompt is section 16's one intervention that cannot
+be replayed, so the number goes to a human rather than to a gate. See
+`state/decisions/harness-001.md` for what it currently says.
+
 `hj estimates` puts section 15's guess table beside what has actually been
 spent, per phase, in the three resources the section keeps apart — tokens,
 model wall-clock, machine wall-clock. The table is read out of the document

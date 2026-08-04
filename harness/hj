@@ -1665,6 +1665,91 @@ def assignments_path(owner: str) -> Path:
     return STATE / "assignments" / f"{owner}.toml"
 
 
+# Two campaign ids that differ in every character, so the divergence a probe
+# finds is the first place the id reaches the rendered prompt and never an
+# accidental shared prefix between two real uuids.
+PREFIX_PROBE = ("aaaaaaaa-0000-0000-0000-000000000000", "bbbbbbbb-1111-1111-1111-111111111111")
+
+
+def first_divergence(left: str, right: str) -> int:
+    limit = min(len(left), len(right))
+    index = 0
+    while index < limit and left[index] == right[index]:
+        index += 1
+    return index
+
+
+def value_at(rendered: str, offset: int, values: dict) -> str | None:
+    """Which template value produced the character at `offset`.
+
+    The shortest value spanning it wins: a long value often contains a short
+    one, and the specific answer is the useful one — "the campaign record
+    path", not "the whole assignment block".
+    """
+    best: tuple[str, int] | None = None
+    for key, value in values.items():
+        if key.startswith("_") or not isinstance(value, str) or not value:
+            continue
+        start = rendered.find(value)
+        while start != -1:
+            if start <= offset < start + len(value):
+                if best is None or len(value) < best[1]:
+                    best = (key, len(value))
+                break
+            start = rendered.find(value, start + 1)
+    return best[0] if best else None
+
+
+def cmd_prompt_prefix(args: argparse.Namespace) -> int:
+    """How much of a loop's prompt is byte-identical from one campaign to the
+    next. `design/loops.md` section 15, the first token lever:
+
+        Keep the prompt's fixed prefix byte-identical across iterations and
+        order it stable-to-volatile — constitution, then prompt, then audit
+        state, then the journal tail and recent commits — so the cacheable
+        prefix is as long as possible.
+
+    Cache reads dominate what a campaign costs — about 141 to 1 against output
+    on the campaigns measured so far — and caching is prefix-based, so the
+    first byte that differs between two campaigns ends the saving for
+    everything after it. That makes this a number rather than a principle, and
+    an unmeasured one is how a one-line edit quietly costs a phase real money.
+
+    Reports and never fails: revising a prompt is `design/loops.md` section
+    16's one intervention that cannot be replayed, so this hands a human a
+    measurement rather than acting on it.
+    """
+    phase = load_phase()
+    owners = [args.loop] if args.loop else sorted(phase.loops)
+    for owner in owners:
+        _, config = loop_config(owner)
+        template = (HARNESS / "prompts" / config.prompt).read_text()
+        left_values = prompt_values(phase, config, PREFIX_PROBE[0])
+        right_values = prompt_values(phase, config, PREFIX_PROBE[1])
+        left = render(template, left_values)
+        right = render(template, right_values)
+        offset = first_divergence(left, right)
+        culprit = value_at(left, offset, left_values)
+        summary = left_values.get("audit_summary") or ""
+        state_at = left.find(summary) if summary else -1
+
+        print(f"prompt-prefix: {owner}  ({config.prompt}, {len(left):,} chars rendered)")
+        print(f"  cacheable prefix   {offset:,} chars ({offset / len(left) * 100:.1f}%)")
+        if culprit:
+            print(f"  ended by           {{{{{culprit}}}}}")
+        if state_at >= 0:
+            print(
+                f"  state block at     {state_at:,} chars ({state_at / len(left) * 100:.1f}%)"
+                " — where per-campaign values are supposed to start"
+            )
+            if offset < state_at:
+                print(
+                    f"  re-sent per campaign  {state_at - offset:,} chars of the instructional body,"
+                    " because a per-campaign value appears inside it"
+                )
+    return 0
+
+
 def cmd_render_planner(args: argparse.Namespace) -> int:
     """The planner divides one round between the workers.
 
@@ -3044,6 +3129,23 @@ def selftest_cases() -> list[tuple[str, object]]:
         )
         assert budget.global_usd == 900.0 and budget.language_usd == {"rust": 120.0}
 
+    def divergence_is_the_cache_boundary():
+        assert first_divergence("abcdef", "abcXef") == 3
+        assert first_divergence("abc", "abc") == 3, "identical strings diverge nowhere"
+        assert first_divergence("abc", "abcdef") == 3, "a prefix ends where the shorter one does"
+        assert first_divergence("", "x") == 0
+
+    def the_culprit_is_the_most_specific_value():
+        rendered = "read state/campaigns/core/ID-1234.md now"
+        values = {
+            "campaign_record": "state/campaigns/core/ID-1234.md",
+            "campaign_id": "ID-1234",
+            "_claimed": ["not a string"],
+        }
+        offset = rendered.index("ID-1234")
+        assert value_at(rendered, offset, values) == "campaign_id", "the shortest spanning value wins"
+        assert value_at(rendered, 0, values) is None, "text outside every value belongs to the template"
+
     def the_estimate_table_parses():
         rows = parse_estimate_table([
             "Some prose above it.",
@@ -3281,6 +3383,10 @@ def main() -> int:
         help="re-measure closed campaigns whose row predates a field the row spec now carries",
     )
     p.set_defaults(run=cmd_cost)
+
+    p = sub.add_parser("prompt-prefix", help="how much of a prompt is byte-identical between campaigns")
+    p.add_argument("loop", nargs="?")
+    p.set_defaults(run=cmd_prompt_prefix)
 
     p = sub.add_parser("estimates", help="section 15's guesses against what has actually been spent")
     p.set_defaults(run=cmd_estimates)
