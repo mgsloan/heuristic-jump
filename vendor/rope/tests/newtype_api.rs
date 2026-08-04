@@ -1,12 +1,27 @@
-//! Ours, not upstream's: the two checks `design/rope-modifications.md` §6 and
-//! §7 ask for on top of the tests the vendored copy already keeps.
+//! Ours, not upstream's: what `design/rope-modifications.md` asks for on top
+//! of the tests the vendored copy already keeps.
 //!
 //! §3 is explicit that a mechanical diff check can no longer prove the newtype
-//! sweep correct, so upstream's own tests are the verification and these two
-//! are the complement. They cover the one thing upstream's cannot: that the
-//! *API* still names its units, and that the four units agree with each other
-//! at the level where a conversion bug originates rather than one layer up in
-//! `shared::proto`.
+//! sweep correct, so upstream's own tests are the verification and everything
+//! here is the complement. They cover what upstream's cannot, which divides
+//! into three:
+//!
+//! * **The API still names its units** — §6's bare-primitive scan, §4's
+//!   operator table as an inventory, the declared types on the converted
+//!   surface, and the constructors. Upstream's tests pass either way, since
+//!   the bodies compile with or without the newtypes.
+//! * **The four units agree with each other** — §7's round trip, one level
+//!   below `shared::proto`, where a conversion bug originates.
+//! * **The document and the crate still describe each other** — §4's
+//!   conversion table read out of the document, and §7's test counts. This is
+//!   the half that had already failed silently: the document said nine
+//!   conversions where there are eight, and nothing could tell that from a
+//!   dropped test.
+//!
+//! Several checks here can only fail on input that does not compile, and each
+//! says so in place. They are kept because the compiler's enforcement is
+//! incidental — it holds only while the mistake happens to be a build error,
+//! and nothing else would record that the rule was deliberate.
 
 use std::fmt::{Debug, Display};
 use std::fs;
@@ -488,11 +503,29 @@ fn every_newtype_has_its_bounds_and_prints_as_a_bare_number() {
 /// `shared::proto`'s job rather than this one.
 #[test]
 fn the_four_units_round_trip_against_each_other() {
+    // §7 asks for the round trip "on random text **with astral-plane
+    // characters**", and that is the corpus doing the work rather than the
+    // assertions: below the astral plane a UTF-16 code unit and a Unicode
+    // scalar value are the same count, so `Utf16Column` and `CharCount` agree
+    // everywhere and a conversion that confused them would round-trip
+    // perfectly. `RandomCharIter` emits four-byte characters about one time in
+    // eight -- but nothing said so, and `SIMPLE_TEXT=1` in the environment
+    // turns the whole corpus into lowercase ASCII.
+    let mut astral = 0usize;
+    let mut where_the_units_disagree = 0usize;
+
     for seed in 0..64 {
         let mut rng = StdRng::seed_from_u64(seed);
         let length = rng.random_range(0..512);
         let text: String = RandomCharIter::new(&mut rng).take(length).collect();
         let rope = Rope::from(text.as_str());
+
+        astral += text
+            .chars()
+            .filter(|character| character.len_utf16() == 2)
+            .count();
+        where_the_units_disagree +=
+            usize::from(rope.offset_to_offset_utf16(Offset(text.len())).0 != text.chars().count());
 
         assert_eq!(rope.len(), ByteLen(text.len()), "seed {seed}");
 
@@ -544,6 +577,17 @@ fn the_four_units_round_trip_against_each_other() {
             );
         }
     }
+
+    assert!(
+        astral > 0 && where_the_units_disagree > 0,
+        "the corpus held {astral} astral-plane characters across {} seeds where \
+         the UTF-16 length and the scalar-value count differ. §7 asks for this \
+         round trip on text *with* them, and without them `Utf16Column` and \
+         `CharCount` count the same thing everywhere -- so every assertion \
+         above would pass against a conversion that confused the two. \
+         `SIMPLE_TEXT` in the environment does exactly this",
+        where_the_units_disagree
+    );
 }
 
 /// §7: "**Every test is preserved**", because upstream's tests "are the only
