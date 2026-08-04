@@ -112,6 +112,20 @@ fi
 step=$((step + 1))
 printf '\n--- %d. tests\n' "$step"
 "$hj" selftest || fail "hj selftest"
+# `$hj` is the *reviewed* copy, which is the point of the pinned gate — but it
+# means that for the one loop allowed to write `harness/`, the file being
+# changed is the one file the gate never runs. Its selftest passed here every
+# time while `hj` was being rewritten, and would have gone on passing if the
+# rewrite were broken; the previous campaign caught exactly that class of bug
+# by hand, on a hunch, minutes before it would have failed three other loops.
+#
+# So the tree's own copy is checked too, whenever it differs. It cannot weaken
+# anything: the reviewed copy has already run and already passed.
+tree_hj="$repo/harness/hj"
+if [ -f "$tree_hj" ] && ! cmp -s "$tree_hj" "$hj"; then
+	echo "note: harness/hj differs from the reviewed copy; checking this tree's own too"
+	HJ_REPO="$repo" "$tree_hj" selftest || fail "hj selftest, for the copy in this tree"
+fi
 if [ ${#crates[@]} -eq 0 ]; then
 	echo "skipped: no owned crate exists yet"
 elif ! command -v cargo-nextest >/dev/null 2>&1; then
