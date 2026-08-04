@@ -1,61 +1,61 @@
 # Findings — core, worker 2
 
-## Open with these two, one turn each
+## Do these two first, one turn each
 
 1. **`harness/gate core`** before writing. A red HEAD from a cross-branch race
-   has happened (`core-002`) and suspends green-or-revert.
-2. **Settle each assigned gap from `state/audit/gap-log.jsonl`, not from
-   timestamps.** Find the run that *opened* it and check whether that run's
-   `sections_audited` names the section. My two answered differently this
-   round: §10's was opened by the latest run against the current file (real);
-   §2's was a stale row carried forward by a *partial* audit that never
-   re-judged the section, and had been closed three campaigns earlier.
+   has happened (`core-002`) and it suspends green-or-revert.
+2. **`grep -rl '<your section>' state/decisions/`.** Settling a gap from
+   `gap-log.jsonl` is necessary, not sufficient — it came back "real" for both
+   of my gaps and both were dead. An **answered** record blocks a gap harder
+   than an open one: nothing is left to escalate.
 
 ## Falsified — act on these directly
 
-* **"The list over-reports" is only half of it. It under-reports the same
-  sections.** §10's one listed gap closed in ten lines; the section then had
-  **four** more claims with no mechanism, none of them listed — a transcribed
-  nine-name list, `main`'s return type, one foreign error not `#[source]`d,
-  and (§2) the single bounded channel. A gap is what the auditor could *see*,
-  so a one-gap section is not a one-problem section. Print the section
-  (`harness/hj section-text`) and take its sentences one at a time, asking what
-  would fail if each stopped being true. That produced four of my five commits.
-* **Stale, verified, do not re-check:** `deps.md#8[ffcd948852]` (`trees.rs` is
-  an `LruCache`, `lru` declared), `core.md#7[bd3003d0fb]` (all three
-  particulars false), `core.md#two-modes[6bd547104d]` (`4c50a45` appends every
-  row), `e83fd58b7a` (aliases at `shared.rs:85`).
-* **`deps.md` §10 and §2 are done** — five commits, both clean, nothing left.
+* **`deps.md#14` cannot go clean this phase. Do not take it.** `core-023` is
+  answered *accepted A — adopt cargo-deny* and gives the work to a human.
+  Re-measured twice: `deny.toml: outside core's owned paths`;
+  `cargo deny: no such command`.
+* **`deps.md` is exhausted for this loop.** §14's only gap is the above; §2 and
+  §10 closed three campaigns ago; §5 and §6's minors closed this round. What
+  remains sits in `measure_core/src/corpus.rs` (§13) and
+  `measure_core.rs` (§9), plus §0's `tempfile` row, whose resolution is in
+  `clippy.toml` and denied to every loop.
+* **Do not follow an answered record's *Consequences* literally.** `core-021`
+  said "if A, the seam test is deleted". A's replacement cannot be built by a
+  loop, so deleting it trades a real check for a file nobody wrote.
+* **A gap the audit really saw can already be closed.** `7d21b547b7` was fixed
+  by `c9e5423` four hours after the run that opened it. The ritual answers "did
+  the audit see this file", not "has anyone fixed it since" — so also
+  `git log --oneline -8 -- <where-file>`, and read the subjects.
+* **An assertion whose negation fails the *build* is decoration.** I wrote one
+  (that `shared` re-exports `Language`/`Tree`/`InputEdit`) and removed it in
+  the same experiment: `driver/src/trees.rs` imports all three. Second hit
+  here. Plant before believing a test works.
 
 ## Confirmed — candidates, test on your own evidence
 
-* **Plant the negation.** Nine plants this round, nine correct failures. Two
-  generalisations that paid: a gap naming one site is a hypothesis about how
-  many there are; and in a two-fixture test the *negative* fixture is usually
-  the whole test — assert the line is absent where the mechanism should not
-  fire, or you have tested the symptom.
-* **Log at the point of conversion, not of construction.** `classify` is the
-  only place an `Error` stops being a failure; `Actor::answer` sees three
-  origins and can name none of them.
-* **The transport is still where the real work is** — `shim.md` §2's codec,
-  §3's router, the child spawn. It buys almost no number (`shim.md` is
-  unaudited this phase) and is a large campaign. Say so in the hypothesis.
+* **Once the gap list is exhausted, hunt for a value written twice where only
+  one copy breaks.** Three of eight commits: §14's file tree is a licence table
+  beside §5's; the toolchain pin sits in two files the build couples plus a
+  third it does not; the upstream sha appears twice in full, three times short.
+* **A comment must *name* its subject to count as an argument** — "some comment
+  nearby" is satisfied by `# -- misc ---`.
+* **Reconcile a wrong premise by appending, never by editing the Decision.**
+  `core-023` argues the resolved graph is what "no test can reach";
+  `cargo metadata --offline` reaches it. The conclusion survives, so I appended
+  a Reconciliation section. A loop that rewrites the ruling it was answered
+  with has un-answered itself.
 
 ## Traps that cost a red gate
 
-* **Text scans read comments.** Never quote a banned identifier in one — *and
-  never write a scan that fires on prose*. Skip comment lines, or you build the
-  trap for the next worker (`actor.rs` explains at length why its inbox is not
-  bounded).
-* `std::fs::read_dir` is disallowed; enumerate with `seam.rs`'s `sources_of`,
-  which follows `mod` declarations.
-* **`driver` may not name `tracing_subscriber`, tests included.** The
-  hand-rolled `Capturing` subscriber in `tests/actor.rs` already exists —
-  reuse it rather than rediscovering the 35 lines.
+* **Text scans read comments** — never quote a banned identifier in one, and
+  skip comment lines in any scan you write yourself.
+* **`driver` may not name `tracing_subscriber`, tests included.** Reuse
+  `tests/actor.rs`'s `Capturing`.
+* ENOSPC mid-campaign: the worktrees share a disk.
+  `rm -rf target/debug/incremental` freed 4.7G and cost nothing.
 
 ## Decisions
 
-* **core-022** (mine, open): an unclassified query lands in `unimplemented`;
-  `pipeline.rs`'s template check asserts the provisional and is *meant* to fail
-  when answered.
-* core-001–004: all need a human; `harness/` and `clippy.toml` are denied.
+`core-021`/`core-023` reconciled, untagged. `core-022` still provisional.
+`core-001`/`core-003`/`harness-008`/`harness-009` need a human.

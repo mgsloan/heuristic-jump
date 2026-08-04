@@ -543,3 +543,115 @@ campaign finds itself doing this for a *gap*, that is a different situation.
   Not laziness: the `mains` control already asserts both binaries' roots were
   reached by the scan, and the assertion runs on every main found, so the
   doc-template plant exercised the strictly harder path.
+
+## Campaign 340b4361 — a blocked assignment, and §14 taken as a section
+
+Eight commits, all green, 292 → 294 tests. `deps.md#14` did **not** go clean
+and could not have. `deps.md#5` and `#6` minors closed with CHANGE-core-025 and
+CHANGE-core-026.
+
+### The assignment was two gaps and neither was workable, which is knowable in one turn
+
+Both were opened by the 05:37 run and that run's `sections_audited` named §14,
+so the staleness ritual came back "real" for both — and both were still dead
+ends, for different reasons the ritual does not detect:
+
+- `7d21b547b7` (the `[profile.dev.package]` list) was **closed by `c9e5423`**,
+  which landed after the audit ran. The ritual answers "did the audit see this
+  file"; it does not answer "did somebody fix it in the four hours since". The
+  cheap second check is `git log --oneline -8 -- <the where: file>` and reading
+  the subjects — `[deps-14] the profile takes exactly §14's list` is not
+  ambiguous.
+- `d822e97954` (the `cargo-deny` config) is **blocked by an answered
+  decision**. `core-023` was answered *accepted A — adopt cargo-deny*, and the
+  ruling's own "what is left, and who does it" assigns it to a human: the file
+  is `deny.toml` at the root, the check path is `harness/gate`, and both are
+  outside every loop's paths. Re-measured rather than assumed:
+  `harness/hj check-scope core` → `deny.toml: outside core's owned paths`;
+  `cargo deny` → `no such command`.
+
+**So read the decision records for your assigned section before doing
+anything.** One `grep -l` over `state/decisions/` for the section number would
+have told me in one turn what took three to establish. An *answered* record can
+block a gap as hard as an open one — harder, because the question is settled
+and there is nothing left to escalate.
+
+### Reconciling an answered decision: do not follow its Consequences section literally
+
+`core-021`'s own Consequences said "if the answer is A, the seam test is
+deleted... about 120 lines of test come out". The answer *was* A. I kept the
+test, and I think that is right: answer A's replacement (`deny.toml`, plus
+something that runs it) does not exist and cannot be built by a loop, so
+deleting the only graph-level licence check today trades a real check for a
+file nobody has written. A Consequences section is written before the answer
+and does not know what the world looks like when it arrives.
+
+I also found the ruling resting on a premise that is false. `core-023`'s
+Decision argues that `deny.toml` "is a claim about the resolved graph, which no
+test can reach" — and `core-021`'s own provisional test reaches it, with
+`cargo metadata --format-version 1 --offline`. The conclusion survives (what
+cargo-deny still buys is SPDX parsing, a reasoned exception list, advisories),
+so I recorded it in a **Reconciliation** section appended to `core-023` and did
+not touch its Decision. Do that rather than editing a ruling: a loop that
+rewrites the argument it was answered with has un-answered itself.
+
+### The assertion that failed the build instead of the test
+
+Writing CHANGE-core-025 I claimed §6's "driver parses with tree-sitter and
+declares none of it" is true only while `shared` re-exports `Language`, `Tree`
+and `InputEdit`, and wrote the assertion. The plant — dropping `InputEdit` from
+the re-export — does not fail the test; it fails `cargo build`, because
+`driver/src/trees.rs` imports all three by name. Same shape worker 1 hit with
+the serde derives. The assertion came out in the same experiment and the fact
+went into the document instead, with the part that is *not* compiler-held: the
+repair rustc suggests for that build failure is `driver` declaring
+`tree-sitter` itself, which is the state the bullet says is not the case.
+
+**Run the plant before believing an assertion is doing work.** A test whose
+negation cannot be reached is decoration, and the two failure modes look
+identical from a green suite.
+
+### Where §14's remaining claims actually were
+
+The audit's two gaps were a closed one and an unreachable one, so the section
+had to be worked sentence by sentence (`harness/hj section-text`). Five real
+mechanisms fell out, none of them listed as anything:
+
+1. "Each `allow` carries a comment saying why" — nothing read it, because
+   §15's comparison drops trailing comments on *both* sides, which it has to.
+2. "Each vendored crate carries its own `[lints]` table" — the non-inheritance
+   was asserted and the table that records it as deliberate was not. An empty
+   table changes nothing about what is linted, so it deletes silently.
+3. §14's file tree is a **licence table**, one section away from §5's, and
+   nothing compared it to the manifests.
+4. The toolchain pin is written three times; two are edited together because a
+   build fails otherwise, and the third is the document.
+5. The upstream revision is written five times, twice in full and three times
+   abbreviated. The table is what a re-sync updates.
+
+Items 3–5 are one pattern and it is worth naming: **a value written down in
+two places where only one of them breaks when it is wrong.** Every one of them
+was a document copy of something the build or another test already held. That
+is the shape to search a section for once the gap list is exhausted — not
+"what is unchecked" but "what is written twice".
+
+A related one, from the `allow` scan: **requiring a comment to *name* its
+subject is what separates an argument from a banner.** A check that only wants
+"some comment nearby" is satisfied by `# -- misc ---`. It cost one vendored
+comment a reword, which is the right price.
+
+### Not taken, and why
+
+- **§0's `tempfile` minor.** The conflict is between `deps.md` §0 rejecting
+  `tempfile` and `clippy.toml:38` naming `tempfile::tempdir` as the sanctioned
+  replacement for a banned method. `clippy.toml` is denied to every loop, so
+  the resolution is not a loop's to make; and fixing §0's row instead would be
+  moving the document to match a file I cannot read the intent of.
+- **§9's and §13's minors.** Both in `measure_core`, which is a different
+  campaign's reading — `measure_core.rs`'s subscriber and `corpus.rs`'s
+  `verify_checkout`.
+- **A "no `lang_*` crate constructs `Outcome::Committed`" scan**, which my last
+  journal entry proposed and which I now hold the right file for. It belongs to
+  `core.md#the-trait`, a section another worker was assigned, and closing a
+  minor of somebody else's section is how two campaigns collide in one file.
+  It is still the right shape and still worth doing by whoever holds §1.
