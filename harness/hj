@@ -105,6 +105,10 @@ HARNESS_PATHS = ["harness/**"]
 # reaching the process table, which several workers reach routinely.
 REAP_GRACE_SECONDS = 120
 
+# Bumped whenever `progress` changes meaning. Rule 1 is the original:
+# sections clean up, or open gaps down, or the test count up.
+PROGRESS_RULE = 1
+
 OUTCOMES = ("confirmed", "falsified", "no-movement", "partial", "budget", "crashed", "error")
 
 
@@ -2058,6 +2062,54 @@ def spec_drift(campaign_id: str, target: str | None) -> dict | None:
 PYTHON_SHEBANG = re.compile(rb"^#!.*python")
 
 
+def campaign_diffstat() -> dict[str, dict[str, int]]:
+    """Lines a campaign added and deleted, split by what kind of line it is.
+
+    Keyed on the `campaign:` trailer rather than a date range, because the
+    harness's own commits land between a campaign's own and would otherwise be
+    charged to whichever one they interrupted. That mattered little with one
+    writer and matters a great deal with three: `line_counts` snapshots the
+    whole tree at close, so under workers a campaign's row carries whatever
+    the other two merged around it.
+
+    The `tests` split follows `loc_per_crate`'s: a path component named
+    `tests`, which is where this workspace puts them — `CLAUDE.md` forbids
+    unit tests, so there are no in-file `#[cfg(test)]` modules to miss.
+    """
+    raw = subprocess.run(
+        ["git", "-C", str(REPO), "log", "--numstat", "--format=%x00%B%x00"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout
+    stats: dict[str, dict[str, int]] = {}
+    current = None
+    for block in raw.split("\0"):
+        match = re.search(r"^campaign:\s*(\S+)\s*$", block, re.MULTILINE)
+        if match:
+            current = match.group(1)
+            continue
+        if current is None:
+            continue
+        row = stats.setdefault(current, {})
+        for line in block.splitlines():
+            parts = line.split("\t")
+            if len(parts) != 3 or not parts[0].isdigit() or not parts[1].isdigit():
+                continue
+            added, deleted, name = int(parts[0]), int(parts[1]), parts[2]
+            segments = name.split("/")
+            if name.endswith(".rs"):
+                kind = "rust_test" if "tests" in segments else "rust_source"
+            elif name.endswith(".md"):
+                kind = "markdown"
+            else:
+                kind = "other"
+            row[f"{kind}_added"] = row.get(f"{kind}_added", 0) + added
+            row[f"{kind}_deleted"] = row.get(f"{kind}_deleted", 0) + deleted
+        current = None
+    return stats
+
+
 def line_counts() -> dict[str, int]:
     """Tracked lines by language, for the size-over-time chart.
 
@@ -2212,6 +2264,18 @@ def cmd_campaign_close(args: argparse.Namespace) -> int:
             "audited": audited,
             "spec_drift": drift,
             "lines": line_counts(),
+            # This campaign's own diff, split by kind. `lines` above is a
+            # whole-tree snapshot and under workers carries whatever the
+            # other two merged around it; this does not.
+            "diff": campaign_diffstat().get(args.id, {}),
+            "loc_nontest": sum(loc_per_crate().values()),
+            "tests_before": tests_before,
+            "tests_after": tests_after,
+            "worker": opened.get("worker") or config.owner,
+            # What rule computed `progress` on this row. Every later change
+            # to that definition is a metric redefinition, and a chart that
+            # spans one without saying so is lying quietly.
+            "progress_rule": PROGRESS_RULE,
             **after,
         },
     )
