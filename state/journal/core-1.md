@@ -290,3 +290,97 @@ above are held by construction and by reading. A fixture server speaking
 enough LSP to answer `initialize` and `textDocument/definition` would close
 all of them at once, and it is the one piece of test infrastructure this crate
 is missing. It is a campaign, not a corner of one.
+
+## Campaign 44773a93 — §8's protocol types: the corpus is real now, both halves
+
+Targets were `core.md#85-the-untagged-unions-are-the-actual-risk[cfd3a3fbdc]`
+and `core.md#83-the-wire-position-type-is-inert[f9ad1766b7]`. Seven commits.
+
+### The gap was reachable because the machine has the servers on it
+
+This is the thing worth carrying forward. §8.5's corpus gap had been open
+since the corpus was written, and every campaign that looked at it treated
+"captured from Zed and VS Code against rust-analyzer, pyright and gopls" as
+aspirational. It is not. On this machine:
+
+* `rust-analyzer` is in `~/.cargo/bin`.
+* `gopls` installs with `go install golang.org/x/tools/gopls@latest` — `go` is
+  present and the network reaches proxy.golang.org.
+* `pyright` runs with `npx --yes pyright@latest`; the npm package is
+  `pyright`, **not** `pyright-langserver` (that name 404s), and the binary
+  inside it is `pyright-langserver --stdio`.
+* `emacs` 30.2 with built-in eglot, which is the only LSP *client* here that
+  runs headless.
+* `zed` is installed and `DISPLAY=:0` exists, but :0 is the user's real Xorg
+  session under gdm and there is no Xvfb. Driving Zed would put a window on
+  somebody's screen. Not done, and not because it would not have worked.
+
+Check before assuming. Twenty minutes of `which` opened a gap that had been
+read as blocked.
+
+### What was actually captured, and the two traps in doing it
+
+Server half, by a stdio client: gopls and pyright, one `initializeResult`,
+definition answers including a real `null` on a keyword, and gopls's
+`$/progress` whose token is a **string of digits** — §8.5's first union at its
+worst.
+
+Client half, by a recording proxy between eglot and a real server: an editor's
+own `initialize`, `didOpen`, three separate `didChange`s, `didSave` and
+`didClose`. Two traps, each of which cost a run:
+
+* **`eglot-ensure` does nothing under `--batch`.** It defers the connect to
+  `post-command-hook`, and batch mode has no command loop. Use
+  `(apply #'eglot--connect (eglot--guess-contact))`.
+* **eglot coalesces buffer edits into one notification.** Three edits arrived
+  as one merged change. `(eglot--signal-textDocument/didChange)` between edits
+  gets three, including the deletion whose `text` is empty — which is the
+  shape that matters.
+
+Also: `project-current` prompts without a `.git`, so `git init` the fixture;
+and a server that does not advertise `save` in `textDocumentSync` never makes
+the editor send a `didSave` (pyright does not, gopls does).
+
+The scripts are in `/tmp/hj-capture`. That is the second campaign to write
+them there — `core-018` escalates where they should live, and the recipe is in
+the corpus header meanwhile.
+
+### Approaches considered and not taken
+
+* **Trusting the previous campaign's `/tmp/hj-capture/new-lines.jsonl`.** It
+  was sitting there, correct, and would have saved four turns. Re-captured
+  instead, because a corpus line's whole value is that somebody watched it
+  come off a wire, and committing one on the strength of a stale JSON file
+  from a session I cannot see is the exact thing the `CAPTURED` label is
+  supposed to mean.
+* **A `PositionEncoding::settle` in `shared`.** §8.3's minor says nothing
+  settles an encoding. Stale: `measure_core::client::settled_encoding` does,
+  applying LSP's "omitted means utf-16", and both newly captured servers omit
+  it. Adding a second settling site in `shared` would have been a duplicate
+  with a better docstring.
+* **Removing `WirePosition::line()` to satisfy §8.3's "no accessors".** Not
+  implementable. §6 compares `(uri, line)` on the child's answer and **reads
+  nothing**; the child's row arrives only inside a `WirePosition`, so without
+  the accessor the only route is `resolve`, which needs the target document's
+  text — the read §6 forbids two sentences earlier. The document was wrong,
+  not the code (CHANGE-core-007).
+* **Making "handlers cannot construct a `WireLocation`" true at the type
+  level.** The doc claimed it followed from `PositionEncoding` never reaching
+  the seam. It does not: the variants are public unit variants, so a handler
+  naming `PositionEncoding::Utf16` compiles. Making it type-level needs a
+  newtype only the driver can build, which is a seam change and Class B for
+  no gain — the property is already asserted by `driver/tests/seam.rs`. The
+  doc now says what holds it.
+* **Claiming `core.md#vocabulary-types[fbe658c158]`.** Granted, and there was
+  nothing to do: `shared.rs:54` re-exports all seven and `driver/tests/seam.rs`
+  asserts it, committed in `9e581f7` — **four minutes after** the audit stamped
+  the section. Third campaign in a row to hit this; see the findings file.
+
+### What the corpus still lacks
+
+48 messages, 23 captured, every kind represented in both halves. Missing: any
+editor other than Emacs, any server-originated request beyond
+`window/workDoneProgress/create` and `workspace/configuration` (neither
+modelled), and a `didSave` without text off a real editor. None of those is
+worth a campaign on its own; they are lines to append when somebody is in
+here anyway.
