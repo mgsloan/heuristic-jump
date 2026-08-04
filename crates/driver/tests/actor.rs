@@ -612,6 +612,64 @@ fn a_cancelled_query_leaves_no_row_and_no_report() {
     );
 }
 
+/// `core.md` §1: "the driver resolves an incoming LSP `languageId` against the
+/// registry and gets `Option<LanguageId>`. Unknown languages fail to resolve at
+/// the boundary rather than travelling inward as a string that matches
+/// nothing".
+///
+/// Both halves of the registry are asserted because they have different
+/// vocabularies and only one of them is exercised by anything else here: a
+/// `languageId` arrives on an open document, and a *file extension* arrives on
+/// "candidate files found by search [where] closed files arrive as a bare path
+/// with no languageId attached". The second lookup had no caller anywhere in the
+/// workspace, which is the state in which a boundary quietly stops being one.
+///
+/// The negative cases are the test. A registry that resolved everything would
+/// pass every positive assertion above, and the string that matches nothing is
+/// exactly what §1 says must not travel inward.
+#[test]
+fn the_registry_resolves_only_what_a_handler_declared() {
+    let registry = Registry::new(vec![Arc::new(Declining) as Arc<dyn LanguageHandler>]);
+
+    assert!(
+        registry.for_language_id("rust").is_some(),
+        "the one declared languageId resolves to nothing, so every assertion below is \
+         vacuous"
+    );
+    assert!(
+        registry.for_language_id("ruby").is_none(),
+        "an undeclared languageId resolved to a handler, which is a document parsed with \
+         somebody else's grammar"
+    );
+    assert_eq!(
+        registry.language_id("rust").map(LanguageId::as_str),
+        Some("rust"),
+        "the interning lookup does not return the id the handler declared, and it is the \
+         only way to obtain a `LanguageId` — so `Documents` could not track the document \
+         at all"
+    );
+    assert!(
+        registry.language_id("ruby").is_none(),
+        "an undeclared languageId was interned, which is §1's string that matches nothing \
+         travelling inward with a newtype on"
+    );
+
+    assert!(
+        registry.for_path(Path::new("src/lib.rs")).is_some(),
+        "a bare path with a declared extension resolves to no handler, so a closed file \
+         found by search can never be attributed to the language that owns it"
+    );
+    assert!(
+        registry.for_path(Path::new("src/lib.py")).is_none(),
+        "a path whose extension nobody declared resolved to a handler"
+    );
+    assert!(
+        registry.for_path(Path::new("Makefile")).is_none(),
+        "a path with no extension at all resolved to a handler: the lookup is reading \
+         something other than the extension"
+    );
+}
+
 /// One query's worth of the deadline test, so the two halves cannot drift.
 struct Queued {
     answered: bool,
