@@ -278,3 +278,29 @@ sentence it replaces, since "nothing changes" says nothing about a workspace
 where a second crate already knew.
 
 **Campaign:** c601eeec-b30f-479c-8a7d-49e19e4c166d
+
+## CHANGE-core-010 — core.md#9-workspace-layout — the four phase-2 crates are marked, because phase 1a is forbidden to create them
+
+**Contradiction:** §9's tree prints eleven `crates/` entries as the workspace
+layout, and four of them — `lang_python/`, `lang_typescript/`,
+`measure_python/`, `measure_typescript/` — cannot exist in this phase.
+`loops.md`'s decided question 10: "**The loop may never add a language.**
+Enforced rather than discouraged: a new `crates/lang_*` is outside every
+loop's owned paths, so the gate rejects the commit." `state/phase.toml` says
+the same from the other side: "`crates/lang_rust/` is named here and not
+globbed, deliberately … so `crates/lang_python/` stays outside every owned
+path and the gate rejects it." So the tree, read as a phase-1a requirement,
+asks for four commits the harness is built to refuse.
+
+**Resolution:** the four carry `phase 2` in the tree's own note column, and a
+paragraph below names the two rules that make them unbuildable here. Nothing
+is removed and no requirement is weakened: the four are still the layout, and
+`#adding-a-language` still prices them.
+
+This trades nothing off, and the marking is what makes the section
+mechanizable at all — `the_workspace_is_the_layout_section_9_prints` in
+`crates/driver/tests/seam.rs` now compares the tree against `[workspace]
+members` in both directions, which without the marking would have demanded
+exactly the commit the gate rejects.
+
+**Campaign:** c601eeec-b30f-479c-8a7d-49e19e4c166d

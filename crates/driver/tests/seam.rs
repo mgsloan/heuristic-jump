@@ -200,6 +200,127 @@ fn the_language_list_is_enumerated_in_heuristic_jump() {
     }
 }
 
+/// `core.md` §9's directory tree, compared against the workspace in both
+/// directions, with the document as the fixture rather than a list
+/// transcribed here — the same arrangement `deps.md` §15's lint block gets,
+/// and for the same reason: a third copy is the thing that drifts.
+///
+/// Both directions are the claim. A crate the tree names and the workspace
+/// lacks is a crate nobody built; a crate the workspace has and the tree does
+/// not name is the layout growing without the section that argued for it,
+/// which is how `crates/` stops being "our code" and `vendor/` stops being
+/// "copied-in Zed crates, kept separate so provenance and licensing stay
+/// obvious".
+///
+/// The four `phase 2` entries are exempt and the marking is load-bearing:
+/// `loops.md`'s decided question 10 puts a new `crates/lang_*` outside every
+/// loop's owned paths, so a phase 1a campaign that tried to satisfy the tree
+/// by creating `crates/lang_python/` would have its commit rejected by the
+/// gate rather than merged (CHANGE-core-010). Without the marking this test
+/// would be demanding exactly that.
+///
+/// The two names §9 calls "chosen rather than mechanical" are asserted with
+/// it, since both are decisions that read as arbitrary later:
+///
+/// > **`driver`, not `core`.** A crate named `core` shadows Rust's own, and
+/// > this document already uses "`core`" throughout for the single-threaded
+/// > actor in section 2.
+///
+/// > **`heuristic_jump`** for the binary crate, with a two-line `[[bin]]`
+/// > rename so that the produced binary is `heuristic-jump`. Cargo names a
+/// > binary target after the package verbatim and does not hyphenate it.
+#[test]
+fn the_workspace_is_the_layout_section_9_prints() {
+    let printed = fenced_block_of(&workspace_file("design/core.md"), "## 9. Workspace layout");
+    assert!(
+        printed.contains("crates/"),
+        "no fenced block found under core.md §9, so this test would compare nothing"
+    );
+
+    let mut parent = String::new();
+    let mut expected = Vec::new();
+    for line in printed.lines() {
+        let indented = line.starts_with(' ');
+        let mut fields = line.split_whitespace();
+        let Some(entry) = fields.next().and_then(|name| name.strip_suffix('/')) else {
+            continue;
+        };
+        if !indented {
+            parent = entry.to_owned();
+            continue;
+        }
+        // The one thing phase 1a may not build. `state/phase.toml` names
+        // `crates/lang_rust/` rather than globbing `crates/lang_*/`, so the
+        // gate rejects the commit that would create the others.
+        if fields.clone().eq(["phase", "2"]) {
+            continue;
+        }
+        expected.push(format!("{parent}/{entry}"));
+    }
+    expected.sort();
+
+    let mut members = workspace_members();
+    members.sort();
+    assert_eq!(
+        members, expected,
+        "the workspace is not the layout core.md §9 prints. A crate the tree names and \
+         [workspace] members lacks is one nobody builds; a member the tree does not name is the \
+         layout growing without the section that argued for it, which is what keeps crates/ our \
+         code and vendor/ the copied-in Zed crates"
+    );
+
+    assert!(
+        !members.iter().any(|member| member.ends_with("/core")),
+        "a crate is named core: §9 chose `driver` deliberately, because a crate named core \
+         shadows Rust's own and these documents already call the single-threaded actor core — \
+         two things with that name in one system is the ambiguity the choice avoids"
+    );
+    assert!(
+        table_of(&workspace_file("Cargo.toml"), "workspace.package")
+            .iter()
+            .any(|line| line.replace(' ', "") == "publish=false"),
+        "[workspace.package] does not set publish = false: §9 makes it workspace-wide, and it \
+         is what lets the crate names carry no project prefix — an accidental publish of a \
+         crate named `shared` is not a mistake with a second chance"
+    );
+
+    for (member, artifact) in [
+        ("crates/heuristic_jump", "heuristic-jump"),
+        ("crates/measure_rust", "measure-rust"),
+    ] {
+        let named = table_of(&workspace_file(&format!("{member}/Cargo.toml")), "[bin]")
+            .iter()
+            .find_map(|line| {
+                let (key, value) = line.split_once('=')?;
+                (key.trim() == "name").then(|| value.trim().trim_matches('"').to_owned())
+            })
+            .unwrap_or_default();
+        assert_eq!(
+            named, artifact,
+            "{member} builds a binary named {named:?}: §9 wants {artifact:?}, and cargo names a \
+             binary target after the package verbatim without hyphenating it — so the two-line \
+             [[bin]] rename is the whole of what makes the artifact match the name every \
+             invocation in these documents uses (CHANGE-conformance-001)"
+        );
+    }
+}
+
+/// The first unlabelled fenced block after a heading. `fenced_toml_of` above
+/// takes the `toml` ones; §9's directory tree carries no language tag, and a
+/// reader that accepted either would take §15's `toml` block for a tree.
+fn fenced_block_of(document: &str, heading: &str) -> String {
+    let Some((_, after)) = document.split_once(heading) else {
+        return String::new();
+    };
+    let Some((_, block)) = after.split_once("```\n") else {
+        return String::new();
+    };
+    block
+        .split_once("\n```")
+        .map_or("", |(body, _)| body)
+        .to_owned()
+}
+
 /// `core.md#adding-a-language`, which is a price rather than a description:
 /// "New `crates/lang_<x>/` … `crates/measure_<x>/`, which is four lines; then
 /// one line in `heuristic_jump`. **No crate other than `heuristic_jump`

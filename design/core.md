@@ -1892,15 +1892,24 @@ crates/
   shared/           handler trait, vocabulary newtypes, ProjectView, proto, Error
   similarity/       ported from the prior implementation; frozen until phase 3
   lang_rust/        one crate per language
-  lang_python/
-  lang_typescript/
+  lang_python/      phase 2
+  lang_typescript/  phase 2
   driver/           the LSP driver
   heuristic_jump/   the shim binary -- `heuristic-jump`
   measure_core/        corpus scan library -- LSP client, replay, metrics
   measure_rust/        `measure-rust` -- four lines, section 7
-  measure_python/
-  measure_typescript/
+  measure_python/      phase 2
+  measure_typescript/  phase 2
 ```
+
+The four marked `phase 2` do not exist yet and **cannot** be created in phase
+1a, which is why they are marked rather than merely absent (CHANGE-core-010).
+`loops.md`'s decided question 10 — "The loop may never add a language" — makes
+a new `crates/lang_*` outside every loop's owned paths so the gate rejects the
+commit, and `state/phase.toml` names `crates/lang_rust/` rather than globbing
+for exactly that reason: "naming one path grants the template without granting
+the glob". Phase 1a instantiates the template once, and
+[adding a language](#adding-a-language) is what the other six cost.
 
 Crate names carry no project prefix, matching the vendored Zed crates
 alongside them (`rope`, `sum_tree`) and the workspace-wide `publish = false`.
