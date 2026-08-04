@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Flags a hand-authored commit. `design/loops.md` section 16:
+#
+#   "Out-of-band interventions cannot all be caught, but the two common ones
+#    can — a git hook flags hand-authored commits, and the harness logs its
+#    own kills."
+#
+# It flags and does not log. A hook that appended to `state/interventions.jsonl`
+# would be writing state from inside a commit — the index is held, and the
+# append would either sit in the working tree (leaving it dirty, which stops
+# the next campaign from starting) or need a commit of its own from a hook
+# that runs on commit. The reasoning is the part worth having and only a
+# person can write it, so the hook asks for it.
+#
+# Install with `harness/hj install-hooks`. Uninstall by deleting the symlink.
+
+set -uo pipefail
+
+subject="$(git log -1 --format=%s)"
+loop="$(git log -1 --format='%(trailers:key=loop,valueonly)' | tr -d '[:space:]')"
+
+# A loop's commit carries `loop:`. The harness's own bookkeeping commits are
+# prefixed and carry no trailers on purpose, so that they stay invisible to
+# everything that counts campaigns.
+case "$subject" in
+"harness: "*) exit 0 ;;
+esac
+[ -z "$loop" ] || exit 0
+
+sha="$(git log -1 --format=%h)"
+cat >&2 <<EOF
+
+  This commit is nobody's campaign: $sha $subject
+
+  Everything the loops do is in git with trailers. Everything you do is in
+  nothing at all — and that is the half with the higher information density.
+  Log why, so a campaign three weeks from now can read it:
+
+    harness/hj intervene --kind <kind> --target <what> \\
+      --rationale "why"
+
+  Kinds: harness/hj intervene --help. A design edit is spec-edited-by-hand,
+  a change under harness/ is harness-changed, a prompt change is
+  prompt-revised — and that last one cannot be replayed, so it is the one
+  worth the thirty seconds.
+
+EOF
+exit 0

@@ -170,6 +170,17 @@ merge_back_locked() {
 	fi
 }
 
+# "The harness logs its own kills" (design/loops.md §16). A loop that stops
+# leaves no trace otherwise: the next person sees a fleet that is quiet and
+# has to work out whether it finished, stalled or ran out of money. The kind
+# is `loop-killed` for all four, with the reason in `answer` — they differ in
+# what a human has to do next, and that is what the reason says.
+log_stop() {
+	"$hj" intervene --kind loop-killed --target "$identity" \
+		--answer "$1" --rationale "$2" >/dev/null 2>&1 ||
+		echo "loop: could not log the stop; continuing to exit." >&2
+}
+
 status_of() {
 	python3 - "$1" "$HJ_CONTROL" <<-'PY'
 		import sys, tomllib, pathlib
@@ -231,6 +242,8 @@ while :; do
 		echo "loop: a spending ceiling is reached; stopping rather than continuing quietly." >&2
 		echo "      Raise it in state/phase.toml under [budget], and log the change as an" >&2
 		echo "      intervention (kind: budget raised)." >&2
+		log_stop "a spending ceiling was reached" \
+			"harness/loop checks the ceilings between campaigns and stops rather than continuing quietly. Raising one is a budget-raised intervention."
 		exit 1
 	fi
 
@@ -238,6 +251,8 @@ while :; do
 		echo "loop: the working tree is dirty. Green-or-revert means a campaign starts" >&2
 		echo "      from a committed tree; the next session cannot tell deliberate" >&2
 		echo "      breakage from an accident. Commit or revert, then start again." >&2
+		log_stop "the working tree was dirty at the start of a campaign" \
+			"Green-or-revert means a campaign starts from a committed tree; the next session cannot tell deliberate breakage from an accident."
 		exit 1
 	fi
 
@@ -357,6 +372,8 @@ while :; do
 			echo
 			echo "loop: three sessions in a row ended without the campaign closing." >&2
 			echo "      Quota, credentials, or the CLI — not the work. Stopping." >&2
+			log_stop "three sessions in a row ended without the campaign closing" \
+				"Quota, credentials or the CLI rather than the work. Crashed sessions are excluded from the stall count, so nothing else would halt a loop whose sessions all fail."
 			exit 1
 		fi
 		;;
@@ -369,6 +386,8 @@ while :; do
 		echo
 		echo "loop: stalled. See state/handoff.md, then answer and set the loop"
 		echo "      back to 'running' in state/phase.toml."
+		log_stop "stalled: campaigns closed in a row without progress" \
+			"The stall rule fired. state/handoff.md is the campaign's account; unblocking it is a stall-unblocked intervention."
 		exit 1
 	fi
 

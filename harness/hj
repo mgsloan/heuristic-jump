@@ -1001,6 +1001,41 @@ def intervention_rows() -> list[dict]:
     return rows
 
 
+def hand_authored_commits(limit: int = 200) -> list[dict]:
+    """Commits that are nobody's campaign and not the harness's bookkeeping.
+
+    `design/loops.md` section 16: "Out-of-band interventions cannot all be
+    caught, but the two common ones can — a git hook flags hand-authored
+    commits, and the harness logs its own kills." This is the reading half.
+    Every such commit is an intervention under one of the section's own kinds:
+    a hand edit to a design document is `spec-edited-by-hand`, a change under
+    `harness/` is `harness-changed`. What is missing from each is the
+    reasoning, which is the field the section says will get skipped.
+
+    A commit counts as logged when its sha appears in the log. Rows written
+    through the dashboard carry the sha of the commit *before* the one they
+    cause, which is a `harness:` commit and excluded here anyway, so there is
+    no need to guess at a time window.
+    """
+    raw = git(
+        "log",
+        f"-{limit}",
+        "--no-merges",
+        "--format=%H%x1f%s%x1f%(trailers:key=loop,valueonly)%x1f%cI",
+    )
+    logged = {row.get("commit") for row in read_jsonl(INTERVENTIONS)}
+    found = []
+    for line in raw.splitlines():
+        parts = line.split("\x1f")
+        if len(parts) != 4:
+            continue
+        sha, subject, loop, stamp = (part.strip() for part in parts)
+        if loop or subject.startswith("harness: "):
+            continue
+        found.append({"commit": sha, "subject": subject, "ts": stamp, "logged": sha in logged})
+    return found
+
+
 RECURRING_KIND = 3
 
 # Kinds that recur by construction, and whose count is therefore a workload
@@ -1093,7 +1128,10 @@ def intervention_stats() -> dict:
             waiting.append(entry)
 
     measured = sorted(entry["hours"] for entry in answered if entry["hours"] is not None)
+    hand = hand_authored_commits()
     return {
+        "hand_authored": hand,
+        "unlogged_commits": [entry for entry in hand if not entry["logged"]],
         "per_phase": per_phase,
         "by_kind": sorted(by_kind.items(), key=lambda pair: (-pair[1], pair[0])),
         "recurring": [
@@ -3731,6 +3769,33 @@ def cmd_intervene(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_install_hooks(args: argparse.Namespace) -> int:
+    """Symlink the git hooks into the common git directory.
+
+    Explicit rather than automatic, and a symlink rather than `core.hooksPath`:
+    setting that would redirect *every* hook, so a hook someone else installed
+    would silently stop running. It goes in the common directory, which is
+    shared by every worktree — one install covers the fleet.
+    """
+    common = Path(git("rev-parse", "--git-common-dir").strip())
+    if not common.is_absolute():
+        common = (REPO / common).resolve()
+    for source in sorted((Path(__file__).resolve().parent / "hooks").glob("*")):
+        if source.name not in ("post-commit",):
+            continue
+        target = common / "hooks" / source.name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.is_symlink() and target.resolve() == source:
+            print(f"install-hooks: {target} already points here")
+            continue
+        if target.exists() or target.is_symlink():
+            print(f"install-hooks: {target} exists and is not ours; left alone", file=sys.stderr)
+            continue
+        target.symlink_to(source)
+        print(f"install-hooks: {target} -> {source}")
+    return 0
+
+
 def cmd_interventions(args: argparse.Namespace) -> int:
     """What the log says about how autonomous this actually is."""
     stats = intervention_stats()
@@ -3759,6 +3824,12 @@ def cmd_interventions(args: argparse.Namespace) -> int:
     for entry in stats["answered"][:5]:
         if entry.get("hours") is not None:
             print(f"    {entry['hours']:>7.1f}h  {entry['id']}")
+    unlogged = stats["unlogged_commits"]
+    if unlogged:
+        print()
+        print(f"  {len(unlogged)} hand-authored commit(s) with nothing in the log")
+        for entry in unlogged[:10]:
+            print(f"    {entry['commit'][:8]}  {entry['ts'][:16]}  {entry['subject'][:60]}")
     if stats["waiting"]:
         print()
         print("  waiting now — a loop is running on a provisional choice for each of these")
@@ -3929,6 +4000,9 @@ def main() -> int:
 
     p = sub.add_parser("interventions", help="how autonomous this is, from the log")
     p.set_defaults(run=cmd_interventions)
+
+    p = sub.add_parser("install-hooks", help="symlink the git hooks; flags hand-authored commits")
+    p.set_defaults(run=cmd_install_hooks)
 
     args = parser.parse_args()
     return args.run(args)

@@ -1656,6 +1656,28 @@ def panel_interventions() -> str:
         for entry in stats["answered"]
     )
 
+    # The reading half of "a git hook flags hand-authored commits". The hook
+    # catches them as they are made and only once installed; this catches the
+    # ones already in the history, and cannot be bypassed with `--no-verify`.
+    unlogged = stats["unlogged_commits"]
+    unlogged_block = ""
+    if unlogged:
+        commits = "".join(
+            f"<tr><td><code>{esc(entry['commit'][:8])}</code></td>"
+            f"<td>{esc(entry['ts'][:16])}</td><td>{inline(entry['subject'])}</td></tr>"
+            for entry in unlogged[:20]
+        )
+        unlogged_block = f"""
+        <article class="metrics">
+          <h3>{len(unlogged)} hand-authored commit(s) with nothing in the log</h3>
+          <table><thead><tr><th>commit</th><th>when</th><th>subject</th></tr></thead>
+            <tbody>{commits}</tbody></table>
+          <p class="note">Not a loop's, and not the harness's bookkeeping — so each is an
+            intervention under one of section 16's kinds, and what is missing from each is the
+            reasoning. <code>harness/hj install-hooks</code> puts the post-commit hook in place,
+            which asks at the moment it is cheapest to answer.</p>
+        </article>"""
+
     body = "".join(
         f"<tr><td>{esc(row.get('ts'))}</td><td>{esc(row.get('kind'))}</td><td>{esc(row.get('target'))}</td>"
         f"<td>{esc(row.get('answer'))}</td><td>{esc(row.get('rationale'))}</td></tr>"
@@ -1687,6 +1709,7 @@ def panel_interventions() -> str:
           <table><thead><tr><th>decision</th><th>question</th><th class="num">waited</th></tr></thead>
             <tbody>{waiting or ''}{answered}</tbody></table>
         </article>
+        {unlogged_block}
         <details><summary>the log, {len(rows)} row(s)</summary>
         <table><thead><tr><th>when</th><th>kind</th><th>target</th><th>answer</th><th>rationale</th></tr></thead>
         <tbody>{body}</tbody></table></details>""",
