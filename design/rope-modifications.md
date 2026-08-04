@@ -38,7 +38,7 @@ pub struct Unclipped<T>(pub T);                   // unclipped.rs
 
 The *dimensions* are newtyped. What is not newtyped is one level down: the
 plain byte offset is a bare `usize` — including as a `sum_tree::Dimension` and
-a `TextDimension` (`rope.rs:1567`, `rope.rs:1577`) — and the row and column
+a `TextDimension` (`rope.rs:1577`, `rope.rs:1587`) — and the row and column
 inside `Point` and `PointUtf16` are bare `u32`.
 
 Both are reasonable upstream. The byte offset is the default dimension, the one
@@ -313,7 +313,7 @@ it is called out rather than absorbed.
 ### The dimension impls
 
 `Offset` gains the two impls that make it usable as a seek dimension,
-mirroring what `OffsetUtf16` already has (`rope.rs:1624`, `rope.rs:1634`):
+mirroring what `OffsetUtf16` already has (`rope.rs:1634`, `rope.rs:1644`):
 
 ```rust
 impl<'a> sum_tree::Dimension<'a, ChunkSummary> for Offset { … }
@@ -441,7 +441,7 @@ were independent; they are not any more.
 ## 5. What deliberately does not change
 
 * **`OffsetUtf16` and `Unclipped`.** Already newtypes, already right.
-* **The `usize` dimension impls** (`rope.rs:1567`, `:1577`). rope uses `usize`
+* **The `usize` dimension impls** (`rope.rs:1577`, `:1587`). rope uses `usize`
   as a dimension internally in about seven places — `find::<usize, _>`,
   `Dimensions<usize, Point>` — and removing the impls would mean editing those
   bodies. They stay.

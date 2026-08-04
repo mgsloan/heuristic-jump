@@ -153,8 +153,8 @@ impl Ord for Point {
 //
 // `CharCount` lands here rather than in `point_utf16.rs` because it is not a
 // UTF-16 quantity: it counts Unicode scalar values, and it exists precisely
-// because `Chunk::first_line_chars` and `Point.column` are both "how far into
-// a line" in different units.
+// because `ChunkSlice::first_line_chars` and `Point.column` are both "how far
+// into a line" in different units.
 //
 // None of the four gets arithmetic. Adding two line numbers is meaningless and
 // there is no length interpretation to rescue it, so rope unwraps explicitly
