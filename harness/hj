@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -1638,34 +1639,44 @@ def selftest_line_range(source: str) -> tuple[int, int]:
     return (start, sys.maxsize) if start else (0, 0)
 
 
+def outside_selftest_region(sites: list[tuple[str, int]], source: str) -> list[tuple[str, int]]:
+    first, past = selftest_line_range(source)
+    return [(path, number) for path, number in sites if not (path == "harness/hj" and first <= number < past)]
+
+
+def provisional_tag_sites(identifier: str | None = None) -> list[tuple[str, int]]:
+    """Every site still running on a provisional choice, as (path, line).
+
+    The one place the scope is defined, because it has two exclusions and both
+    have to hold for every reader: `DECISION_TAG_NOT_A_SITE` drops the paths
+    that are talk about the mechanism, and `selftest_line_range` drops this
+    file's own fixtures, which are tags written to test the reader of tags.
+    `tagged_sites` used to state that scope in its docstring and implement a
+    different one, which listed `harness/hj` under every decision id a fixture
+    happened to name — so an answered decision could never be reported
+    reconciled, and the loop that raised it was sent to a file with no tag in
+    it. Sharing the function is what makes the docstring true by construction.
+    """
+    pattern = (
+        rf"DECISION-{re.escape(identifier)}: provisional"
+        if identifier
+        else r"DECISION-[A-Za-z0-9_-]+: provisional"
+    )
+    result = subprocess.run(
+        ["git", "-C", str(REPO), "grep", "-z", "-n", "-E", pattern, "--", *DECISION_TAG_NOT_A_SITE],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return outside_selftest_region(tag_sites(result.stdout), (HARNESS / "hj").read_text())
+
+
 def provisional_decisions() -> int:
     """Sites still running on a provisional choice. Its count is a health
     metric — rising steadily means the loop is running ahead of its decisions
     and the work is getting speculative (`design/loops.md` section 6).
     """
-    result = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(REPO),
-            "grep",
-            "-z",
-            "-n",
-            "-E",
-            r"DECISION-[A-Za-z0-9_-]+: provisional",
-            "--",
-            *DECISION_TAG_NOT_A_SITE,
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    first, past = selftest_line_range((HARNESS / "hj").read_text())
-    return sum(
-        1
-        for path, number in tag_sites(result.stdout)
-        if not (path == "harness/hj" and first <= number < past)
-    )
+    return len(provisional_tag_sites())
 
 
 # --------------------------------------------------------------------------
@@ -2124,17 +2135,16 @@ def judged_campaigns(owner: str) -> list[dict]:
 
 
 def tagged_sites(identifier: str) -> list[str]:
-    """The files an answered decision has to be reconciled in, spliced into the
-    next prompt. Same scope as `provisional_decisions`, and for the same
-    reason: with `harness/` excluded, an answered harness decision reached its
-    own loop's prompt carrying no sites at all."""
-    result = subprocess.run(
-        ["git", "-C", str(REPO), "grep", "-l", "-F", f"DECISION-{identifier}:", "--", *DECISION_TAG_NOT_A_SITE],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return [line for line in result.stdout.splitlines() if line][:20]
+    """The files an answered decision still has to be reconciled in, spliced
+    into the next prompt. `harness/` is in scope deliberately — excluding it
+    made an answered harness decision reach its own loop's prompt carrying no
+    sites at all — and the fixtures in this file's selftest region are not,
+    which is `provisional_tag_sites`'s job to know rather than this one's."""
+    files = []
+    for path, _ in provisional_tag_sites(identifier):
+        if path not in files:
+            files.append(path)
+    return files[:20]
 
 
 def trailing_without_progress(owner: str) -> int:
@@ -2375,8 +2385,7 @@ def prompt_values(
                 f"- {path.stem}: {name} [ANSWERED: {state} — read the record; the"
                 " ruling was not logged, so the reasoning is only in the file]"
             )
-        elif tagged_sites(path.stem):
-            sites = ", ".join(tagged_sites(path.stem))
+        elif sites := ", ".join(tagged_sites(path.stem)):
             decisions.append(
                 f"- {path.stem}: {name} [ANSWERED: {state} — reconcile and remove the tag]\n"
                 f"  still tagged at: {sites}"
@@ -4888,6 +4897,27 @@ def selftest_cases() -> list[tuple[str, object]]:
         )
         assert selftest_line_range("def other():\n    pass\n") == (0, 0), (
             "a file with no selftest excludes nothing, rather than excluding everything"
+        )
+
+    def an_answered_decision_is_not_reported_at_a_fixture():
+        # The bug this replaced: `tagged_sites` claimed `provisional_decisions`'
+        # scope and did its own grep without the region filter, so every id a
+        # fixture below happens to name was reported as still tagged in
+        # `harness/hj` — permanently, since nothing there is ever reconciled.
+        # Five answered decisions were sitting in loop prompts saying
+        # "reconcile and remove the tag" against a file with no tag in it.
+        source = "def selftest_cases():\n    x = 'DECISION-harness-003: provisional'\n\n\ndef after():\n    pass\n"
+        sites = [("harness/hj", 2), ("harness/hj", 6), ("crates/driver/src/actor.rs", 579)]
+        kept = outside_selftest_region(sites, source)
+        assert ("harness/hj", 2) not in kept, "a fixture inside the selftest region is not a site"
+        assert ("harness/hj", 6) in kept, "the harness loop's own implementation still counts"
+        assert ("crates/driver/src/actor.rs", 579) in kept, "another file is never filtered by line"
+
+    def the_two_readers_of_the_tag_share_one_scope():
+        assert "provisional_tag_sites" in inspect.getsource(provisional_decisions)
+        assert "provisional_tag_sites" in inspect.getsource(tagged_sites), (
+            "tagged_sites must not grep for itself; the scope has two exclusions "
+            "and a second implementation drops one of them"
         )
 
     def the_harness_is_code_for_drift_purposes():
