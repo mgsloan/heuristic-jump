@@ -623,6 +623,34 @@ def open_gap_ids(docs: list[str]) -> dict[str, tuple[str, str]]:
     return out
 
 
+def campaign_was_audited(audits: list[dict], commit_times: list[str], opened_at: str) -> bool:
+    """Has anything judged this campaign's work?
+
+    `state/phase.toml` excludes a campaign that closes with no audit since it
+    opened from the stall count, "otherwise the cadence itself would stop the
+    loop". Two things have to be true for that exclusion to mean what it says,
+    and neither was.
+
+    **The audits must be this loop's.** The gap log is one file for both loops,
+    so the last row in it is whichever loop audited most recently. Campaign
+    2e588730 was judged as audited by the core loop's audit of `core.md`, while
+    the harness loop's own audit had run two seconds *before* it opened — so it
+    closed `confirmed` with no progress and tripped §7's "a loop that has
+    decided it is finished" notice, the most alarming line the harness prints,
+    over four commits nothing had looked at. Callers pass `audits_for(docs)`.
+
+    **The audit must postdate the work, not the session.** An audit that ran
+    while a campaign was still writing cannot see what it committed afterwards.
+    The commits are the work; the open time is only when the session began
+    reading, and it is the fallback for a campaign that committed nothing —
+    where there is no work to have been judged and the old question is the
+    right one.
+    """
+    if not audits:
+        return False
+    return audits[-1]["ts"] > max(commit_times, default=opened_at)
+
+
 def audits_for(docs: list[str]) -> list[dict]:
     """The gap-log rows belonging to a document set.
 
@@ -869,6 +897,24 @@ def format_commit_lines(raw: str, limit: int = RECENT_COMMITS) -> list[str]:
 def commits_for_campaign(campaign_id: str) -> list[str]:
     raw = git("log", "--format=%H", f"--grep=campaign: {campaign_id}", "HEAD")
     return [line for line in raw.splitlines() if line]
+
+
+def commit_time(sha: str) -> str:
+    """Committer date, normalised to UTC so it sorts against `now()`'s output.
+
+    `%cI` rather than `%aI`: a rebase rewrites the committer date and leaves the
+    author date alone, and what is being compared here is when the work reached
+    the branch an audit would have read, not when it was first written.
+
+    Converted rather than passed through, because git emits the *local* offset
+    and every timestamp this is compared against is `now()`, which is UTC — and
+    these get compared as strings. `2026-08-04T15:18:26-06:00` sorts before
+    `2026-08-04T20:59:31+00:00` and is two minutes after it.
+    """
+    raw = git("show", "-s", "--format=%cI", sha, check=False).strip()
+    if not raw:
+        return ""
+    return datetime.fromisoformat(raw).astimezone(timezone.utc).isoformat(timespec="seconds")
 
 
 # --------------------------------------------------------------------------
@@ -3222,6 +3268,16 @@ def prompt_values(
         # findings digest below is deliberately shared and contended instead
         # (`design/loops.md` §13, "What is per worker and what is shared").
         "journal": f"state/journal/{worker_name}.md",
+        # Per worker for the same reason as the journal, and found the same
+        # way: `changelog_paths` already globs the directory, so a per-worker
+        # file needs no reader change. Three workers appending Class A entries
+        # to one file conflicted on both merges of every round — which is what
+        # §13 means by partitioning shared state by owner, one level below
+        # where `changelog_paths`'s own docstring had already applied it. A
+        # line-level union would resolve the conflict and corrupt the result:
+        # these are prose blocks, and interleaving two produces a third entry
+        # neither campaign wrote.
+        "changelog": f"state/spec-changelog/{worker_name}.md",
         "owned_paths": "\n".join(f"- `{p}`" for p in config.write),
         "denied_paths": "\n".join(f"- `{p}`" for p in denied_paths(phase, config.owner)),
         # A loop that may write `harness/` must not be able to run its own
@@ -4968,8 +5024,26 @@ def cmd_campaign_close(args: argparse.Namespace) -> int:
     )
     drift = spec_drift(args.id, args.target)
     prompts = prompt_drift(args.id, config)
-    audits = read_jsonl(GAP_LOG)
-    audited = bool(audits) and audits[-1]["ts"] > (opened.get("started") or "")
+    # `audits_for`, not the whole log: an audit covers one loop's documents and
+    # the log is shared, so `read_jsonl(GAP_LOG)[-1]` is whichever loop audited
+    # most recently. That is how campaign 2e588730 was judged as audited by the
+    # core loop's audit of core.md, two seconds after the harness loop's own
+    # audit had run *before* it opened — and so closed `confirmed` with
+    # `progress` false, tripping §7's "a loop that has decided it is finished"
+    # notice, which is the most alarming line the harness can print, on a
+    # campaign whose four commits nothing had looked at yet.
+    #
+    # Against the campaign's last commit rather than its start, for the same
+    # reason one step further in: `state/phase.toml` excludes a campaign with
+    # no audit since it opened so that the cadence cannot stop the loop, and an
+    # audit that ran while the campaign was still working cannot see what it
+    # committed afterwards. The commits are the work; the open time is only
+    # when the session began reading.
+    audited = campaign_was_audited(
+        audits_for(config.docs),
+        [commit_time(commit) for commit in commits],
+        opened.get("started") or "",
+    )
 
     # The last two fields of section 16's row spec. The transcript path is
     # known before the session starts and is recorded whether or not the file
@@ -6511,10 +6585,28 @@ def spec_changes() -> list[dict]:
                     "heading": match.group("rest").strip(),
                     "body": text[match.end() : end].strip(),
                     "reviewed": match.group("id") in reviewed,
-                    "owner": path.stem if path.parent.name == "spec-changelog" else "",
+                    "owner": (
+                        loop_of_worker(path.stem) if path.parent.name == "spec-changelog" else ""
+                    ),
+                    "worker": path.stem if path.parent.name == "spec-changelog" else "",
                 }
             )
     return entries
+
+
+def loop_of_worker(name: str) -> str:
+    """`core-2` is worker 2 of the `core` loop; `core` is the loop itself.
+
+    The changelog is per worker, like the journal and the findings, so the
+    filename stopped being the loop's name. Both are kept on the entry: the
+    loop is what a reader groups by, and the worker is what says which of three
+    campaigns in a round wrote it.
+
+    Only a trailing all-digit segment is a worker number, so a loop that is
+    named with a hyphen — `lang-rust` — is left alone.
+    """
+    head, _, tail = name.rpartition("-")
+    return head if head and tail.isdigit() else name
 
 
 def changelog_paths() -> list[Path]:
@@ -7291,6 +7383,33 @@ def selftest_cases() -> list[tuple[str, object]]:
         assert set(SIZE_RATCHET_PHASES) == {"3", "7"}, "the two cost phases, and no others"
         phase = Phase(phase="2a", loops={"lang-rust": _selftest_loop("lang-rust", "rust")})
         assert check_size_ratchet(phase.loops["lang-rust"], phase) == 0
+
+    def a_worker_changelog_still_reports_its_loop():
+        assert loop_of_worker("core-2") == "core"
+        assert loop_of_worker("core") == "core"
+        assert loop_of_worker("harness") == "harness"
+        assert loop_of_worker("lang-rust") == "lang-rust", (
+            "a hyphen in a loop's own name is not a worker number"
+        )
+        assert loop_of_worker("lang-rust-3") == "lang-rust"
+
+    def an_audit_that_predates_the_work_has_not_judged_it():
+        opened = "2026-08-04T20:59:33+00:00"
+        commits = ["2026-08-04T21:04:28+00:00", "2026-08-04T21:18:26+00:00"]
+        # The real shape of the false positive: the loop's own audit ran two
+        # seconds before the campaign opened, and the commits came later.
+        early = [{"ts": "2026-08-04T20:59:31+00:00"}]
+        assert not campaign_was_audited(early, commits, opened)
+        # An audit mid-campaign still cannot see the last commit.
+        midway = [{"ts": "2026-08-04T21:12:07+00:00"}]
+        assert not campaign_was_audited(midway, commits, opened)
+        after = [{"ts": "2026-08-04T21:20:00+00:00"}]
+        assert campaign_was_audited(after, commits, opened)
+        # A campaign that committed nothing has no work to have been judged, so
+        # the question falls back to the session's own span.
+        assert campaign_was_audited(midway, [], opened), "no commits: measured from the open"
+        assert not campaign_was_audited(early, [], opened)
+        assert not campaign_was_audited([], commits, opened), "no audit at all is not audited"
 
     def only_a_prompt_in_use_is_a_prompt_revision():
         core = _selftest_loop("core", "rust")

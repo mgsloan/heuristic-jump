@@ -570,6 +570,12 @@ impl ProjectView {
     /// the walk and the read, and there would be nothing in the record saying
     /// the answer was computed from less than the project.
     ///
+    /// What keeps that from being permanent for the commonest case — a
+    /// candidate deleted since the walk — is `core.md` §4's second on-demand
+    /// signal rather than anything here: the failure is classified by
+    /// [`Error::file_list_evidence`] as evidence about the list, so the query
+    /// after it searches a list without the removed file.
+    ///
     /// Sequential, where `resolution.md` §3 has the fan-out run on a bounded
     /// pool. The pool is `shim.md` §10's and does not exist, and `CLAUDE.md`
     /// withholds optimisation until the corpus harness shows it is worth it
