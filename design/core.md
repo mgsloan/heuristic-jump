@@ -903,7 +903,20 @@ exactly.
 **The stratum is two fields, not one.** `resolution.md` §8 assigns a stratum
 a-priori from the reference, then permits one refinement during search — to
 `AmbiguousName` or `ExternalDependency`, neither of which is knowable before
-the search runs. Coverage is reported on `stratum_prior` so the denominator
+the search runs.
+
+*A-priori* is about the **rule**, not about who evaluates it. The handler
+computes both fields and reports them, as the paragraph above says; what makes
+the prior stable is that its rule reads only the query and the reference, and
+never what the search found. Two consequences follow, and the second is easy
+to miss: the prior does not move when the implementation changes, **and it is
+knowable without the search finishing.** A query whose outcome is discarded
+after the fact — by §5's hard cap, say — has not thereby lost its prior. The
+prior was never the outcome's to carry away, and code that reads it off a
+completed outcome is taking the only path that happens to be convenient rather
+than the only one there is.
+
+Coverage is reported on `stratum_prior` so the denominator
 is fixed by the reference and does not move when the implementation changes;
 precision is reported on `stratum_final` so an answer is judged against the
 class it turned out to be. One field cannot do both, and collapsing them
