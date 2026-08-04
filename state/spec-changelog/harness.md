@@ -429,3 +429,49 @@ retakes the baseline next, and the body's first correcting sentence carries
 the meaning until then.
 
 **Campaign:** 3e637dcd-7552-460c-8eb4-fb41941ef14b
+
+## CHANGE-harness-010 — loops.md#7-progress-stall-and-the-ways-it-is-faked — what ralph's two heuristics mean in this harness
+
+**Contradiction:** §7 adopts two heuristics from `frankbria/ralph-claude-code`
+"which ships them as tuned constants" —
+
+> **flag when ≥30% of recent iterations are test-only changes**, and **cap
+> consecutive "done" signals** so a loop that has decided it is finished
+> cannot keep saying so
+
+— and neither term has a referent here. This harness has no "done" signal: a
+loop's `status` is set by a human in `state/phase.toml`, which no loop may
+write, so the thing being capped does not exist under that name. And
+"test-only" has two readings that differ by an order of magnitude on real
+data, which is not a detail an implementation should be left to guess.
+
+**Resolution:** §7 now says what each means here, and says that both report
+and neither stops.
+
+*Test-only* is a commit that touched Rust tests and **nothing else**. The
+looser reading — touched no source — measured **71%** against the `core` loop
+over its last twenty commits, at a time when that loop was closing gaps and
+its commits were a test carrying a claim plus the `design/` edit settling it.
+A flag that fires on campaigns doing their job is one that gets ignored by the
+third time it fires. Under the strict reading the same window reads 7%.
+Commits touching no Rust are outside the denominator rather than counted as
+healthy, because the harness loop's own tests are `selftest_cases` *inside*
+`harness/hj` and no path can distinguish them from the code they check —
+reporting 0% would assert health about a loop this measure cannot see.
+
+*A "done" signal* is a campaign closing `confirmed` or `partial` — a claim of
+movement — when the repository shows none. This adds **no** stop condition:
+such a campaign already increments `trailing_without_progress` and stops the
+loop at N exactly like an honest `no-movement` close. What was missing is the
+distinction, and it is the one that matters — the two shapes stop the loop
+identically and mean opposite things. A run of `no-movement` is a loop that
+hit something the spec did not anticipate; a run of `confirmed` with nothing
+behind it is a loop that has decided it is finished, which is the failure the
+heuristic is named for.
+
+Nothing is traded off. The document named two mechanisms and this says which
+observable each is, in a harness that had neither; no threshold was moved, no
+check weakened, and the one number that was ambiguous was resolved toward the
+reading that does not fire on correct work.
+
+**Campaign:** 3e637dcd-7552-460c-8eb4-fb41941ef14b

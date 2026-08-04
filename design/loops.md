@@ -667,6 +667,30 @@ so. The first is the better one — a run that is mostly test churn is
 the characteristic shape of a loop that has run out of real work but
 not out of budget.
 
+Both are `hj stall`'s and neither stops anything. What each *means* here
+needs saying, because ralph's vocabulary does not map onto this one:
+
+* **Test-only** is per commit, since [section 4](#4-the-iteration-contract)
+  makes one commit per experiment, and means a commit that touched Rust
+  tests and **nothing else** — not merely no source. A commit that adds a
+  test and edits `design/` did other work, and for a conformance loop that
+  other work is usually the point: the test carries the claim the spec edit
+  settles. The loose reading measured 71% against a loop that was closing
+  gaps at the time, and a flag that fires on campaigns doing their job is
+  one nobody keeps believing. Commits touching no Rust at all sit outside
+  the denominator rather than counting as healthy — a loop whose tests live
+  *inside* its implementation, as this harness's do in `hj selftest`, is one
+  the measure cannot see, and it says so rather than reporting 0%.
+* **A "done" signal** here is a campaign closing `confirmed` or `partial` —
+  a claim of movement — when the repository shows none. The cap is not a new
+  rule: such a campaign already increments the no-progress count above and
+  stops the loop at N like any other. What is added is the *distinction*,
+  because the two shapes stop the loop identically and mean opposite things.
+  A run of honest `no-movement` closes is a loop that has hit something the
+  spec did not anticipate, which is exactly what should reach a human; a run
+  of `confirmed` closes with nothing behind them is a loop that has decided
+  it is finished, which is the failure this heuristic is named for.
+
 The failure this is guarding against is not idleness — it is the loop
 generating plausible activity indefinitely. Which brings up the ways
 the metrics can be satisfied without work being done:

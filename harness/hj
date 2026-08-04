@@ -3173,6 +3173,111 @@ def spec_drift(campaign_id: str, target: str | None) -> dict | None:
 
 PYTHON_SHEBANG = re.compile(rb"^#!.*python")
 
+# `design/loops.md` section 7's better ralph heuristic, and its constant.
+# Twenty commits because it has to be a *run* rather than a campaign: three
+# workers interleave, so the last twenty of one loop's commits span a few
+# rounds, which is the window in which "mostly test churn" is a shape rather
+# than one campaign that happened to be writing tests.
+TEST_CHURN_WINDOW = 20
+TEST_CHURN_FLAG = 0.30
+
+
+def classify_diff_path(name: str) -> str:
+    """Which bucket a changed path counts in. `campaign_diffstat`'s split, and
+    `loc_per_crate`'s: a path component named `tests`, which is where this
+    workspace puts them — `CLAUDE.md` forbids unit tests, so there are no
+    in-file `#[cfg(test)]` modules to miss."""
+    if name.endswith(".rs"):
+        return "rust_test" if "tests" in name.split("/") else "rust_source"
+    if name.endswith(".md"):
+        return "markdown"
+    return "other"
+
+
+def test_churn(owner: str, window: int = TEST_CHURN_WINDOW) -> dict:
+    """Section 7: "flag when >=30% of recent iterations are test-only changes"
+    — "the characteristic shape of a loop that has run out of real work but not
+    out of budget".
+
+    Per commit, because section 7 says *iterations* and section 4's contract
+    makes one commit per experiment. Unlike the spec-drift detector, which that
+    section deliberately widened to the campaign, nothing here is defeated by
+    one-target commits: a commit is exactly the unit the heuristic is about.
+
+    **Only commits that touch Rust are classifiable, and the denominator says
+    so.** A markdown-only commit is neither test churn nor source work, and the
+    harness loop's tests are `selftest_cases` *inside* `harness/hj`, so no path
+    can distinguish them from the code they check. Reporting a denominator of
+    nothing as 0% would say "healthy" about a loop this measure cannot see, so
+    it reports `flagged` only when there is something to have seen.
+    """
+    raw = subprocess.run(
+        ["git", "-C", str(REPO), "log", f"-n{window * 8}", "--numstat", "--format=%x00%B%x00"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout
+    commits: list[set[str]] = []
+    pending: str | None = None
+    for block in raw.split("\0"):
+        if re.search(rf"^loop:\s*{re.escape(owner)}\s*$", block, re.MULTILINE):
+            pending = owner
+            continue
+        if pending is None:
+            continue
+        kinds = {
+            classify_diff_path(parts[2])
+            for line in block.splitlines()
+            if len(parts := line.split("\t")) == 3 and parts[0].isdigit()
+        }
+        commits.append(kinds)
+        pending = None
+        if len(commits) >= window:
+            break
+    return test_churn_ratio(commits)
+
+
+def test_churn_ratio(commits: list[set[str]]) -> dict:
+    """The arithmetic of `test_churn`, over one bucket-set per commit."""
+    classifiable = [kinds for kinds in commits if kinds & {"rust_test", "rust_source"}]
+    # Strictly nothing else, not merely "no source". A commit that adds a test
+    # and edits `design/` did other work, and for a conformance loop that other
+    # work is often the deliverable — the test carries the claim the spec edit
+    # settles. The loose reading measured 71% against a core loop that was
+    # closing gaps at the time, which is a flag nobody would keep believing.
+    test_only = [kinds for kinds in classifiable if kinds == {"rust_test"}]
+    ratio = len(test_only) / len(classifiable) if classifiable else None
+    return {
+        "commits": len(commits),
+        "classifiable": len(classifiable),
+        "test_only": len(test_only),
+        "ratio": ratio,
+        "flagged": ratio is not None and ratio >= TEST_CHURN_FLAG,
+    }
+
+
+def unsupported_claims(owner: str) -> int:
+    """Consecutive closes that claimed movement the repository does not show.
+
+    Section 7's other ralph heuristic is to "cap consecutive 'done' signals so
+    a loop that has decided it is finished cannot keep saying so". The cap
+    itself already exists and is the stall rule — a campaign closing
+    `confirmed` with no computed progress increments
+    `trailing_without_progress` exactly like one closing `no-movement` — so
+    this adds no second stop condition. What was missing is the *diagnosis*:
+    those two shapes stop the loop identically and mean opposite things. A run
+    of honest `no-movement` closes is a loop that has hit something hard; a run
+    of `confirmed` closes with nothing behind them is a loop that has decided
+    it is finished, and only the second is the failure section 7 names.
+    """
+    trailing = 0
+    for campaign in reversed(judged_campaigns(owner)):
+        if campaign.get("progress"):
+            break
+        if campaign.get("outcome") in ("confirmed", "partial"):
+            trailing += 1
+    return trailing
+
 
 def campaign_diffstat() -> dict[str, dict[str, int]]:
     """Lines a campaign added and deleted, split by what kind of line it is.
@@ -3209,13 +3314,7 @@ def campaign_diffstat() -> dict[str, dict[str, int]]:
             if len(parts) != 3 or not parts[0].isdigit() or not parts[1].isdigit():
                 continue
             added, deleted, name = int(parts[0]), int(parts[1]), parts[2]
-            segments = name.split("/")
-            if name.endswith(".rs"):
-                kind = "rust_test" if "tests" in segments else "rust_source"
-            elif name.endswith(".md"):
-                kind = "markdown"
-            else:
-                kind = "other"
+            kind = classify_diff_path(name)
             row[f"{kind}_added"] = row.get(f"{kind}_added", 0) + added
             row[f"{kind}_deleted"] = row.get(f"{kind}_deleted", 0) + deleted
         current = None
@@ -4498,6 +4597,27 @@ def cmd_stall(args: argparse.Namespace) -> int:
         f"stall: {trailing} campaign(s) without progress (N={config.stall_n}); "
         f"{empty} of the last {config.stall_n} produced no commit; {crashed} crashed (not counted)"
     )
+    # Section 7's two ralph heuristics. Both report and neither stops: the
+    # first the section calls a flag, and the second is a diagnosis of the
+    # stall rule above rather than a second rule beside it.
+    unsupported = unsupported_claims(config.owner)
+    if unsupported:
+        print(
+            f"stall: {unsupported} of those closed claiming movement the repository does not"
+            " show — a loop that has decided it is finished, not one that has hit something hard"
+        )
+    churn = test_churn(config.owner)
+    if churn["ratio"] is None:
+        print(
+            f"stall: test churn not measurable — none of the last {churn['commits']} commit(s)"
+            " touched Rust, so there is no source/test split to read"
+        )
+    else:
+        print(
+            f"stall: {churn['test_only']} of {churn['classifiable']} recent Rust commits were"
+            f" test-only ({churn['ratio']:.0%}, flag at {TEST_CHURN_FLAG:.0%})"
+            + ("  — FLAGGED" if churn["flagged"] else "")
+        )
     return 1 if trailing >= config.stall_n else 0
 
 
@@ -5027,6 +5147,35 @@ def selftest_cases() -> list[tuple[str, object]]:
         assert selftest_line_range("def other():\n    pass\n") == (0, 0), (
             "a file with no selftest excludes nothing, rather than excluding everything"
         )
+
+    def a_commit_that_did_other_work_is_not_test_churn():
+        # The loose reading — "touched no source" — called a commit that adds a
+        # test and edits `design/` churn, and measured 71% against a core loop
+        # that was closing gaps at the time. For a conformance loop the test
+        # carries the claim the spec edit settles, so that is the deliverable.
+        churn = test_churn_ratio([{"rust_test", "markdown"}, {"rust_source"}])
+        assert churn["test_only"] == 0 and churn["ratio"] == 0.0, churn
+
+    def test_churn_is_undefined_rather_than_zero_when_nothing_is_rust():
+        churn = test_churn_ratio([{"markdown"}, {"other"}])
+        assert churn["ratio"] is None and churn["flagged"] is False, (
+            "the harness loop's tests live inside harness/hj, so no path can see them; "
+            "0% would report health about a loop this measure cannot look at"
+        )
+        assert churn["commits"] == 2 and churn["classifiable"] == 0
+
+    def the_churn_flag_fires_at_thirty_percent():
+        churn = test_churn_ratio([{"rust_test"}, {"rust_source"}, {"rust_source"}])
+        assert churn["ratio"] == 1 / 3 and churn["flagged"] is True
+        assert test_churn_ratio([{"rust_test"}] + [{"rust_source"}] * 3)["flagged"] is False
+
+    def classify_diff_path_splits_tests_by_directory():
+        assert classify_diff_path("crates/shared/tests/proto.rs") == "rust_test"
+        assert classify_diff_path("crates/shared/src/tests.rs") == "rust_source", (
+            "a component named tests, not a file; CLAUDE.md forbids unit tests"
+        )
+        assert classify_diff_path("design/loops.md") == "markdown"
+        assert classify_diff_path("harness/hj") == "other"
 
     def a_loop_reads_loops_and_not_their_workers():
         # A glob over state/findings/ matches core-1.md, core-2.md, core-3.md
