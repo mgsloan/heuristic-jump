@@ -679,7 +679,14 @@ fn our_position(position: WirePosition) -> (u32, u32) {
 }
 
 const COLUMNS: usize = 96;
-const ROWS: usize = 96;
+
+/// Deep enough for a real answer. 96 rows was, until pyright answered a call
+/// to `print` with two locations 2075 lines into typeshed's `builtins.pyi` —
+/// which is what a definition in a standard library looks like and what a
+/// hand-authored corpus line never looks like, since somebody writing one
+/// picks a small number. The grid broke loudly rather than quietly, which is
+/// the property below, and growing it is the response.
+const ROWS: usize = 4096;
 
 /// An ASCII document of known geometry: [`ROWS`] lines of exactly [`COLUMNS`]
 /// characters. Large enough to hold every position in the corpus, which is the
