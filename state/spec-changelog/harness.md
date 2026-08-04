@@ -321,3 +321,56 @@ option that was *rejected* and what it would have cost. The changelog entry
 is the place a reviewer can check that claim against the records.
 
 **Campaign:** 3e637dcd-7552-460c-8eb4-fb41941ef14b
+
+## CHANGE-harness-008 — loops.md#6-spec-changes-what-the-loop-may-decide-alone — the batch trigger counts records waiting, not tagged sites
+
+**Contradiction:** §6 says a batch is triggered by
+
+> the outstanding `DECISION-` count crossing a threshold, or a phase gate
+
+and defines that count two paragraphs earlier as the grep:
+
+> `grep -r DECISION-` is the outstanding-provisional-choice report, and its
+> count is a health metric
+
+Those are not the same set, and the difference is not a corner case. A record
+can be waiting on a human with **no taggable site at all** — the choice is
+about a file the raising loop may not write, so there is nowhere to put
+`// DECISION-<id>: provisional` and no work the loop could do meanwhile.
+Three of this loop's records say exactly that in their own "Provisional choice
+in force" section: `harness-002` (`.claude/settings.json`), `harness-003`
+(`state/phase.toml`), `harness-007` (another loop's crate). A trigger driven
+by the grep count would never fire for any of them, which inverts the
+mechanism — those are the escalations that most need a human, because they are
+the ones the loop cannot route around.
+
+**Resolution:** the trigger counts records waiting on a human and crosses
+`escalation_batch` in `state/phase.toml`; the grep count keeps the job §6
+already gives it, which is the health metric. §6 now says both, and says why
+the earlier reading fails.
+
+This trades nothing off. The two counts are different questions — "is the loop
+running ahead of its decisions" and "is there enough for a human to sit down
+with" — and §6 already asks both; the edit stops one number being asked to
+answer both. Nothing is loosened: the health metric is unchanged and still
+recorded in every metrics row.
+
+**What was built, and the one thing it deliberately does not do.**
+`hj escalations` prints the queue, each record's age *in campaigns closed
+since it was raised* — §6's "reconciliation gets more expensive the longer it
+waits", measured in the unit the expense is actually paid in, since a quiesced
+fleet costs nothing to wait — and whether a batch is due. It exits 1 when due.
+`harness/loop` does not consult it and the docstring says it must not: §6 says
+the loop "never idles waiting for an answer", so unlike `hj budget`, a
+non-zero exit here is a message to the operator rather than a condition the
+harness acts on. The trigger also appears on `hj status` and in the note on
+the dashboard panel a batch is answered from.
+
+`escalation_batch` is **absent** from `state/phase.toml`, which is denied to
+every loop. It defaults to absent rather than to a guessed number, for the
+reason `Budget` gives for the same choice: an invented threshold either cries
+wolf or never fires, and §6 names no number. With it unset the phase gate is
+the only trigger — a degenerate cadence, not a broken one, and setting it is
+one line for whoever decides what the number should be.
+
+**Campaign:** 3e637dcd-7552-460c-8eb4-fb41941ef14b

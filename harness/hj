@@ -227,6 +227,13 @@ class Budget:
 class Phase:
     phase: str
     audit_every: int = 1
+    # `design/loops.md` section 6: "a batch is triggered by whichever comes
+    # first: the outstanding `DECISION-` count crossing a threshold, or a phase
+    # gate". Absent rather than a default number, for `Budget`'s reason — a
+    # guessed threshold either cries wolf or never fires, and the section names
+    # no number. Absent means the phase gate is the only trigger, which is the
+    # degenerate case the section already describes rather than a broken one.
+    escalation_batch: int | None = None
     budget: Budget = field(default_factory=Budget)
     loops: dict[str, LoopConfig] = field(default_factory=dict)
 
@@ -240,6 +247,7 @@ def load_phase() -> Phase:
     result = Phase(
         phase=raw["phase"],
         audit_every=raw.get("audit_every", 1),
+        escalation_batch=raw.get("escalation_batch"),
         budget=Budget(
             global_usd=budget_table.get("global_usd"),
             language_usd={
@@ -4287,6 +4295,104 @@ def cmd_budget(args: argparse.Namespace) -> int:
     return 1 if exhausted else 0
 
 
+def waiting_decisions(answers: dict[str, dict] | None = None) -> list[tuple[str, str]]:
+    """Records a batch review would consume, as (id, opened), oldest first.
+
+    Status comes from `decision_status`, which derives it from the intervention
+    log rather than from the record's own `status:` line: a record whose file
+    says `accepted` and whose ruling was never logged is still waiting, because
+    the reasoning a batch exists to produce is not there.
+    """
+    answers = decision_answers() if answers is None else answers
+    waiting = []
+    for path in sorted((STATE / "decisions").glob("*.md")):
+        text = path.read_text()
+        recorded = re.search(r"^status:\s*(.+)$", text, re.MULTILINE)
+        if decision_status(path.stem, recorded.group(1) if recorded else "", answers) not in (
+            "open",
+            "provisional",
+        ):
+            continue
+        opened = re.search(r"^opened:\s*(\S+)", text, re.MULTILINE)
+        waiting.append((path.stem, opened.group(1) if opened else ""))
+    return sorted(waiting, key=lambda entry: (entry[1] or "9999", entry[0]))
+
+
+def batch_is_due(waiting: int, threshold: int | None) -> tuple[bool, str]:
+    """`design/loops.md` section 6's first batch trigger. The second is a phase
+    gate, which is a human event and needs no arithmetic.
+
+    **What is counted is records waiting on a human, not tagged sites**, and
+    the two differ. Section 6 names "the outstanding `DECISION-` count", having
+    two paragraphs earlier defined that as what `grep -r DECISION-` reports —
+    but a record can be waiting with no taggable site at all, and that is not a
+    corner case. `harness-002`, `harness-003` and `harness-007` each say so in
+    their own "Provisional choice in force" section, and for the same reason:
+    the choice each is about lives in a file the raising loop may not write —
+    `.claude/settings.json`, `state/phase.toml`, another loop's crate — so
+    there is nowhere to put the tag. Counting sites would leave exactly the
+    escalations a loop could not act on invisible to the trigger. The grep
+    count stays
+    what section 6 separately calls it, a health metric that rises when the
+    loop runs ahead of its decisions (`provisional_decisions`).
+    """
+    if threshold is None:
+        return False, "no threshold set in state/phase.toml; a phase gate is the only trigger"
+    if waiting >= threshold:
+        return True, f"{waiting} waiting, threshold {threshold}"
+    return False, f"{waiting} of {threshold}"
+
+
+def campaigns_closed_since(timestamp: str) -> int:
+    """Campaigns closed across every loop since a decision was raised.
+
+    Section 6: "the loop runs further on provisional choices and reconciliation
+    gets more expensive the longer it waits". Campaigns are the unit that
+    expense is actually paid in, so this is the number that says whether the
+    threshold is too high — wall-clock says nothing when a fleet is idle.
+    """
+    if not timestamp:
+        return 0
+    latest: dict[str, dict] = {}
+    for row in session_rows():
+        latest.setdefault(row["campaign"], {}).update(row)
+    return sum(
+        1 for row in latest.values() if row.get("outcome") and (row.get("ended") or "") > timestamp
+    )
+
+
+def cmd_escalations(args: argparse.Namespace) -> int:
+    """`design/loops.md` section 6: escalations are reviewed in batches, never
+    as interrupts, because answering each as it arrives "would make the
+    operator the rate limiter for every loop at once".
+
+    Exit 1 means a batch is due. **Nothing in `harness/loop` consults this, and
+    nothing should**: section 6 says the loop "never idles waiting for an
+    answer", so a due batch is a message to the operator and never a stop. That
+    is the difference between this and `hj budget`, which exits 1 for a
+    condition the harness is supposed to act on.
+    """
+    phase = load_phase()
+    waiting = waiting_decisions()
+    due, reason = batch_is_due(len(waiting), phase.escalation_batch)
+    print(
+        f"escalations: {len(waiting)} waiting on a human, "
+        f"{provisional_decisions()} site(s) running on a provisional choice"
+    )
+    for identifier, opened in waiting:
+        waited = campaigns_closed_since(opened)
+        print(f"  {identifier:<16} opened {(opened[:10] or '?'):<12} {waited} campaign(s) ago")
+    print(f"escalations: batch {'DUE' if due else 'not due'} — {reason}")
+    if due:
+        print(
+            "escalations: answer them from the dashboard, which logs the ruling and the"
+            " reasoning in one action. The loops keep running meanwhile; a due batch"
+            " stops nothing.",
+            file=sys.stderr,
+        )
+    return 1 if due else 0
+
+
 def cmd_gaps(args: argparse.Namespace) -> int:
     _, config = loop_config(args.loop)
     ledger = gap_ledger(config.docs)
@@ -4409,14 +4515,12 @@ def cmd_status(args: argparse.Namespace) -> int:
     print()
     print(f"  provisional DECISION- tags: {provisional_decisions()}")
     decisions = sorted((STATE / "decisions").glob("*.md"))
-    answers = decision_answers()
-    waiting = []
-    for path in decisions:
-        recorded = re.search(r"^status:\s*(.+)$", path.read_text(), re.MULTILINE)
-        state = decision_status(path.stem, recorded.group(1) if recorded else "", answers)
-        if state in ("open", "provisional"):
-            waiting.append(path)
-    print(f"  decisions: {len(decisions)} recorded, {len(waiting)} waiting on a human")
+    waiting = waiting_decisions()
+    due, reason = batch_is_due(len(waiting), phase.escalation_batch)
+    print(
+        f"  decisions: {len(decisions)} recorded, {len(waiting)} waiting on a human; "
+        f"batch {'DUE' if due else 'not due'} ({reason})"
+    )
     changes = spec_changes()
     unread = [entry for entry in changes if not entry["reviewed"]]
     print(f"  spec changes: {len(changes)} recorded, {len(unread)} not yet read by a human")
@@ -4899,6 +5003,25 @@ def selftest_cases() -> list[tuple[str, object]]:
             "a file with no selftest excludes nothing, rather than excluding everything"
         )
 
+    def no_threshold_means_the_phase_gate_is_the_only_trigger():
+        due, reason = batch_is_due(9, None)
+        assert due is False and "phase gate" in reason, reason
+
+    def the_batch_fires_at_the_threshold_and_not_before():
+        assert batch_is_due(2, 3)[0] is False
+        assert batch_is_due(3, 3)[0] is True, "crossing is inclusive; at the threshold is at it"
+        assert batch_is_due(4, 3)[0] is True
+        assert batch_is_due(0, 0)[0] is True, "a threshold of zero is review-every-escalation"
+
+    def the_trigger_counts_records_and_not_tag_sites():
+        # A record can be waiting with no taggable site — the choice lives in a
+        # file the raising loop may not write, which is true of harness-002,
+        # harness-003 and harness-007. Counting sites would leave exactly the
+        # escalations a loop could not act on invisible to the trigger.
+        source = inspect.getsource(cmd_escalations)
+        assert "waiting_decisions()" in source
+        assert "batch_is_due(len(waiting)" in source, "the threshold applies to records"
+
     def an_answered_decision_is_not_reported_at_a_fixture():
         # The bug this replaced: `tagged_sites` claimed `provisional_decisions`'
         # scope and did its own grep without the region filter, so every id a
@@ -5256,6 +5379,12 @@ def main() -> int:
     p = sub.add_parser("budget", help="spend against each ceiling; exit 1 when one is reached")
     p.add_argument("loop", nargs="?")
     p.set_defaults(run=cmd_budget)
+
+    p = sub.add_parser(
+        "escalations",
+        help="the decision queue and whether a batch is due; exit 1 when it is (a report, not a stop)",
+    )
+    p.set_defaults(run=cmd_escalations)
 
     p = sub.add_parser("audit-cost", help="record what an audit session cost")
     p.add_argument("loop")

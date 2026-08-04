@@ -577,16 +577,36 @@ speculative.
 **Escalations are reviewed in batches, never as interrupts.** Answering
 each one as it arrives is unusable at campaign cadence and would make
 the operator the rate limiter for every loop at once. So they queue, and
-a batch is triggered by whichever comes first: the outstanding
-`DECISION-` count crossing a threshold, or a phase gate — which is
-already a synchronisation point where the loops are quiesced and a human
-is looking anyway.
+a batch is triggered by whichever comes first: the number of records
+**waiting on a human** crossing `escalation_batch` in
+`state/phase.toml`, or a phase gate — which is already a synchronisation
+point where the loops are quiesced and a human is looking anyway.
+`hj escalations` computes it and exits 1 when a batch is due; nothing in
+the runner consults that exit code, and nothing should, because a due
+batch is a message to the operator and never a stop. With no threshold
+set, the phase gate is the only trigger, which is a degenerate cadence
+and not a broken one.
+
+**Records waiting, not tagged sites.** An earlier revision made the
+trigger "the outstanding `DECISION-` count", meaning the `grep -r
+DECISION-` report above. But a record can be waiting with no taggable
+site at all, and those are systematically the ones that most need a
+human: the choice is about a file the raising loop may not write —
+`state/phase.toml`, `.claude/`, another loop's crate — so there was
+nowhere to put a tag and no work the loop could do meanwhile. Counting
+sites would leave exactly those invisible to the trigger. The grep count
+keeps the job it already has, which is the health metric; when the loop
+is running ahead of its decisions is a different question from when to
+hold a review.
 
 The cost of batching is that the loop runs further on provisional
 choices and reconciliation gets more expensive the longer it waits.
 That is the trade being taken deliberately, and the outstanding count is
-what makes it visible rather than silent. If reconciliation starts
-dominating, the threshold is too high.
+what makes it visible rather than silent. **The unit that expense is
+paid in is campaigns, not days** — a quiesced fleet costs nothing to
+wait — so `hj escalations` reports, per record, how many campaigns have
+closed since it was raised. If reconciliation starts dominating, the
+threshold is too high.
 
 **The queue starts empty, and is not seeded from `open-questions.md`.** An
 earlier revision said the opposite — that document and `resolution.md`'s
