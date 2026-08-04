@@ -521,3 +521,50 @@ were stale before this campaign opened, and the two it touched are recorded as
 *half*-built in both this document and the readme rather than as done.
 
 **Campaign:** 78bbbbc4-9003-447e-9139-61389562ceb5
+
+## CHANGE-harness-012 — loops.md#mechanics-isolation-in-four-layers — the bounded exception says what the deny list actually holds
+
+**Contradiction:** §13 said, of the loop allowed to write `harness/` while it
+builds the phase-2 machinery, that it may "never [write] the gate, the
+prompts, or the auditor that judge it now", and §18's table said the same in a
+row reading "`harness/gate*`, `harness/prompts/`, the auditor — **denied**".
+`DENIED_ALWAYS` in `harness/hj` denies four files: `harness/gate`,
+`harness/prompts/auditor.md`, `harness/section-baseline.toml` and
+`harness/ratchets.toml`. So the prompt template every loop is generated from
+was writable by the harness loop, and two of the denied files were not named
+anywhere in the document.
+
+§18 also contradicts itself in the paragraph that states the rule: the same
+paragraph assigns this loop the tuning and optimisation prompts, which are
+files under `harness/prompts/`, and denies it `harness/prompts/`.
+
+**Resolution:** the document now names the four files, and says that the live
+prompt templates are *not* among them. This is not a reading I chose. It is
+`state/decisions/harness-009.md`, raised by campaign `78bbbbc4` and answered
+by a human — `accepted`, logged as a `decision-answered` intervention — in
+favour of keeping the route and logging every use of it: a revision to a
+template some loop is currently generated from is written to the intervention
+log as `prompt-revised` at campaign close. The document also now records the
+limit of the argument that makes the rest of `harness/` safe, which was
+missing: a loop's gate runs from the reviewed copy on the integration branch,
+but `render-prompt` reads the template through `HJ_REPO` — the loop's own
+worktree — so a prompt revision generates the next campaign with no review in
+between, and the log is the only thing standing there.
+
+What this trades nothing off *on* is the enumeration: `section-baseline.toml`
+and `ratchets.toml` were denied by the code and named by neither section, and
+writing them down costs nothing and closes the gap between a claim and its
+enforcement. `check-metrics` now reads the four names back out of the
+paragraph and compares them with the constant, in both directions.
+
+**This campaign edited this document in the direction that favours the loop
+that wrote the edit**, which is the shape `harness/readme.md` watches for, so
+plainly: the alternative reading — deny the loop its own prompt — is the one
+the audit proposed as the mechanical fix, and it is the option a human
+considered and rejected four commits ago. I did not implement the rejected
+option and I did not decide the question; if the ruling is revisited, this
+paragraph and the two sections it edits are what has to be reverted, and the
+`prompt-revised` rows accumulating in `state/interventions.jsonl` are the
+evidence `harness-009` says would justify revisiting it.
+
+**Campaign:** 59da1668-66ac-46f5-9479-0075734f62b3

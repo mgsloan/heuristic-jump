@@ -2595,6 +2595,7 @@ def cmd_check_metrics(args: argparse.Namespace) -> int:
     # run instead of two.
     failed = check_test_ratchet(config)
     failed = check_prompt_prefix(config, phase) or failed
+    failed = check_denial_table(config) or failed
     return 1 if failed else 0
 
 
@@ -3308,6 +3309,84 @@ def prompt_body_problems(name: str, template: str) -> list[str]:
                 "check exists to prevent"
             )
     return problems
+
+
+# The paragraph in `design/loops.md` §13 that states the bounded exception,
+# found by the phrase that is the claim rather than by a line number. It names
+# the files that stay denied while a loop is allowed to write `harness/`, and
+# `DENIED_ALWAYS` is the same list in code.
+EXCEPTION_PARAGRAPH = "stay denied to it"
+ISOLATION_SECTION = "loops.md#mechanics-isolation-in-four-layers"
+
+
+def documented_harness_denials(text: str) -> tuple[set[str], str]:
+    """The `harness/…` paths §13's bounded-exception paragraph names, and why
+    it found none when it finds none.
+
+    Paragraph-scoped rather than section-scoped on purpose: the section also
+    mentions `harness/workers`, `harness/measure` and `harness/hj` in passing,
+    and a check that read the whole section would demand that every path the
+    prose happens to name be denied.
+    """
+    paragraphs = [block for block in text.split("\n\n") if EXCEPTION_PARAGRAPH in block]
+    if len(paragraphs) != 1:
+        return set(), (
+            f"{len(paragraphs)} paragraphs of {ISOLATION_SECTION} say "
+            f"{EXCEPTION_PARAGRAPH!r} and exactly one should: it is the sentence that "
+            "names what a loop writing `harness/` still may not touch"
+        )
+    return set(re.findall(r"`(harness/[^`\s]+)`", paragraphs[0])), ""
+
+
+def check_denial_table(config: LoopConfig) -> int:
+    """`DENIED_ALWAYS` and the paragraph that states it, held together.
+
+    §13's four layers end at "the gate decides what may be in it", and this is
+    the case where the gate's rule and the document's sentence are the same
+    claim written twice — the shape §5 calls converting an audit finding into
+    a permanent check. The sentence was wrong for as long as it took an
+    auditor to read it: it said the prompts were denied while
+    `harness-009` was answering that they are not.
+
+    Scoped to `writes_harness` for `check_prompt_prefix`'s reason. Every loop
+    can write `design/`, but only one is judged on this document, and a check
+    that fails in the tree of whoever has not merged yet is `harness-011`.
+    """
+    if not config.writes_harness:
+        return 0
+    index = section_index(["loops.md"])
+    section = index.get(ISOLATION_SECTION)
+    if section is None:
+        print(
+            f"denials: {ISOLATION_SECTION} is gone, and it is where the deny list is "
+            "stated. Renaming the heading also breaks harness/section-baseline.toml, "
+            "which is the frozen denominator and is denied to every loop",
+            file=sys.stderr,
+        )
+        return 1
+    documented, problem = documented_harness_denials(section_text(section))
+    if problem:
+        print(f"denials: {problem}", file=sys.stderr)
+        return 1
+    constant = {path for path in DENIED_ALWAYS if path.startswith("harness/")}
+    if documented == constant:
+        print(f"denials: {len(constant)} harness path(s) denied, and the document says so")
+        return 0
+    for path in sorted(constant - documented):
+        print(
+            f"denials: DENIED_ALWAYS holds {path}, which §13's bounded-exception "
+            "paragraph does not name. A file denied without being written down is a "
+            "gate failure nobody can predict",
+            file=sys.stderr,
+        )
+    for path in sorted(documented - constant):
+        print(
+            f"denials: §13 says {path} is denied and DENIED_ALWAYS does not. The "
+            "document is the claim and the constant is the enforcement; where they "
+            "disagree the loop has more reach than the spec grants it",
+            file=sys.stderr,
+        )
+    return 1
 
 
 def check_prompt_prefix(config: LoopConfig, phase: Phase) -> int:
@@ -6473,6 +6552,26 @@ def selftest_cases() -> list[tuple[str, object]]:
         # A body value under a missing separator is not silently forgiven: the
         # separator failure is reported first and the check still fails.
         assert prompt_body_problems("p.md", "{{campaign_id}} no separator") != []
+
+    def the_denied_paths_are_read_out_of_the_paragraph_that_states_them():
+        section = (
+            "### Mechanics\n\n"
+            "`harness/workers` runs in the integration checkout, and\n"
+            "`harness/measure` reports the number.\n\n"
+            "Four files stay denied to it: `harness/gate` and `harness/ratchets.toml`.\n\n"
+            "That list is a constant in `harness/hj`.\n"
+        )
+        found, problem = documented_harness_denials(section)
+        assert problem == "", problem
+        assert found == {"harness/gate", "harness/ratchets.toml"}, found
+
+    def a_paragraph_that_cannot_be_found_is_not_an_empty_list():
+        # Scoring a reworded paragraph as "nothing is denied" would pass the
+        # comparison against a constant that had also been emptied, which is
+        # the one direction this check exists to refuse.
+        for text in ("no such sentence here", "stay denied to it\n\nstay denied to it"):
+            found, problem = documented_harness_denials(text)
+            assert found == set() and problem, text
 
     def the_estimate_table_parses():
         rows = parse_estimate_table([
