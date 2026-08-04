@@ -64,7 +64,11 @@ version)
 transcript-path)
 	owner="${1:?owner}"
 	campaign="${2:?campaign}"
-	root="${HJ_TRANSCRIPTS:-$repo/../heuristic-jump-transcripts}"
+	# Normalised, because this string is now recorded in the session row
+	# (`design/loops.md` §16) rather than only used to open a file. `$repo`
+	# arrives as `HJ_REPO`, which a loop runner sets to `.../x/../y`, so the
+	# unresolved form recorded a different string per worktree for one file.
+	root="${HJ_TRANSCRIPTS:-$(cd "$repo/.." && pwd)/heuristic-jump-transcripts}"
 	echo "$root/$owner/$campaign.jsonl"
 	;;
 

@@ -2467,6 +2467,13 @@ def cmd_campaign_close(args: argparse.Namespace) -> int:
     audits = read_jsonl(GAP_LOG)
     audited = bool(audits) and audits[-1]["ts"] > (opened.get("started") or "")
 
+    # The last two fields of section 16's row spec. The transcript path is
+    # known before the session starts and is recorded whether or not the file
+    # is there — a row that points at a transcript which was dropped under the
+    # retention rule is more useful than a row that points at nothing.
+    transcript = transcript_of(config.owner, args.id)
+    tokens = token_counts(measure_transcript(transcript))
+
     append_jsonl(
         sessions_path(),
         {
@@ -2478,6 +2485,8 @@ def cmd_campaign_close(args: argparse.Namespace) -> int:
             "end_commit": head_sha(),
             "commits": len(commits),
             "outcome": args.outcome,
+            "transcript": transcript or None,
+            "tokens": tokens,
             "progress": progress,
             "audited": audited,
             "spec_drift": drift,
@@ -2590,6 +2599,50 @@ def cmd_campaign_reap(args: argparse.Namespace) -> int:
     return 0
 
 
+def transcript_of(owner: str, campaign_id: str) -> str:
+    """Where the teed stream for a campaign is, asked of the adapter.
+
+    Never composed here. `design/loops.md` section 17 puts the transcript
+    layout on the vendor's side of the seam along with everything else about
+    the runner, and `harness/adapter` is the one file allowed to know it.
+    """
+    return subprocess.run(
+        [str(Path(__file__).resolve().parent / "adapter"), "transcript-path", owner, campaign_id],
+        capture_output=True, text=True, check=False,
+    ).stdout.strip()
+
+
+def measure_transcript(transcript: str) -> dict:
+    if not transcript or not Path(transcript).exists():
+        return {}
+    measured = subprocess.run(
+        [str(Path(__file__).resolve().parent / "adapter"), "cost", transcript],
+        capture_output=True, text=True, check=False,
+    ).stdout.strip()
+    try:
+        return json.loads(measured or "{}")
+    except json.JSONDecodeError:
+        return {}
+
+
+def token_counts(numbers: dict) -> dict | None:
+    """The `tokens` field of section 16's session row.
+
+    Four counts rather than one, because the one that matters depends on the
+    question: output is what the campaign produced and what the cost-per-gap
+    ratio divides, and cache reads are what it actually spent — about 141
+    tokens read for every one written.
+    """
+    if not numbers:
+        return None
+    return {
+        "output": numbers.get("output_tokens"),
+        "input": numbers.get("input_tokens"),
+        "cache_read": numbers.get("cache_read_tokens"),
+        "cache_creation": numbers.get("cache_creation_tokens"),
+    }
+
+
 def cost_path(owner: str) -> Path:
     return STATE / "cost" / f"{owner}.jsonl"
 
@@ -2679,6 +2732,7 @@ def cmd_cost(args: argparse.Namespace) -> int:
     phase = load_phase()
     owners = [args.loop] if args.loop else sorted(phase.loops)
     written = 0
+    backfilled = 0
     for owner in owners:
         already = {
             row.get("campaign"): row for row in cost_rows(owner) if row.get("kind") != "audit"
@@ -2687,25 +2741,30 @@ def cmd_cost(args: argparse.Namespace) -> int:
             campaign_id = campaign.get("campaign", "")
             if not campaign.get("outcome"):
                 continue
+            transcript = transcript_of(owner, campaign_id)
+            # Section 16's row spec, for the campaigns that closed before the
+            # two fields existed. Done here rather than in a backfill command
+            # of its own because this is already the walk that measures a
+            # transcript, and a second one would be a second definition of the
+            # same number. Appended only when the field is actually missing:
+            # the file is append-only and `campaigns_of` merges it, so an
+            # unconditional append would grow it by a row per campaign per run.
+            if "transcript" not in campaign or "tokens" not in campaign:
+                filled = {
+                    "campaign": campaign_id,
+                    "loop": owner,
+                    "transcript": transcript or None,
+                    "tokens": token_counts(measure_transcript(transcript)),
+                    "backfilled": True,
+                }
+                append_jsonl(sessions_path(), filled)
+                backfilled += 1
             existing = already.get(campaign_id)
             if existing is not None:
                 stale = any(field not in existing for field in COST_FIELDS)
                 if not (args.refresh and stale):
                     continue
-            transcript = subprocess.run(
-                [str(HARNESS / "adapter"), "transcript-path", owner, campaign_id],
-                capture_output=True, text=True, check=False,
-            ).stdout.strip()
-            if not transcript or not Path(transcript).exists():
-                continue
-            measured = subprocess.run(
-                [str(HARNESS / "adapter"), "cost", transcript],
-                capture_output=True, text=True, check=False,
-            ).stdout.strip()
-            try:
-                numbers = json.loads(measured or "{}")
-            except json.JSONDecodeError:
-                numbers = {}
+            numbers = measure_transcript(transcript)
             if not numbers:
                 continue
             experiments = experiment_mix(campaign, numbers)
@@ -2736,9 +2795,12 @@ def cmd_cost(args: argparse.Namespace) -> int:
                 f"{numbers.get('gate_seconds') or 0:.0f}s gate  "
                 f"{experiments['committed']}c/{experiments['reverted']}r/{experiments['empty']}e"
             )
+    if backfilled:
+        commit_harness_state([sessions_path()], f"transcript and tokens for {backfilled} session row(s)")
+        print(f"cost: filled in transcript and tokens for {backfilled} closed campaign(s)")
     if written:
         commit_harness_state([cost_path(owner) for owner in owners], f"cost rows for {written} campaign(s)")
-    else:
+    elif not backfilled:
         print("cost: nothing new to record")
     return 0
 
@@ -3471,6 +3533,15 @@ def selftest_cases() -> list[tuple[str, object]]:
         assert not set(INTERVENTION_KINDS) & set(KINDS_IN_USE), "a kind is named once"
         for routine in ROUTINE_KINDS:
             assert routine in KNOWN_KINDS, routine
+
+    def the_session_row_carries_tokens_or_nothing():
+        assert token_counts({}) is None, "no measurement is absent, not four zeroes"
+        counts = token_counts({"output_tokens": 10, "cache_read_tokens": 1410, "usd": 1.0})
+        assert counts == {"output": 10, "input": None, "cache_read": 1410, "cache_creation": None}
+
+    def a_missing_transcript_measures_to_nothing():
+        assert measure_transcript("") == {}
+        assert measure_transcript("/nonexistent/nope.jsonl") == {}
 
     def a_phase_is_attributed_by_when_it_started():
         timeline = [("2026-01-01T00:00:00+00:00", "1a"), ("2026-03-01T00:00:00+00:00", "2a")]
