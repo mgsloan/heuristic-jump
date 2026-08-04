@@ -465,6 +465,69 @@ fn replay_is_deterministic_byte_for_byte() {
     );
 }
 
+/// The other half of the test above, and the one that decays silently: a
+/// determinism assertion over masked text is worth exactly what the mask
+/// leaves behind, and the repair for a flake is always to mask one more field.
+///
+/// §7 names two fields a replay does not reproduce and the mask is those two,
+/// so what is held here is the count and the shape — every field still present,
+/// every other value still its own. A third entry in `NOT_REPRODUCED` fails
+/// this, which is the point at which somebody has to say why the record
+/// acquired a third clock reading.
+#[test]
+fn the_mask_is_not_the_whole_record() {
+    let corpus = fixture("mask_scope");
+    enumerate(&corpus);
+    write_truth(&corpus);
+
+    let records = corpus.scratch.join("records.jsonl");
+    // The reporting handler, because the template reports no `stage_us` at all
+    // and a mask over an empty map holds nothing.
+    replay_with(&ReportingHandler, &corpus, Some(&records));
+
+    let text = fs::read_to_string(&records).expect("replay wrote the records file");
+    let masked = without_the_clock(&text);
+    let first = masked.lines().next().expect("a replayed query");
+
+    assert_eq!(
+        field_order(first),
+        RECORD_FIELDS,
+        "masking dropped a field rather than a value, so the comparison it \
+         serves no longer knows what shape a record is.\n{first}"
+    );
+    assert_eq!(
+        first.matches(MASK).count(),
+        NOT_REPRODUCED.len(),
+        "{} of the record's values are masked and §7 names {}. Every mask is a \
+         value two runs are allowed to disagree on, and the cheap repair for a \
+         flaky determinism test is another one\n{first}",
+        first.matches(MASK).count(),
+        NOT_REPRODUCED.len()
+    );
+    for timing in ["\"heuristic_latency_us\":~,", "\"stage_us\":{~}"] {
+        assert!(
+            first.contains(timing),
+            "the mask did not reach {timing}, so the two runs it compares are \
+             being compared on a clock reading\n{first}"
+        );
+    }
+    for surviving in [
+        "\"decision\":\"committed\"",
+        "\"stratum_prior\":\"explicitly_imported\"",
+        "\"stages\":[\"ref:Type\",\"scope:miss\"]",
+        "\"bytes_scanned\":1234",
+        "\"queued_us\":0",
+    ] {
+        assert!(
+            first.contains(surviving),
+            "the mask took {surviving} with it. What a replay reproduces \
+             exactly is everything but the two timings, and a mask that reaches \
+             a work counter or an outcome hides the disagreements this test \
+             exists to find\n{first}"
+        );
+    }
+}
+
 /// The sibling of the test above, and the one §7's command line actually
 /// states: "**`replay` is deterministic.** Same corpus, same commit, same
 /// table, byte for byte — which is what makes it usable as a gate rather than
@@ -1981,25 +2044,54 @@ fn git(repository: &Path, arguments: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
-/// `heuristic_latency_us` is the one field §7 says a replay does *not*
-/// reproduce exactly — it is the same handler on the same snapshot, so it is
-/// recorded, but nothing in the run branches on it and it needs a quiet
-/// machine to mean anything. Masking it is what leaves the determinism claim
-/// testable instead of flaky; masking anything else would be hiding a bug.
+/// The two fields §7 says a replay does *not* reproduce exactly. Both are the
+/// same handler on the same snapshot, so both are recorded; nothing in the run
+/// branches on either, and both need a quiet machine to mean anything
+/// (`state/spec-changelog/core.md`, CHANGE-core-005).
+///
+/// `stage_us` is a map rather than a number, so its whole interior goes: the
+/// keys are the handler's stage names and only the values are clock readings,
+/// but a stage entered on one run and skipped on the next is a determinism
+/// failure the `stages` comparison already catches, and matching one value at
+/// a time here would mean parsing JSON in a file that deliberately does not.
+/// The braces stay, so a masked record is still shaped like a record.
+const NOT_REPRODUCED: [(&str, char); 2] =
+    [("\"heuristic_latency_us\":", ','), ("\"stage_us\":{", '}')];
+
+/// What a masked value is replaced by. A character no other value in a record
+/// can hold, so counting them counts masks — and if one ever appears in a URI
+/// or a stage label, the count is what says so.
+const MASK: char = '~';
+
+/// Masking these is what leaves the determinism claim testable instead of
+/// flaky; masking anything else would be hiding a bug, which is why
+/// [`the_mask_is_not_the_whole_record`] holds the size of what is left.
 fn without_the_clock(text: &str) -> String {
-    text.lines()
-        .map(|line| {
-            let mut masked = String::with_capacity(line.len());
-            let mut rest = line;
-            while let Some(at) = rest.find("\"heuristic_latency_us\":") {
-                let (before, after) = rest.split_at(at + "\"heuristic_latency_us\":".len());
-                masked.push_str(before);
-                masked.push('_');
-                rest = after.trim_start_matches(|scalar: char| scalar.is_ascii_digit());
-            }
-            masked.push_str(rest);
-            masked
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut masked = text.to_owned();
+    for (field, ends) in NOT_REPRODUCED {
+        masked = masked
+            .lines()
+            .map(|line| mask_after(line, field, ends))
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+    masked
+}
+
+/// Replaces every `field`'s value with `_`, up to but not including the first
+/// `ends` after it.
+fn mask_after(line: &str, field: &str, ends: char) -> String {
+    let mut masked = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(at) = rest.find(field) {
+        let (before, after) = rest.split_at(at + field.len());
+        masked.push_str(before);
+        masked.push(MASK);
+        rest = match after.find(ends) {
+            Some(end) => &after[end..],
+            None => "",
+        };
+    }
+    masked.push_str(rest);
+    masked
 }

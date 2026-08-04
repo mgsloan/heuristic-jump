@@ -1185,14 +1185,22 @@ Constraints that make a replay trustworthy:
   (`loops.md` §10). Handler coverage from replay is a statement
   about resolution, not a promise about the field.
 * **Only the heuristic side is re-measured, and its timing is an observation,
-  not a control input.** `heuristic_latency_us` is recorded during replay
-  because it is the same handler code on the same snapshot, but nothing in
-  the run branches on it. It is therefore the one field in the record that a
-  replay does not reproduce exactly, and the one that needs a quiet machine
-  to mean anything. `lsp_latency_us` comes from `collect` and is a property
+  not a control input.** `heuristic_latency_us` and `stage_us` are recorded
+  during replay because it is the same handler code on the same snapshot, but
+  nothing in the run branches on either. They are therefore the fields in the
+  record that a replay does not reproduce exactly, and the ones that need a
+  quiet machine to mean anything — the same two [the record
+  above](#7-observability-and-the-corpus-scan) calls observations that do not
+  have to be reproducible the way the rest of it does.
+  `lsp_latency_us` comes from `collect` and is a property
   of the frozen truth — which is exactly what `high-level.md`'s value weighting
   wants, since it is a fact about how slow the real server was, not about
   this run.
+
+  The distinction this does *not* blur is with the table, which is
+  byte-identical across runs and holds no clock reading at all
+  ([the command line](#the-command-line)): a replay's own wall clock is
+  reported on the log stream, and per-query timings live in the record.
 * **Replay measures the handler, not the driver**, same as `collect` — the
   paragraph above applies unchanged. Nothing in the proxy or the health model
   is under test in either mode.

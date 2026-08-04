@@ -112,3 +112,31 @@ unchanged in kind. Nothing about which impls exist, or what they do, is
 touched.
 
 **Campaign:** 37a6d098-e7c7-4fb3-af7a-5f1562728e56
+
+## CHANGE-core-005 — core.md#two-modes-collect-and-replay — `stage_us` is a second field a replay does not reproduce
+
+**Contradiction:** the two modes say of the replayed side that
+`heuristic_latency_us` "is therefore **the one field** in the record that a
+replay does not reproduce exactly, and the one that needs a quiet machine to
+mean anything" (§7, two modes). §7's own record, four hundred lines earlier,
+tables `stage_us` as "wall clock per pipeline stage, handler-supplied | both"
+and then says of it: "it is an *observation*, so it does not have to be
+reproducible the way the rest of the record does."
+
+**Resolution:** the two-modes bullet now names both fields and points at the
+record's own sentence about them. This trades nothing off: the record section
+is the one that defines the field, it already says exactly this, and no
+consumer is affected — nothing branches on either field, and the *table*,
+which is the artifact §7's command line requires to be byte-identical, holds
+neither. The reading being corrected is only the count "one", which was true
+of the record as §7 first described it and stopped being true when `stage_us`
+was added beside it.
+
+The code was not moved toward the document or the document toward the code:
+`Trace::timed` takes a measured `Micros` from the handler, which is what the
+record section describes, and the only code change in the same commit is a
+test's mask — `tests/pipeline.rs` masked the one field the sentence named, so
+a handler that reported a real stage timing would have failed a determinism
+assertion that §7 never made about it.
+
+**Campaign:** 18835da5-abcf-4eed-bc64-f52405edd53f
