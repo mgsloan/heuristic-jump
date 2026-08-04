@@ -151,17 +151,27 @@ impl FileListCache {
     ///
     /// It takes what `dispatch` returned rather than an [`shared::AbstainReason`]
     /// picked out by the caller, so the classification cannot be done twice or
-    /// done differently; and the reason-to-evidence half is
-    /// `AbstainReason::file_list_evidence`, in `shared`, where a new variant
-    /// fails to compile until somebody classifies it.
+    /// done differently; and both halves of the reason-to-evidence rule —
+    /// `AbstainReason::file_list_evidence` and `Error::file_list_evidence` —
+    /// are in `shared`, where a new variant fails to compile until somebody
+    /// classifies it.
+    ///
+    /// **A failure is usually evidence about the handler, and sometimes
+    /// evidence about the list.** §4's deletion sentence is the case: a
+    /// candidate that vanished between the walk and the read fails the whole
+    /// scan (`resolution.md` §4 forbids reporting a partial one), and if that
+    /// stopped here it would fail every later query over the same candidate
+    /// set — permanently in standalone, where there is no watcher to mark the
+    /// list stale instead. What makes it the failed read §4 describes rather
+    /// than an outage is that the failure schedules the same rescan.
     pub fn observe(&mut self, dispatched: &Dispatched) {
-        let reason = match dispatched {
+        let evidence = match dispatched {
             Dispatched::Decided(answer) => match answer.outcome() {
                 Outcome::Abstain {
                     reason,
                     strata: _,
                     trace: _,
-                } => reason,
+                } => reason.file_list_evidence(),
                 Outcome::Committed {
                     locations: _,
                     confidence: _,
@@ -175,11 +185,10 @@ impl FileListCache {
             // of it. Identical to `AbstainReason::Deadline`, which is what
             // this became on the way out.
             Dispatched::DeadlineExpired(_) => return,
-            // A failure is evidence about the handler.
-            Dispatched::Failed(_) => return,
+            Dispatched::Failed(error) => error.file_list_evidence(),
         };
 
-        match reason.file_list_evidence() {
+        match evidence {
             FileListEvidence::Stale => self.mark_stale(),
             FileListEvidence::Inconclusive => {}
         }
