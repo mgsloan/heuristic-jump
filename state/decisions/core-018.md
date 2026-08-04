@@ -1,6 +1,6 @@
 ---
 id: core-018
-status: open
+status: accepted
 opened: 2026-08-04T04:30:00+00:00
 campaign: 2c129b10-41f7-4292-a1f5-4e31ed08b7ea
 kind: class-b
@@ -62,7 +62,27 @@ it, and the number that scores this loop is blocked on work outside it.
 
 ## Decision
 
-Undecided — waiting on a human.
+**(a) now, (b) when convenient**, answered 2026-08-04. §8.5 is judged on the
+server half, which a loop can produce; the corpus header records what is
+missing; `contentChanges` stays covered by hand-authored messages and the
+negative tests §8.5 also asks for.
+
+The honest cost is stated rather than softened: the union with the worst
+failure mode in the design keeps a hand-authored corpus until someone captures
+the other half, and `TextDocumentContentChangeEvent` — full-replace against
+incremental, distinguished by a field being *absent* — is exactly the shape
+§8.5 exists to catch on traffic nobody imagined.
+
+**"When convenient" is where an item like this dies, so it is not left as an
+intention.** `harness/capture-editor-traffic` is written: `--install` prints
+the Zed setting to paste, the script tees both directions of the real server,
+and `--finish` folds the capture into `golden-traffic.jsonl`, keeping payloads
+verbatim and de-duplicating by *shape* so a minute of typing contributes one
+row per message shape rather than hundreds. The remaining step is two minutes
+at a desktop, not a project.
+
+Nothing in the loops will raise this again, which is the point of leaving the
+tooling rather than a note.
 
 ## Provisional choice in force
 
