@@ -378,23 +378,65 @@ fn a_conversion_that_expires_keeps_the_stratum_too() {
 /// handler that declined on its own left the same trace, which is the
 /// distinction the whole of §7's `decision` column exists to preserve.
 ///
-/// The second half is what makes this a test of the *conversion* rather than of
-/// expiry in general. Both fixtures expire, and they differ only in which file
-/// the definition is in: a same-file answer takes `target_text`'s free path, so
-/// no read happens, no `Error` is ever built, and nothing is converted — it is
-/// `hard_cap` that drops it, under its own line. A conversion line on that path
-/// would mean the message is attached to lateness rather than to the
-/// conversion, and §10's claim would be unbacked with this test still green.
+/// **`classify` is reached three ways and the claim is about all of them.** Its
+/// own comment says so — "logging here covers all three callers: a parse
+/// abandoned in `realise`, a handler's own `?` propagation through `call`, and
+/// an expiry raised inside §8.4's conversion" — and a comment describing
+/// behaviour is not a mechanism for it. The three fixtures below take one route
+/// each. They are not three spellings of one test: the routes differ in what has
+/// already happened when the `Error` appears, which is why `Classified` has two
+/// variants, and a conversion that logged only where an outcome already existed
+/// would leave the two silent ones looking exactly like a handler that declined.
+///
+/// The fourth fixture is what makes this a test of the *conversion* rather than
+/// of expiry in general. It expires too, and differs from the third only in
+/// which file the definition is in: a same-file answer takes `target_text`'s
+/// free path, so no read happens, no `Error` is ever built, and nothing is
+/// converted — it is `hard_cap` that drops it, under its own line. A conversion
+/// line on that path would mean the message is attached to lateness rather than
+/// to the conversion, and §10's claim would be unbacked with this test still
+/// green.
+///
+/// The counts are exact in both directions for the same reason. `Actor::answer`
+/// builds the `Outcome::Abstain` these all end as and deliberately logs nothing,
+/// because every expiry that reaches it has been reported once already; a second
+/// line there would put one query in the log twice and make the rate §7 reports
+/// unreadable from the log it is supposed to explain.
 #[test]
 fn converting_an_expiry_into_an_abstention_is_logged() {
-    let converted = expiring_in("src/target.rs", "actor_expiry_converted");
-    let merely_late = expiring_in("src/lib.rs", "actor_expiry_capped");
+    let routes = [
+        (
+            "a parse abandoned in `realise`, before any handler ran",
+            expired_before_the_parse("actor_expiry_parse"),
+        ),
+        (
+            "a handler's own `?` propagation through `call`",
+            propagated_from_a_read("actor_expiry_propagated"),
+        ),
+        (
+            "an expiry raised inside §8.4's conversion",
+            expiring_in("src/target.rs", "actor_expiry_converted"),
+        ),
+    ];
 
-    assert_eq!(
-        lines_saying(&converted, CONVERSION).len(),
-        1,
-        "an `Error` became an abstention and said nothing: {converted:?}"
-    );
+    for (route, lines) in &routes {
+        assert_eq!(
+            lines_saying(lines, CONVERSION).len(),
+            1,
+            "{route} converted an `Error` into an abstention without §10's one line. \
+             `classify` claims to cover every caller, and a route that reaches it silently \
+             is a query the clock ended wearing the trace of a handler that declined: \
+             {lines:?}"
+        );
+        assert_eq!(
+            lines_saying(lines, HARD_CAP).len(),
+            0,
+            "{route} reported a dropped late answer as well as a conversion, so one query \
+             is in the log twice and neither line can be counted: {lines:?}"
+        );
+    }
+
+    let merely_late = expiring_in("src/lib.rs", "actor_expiry_capped");
     assert_eq!(
         lines_saying(&merely_late, HARD_CAP).len(),
         1,
@@ -783,6 +825,85 @@ fn expiring_in(relative: &str, name: &str) -> Vec<String> {
 
 fn lines_saying<'a>(lines: &'a [String], message: &str) -> Vec<&'a String> {
     lines.iter().filter(|line| line.contains(message)).collect()
+}
+
+/// `classify`'s first caller: the deadline is already gone when the request is
+/// taken off the queue, so the parse in front of the handler is abandoned and no
+/// handler ever runs.
+///
+/// It needs a document of its own, and that is the one non-obvious thing here.
+/// `SnapshotSeed::realise` polls the deadline from tree-sitter's progress
+/// callback, which fires "once per 100 parser operations" — so the five-line
+/// `DOCUMENT` every other test uses finishes inside a single interval and
+/// observes no deadline at all. The handler commits nothing, so if the parse
+/// were *not* abandoned the query would reach the hard cap instead and this
+/// fixture would fail on the `HARD_CAP` count rather than pass quietly on the
+/// wrong route.
+fn expired_before_the_parse(name: &str) -> Vec<String> {
+    let fixture = Fixture::new(name, Proxying::No);
+    let text = large_document();
+    fs::write(fixture.root.join("src").join("lib.rs"), &text).expect("the large fixture document");
+    let mut actor = fixture.actor(Arc::new(Committing {
+        locations: Vec::new(),
+    }));
+
+    let (logged, lines) = crossbeam_channel::unbounded();
+    tracing::subscriber::with_default(Capturing { events: logged }, || {
+        actor
+            .handle(Event::Negotiated {
+                roots: vec![fixture.root.clone()],
+                encoding: PositionEncoding::Utf16,
+            })
+            .expect("the negotiation");
+        actor
+            .handle(fixture.did_open(&text))
+            .expect("the large document opening");
+        // The request arrives, and the clock passes the 750ms budget before
+        // `core` reaches it — which is a queue, and is what leaves the parse
+        // with no time to start.
+        let arrived = fixture.clock.now();
+        fixture.clock.advance(Duration::from_millis(1_000));
+        actor
+            .handle(Event::Requested {
+                editor_id: EditorRequestId::from_number(1),
+                params: definition_params(&fixture.uri("src/lib.rs")),
+                arrived,
+            })
+            .expect("a definition request");
+    });
+    lines.try_iter().collect()
+}
+
+/// A document long enough for the parser to reach its progress callback. The
+/// count is far past the 100-operation interval rather than tuned to it: a
+/// fixture sitting on the boundary would decide this test by which tree-sitter
+/// revision is vendored.
+fn large_document() -> String {
+    let mut text = String::from("fn caller() {\n    target();\n}\n");
+    for index in 0..2_000 {
+        let _ = writeln!(
+            text,
+            "fn filler_{index}() {{ let held_{index} = {index}; }}"
+        );
+    }
+    text
+}
+
+/// `classify`'s second caller: the handler itself runs out of time in a read and
+/// propagates it with `?`, which is the one route that arrives having classified
+/// nothing *and* having had a handler run.
+fn propagated_from_a_read(name: &str) -> Vec<String> {
+    let fixture = Fixture::new(name, Proxying::No);
+    let mut actor = fixture.actor(Arc::new(Propagating {
+        clock: Arc::clone(&fixture.clock),
+    }));
+
+    let (logged, lines) = crossbeam_channel::unbounded();
+    tracing::subscriber::with_default(Capturing { events: logged }, || {
+        fixture.open(&mut actor);
+        fixture.request(&mut actor, 1);
+    });
+    lines.try_iter().collect()
 }
 
 /// Whether there is a child to be an oracle. `Mode` carries the argv and the
@@ -1244,6 +1365,60 @@ impl LanguageHandler for Slow {
             self.locations.clone(),
             Trace::new(),
         ))
+    }
+}
+
+/// A handler that spends its budget and then reads, propagating the refusal
+/// with the `?` `core.md` §1 says a handler should write rather than checking
+/// the clock itself.
+///
+/// Distinct from `Slow` in the way `Classified`'s two variants are distinct:
+/// `Slow` returns an `Outcome`, so the strata it assigned survive whatever
+/// discards the answer, where this one never gets as far as assigning any. That
+/// is the case `dispatch.rs` calls "a read expired inside the handler before it
+/// assigned a stratum", and it is the route with no fixture until now.
+struct Propagating {
+    clock: Arc<TestClock>,
+}
+
+impl LanguageHandler for Propagating {
+    fn language_ids(&self) -> &'static [LanguageId] {
+        LANGUAGE_IDS
+    }
+
+    fn file_extensions(&self) -> &'static [FileExtension] {
+        FILE_EXTENSIONS
+    }
+
+    fn grammar(&self) -> Language {
+        grammar()
+    }
+
+    fn goto_definition(&self, query: &Query<'_>) -> Result<Outcome, Error> {
+        self.clock.advance(Duration::from_millis(1_000));
+        let root = query
+            .project
+            .root_of(&query.doc.uri)
+            .expect("the queried document is under a root");
+        let rel = RelPath::new(Path::new("src/target.rs")).expect("a relative path");
+        let path = query
+            .project
+            .lookup(root, &rel)
+            .expect("src/target.rs is in the fixture file list");
+        // `ProjectView` checks the deadline before starting the I/O, so this is
+        // the refusal and not a short read. Propagated rather than matched on:
+        // a handler that inspected the class here would be doing the driver's
+        // job, which is the whole of what §10 keeps on one side of the seam.
+        query.project.read(&path)?;
+        // Only reachable if the read did *not* refuse, which means the clock
+        // never expired and there was no `Error` for anything to convert. A
+        // failure rather than a panic — `panic_in_result_fn` is denied, and the
+        // driver logs a failure under its own line, so the fixture that collects
+        // the log says which of the two happened.
+        Err(ProjectError::Unresolvable {
+            uri: query.doc.uri.clone(),
+        }
+        .into())
     }
 }
 
