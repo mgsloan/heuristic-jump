@@ -44,7 +44,7 @@ use shared::{
 };
 
 use crate::config::{Config, DebounceMs, Heuristics};
-use crate::dispatch::{Answer, Completed, Dispatched, Registry, Request, dispatch};
+use crate::dispatch::{Answer, Completed, Dispatched, LateStrata, Registry, Request, dispatch};
 use crate::documents::{Documents, Queried};
 use crate::files::FileListCache;
 use crate::pending::{PendingQueries, PendingQuery, Resolution};
@@ -619,15 +619,21 @@ impl Actor {
                 }
                 Answered::of(Ok(outcome))
             }
-            // The outcome was dropped by the hard cap, and with it the stratum
-            // the handler had assigned — so this row lands in `unimplemented`
-            // rather than in the stratum it was really asked about, and §7's
-            // coverage denominator moves by one query. The alternatives both
-            // change something else's shape.
-            // DECISION-core-017: provisional
-            Dispatched::DeadlineExpired => Answered::of(Ok(Outcome::Abstain {
+            // The cap dropped the answer and not the classification: §7's
+            // prior is a fact about the reference, so it survives the outcome
+            // that carried it (`core-017`, answered — see [`LateStrata`]).
+            Dispatched::DeadlineExpired(late) => Answered::of(Ok(Outcome::Abstain {
                 reason: shared::AbstainReason::Deadline,
-                strata: Strata::from_reference(Stratum::Unimplemented),
+                strata: match late {
+                    LateStrata::Classified(strata) => strata,
+                    // Nothing classified anything, so there is no prior to
+                    // report and this is the same "for want of anywhere honest
+                    // to put it" the failure path is in — except that this one
+                    // is an *abstention*, which is what `Table::template`
+                    // reads. `core-024` is the question.
+                    // DECISION-core-024: provisional
+                    LateStrata::Unclassified => Strata::from_reference(Stratum::Unimplemented),
+                },
                 trace: Trace::new(),
             })),
             // Served as an abstention on the wire — which here means silence —

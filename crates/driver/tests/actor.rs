@@ -348,6 +348,96 @@ fn the_loop_drains_its_channel_and_ends_when_the_wire_closes() {
     assert_eq!(field(row, "agreement"), "\"match_top1\"", "{row}");
 }
 
+/// `core.md` §1 on `Stratum::Unimplemented`: it is the unmodified template's,
+/// "which no real handler may return … and its presence in a metrics table
+/// means the template has not been replaced — a gate check rather than
+/// something anybody has to notice".
+///
+/// The driver was synthesising it. §5's hard cap drops an answer that arrived
+/// after its deadline, and the classification went out with the answer, so a
+/// real handler that missed its deadline once wrote an `unimplemented`
+/// *abstention* into §7's record — which is exactly the row `Table::template`
+/// reads as an unreplaced template. One slow query anywhere in a corpus and
+/// the gate check reports a template that was replaced months ago.
+///
+/// `core-017`, answered, and the answer is about what a prior *is*: §7 now says
+/// a-priori is about the rule rather than about who evaluates it, so the prior
+/// "is knowable without the search finishing" and "a query whose outcome is
+/// discarded after the fact — by §5's hard cap, say — has not thereby lost its
+/// prior. The prior was never the outcome's to carry away."
+///
+/// Three assertions, because the row is only right if all three hold: the
+/// answer must not reach the editor (that is what the cap is *for*), the
+/// decision must be an abstention rather than a failure, and the stratum must
+/// be the handler's on both fields. Dropping the answer while keeping the
+/// stratum is the whole of it; either alone is a different bug.
+///
+/// Both fixtures, because a late answer loses its classification on two
+/// different paths and they are one bug. A target in the query's own document
+/// converts for free, so the answer reaches the hard cap and the cap drops it;
+/// a target in another file needs a read, and `ProjectView` refuses a read
+/// whose deadline has expired — so `encode` fails and the answer never becomes
+/// one. Fixing only the cap leaves every cross-file late answer filed under
+/// `unimplemented`, which is the more common case of the two.
+#[test]
+fn a_capped_answer_keeps_the_stratum_the_handler_assigned() {
+    for target in ["src/lib.rs", "src/target.rs"] {
+        let row = capped_row(target);
+        assert_eq!(
+            field(&row, "stratum_prior"),
+            "\"explicitly_imported\"",
+            "the late answer for a target in {target} was filed under a stratum the handler \
+             did not assign. §7 reports coverage on stratum_prior \"so the denominator is \
+             fixed by the reference and does not move when the implementation changes\", and \
+             `unimplemented` here both moves it and tells measure_core the template was never \
+             replaced: {row}"
+        );
+        assert_eq!(
+            field(&row, "stratum_final"),
+            "\"explicitly_imported\"",
+            "the settled stratum did not survive either, and precision is reported on it: \
+             {row}"
+        );
+        assert_eq!(
+            field(&row, "decision"),
+            "\"abstained\"",
+            "a capped query is a deadline abstention and not a failure: {row}"
+        );
+    }
+}
+
+/// One query, answered `overrun` past its deadline with a definition in
+/// `target`, as §7's row.
+fn capped_row(target: &str) -> String {
+    let name = format!("cap_keeps_the_stratum_{}", target.replace(['/', '.'], "_"));
+    let fixture = Fixture::new(&name, Proxying::No);
+    let located = fixture.definition_in(target);
+    let mut actor = fixture.actor(Arc::new(Dawdling {
+        clock: Arc::clone(&fixture.clock),
+        // Past the fixture's 750ms budget, so the cap is what drops the answer
+        // rather than the handler declining to give one.
+        overrun: Duration::from_millis(800),
+        locations: vec![located],
+    }));
+
+    fixture.open(&mut actor);
+    fixture.request(&mut actor, 1);
+
+    let rows = fixture.rows();
+    let [row] = rows.as_slice() else {
+        panic!("{} rows for one query", rows.len());
+    };
+    assert!(
+        !fixture
+            .outbound()
+            .iter()
+            .any(|outbound| matches!(outbound, Outbound::Definition { .. })),
+        "an answer that arrived after its deadline reached the editor, so the cap is not \
+         applied and the caller's assertions are about a query that was never capped"
+    );
+    row.clone()
+}
+
 /// `deps.md` §2, whose conclusion is a log line and not an assertion:
 ///
 /// > memory is bounded only by the shed-load rule in `shim.md` §10, so the
@@ -878,6 +968,43 @@ impl LanguageHandler for Committing {
     fn goto_definition(&self, query: &Query<'_>) -> Result<Outcome, Error> {
         Ok(query.policy.decide(
             Strata::from_reference(Stratum::LocalBinding),
+            Confidence::ONE,
+            self.locations.clone(),
+            Trace::new(),
+        ))
+    }
+}
+
+/// A handler that answers correctly and too late: it advances the clock past
+/// its own deadline before committing. §5's cap is the only thing standing
+/// between that and the editor, and a `TestClock` is what makes "too late"
+/// something a test can state rather than race for.
+struct Dawdling {
+    clock: Arc<TestClock>,
+    overrun: Duration,
+    locations: Vec<Location>,
+}
+
+impl LanguageHandler for Dawdling {
+    fn language_ids(&self) -> &'static [LanguageId] {
+        LANGUAGE_IDS
+    }
+
+    fn file_extensions(&self) -> &'static [FileExtension] {
+        FILE_EXTENSIONS
+    }
+
+    fn grammar(&self) -> Language {
+        grammar()
+    }
+
+    fn goto_definition(&self, query: &Query<'_>) -> Result<Outcome, Error> {
+        self.clock.advance(self.overrun);
+        // A stratum that is not `Unimplemented` and not the one every other
+        // double here uses, so a row carrying it cannot have come from
+        // somewhere else in this file.
+        Ok(query.policy.decide(
+            Strata::from_reference(Stratum::ExplicitImport),
             Confidence::ONE,
             self.locations.clone(),
             Trace::new(),

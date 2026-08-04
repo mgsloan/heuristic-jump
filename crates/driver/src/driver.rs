@@ -23,7 +23,9 @@ pub use config::{
     Config, DEFAULT_LOG_FILTER, DeadlineMs, DeadlineOverride, DebounceMs, Heuristics, LOG_PREFIX,
     Mode, PrefixedWriter, ServerCommand,
 };
-pub use dispatch::{Answer, Completed, Dispatched, Parsed, Registry, Request, dispatch, hard_cap};
+pub use dispatch::{
+    Answer, Completed, Dispatched, LateStrata, Parsed, Registry, Request, dispatch, hard_cap,
+};
 pub use documents::{Documents, Queried, SaveCheck, Saved, Synced, Trusted};
 pub use files::{DID_CHANGE_WATCHED_FILES, FileListCache, Rescan};
 pub use pending::{Divergence, PendingQueries, PendingQuery, Resolution};
