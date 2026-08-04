@@ -221,12 +221,24 @@ def decision_form(decision: dict) -> str:
 
 
 def decision_card(decision: dict) -> str:
-    wanted = ["context", "options", "provisional choice in force", "consequences", "decision"]
+    # Section 16's evidence table asks a Class B card for "options,
+    # recommendation, the provisional choice in force, and the sites". The
+    # record template has no separate recommendation, and deliberately: the
+    # provisional choice *is* the loop's recommendation — section 14 calls it
+    # "what a human is really ruling on when the answer arrives". Said here so
+    # a reader is not looking for a field that does not exist.
+    wanted = {
+        "context": "context",
+        "options": "options",
+        "provisional choice in force": "provisional choice in force — the loop's recommendation, and what you are ruling on",
+        "consequences": "consequences",
+        "decision": "decision",
+    }
     parts = []
-    for name in wanted:
+    for name, label in wanted.items():
         body = decision["sections"].get(name)
         if body:
-            parts.append(f'<div class="field"><h4>{esc(name)}</h4>{markdownish(body)}</div>')
+            parts.append(f'<div class="field"><h4>{esc(label)}</h4>{markdownish(body)}</div>')
     if decision["tagged"]:
         sites = "".join(f"<li><code>{esc(line)}</code></li>" for line in decision["tagged"])
         parts.append(f'<div class="field"><h4>sites running on the provisional choice</h4><ul class="sites">{sites}</ul></div>')
@@ -254,15 +266,91 @@ def decision_card(decision: dict) -> str:
     </article>"""
 
 
+def stalled_loop() -> str:
+    """Which loop wrote `state/handoff.md`.
+
+    One file, shared, because a stall stops the loop that wrote it and nothing
+    else — so the writer is the loop currently over its `stall_n`. Falls back
+    to the loop whose last campaign is newest, which is the right guess for a
+    handoff that has already been answered but not deleted.
+    """
+    phase = hj.load_phase()
+    over = [
+        owner
+        for owner, config in phase.loops.items()
+        if hj.trailing_without_progress(owner) >= config.stall_n or config.status == "blocked"
+    ]
+    if over:
+        return sorted(over)[0]
+    newest, when = "", ""
+    for owner in phase.loops:
+        for campaign in hj.campaigns_of(owner):
+            ended = campaign.get("ended") or ""
+            if ended > when:
+                newest, when = owner, ended
+    return newest
+
+
+def journal_excerpt(owner: str, entries: int = 1) -> str:
+    """The last entries of a loop's journal.
+
+    `design/loops.md` section 16's evidence table asks a stall handoff for the
+    journal excerpt, and the reason is in section 4: the journal is where a
+    campaign writes what it tried and why it failed, which is exactly what a
+    human unblocking a stall needs and is not in the handoff's own summary.
+    """
+    path = STATE / "journal" / f"{owner}.md"
+    if not path.is_file():
+        return ""
+    parts = re.split(r"(?m)^##\s", path.read_text())
+    return "\n\n".join(f"## {part.strip()}" for part in parts[-entries:] if part.strip())
+
+
 def handoff_card() -> str:
     path = STATE / "handoff.md"
     if not path.exists():
         return ""
+    owner = stalled_loop()
+    campaigns = list(reversed(hj.campaigns_of(owner)))[:5] if owner else []
+    tried = "".join(
+        f"<tr><td><a href='/record/{urllib.parse.quote(owner)}/{urllib.parse.quote(row.get('campaign', ''))}'>"
+        f"<code>{esc(row.get('campaign', '')[:8])}</code></a></td>"
+        f"<td>{target_links(row.get('target'))}</td>"
+        f"<td>{esc(row.get('outcome') or 'open')}</td>"
+        f"<td class='num'>{esc(row.get('commits'))}</td>"
+        f"<td>{'progress' if row.get('progress') else '<span class=\"warn\">none</span>'}</td></tr>"
+        for row in campaigns
+    )
+    record = ""
+    if campaigns:
+        identifier = campaigns[0].get("campaign", "")
+        body = (STATE / "campaigns" / owner / f"{identifier}.md")
+        if body.is_file():
+            record = (
+                f'<div class="field"><h4>the campaign record it stopped on</h4>'
+                f'<details><summary><code>{esc(identifier[:8])}</code> — '
+                f'<a href="/record/{urllib.parse.quote(owner)}/{urllib.parse.quote(identifier)}">whole record</a>'
+                f'</summary>{markdownish(body.read_text())}</details></div>'
+            )
+    excerpt = journal_excerpt(owner)
+    journal = (
+        f'<div class="field"><h4>journal — what was tried, and why it failed</h4>'
+        f"<details><summary>state/journal/{esc(owner)}.md, last entry</summary>"
+        f"{markdownish(excerpt)}</details></div>"
+        if excerpt
+        else ""
+    )
     return f"""
     <article class="decision stall">
-      <h3>Stall handoff</h3>
+      <h3>Stall handoff — {esc(owner or 'unknown loop')}</h3>
       <p class="meta">state/handoff.md — the loop stopped and asked. It will not start again until you set it back to <code>running</code> in <code>state/phase.toml</code>.</p>
       {markdownish(path.read_text())}
+      <div class="field"><h4>what was tried</h4>
+        <table class="campaigns"><thead><tr><th>campaign</th><th>target</th><th>outcome</th>
+          <th class="num">commits</th><th>moved the number</th></tr></thead>
+          <tbody>{tried or '<tr><td colspan="5">no campaigns recorded</td></tr>'}</tbody></table></div>
+      {record}
+      {journal}
     </article>"""
 
 
