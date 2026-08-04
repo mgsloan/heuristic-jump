@@ -1,6 +1,6 @@
 ---
 id: harness-007
-status: open
+status: accepted
 opened: 2026-08-04T20:04:00+00:00
 campaign: 3e637dcd-7552-460c-8eb4-fb41941ef14b
 kind: class-b
@@ -87,7 +87,51 @@ mechanical one.
 
 ## Decision
 
-Undecided — waiting on a human.
+**accepted: A — the exclusion list is what is wrong, and it is rewritten**,
+answered 2026-08-04 and logged as a `decision-answered` intervention, which is
+what makes it answered — `design/loops.md` §16 derives the status from the log
+rather than from this line.
+
+`core.md` §5 puts the hard cap on the driver, §6's predicate can only be
+evaluated by the one component that sees both answers, and §7 is one record per
+query. All three are phase 1a's by "core.md in its entirety", and every one of
+them requires a single owner of mutable state. `shim.md` §13 had already given
+that owner a name and a file. So the actor is not scope creep: it is what
+"core.md in its entirety" implies, and §8's list was written before anyone had
+discovered that.
+
+§19 calls legalising work already done indefensible, and that objection is
+answered by who raised this rather than by argument. §19's concern is a loop
+rewriting the spec so its own number moves. This record was raised by the
+harness loop about the core loop's code, and the harness loop's number does not
+move either way — it gains nothing from widening core's scope, and it explicitly
+left `loops.md#8-sequencing-and-gates` with an open gap it could have closed by
+deleting two words. The conflict of interest that makes the shape indefensible
+is absent here, and this record is the check working rather than failing.
+
+C is rejected: deleting code that `core.md`'s own claims require, to be written
+again in 2b, spends a campaign to end up where we started. B is rejected as the
+primary answer because adding `shim.md` to the 1a `docs` list puts phase 2b's
+whole gap list in front of a loop meant to be finishing 1a, and redefines
+`sections_total` mid-phase.
+
+**What A costs, accepted knowingly:** the genuinely `shim.md`-derived surface —
+§4's negotiation states, §8's abstention wire form, §9's report — has no oracle
+until 2b. That is a real hole and it is the reason this was worth asking about.
+It is accepted rather than overlooked, and the rewritten §8 should say so in the
+document rather than leaving it to be rediscovered.
+
+### What is left
+
+The harness loop's, as an ordinary campaign: rewrite §8's exclusion list to what
+actually stays behind — the transport (`shim.md` §2's codec, §3's router, the
+child spawn), the health model, standalone as a *mode of operation*, and
+divergence *reporting to the editor* as distinct from divergence being computed
+and recorded — and state in the same paragraph that the shim-derived surface in
+`crates/driver/` is unaudited until 2b, by decision rather than by oversight.
+
+It is a Class A spec edit with a changelog entry, and it closes
+`loops.md#8-sequencing-and-gates[59c352d1d4]`.
 
 ## Provisional choice in force
 

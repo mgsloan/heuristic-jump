@@ -240,3 +240,213 @@ one reads 100%. Verified by planting `committed` as the denominator.
   `server_health` is null because there is no child to be healthy, which is a
   fact about the producer and not about the mode. `Mode::Proxy`'s doc comment
   in `shared::record` already argues exactly this.
+
+## Campaign 20bbc1bf — five stale gaps, and what the sections had underneath
+
+Assignment: `core.md#two-modes-collect-and-replay[6bd547104d]` and
+`rope-modifications.md#the-signatures[a163ac3aee]`. Both stale. So were three
+more I checked before claiming, and one I claimed and then found stale.
+
+### The staleness check is now mechanical and takes one turn — use it
+
+```
+python3: for each state/audit/*.toml section with gaps,
+         compare last_audited against `git log -1 <the gap's where-file>`
+```
+
+Sixteen gaps, one turn, and it prints `STALE?` per gap. **But it is necessary
+and not sufficient, in both directions.** `deps.md#8-parse-cache` reads "fresh"
+by timestamp and is closed anyway — the fix landed in `driver/tests/snapshots.rs`
+and the gap's `where:` names `driver/src/trees.rs`, so the file the gap points
+at never moved. Two of the five I checked were like that. The reliable check is
+still the timestamp *plus* one grep for the thing the gap says is missing; the
+timestamp just tells you which gaps deserve the grep.
+
+The gaps that turned out to be live were the two nobody could reach cheaply,
+both in `crates/driver/src/actor.rs`.
+
+### What a stale assignment is actually worth
+
+Not nothing, and this is the lesson I would want a fresh session to take. The
+*section* was still the right target both times, and re-reading it with the
+gap's claim in hand found a defect one step further along the same sentence:
+
+`6bd547104d` says the checkpoint appends every N positions and the resume
+miscounts. `4c50a45` fixed that. What it did not fix is the *other* end of the
+same window — `collect` appends every answer and rewrites the header last, so a
+run killed between its final `append` and `Writer::finish` holds every answer
+and still says `complete: false`. `Truth::read` refuses that. And the resume
+could not lift it either: `done >= all.len()` logged "already collected" and
+returned. The only remedy was `--restart`, which re-spends the machine-hours
+those rows already paid for — on the artifact §7 says should be regenerated
+rarely.
+
+So: read the section, not the gap. The gap is a statement about a repository at
+a timestamp; the section is the claim.
+
+### Where the fix went, and the shape I rejected first
+
+I first wrote a `seal(path)` that rewrote the header, with the arithmetic
+staying in `collect`. That is testable but tests the wrong thing: the bug was
+`collect`'s early return, and a test of `seal` alone would have passed against
+it. What is committed instead is `truth::resume_collection(path, wanted,
+positions)`, which makes the *whole decision* — header drift, answered count,
+seal — one call that `collect` delegates to entirely, and hands the rows back
+so there is no second read. Public for the reason `check_resumable` is, and its
+doc says so.
+
+The second shape I rejected: `Writer::create` + re-append + `finish` for the
+seal. It truncates the file first, and on the sealing path the rows being
+written back are the only copy there is — a crash mid-append would lose a
+collection to a call whose only job was to flip one field. `rewrite_complete` is
+one `fs::write`, and `Writer::finish` now goes through it too.
+
+### A nextest race that `cargo test` hides
+
+Adding two fixtures made an existing flake frequent: `a_digest_group_names_...`
+and `the_digests_concrete_sample_...` both built `fixture("digest_sample")`, and
+the name is the corpus root, which `fixture_of` clears. Under nextest — process
+per test, several at once — they delete each other's checkout mid-run. It fails
+as `ProjectError::Read` on a source file that was there a moment ago, in
+whichever test lost.
+
+**It reproduces on a clean tree about one run in three, and never under
+`cargo test`**, whose threads-in-one-process interleave less. I confirmed that
+by stashing my change and running nextest three times before touching it —
+worth the two turns, because the alternative was believing I had broken it.
+
+Worse than a name clash: the two wanted *different* repositories (one file
+versus two), so the join under test was being asserted against whichever
+checkout survived. Renamed, plus `no_two_tests_build_a_fixture_under_the_same_name`,
+which is a scan of the file's own `fixture("...")` literals.
+
+### The licensing gap: stale, and the same retraction had two stragglers
+
+`9d0b19a109` says `high-level.md` still claims rope is the only GPL input.
+`e1136f3` fixed it an hour before the audit ran on a tree without it. But
+`deps.md` §5 — the document that *wrote* the retraction — still had the
+retracted argument four paragraphs above its own table: "the portable and
+valuable part of this project is `similarity` and the `lang_*` handlers …
+Marking those MIT means … the whole workspace becomes permissively licensable
+without relicensing a line", against a table marking both GPL-3.0-or-later and
+a paragraph two below saying that exit is closed. CHANGE-core-016.
+
+The mechanising half is the one claim in §5 that is about an *edge*: no MIT
+member depends on `similarity`. Every existing test holds `license` *fields*,
+and a field is what a licence claims — add `similarity` to `shared` and every
+field still reads MIT, every one of those tests still passes, and the permissive
+surface the section promises is gone. Planting it on `shared` does not work:
+cargo refuses the dependency cycle. `measure_core` is the plant, and §5 names it.
+
+### `core-017`, and the half of its ruling the driver cannot reach
+
+Reconciled. The cap now drops the answer and keeps the classification, which is
+the ruling exactly: *a-priori* is about the rule, the rule reads only the query
+and the reference, so the prior was never the outcome's to carry away.
+
+**The ruling's last paragraph is not implementable as written, and I want that
+recorded rather than rediscovered.** It says the parse-expiry case "resolves the
+same way — a query abandoned before any handler ran still has a prior, because
+the reference and the query are all its rule needs." True of the rule; the
+*driver* has no reference, no resolution vocabulary and, by `core.md` §1's
+design, no way to ask a handler for one. Worse, the case that will actually
+occur in the field is not the abandoned parse: it is a handler that classified
+the reference and then hit `ProjectView`'s expiry on a read and returned `Err`
+via `?` — which §1 explicitly expects handlers to do — and `Result<Outcome,
+Error>` gives an `Err` no way to carry a stratum out. That is `core-025`, and
+all three answers to it are Class B.
+
+So the residue keeps `Unimplemented` and is tagged. What changed is its size: it
+was every capped answer, and it is now only a query nothing ever classified.
+
+**How to reach the cap's drop from a test.** Not by queueing the request past
+the deadline — that is what `the_deadline_is_measured_from_arrival_...` does,
+and it expires in the *parse*, in front of the handler, so it never produces an
+outcome to drop. The handler has to advance the fixture's clock from inside
+`goto_definition`. `Slow` in `tests/actor.rs` does that, and it is the only way
+I found to get an `ExpiredStrata::Assigned` end to end.
+
+### Planted every assertion before believing it
+
+Six plants, all of which failed the way they should: the seal never firing, the
+seal always firing, a `std::process` marker in `replay.rs`, a second
+`QueryRecord::new`, a `similarity` dependency on `measure_core`, and the cap
+dropping the stratum again. The last printed the whole row with
+`"stratum_prior":"unimplemented"`, which is the gap's sentence verbatim. Two of
+the six passed against the *unplanted* wrong version first — worth the turns.
+
+## Campaign 636bbd45 — a spec claim whose second half an answered decision had already refused
+
+Assignment: `deps.md#8-parse-cache[fb0aa10250]`, one gap. Not stale — the first
+assignment in several rounds that was live when I got it, and the staleness
+check (`git log -1` on the `where:` file against `last_audited`) said so in one
+turn because the section had been re-audited that evening.
+
+### What the gap actually was, and why the fix is a document and not a cache
+
+§8 said the parse cache "is keyed by `(uri, version)` for open docs and
+`(path, mtime, len)` for disk files". The first is `driver::TreeCache` and is
+real. The second is a cache **nothing has and nothing here may build**: the
+only route to a disk-file parse is `ProjectView::parse`, behind the `Sync`
+`&Query` several fan-out threads hold, and `conformance-005` was answered *no*
+to a cache there — "no new caching or indexing until the corpus harness shows
+the change is worth it and there is a benchmark", plus the fact that a cache on
+`&self` is the lock this design does not have.
+
+So the ruling had been applied to the *code* — `project.rs`'s module doc and
+`trees.rs`'s `ParseKey` doc both say the disk half has no cache to be a key of
+— and never to the *document that the ruling contradicted*. That is the shape
+worth remembering: **when a decision record is answered, the code gets fixed
+and the design section that stated the refused thing usually does not.** The
+audit finds it later as a gap, one campaign per straggler. Anyone reconciling
+an answered decision should grep the design corpus for the sentence, not only
+the code.
+
+### The one thing this edit deliberately did not do
+
+`open-questions.md` question 5 asks whether `(path, mtime, len)` is sound at
+all, since second-granularity mtime serves a stale tree for a same-second
+rewrite of the same length. Deleting the disk key from §8 would have quietly
+answered it — the question would still be in `open-questions.md` and its
+subject would no longer be anywhere in `deps.md`. Numbered open questions are
+Class B. So the key stays written down as the one that *would* be used, marked
+as having no cache, and §8 now says in as many words that deferring the cache
+defers the question. That is the reading that trades nothing off, and it is the
+whole reason this stayed Class A.
+
+### The test, and why equal length is the entire point
+
+`a_second_parse_of_the_same_path_is_a_fresh_parse` writes `struct Beta;\n` over
+the fixture's `fn beta() {}\n` — thirteen bytes either way — and asserts that
+`read` returns the new text and `parse` returns a `struct_item`. Same path,
+same length, and on any filesystem whose mtime resolution is a second, the same
+mtime. So it fails against the exact key §8 claimed rather than against caching
+in general, which a shorter or longer rewrite would not have done.
+
+Planted both halves separately, each with a `thread_local` map so the plant
+needed no lock and no signature change: a path-keyed cache in `read` (the read
+assertion fired), then a `(path, len)`-keyed one in `parse` (the parse
+assertion fired). Two plants, two runs, and worth the four turns — the first
+assertion in this test is a *precondition* check (`function_item`), and a test
+whose first assertion is the only live one passes for a reason nobody chose.
+
+### Extending: two refusals and a stale grant
+
+`hj claim` refused `deps.md#10-errors[d50e2285d0]` and
+`deps.md#2-channels[8e707386b4]` — both live, both held by other workers, which
+matches three campaigns' worth of findings saying `actor.rs` and `dispatch.rs`
+are where the remaining work is. One turn each, and the right turns.
+
+It granted `deps.md#fxhashmap[e83fd58b7a]`, which is stale for the third round
+running: `shared::Map`/`Set` are at `shared.rs:85`, and
+`the_default_map_and_set_are_the_aliases_shared_exports` in
+`driver/tests/seam.rs` already scans **every** workspace member for
+`rustc_hash`, `FxHashMap` and `FxHashSet`, exempting only the file that defines
+the alias, with vacuity guards on both the member list and each source. There is
+nothing left to do to that section and no commit came of taking it. **Do not
+take it again** — the gap's own suggestion ("a scan for `rustc_hash::` outside
+shared would make this mechanical") was implemented by campaign 5cc94daa, and
+the gap has simply never been re-audited since.
+
+That is the round's cost lesson: a granted claim is not evidence the gap is
+live. The claim ledger knows who is working on what, not what is true.

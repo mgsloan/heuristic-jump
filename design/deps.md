@@ -38,7 +38,7 @@ pin that is a design constraint rather than a resolution detail.
 | `lru` | driver | chosen, with a caveat — see §8 |
 | `thiserror` | shared | chosen; `anyhow` explicitly rejected — see §10 |
 | `tracing` | all | chosen |
-| `tracing-subscriber` | heuristic_jump, measure_core | chosen — §9, DECISION-core-002: provisional |
+| `tracing-subscriber` | heuristic_jump, measure_core | **chosen** in both, on the ruling on `state/decisions/core-002.md` — §9 |
 | `rustc-hash` | driver, shared | chosen — the default map/set, see §8 |
 | `heapless` | vendored rope/sum_tree | forced by rope |
 | `unicode-segmentation` | vendored rope | forced by rope |
@@ -346,14 +346,18 @@ crate combines into a GPL binary with no friction and no extra grant needed.
 Marking them GPL would be volunteering a restriction the license of `rope`
 imposes on the *combination* only.
 
-What that buys, concretely: the portable and valuable part of this project is
-`similarity` and the `lang_*` handlers — resolution logic that has nothing
-to do with which rope is underneath. Marking those MIT means anyone who
-supplies a different text layer can lift them, and it means that if `ropey`
-ever wins the argument above, the whole workspace becomes permissively
-licensable **without relicensing a line**. That option costs nothing today and
-is awkward to recover later, since relicensing needs every contributor's
-agreement.
+What that buys, concretely: the crates that carry no GPL input can be lifted
+with no extra grant needed — the seam and the measurement program, which the
+end of this section names. That option costs nothing today and is awkward to
+recover later, since relicensing needs every contributor's agreement.
+
+It is deliberately **not** the whole workspace, and an earlier revision of this
+paragraph said it was: that the portable and valuable part was `similarity` and
+the `lang_*` handlers — resolution logic with nothing to do with which rope is
+underneath — and that if `ropey` ever won the argument above, the whole
+workspace would become permissively licensable *without relicensing a line*.
+The table below marks both `GPL-3.0-or-later`, and "There are two GPL inputs,
+not one" further down is where that was settled and why.
 
 The honest caveat: `shared`'s `DocumentSnapshot` names `Rope` in its public
 API, so MIT source is not *drop-in* usable without rope — a taker would have
@@ -485,9 +489,27 @@ Alternatives:
   If the `lru` API fights the byte accounting, dropping to `HashMap` + a
   `VecDeque` of keys is not a large loss.
 
-Note the cache is keyed by `(uri, version)` for open docs and `(path, mtime,
-len)` for disk files, so it is a map keyed by our own types, not by
-attacker-controlled strings.
+Note the keys are our own types rather than attacker-controlled strings, which
+is the reason to write them down here. `shim.md` §5 names two, and **only the
+first of them is a cache anything has today**:
+
+* Open documents: `(uri, version)`. This is `driver::TreeCache`, and it is the
+  cache the `lru` wrapper above is for.
+* Disk files: `(path, mtime, len)`, with `didSave` letting the disk entry take
+  over. **No such cache exists, and adding one is not this phase's to do.** The
+  only route to a disk-file parse is `ProjectView::parse`, reached through a
+  `Sync` `&Query` several fan-out threads hold at once — so a cache on it is
+  shared mutable state behind `&self`, which is a lock in a design that has
+  none. `conformance-005` asked and was answered **no**: `CLAUDE.md` withholds
+  caching and indexing until the corpus harness shows the change is worth it
+  and there is a benchmark, and there is no corpus. A repeat parse is a fresh
+  parse, and `crates/shared/tests/project.rs` asserts it.
+
+  The key stays written down because it is the one that would be used, and
+  because `open-questions.md` question 5 is about whether it is sound —
+  second-granularity `mtime` serves a stale tree for a same-second rewrite of
+  the same length. Nothing here answers that; deferring the cache defers the
+  question with it.
 
 ### `FxHashMap` and `FxHashSet` are the default
 
@@ -542,7 +564,7 @@ Alternative: `log` + `env_logger`. Simpler, but `tracing` is already in the
 graph and its spans are the natural way to attribute the per-stratum latency
 `high-level.md` asks for.
 
-**Who installs the subscriber** — `DECISION-core-002: provisional`. The rule is
+**Who installs the subscriber.** The rule is
 that a crate the shim *links* has no opinion about where logs go: `driver` and
 `shared` emit through the facade and nothing else. That leaves the crate which
 owns the process, and there are two processes, not one. `heuristic_jump` is the
@@ -555,9 +577,15 @@ disagreement with it: the shim is quiet because its stderr is an editor panel
 with the child's output interleaved, and a `measure` run has neither a child
 nor an editor while §7 requires it to report its own wall clock.
 
-The trade is a library that installs a global subscriber, and it is why this is
-a decision record rather than a fix. `state/decisions/core-002.md` has the
-option that does not.
+The trade is a library that installs a global subscriber, which is why it was a
+decision record rather than a fix. It is answered — `state/decisions/core-002.md`
+— and the reasoning is that the rule this looks like a breach of is not the rule
+it breaches: `measure_core` is a binary body under a library's name, linked only
+by the four-line `measure_<lang>` binaries, so "a library a handler links must
+have no opinion about where logs go" is about `driver` and `shared` and does not
+reach it. `try_init` leaves a test's scoped subscriber winning. The option not
+taken — the same twenty lines in every language's `main` — is the drift
+`core.md` §7 gives as the reason `clap` lives here at all.
 
 ## 10. Errors: one enumerated type, no `anyhow`
 

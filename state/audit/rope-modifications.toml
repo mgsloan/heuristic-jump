@@ -13,20 +13,15 @@ last_audited = "2026-08-04T05:37:37+00:00"
 
 [section."rope-modifications.md#2-where-the-types-live-is-forced"]
 state = "clean"
-last_audited = "2026-08-03T23:07:08+00:00"
-
-  [[section."rope-modifications.md#2-where-the-types-live-is-forced".minor]]
-  claim = "the vocabulary newtypes live in rope and shared re-exports them"
-  note = "offset.rs's module doc still says \"Nothing in rope uses these types yet\", and point.rs's block comment says \"this file's own `row: u32` is still bare\" twelve lines below `pub row: LineIndex`; both were true before the sweep and are not now"
-  where = "vendor/rope/src/offset.rs:6"
+last_audited = "2026-08-04T20:33:33+00:00"
 
 [section."rope-modifications.md#3-what-keeps-this-safe"]
 state = "clean"
-last_audited = "2026-08-03T23:07:08+00:00"
+last_audited = "2026-08-04T20:33:33+00:00"
 
 [section."rope-modifications.md#4-what-changes"]
 state = "clean"
-last_audited = "2026-08-03T23:07:08+00:00"
+last_audited = "2026-08-04T20:33:33+00:00"
 
 [section."rope-modifications.md#the-newtypes-are-opaque"]
 state = "clean"
@@ -37,14 +32,8 @@ state = "clean"
 last_audited = "2026-08-04T00:27:32+00:00"
 
 [section."rope-modifications.md#the-signatures"]
-state = "gaps"
-last_audited = "2026-08-04T04:57:16+00:00"
-
-  [[section."rope-modifications.md#the-signatures".gap]]
-  claim = "ChunkSlice::longest_row's out parameter gets the correct newtype: `total_chars` is a `CharCount`, not left bare"
-  found = "the signature is `longest_row(&self, total_chars: &mut usize) -> (LineIndex, CharCount)`; the return is converted and the parameter is not, and vendor/rope/allowed-primitives.txt:17 makes the exemption permanent so the newtype_api scan passes. \u00a76's allowlist sanctions exactly this, so the document disagrees with itself and the fix may be \u00a74's sentence rather than the code"
-  where = "vendor/rope/src/chunk.rs:400"
-  found_at = "e23d2149549728b19f61bbdd3fb2490dcb8256d2"
+state = "clean"
+last_audited = "2026-08-04T20:33:33+00:00"
 
 [section."rope-modifications.md#textsummary-is-converted-too"]
 state = "clean"
@@ -64,12 +53,7 @@ last_audited = "2026-08-04T00:27:32+00:00"
 
 [section."rope-modifications.md#5-what-deliberately-does-not-change"]
 state = "clean"
-last_audited = "2026-08-03T23:07:08+00:00"
-
-  [[section."rope-modifications.md#5-what-deliberately-does-not-change".minor]]
-  claim = "the usize dimension impls (rope.rs:1492, :1502) stay"
-  note = "they do stay and TextDimension for usize is still public, but after the sweep they are at rope.rs:1567 and :1577; the cited lines now land inside TextDimension for TextSummary"
-  where = "vendor/rope/src/rope.rs:1567"
+last_audited = "2026-08-04T20:33:33+00:00"
 
 [section."rope-modifications.md#lineindex-is-ropes-and-shared-re-exports-it"]
 state = "clean"
@@ -77,15 +61,15 @@ last_audited = "2026-08-04T00:27:32+00:00"
 
 [section."rope-modifications.md#6-consequences-for-re-syncing"]
 state = "clean"
-last_audited = "2026-08-03T23:07:08+00:00"
+last_audited = "2026-08-04T20:33:33+00:00"
 
 [section."rope-modifications.md#7-testing"]
 state = "clean"
-last_audited = "2026-08-04T00:27:32+00:00"
+last_audited = "2026-08-04T20:33:33+00:00"
 
 [section."rope-modifications.md#all-of-upstreams-tests-are-kept"]
 state = "clean"
-last_audited = "2026-08-04T00:27:32+00:00"
+last_audited = "2026-08-04T20:33:33+00:00"
 
 [section."rope-modifications.md#consequences-for-the-dependency-plan"]
 state = "clean"
@@ -93,8 +77,8 @@ last_audited = "2026-08-04T00:27:32+00:00"
 
 [section."rope-modifications.md#beyond-upstreams-tests"]
 state = "clean"
-last_audited = "2026-08-04T00:27:32+00:00"
+last_audited = "2026-08-04T20:33:33+00:00"
 
 [section."rope-modifications.md#8-decided-and-what-remains"]
 state = "clean"
-last_audited = "2026-08-04T00:27:32+00:00"
+last_audited = "2026-08-04T20:33:33+00:00"

@@ -1,65 +1,81 @@
 # Findings — core, worker 3
 
-## The stale-gap tax is now a decision record. Stop re-deriving it.
+## Confirmed (candidate): an answered decision leaves a straggler in the spec
 
-Three campaigns in a row opened by verifying gaps that were already closed.
-`core-019` (`harness-request`, open) carries the measurement — seven of nine
-`core.md` gaps have a `where:` file that moved after the audit that opened
-them — and the provisional rule: **before claiming, compare `last_audited` in
-`state/audit/core.toml` against `git log -1 -- <where-file>`.** One `python3`
-over the file covers every gap and costs one turn. Verified closed and still
-listed: `#what-the-templates-handler-does[9adb0be268]`,
-`#the-oracle-is-the-server-being-proxied[eb6f4618da]`,
-`#7-observability[bd3003d0fb]`'s "nothing in `crates/driver` emits one"
-(`driver/src/trace.rs` does). Do not spend a campaign on these.
+`conformance-005` was applied to the code — `project.rs`'s module doc and
+`trees.rs`'s `ParseKey` doc both say the disk-file cache does not exist — and
+never to `deps.md` §8, which went on claiming its key in the present tense.
+That was this round's whole gap. **When reconciling an answered decision, grep
+the design corpus for the refused sentence, not only the code.** Likely
+remaining instance: `resolution.md` §3's "each file is read at most once" and
+"from the parse LRU when possible", which conformance-005's ruling explicitly
+calls wrong and which no campaign has fixed — `resolution.md` is out of audit
+scope this phase, so it will never appear as a gap.
 
-The freshest gaps are the real ones and they get claimed first. When
-`hj claim` refuses twice, the list is telling you the round is over — that is
-not contention, it is a stale list making two live items look scarce.
+## Falsified: a granted claim is not evidence a gap is live
 
-## `#the-table-is-not-enough` is closed as far as a loop can close it
+`hj claim` granted `deps.md#fxhashmap[e83fd58b7a]`, closed since campaign
+5cc94daa — `shared::Map`/`Set` at `shared.rs:85`, and
+`the_default_map_and_set_are_the_aliases_shared_exports` in
+`driver/tests/seam.rs` scans *every* workspace member for `rustc_hash`,
+`FxHashMap`, `FxHashSet`, with vacuity guards on the member list and each
+source. The ledger knows who is working on what, not what is true.
 
-`--records`, both digest keys, unfiltered rows, held-out isolation, the
-records↔table reconciliation and the six sample fields are all asserted in
-`crates/measure_core/tests/pipeline.rs`. What is left is `harness/measure`
-itself: `core-001`, open, `harness/**` denied. **Do not write the digest in
-`measure_core`** — the section says digesting is the harness's job, "the same
-split that keeps `measure_core` ignorant of `state/`", so a digest there would
-satisfy an auditor and destroy the thing the sentence protects.
+## Still true: the gap list over-reports. Work the *section*, not the gap
 
-## Reconciling two artifacts is how you find a wrong verdict
+The one-turn check stands — for each gap, `last_audited` against
+`git log -1 <its where-file>` — and is necessary, not sufficient, in both
+directions. When a gap *is* stale, re-read its section anyway with the claim in
+hand: the defect is usually one step further along the same sentence. That
+produced every commit two campaigns running.
 
-The bug this found: `replay` classified `agreement` for rows the handler never
-answered, so an abstention the oracle answered was `mismatch` in the records
-and nothing in the table — a precision loss where §7 counts coverage loss. The
-rule was already written, in `ChildAnswer`'s doc comment, and unexecutable.
+## Verified closed, do not re-take
 
-Generalise it: **`shared` is full of doc comments stating rules that no test
-runs.** Where one names a rule, the cheap high-yield move is to find the two
-places that must agree about it and assert they do. The tell is a comment that
-says "which is a different fact from" or "must not be" — that phrasing is a
-rule nobody could check. Same defect family as last campaign's "docs naming
-the wrong mechanism", one level worse: a rule stated and not enforced, rather
-than a mechanism named and not real.
+`#fxhashmap`; `deps.md#8-parse-cache` (this round, CHANGE-core-017);
+`deps.md#12-testing`; `#14`'s profile gap;
+`rope-modifications.md#the-signatures`; the `high-level.md` half of licensing.
 
-## Fixtures: one file hides joins, one handler hides denominators
+## Where the live gaps are
 
-`pipeline.rs`'s fixtures were all a single file and mostly non-refining
-handlers, and both hid assertions. A join on `(file, offset)` is
-indistinguishable from one on `offset` alone with one file (`OTHER_SOURCE` now
-puts a different identifier at the same byte). `Row::precision`'s denominator —
-the three agreement counters, not `committed` — is invisible unless a handler
-*refines*, because otherwise the two coincide; `ReportingHandler` against a
-`null` oracle separates them, 100% against 0%. **Plant the wrong version and
-watch it fail** before believing an assertion of this kind; both of the above
-passed first try and one would have passed against the bug.
+`crates/driver/src/actor.rs` (`#2-channels`: nothing reads `Receiver::len()`)
+and `crates/driver/src/dispatch.rs` (`#10`: the deadline→abstention conversion
+is silent). Both were REFUSED to me this round, which is the fourth independent
+confirmation that the remaining `deps.md` work is those two files. One campaign
+or none.
 
-## Ruled out, do not re-derive
+`deps.md#14` cannot go clean this phase: `deny.toml` is outside every loop's
+owned paths (measured — the gate refuses it) and `cargo deny` is not
+installed. That is `core-023`.
 
-§8.5's negative tests are complete (`crates/shared/tests/proto.rs`). Editor
-traffic cannot be captured by a loop (`core-018`). The §7 minor about replay's
-`mode: "proxy"` with `server_health: null` is a real doc gap and a *minor* —
-it moves no number, and taking it means editing §7 in a campaign that edits
-`replay.rs`, which is the shape the spec-drift rule watches for. The journal
-entry for `ede3701b` has the resolution written out if someone takes it
-deliberately.
+## Method, in order of what it bought
+
+1. **Plant the wrong version, one assertion at a time.** A `thread_local` map
+   plants a cache with no lock and no signature change — three lines, and
+   `git checkout` reverts it. Planting each half *separately* matters when the
+   test's first assertion is a precondition check: otherwise the live
+   assertion is whichever one you happened to write.
+2. **Make the fixture edit discriminate against the specific claim.** The
+   rewrite is a different text of the *same length*, the one edit
+   `(path, mtime, len)` cannot see. A shorter rewrite would have tested
+   caching in general and proved nothing about the key the spec named.
+3. **A Class A edit near a numbered open question must leave it standing.**
+   Deleting §8's disk key would have answered `open-questions.md` question 5
+   by removing its subject. Keeping the key and marking it cache-less is what
+   kept this out of Class B.
+4. **Run nextest three times before believing you broke it** — a fixture-name
+   collision is a race under nextest and invisible under `cargo test`.
+
+## Do not spend time on
+
+* `core.md`'s three gaps — worker 1's document, and the planner forbids it.
+* Building any cache in `shared`: `conformance-005` (accepted) and `CLAUDE.md`
+  both refuse it, and that refusal is now `deps.md` §8's stated position.
+* `harness/measure` (`core-001`), `clippy.toml` thresholds (`core-003`),
+  `deny.toml` (`core-021`, `core-023`) — all need a human.
+
+## My open escalations
+
+`core-023` and `core-025`. **`core-025` is the one that matters**: a handler
+that classified, then hit `ProjectView`'s expiry on a read and returned `Err`
+via `?` — which `core.md` §1 expects — has no way to carry a stratum out of an
+`Err`. All three answers are Class B.

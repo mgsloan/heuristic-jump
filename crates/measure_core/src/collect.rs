@@ -20,7 +20,7 @@ use shared::{ChildError, Clock, DocumentUri, DocumentVersion, Error, Offset, Rop
 use crate::client::{Client, OFFERED_ENCODINGS, RawResult, settled_encoding};
 use crate::corpus::{Corpus, Repository, ServerEntry, grammar_pin, verify_checkout};
 use crate::positions::{self, Position};
-use crate::truth::{self, Outcome, Provenance, Row, Truth};
+use crate::truth::{self, Outcome, Provenance, Row};
 
 /// How many answers between progress lines. Not how often the file is written:
 /// every answer is appended as it arrives, which is what makes a crash cost the
@@ -66,33 +66,29 @@ impl Collection<'_> {
             complete: false,
         };
 
-        let existing = if self.restart {
-            if let Err(error) = remove_partial(&path) {
-                tracing::warn!(%error, path = %path.display(), "discarding the partial truth file");
-            }
-            None
-        } else {
-            Truth::read_partial(&path)?
-        };
-        if let Some(existing) = &existing
-            && let Some(drift) = existing.provenance.drift(&provenance)
+        if self.restart
+            && let Err(error) = remove_partial(&path)
         {
-            return Err(drift.at(&path));
+            tracing::warn!(%error, path = %path.display(), "discarding the partial truth file");
         }
 
         let all = positions::read(&self.corpus.positions(&repository.name))?;
-        let collected = existing.map(|existing| existing.rows).unwrap_or_default();
-        let done = collected.len();
-
-        if done >= all.len() {
+        // The header check, the answered-row count and the seal are one
+        // decision and are made in one place -- see `truth::resume_collection`
+        // for why the seal in particular cannot live here. Nothing below this
+        // line runs for a repository that is already collected, which is what
+        // lets a resume with nothing left to ask finish without a server.
+        let resumed = truth::resume_collection(&path, &provenance, all.len())?;
+        if resumed.is_complete() {
             tracing::info!(repository = %repository.name, "already collected");
             return Ok(());
         }
+        let done = resumed.answered();
 
         let mut client = Client::start(&self.server.command)?;
         let encoding = self.initialize(&mut client, repository)?;
         let mut writer = truth::Writer::create(&path, provenance)?;
-        for row in collected {
+        for row in resumed.into_rows() {
             writer.append(row)?;
         }
 

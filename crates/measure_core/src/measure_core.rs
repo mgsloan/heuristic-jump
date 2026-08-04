@@ -44,7 +44,7 @@ pub use corpus::{ServerEntry, grammar_pin, locked_grammar, resolve_server};
 // Re-exported rather than reached through `shared::record` at every call site,
 // so a `measure_<lang>` binary keeps naming one crate.
 pub use shared::record::{Decision, Mode, QueryRecord, StratumName};
-pub use truth::{Provenance, check_resumable};
+pub use truth::{Provenance, Resumption, check_resumable, resume_collection};
 
 /// The whole of a `measure_<lang>` binary, after `Cli::parse()`.
 ///
@@ -170,10 +170,13 @@ pub fn replay_table(
 /// line is a closed set (`tests/pipeline.rs`), and a flag is a thing a run can
 /// be misconfigured by where an environment variable is a thing an operator
 /// reaches for.
-// DECISION-core-002: provisional. A library installing a global subscriber is
-// the thing `deps.md` §9 warns about, and this one is here because a
-// `measure_<lang>` main is four lines. The alternative — the install in each
-// language binary — is the option that record leaves open.
+// `core-002`, answered: a library installing a global subscriber is what
+// `deps.md` §9 warns about, and the rule it warns under is about the crates the
+// *shim* links — `driver` and `shared`, which emit through the facade and
+// nothing else. This crate is a binary body under a library's name, linked only
+// by the four-line `measure_<lang>` binaries, so it is the crate that owns the
+// process rather than one a handler links. `try_init` below is what leaves a
+// test's scoped subscriber winning.
 fn install_logging() {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));

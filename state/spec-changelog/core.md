@@ -459,3 +459,93 @@ members` in both directions, which without the marking would have demanded
 exactly the commit the gate rejects.
 
 **Campaign:** c601eeec-b30f-479c-8a7d-49e19e4c166d
+
+## CHANGE-core-016 — deps.md#licensing-our-crates-are-mit-the-binary-is-gpl — the "what that buys" paragraph still argued the retracted one-GPL-input position
+
+**Contradiction:** §5's licensing subsection said, four paragraphs before its
+own table, that "the portable and valuable part of this project is
+`similarity` and the `lang_*` handlers … Marking those MIT means anyone who
+supplies a different text layer can lift them, and it means that if `ropey`
+ever wins the argument above, the whole workspace becomes permissively
+licensable **without relicensing a line**."
+
+The table immediately below marks both `GPL-3.0-or-later`
+(`| crates/similarity | GPL-3.0-or-later (ported, see below) |`,
+`| crates/lang_* | GPL-3.0-or-later, because they depend on similarity |`),
+and the section retracts the argument in as many words two paragraphs later:
+"**There are two GPL inputs, not one.** An earlier revision of this section
+said `rope` was the only one, and treated keeping everything else permissive
+as an exit … `crates/similarity` closes that exit for the handler layer. …
+going permissive would now mean replacing two things instead of one."
+
+So one paragraph of the section describes two crates as MIT and names an exit,
+and two later paragraphs mark the same crates GPL and record that exit as
+closed.
+
+**Resolution:** the paragraph now states what the MIT marking buys under the
+position the section actually holds — the seam and the measurement program are
+the permissive surface, which is what the subsection's own last paragraph
+already says — and keeps the retracted argument as history, marked as
+retracted, pointing at the paragraph that settled it.
+
+This trades nothing off: the two claims cannot both stand, the section itself
+names one of them superseded, and CHANGE-core-011 already applied the same
+retraction to `high-level.md`'s License section. The straggler was a second
+copy of the sentence that revision was about, in the document that wrote it.
+
+**No code moved with it.** The manifests were already correct — `expected_licence`
+in `crates/driver/tests/seam.rs` has held them to the table since before this
+campaign — and the same commit adds `the_permissive_surface_is_exactly_what_does_not_reach_similarity`,
+which asserts the corrected claim positively rather than checking that the
+wrong sentence is absent: the members that depend on `similarity` are exactly
+`crates/lang_*`, and each of them is GPL. Planted the dependency on
+`measure_core` and watched it fail.
+
+**Campaign:** 20bbc1bf-03c5-4d3c-afda-a5c5791d47ce
+
+## CHANGE-core-017 — deps.md#8-parse-cache — one of the two keys is a cache that `conformance-005` refused
+
+**Contradiction:** §8's last paragraph said, in the present tense, "the cache
+is keyed by `(uri, version)` for open docs and `(path, mtime, len)` for disk
+files, so it is a map keyed by our own types, not by attacker-controlled
+strings."
+
+`state/decisions/conformance-005.md` is answered, by a human, the other way for
+the second half: "**Ruling:** accepted. Option A stands: no read cache", on the
+grounds that a cache reached through the `Sync` `&Query` "is not implementable
+behind a Sync &Query without a primitive this project does not have", and that
+"`CLAUDE.md` line 112 decides it: no new caching or indexing until the corpus
+harness shows the change is worth it and there is a benchmark ... There is no
+corpus."
+
+The only route to a disk-file parse is `ProjectView::parse`, which is behind
+that same `&Query`. So the disk-file half of §8's key is the key of a cache the
+ruling says this phase does not get, and `crates/shared/src/project.rs`'s
+module doc and `crates/driver/src/trees.rs`'s `ParseKey` doc both already say
+so — "the disk-file half ... has no cache to be a key of yet".
+
+**Resolution:** the paragraph now separates the two keys, says which one is a
+cache today (`driver::TreeCache`, `(uri, version)`, which is what the `lru`
+wrapper the rest of §8 chooses is for), and says the disk-file half has no
+cache and why, citing the ruling.
+
+This trades nothing off in either direction. It does not weaken the point the
+sentence was making — both keys are still our own types, and that is now the
+paragraph's opening claim rather than its trailing one. It does not settle
+`open-questions.md` question 5, which asks whether second-granularity `mtime`
+makes `(path, mtime, len)` unsound: the key is kept written down as the one
+that would be used, and the section says explicitly that deferring the cache
+defers the question with it. Answering it here would have been the Class B
+edit, and is not what this is.
+
+The one thing to be plain about, since the spec and the code are both touched
+in this campaign: **§8 moved toward the code, and it moved toward an answered
+decision record rather than toward a convenience.** Nothing in
+`crates/shared/` changed except a test. That test —
+`a_second_parse_of_the_same_path_is_a_fresh_parse` — asserts the corrected
+claim positively, by rewriting a fixture file to a different text *of the same
+length* and requiring both the read and the parse to follow it. That is
+precisely the rewrite a `(path, mtime, len)` key cannot notice, so the test
+fails against the cache the old sentence described.
+
+**Campaign:** 636bbd45-e572-46de-9078-ab09897c68da

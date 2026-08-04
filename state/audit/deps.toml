@@ -27,44 +27,33 @@ last_audited = "2026-08-04T05:37:37+00:00"
 
 [section."deps.md#3-lsp-types-our-own-not-lsp-types"]
 state = "clean"
-last_audited = "2026-08-03T23:07:08+00:00"
+last_audited = "2026-08-04T20:33:33+00:00"
 
 [section."deps.md#4-json"]
 state = "clean"
-last_audited = "2026-08-03T23:07:08+00:00"
+last_audited = "2026-08-04T20:33:33+00:00"
 
 [section."deps.md#5-text-vendored-zed-rope"]
 state = "clean"
-last_audited = "2026-08-03T23:07:08+00:00"
+last_audited = "2026-08-04T20:33:33+00:00"
 
   [[section."deps.md#5-text-vendored-zed-rope".minor]]
-  claim = "rope's tests use `#[gpui::test]` (9 sites), each replaced by `seeded(N, <name>_inner)`"
-  note = "there are eight seeded() call sites, not nine; the 24-test total matches vendor/README.md, and rope.rs:2421 is a randomised test with an inline seed that reads like upstream's own shape \u2014 probably the document's count is wrong rather than a test dropped, but \u00a75 rests the newtype verification on these tests and a human should confirm"
-  where = "vendor/rope/src/rope.rs:2421"
+  claim = "four patches, each recorded in `vendor/README.md`"
+  note = "the README records eight for `rope`; the four \u00a75 names are all present, but the count reads as exhaustive and the newtype sweep added four more"
+  where = "vendor/README.md:22"
 
 [section."deps.md#licensing-our-crates-are-mit-the-binary-is-gpl"]
-state = "gaps"
-last_audited = "2026-08-04T05:37:37+00:00"
-
-  [[section."deps.md#licensing-our-crates-are-mit-the-binary-is-gpl".gap]]
-  claim = "there are two GPL inputs, not one \u2014 similarity and lang_* are GPL-3.0-or-later \u2014 and the project-level commitment is stated plainly in high-level.md"
-  found = "design/high-level.md still carries the retracted revision: \"The crates in crates/ are MIT\" and \"rope is the only GPL input, so replacing it would make the whole workspace permissively licensable\". The manifests are correct; the designated statement contradicts the section's table. Mechanisable: scan high-level.md's License section against every member's `license =` field, the way pipeline.rs already scans core.md"
-  where = "design/high-level.md:477"
-  found_at = "dd846068c786ddbbfe01f8970d7bd0914b1c1742"
+state = "clean"
+last_audited = "2026-08-04T20:33:33+00:00"
 
 [section."deps.md#6-tree-sitter"]
 state = "clean"
-last_audited = "2026-08-04T00:27:32+00:00"
+last_audited = "2026-08-04T20:33:33+00:00"
 
   [[section."deps.md#6-tree-sitter".minor]]
-  claim = "driver depends on tree-sitter but on no grammar crate"
-  note = "driver's [dependencies] names no tree-sitter at all; Language/Tree/InputEdit arrive through shared's re-export, on core.md \u00a79's reading that driver has no tree-sitter edge \u2014 the two documents disagree and the manifest follows the other one"
-  where = "crates/driver/Cargo.toml:16"
-
-  [[section."deps.md#6-tree-sitter".minor]]
-  claim = "the grammars match Zed's pinned revisions"
-  note = "`tree-sitter-rust = \"0.24.2\"` is a caret range that cargo update may move to 0.24.3; the seam test's three-component rule accepts it as a pin, and only Cargo.lock actually holds the revision"
-  where = "crates/driver/tests/seam.rs:474"
+  claim = "`driver` depends on `tree-sitter` but on no grammar crate"
+  note = "`driver` has no `tree-sitter` entry in `[dependencies]` (it uses `shared`'s re-exports) and does depend on the grammar crate `tree-sitter-rust` in `[dev-dependencies]`; \u00a712 states the dev/non-dev exemption for `lsp-types` but \u00a76 does not"
+  where = "crates/driver/Cargo.toml:54"
 
 [section."deps.md#7-file-enumeration-and-watching"]
 state = "clean"
@@ -72,13 +61,13 @@ last_audited = "2026-08-04T04:57:16+00:00"
 
 [section."deps.md#8-parse-cache"]
 state = "gaps"
-last_audited = "2026-08-04T00:27:32+00:00"
+last_audited = "2026-08-04T20:33:33+00:00"
 
   [[section."deps.md#8-parse-cache".gap]]
-  claim = "lru, wrapped by driver to bound total bytes as well as entries, keyed by (uri, version) and (path, mtime, len)"
-  found = "the parse cache is an unbounded FxHashMap keyed by uri alone with no eviction and no byte accounting; lru is in neither Cargo.toml nor Cargo.lock, though clippy.toml:48 already bans lru::LruCache::put and points at a wrapper that does not exist"
-  where = "crates/driver/src/trees.rs:26"
-  found_at = "3dba8fae70beafb43851557f5d67a54115d53791"
+  claim = "the cache is keyed by `(uri, version)` for open docs and `(path, mtime, len)` for disk files"
+  found = "only the open-document half exists; `ProjectView::parse` has no cache and no key at all, ruled by conformance-005, and \u00a78 carries no CHANGE- record for it"
+  where = "crates/shared/src/project.rs:533"
+  found_at = "187307eeed4c196ebb471f4a3e8d46f60e18a53a"
 
 [section."deps.md#fxhashmap-and-fxhashset-are-the-default"]
 state = "gaps"
@@ -92,40 +81,35 @@ last_audited = "2026-08-04T00:27:32+00:00"
 
 [section."deps.md#9-logging-and-tracing"]
 state = "clean"
-last_audited = "2026-08-04T00:27:32+00:00"
+last_audited = "2026-08-04T20:33:33+00:00"
 
   [[section."deps.md#9-logging-and-tracing".minor]]
   claim = "every line we emit gets a distinguishing prefix"
-  note = "nothing configures a prefix; what distinguishes our lines is tracing_subscriber::fmt's default timestamp/level/target, and the child's stderr forwarding does not exist yet to interleave with"
-  where = "crates/heuristic_jump/src/heuristic_jump.rs:84"
+  note = "`measure_core`'s subscriber installs no prefix while `collect` inherits the language server's stderr into its own, which is the interleaving the prefix exists for"
+  where = "crates/measure_core/src/measure_core.rs:181"
 
 [section."deps.md#10-errors-one-enumerated-type-no-anyhow"]
-state = "clean"
-last_audited = "2026-08-04T00:27:32+00:00"
+state = "gaps"
+last_audited = "2026-08-04T20:33:33+00:00"
+
+  [[section."deps.md#10-errors-one-enumerated-type-no-anyhow".gap]]
+  claim = "some `driver` code converts an `Error` into an abstention; that conversion is explicit and logged"
+  found = "the deadline conversion is explicit but silent \u2014 neither `classify` nor `Actor::answer` logs it, and `hard_cap`'s debug line covers only the late-answer case"
+  where = "crates/driver/src/dispatch.rs:528"
+  found_at = "187307eeed4c196ebb471f4a3e8d46f60e18a53a"
 
   [[section."deps.md#10-errors-one-enumerated-type-no-anyhow".minor]]
-  claim = "every variant carries typed context, not a formatted string; foreign errors are wrapped as #[source]"
-  note = "ConfigError::ManifestMalformed renders the TOML parser's message into a Box<str> instead of sourcing it, documented as avoiding a parser in shared's graph"
-  where = "crates/shared/src/error.rs:77"
+  claim = "every variant carries typed context, and foreign errors are wrapped as `#[source]` fields"
+  note = "`ConfigError::ManifestMalformed` renders the TOML parser's error into `reason: Box<str>`, losing the `Error` chain \u2014 for a stated reason, but it is the one foreign error not sourced"
+  where = "crates/shared/src/error.rs:76"
 
 [section."deps.md#11-cli-parsing-clap"]
 state = "clean"
 last_audited = "2026-08-04T05:37:37+00:00"
 
 [section."deps.md#12-testing"]
-state = "gaps"
-last_audited = "2026-08-04T00:27:32+00:00"
-
-  [[section."deps.md#12-testing".gap]]
-  claim = "the injected clock is a `trait Clock` with a `TestClock` impl in `shared`, not a dependency"
-  found = "shared defines the trait and SystemClock only; five test files each define their own clock impl. A scan asserting no `impl Clock for` outside shared/src/deadline.rs would hold it"
-  where = "crates/shared/src/deadline.rs:14"
-  found_at = "3dba8fae70beafb43851557f5d67a54115d53791"
-
-  [[section."deps.md#12-testing".minor]]
-  claim = "tempfile is deliberately not added"
-  note = "clippy.toml still names tempfile::tempdir as the sanctioned replacement for std::env::temp_dir, so following the lint fails the seam test that enforces the declined list"
-  where = "clippy.toml:38"
+state = "clean"
+last_audited = "2026-08-04T20:33:33+00:00"
 
 [section."deps.md#13-explicitly-not-depended-on"]
 state = "clean"
