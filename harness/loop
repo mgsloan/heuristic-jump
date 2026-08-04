@@ -126,6 +126,26 @@ cd "$repo" || exit 2
 # branch accumulates (`design/loops.md` §13). Code and state are partitioned by
 # owner, so the rebase is conflict-free by construction and the fast-forward
 # touches nothing the other loop has open.
+# A merge that cannot be made is escalated, never swallowed. `design/loops.md`
+# §13 says a rebase that turns the gate red is "escalated as a blocked item
+# rather than repaired locally", and until now it was only printed — to a log
+# nobody reads, while the branch kept accumulating and the next campaign on
+# that worker started from it.
+#
+# Deliberately not resolved automatically. A conflict here means two workers
+# wrote the same file, which is a failure of the plan that divided them, and a
+# machine that quietly picks a side hides the evidence that the planner needs.
+blocked() {
+	local reason="$1" files="$2"
+	echo "loop: $reason" >&2
+	[ -n "$files" ] && echo "loop:   conflicting: $files" >&2
+	echo "loop:   left unmerged on $branch; escalated as a blocked item." >&2
+	"$hj" intervene --kind merge-blocked --target "$identity" \
+		--answer "$branch left unmerged" \
+		--rationale "$reason. Conflicting paths: ${files:-unknown}. Two workers wrote the same file, which is a failure of the plan that divided them rather than of either campaign. The branch is intact and rebases once the other side lands or a human picks. Nothing is discarded automatically: a machine choosing a side here would hide the evidence the planner needs." \
+		>/dev/null 2>&1 || true
+}
+
 # Serialised across workers. Three of them close at their own pace, and two
 # `git merge --ff-only` into one checkout at the same moment is a race the
 # second one loses for no reason — its branch is fine, it just read `main`
@@ -156,16 +176,15 @@ merge_back_locked() {
 		return 0
 	fi
 	if ! git -C "$worktree" rebase main; then
+		files="$(git -C "$worktree" diff --name-only --diff-filter=U | tr '\n' ' ')"
 		git -C "$worktree" rebase --abort 2>/dev/null
-		echo "loop: rebase onto main failed. Code and state are supposed to be" >&2
-		echo "      partitioned by owner, so a conflict here is a real finding:" >&2
-		echo "      two loops wrote the same file. Left unmerged on $branch." >&2
+		blocked "conflict rebasing $branch onto main" "$files"
 		return 1
 	fi
 	if git -C "$integration" merge --ff-only "$branch"; then
 		echo "loop: merged $branch into main."
 	else
-		echo "loop: main would not fast-forward from $branch; left unmerged." >&2
+		blocked "main would not fast-forward from $branch" ""
 		return 1
 	fi
 }

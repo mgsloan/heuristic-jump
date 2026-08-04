@@ -1446,6 +1446,20 @@ def assignment_block(owner: str, worker: str) -> str:
             "outside that, say so at close — the planner believed it was disjoint,",
             "and a wrong belief there is what makes two workers collide.",
         ]
+    lines += [
+        "",
+        "**Step 4 does not apply to you this round.** It tells a single campaign",
+        "to take another target when one is cheap, which is right when nothing",
+        "else is running and wrong now: the targets it would reach for are the",
+        "ones another worker is holding, and you cannot see which. Extending",
+        "*within* this assignment is free and encouraged. Extending outside it is",
+        "how two workers end up editing one file, and the cost lands on whoever",
+        "rebases second, not on you.",
+        "",
+        "If you finish early and the assignment is genuinely done, close. An idle",
+        "worker costs one session; a collision costs two campaigns and a blocked",
+        "merge.",
+    ]
     return "\n".join(lines)
 
 
