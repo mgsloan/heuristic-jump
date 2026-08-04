@@ -197,12 +197,13 @@ impl Replay<'_> {
         // from the two sides disagreeing" (`shared::record::ChildAnswer`).
         //
         // Classifying one anyway reads as `mismatch` wherever the oracle
-        // answered, which is wrong in both directions at once: §7 counts an
-        // abstention as coverage loss and never as precision loss, so the
-        // precision denominator would move with coverage; and §6 reports
-        // divergence to the user "on `mismatch` only", so the shim would be
-        // telling somebody it sent them to the wrong place when it sent them
-        // nowhere at all.
+        // answered, which §7 counts as a precision loss where an abstention is
+        // a coverage loss — so the precision denominator would move with
+        // coverage. The other producer already refuses it, one step earlier and
+        // in the shape that makes it unrepresentable rather than merely unmade:
+        // `driver::pending`'s `answered_by_shim` stores `None` for an
+        // abstention, so `resolve` has nothing to classify. This is the same
+        // rule, at the site where a replay mints the verdict.
         let agreement =
             (decision == Decision::Committed).then(|| Agreement::classify(&ours, &child));
 

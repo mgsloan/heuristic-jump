@@ -1494,6 +1494,125 @@ fn the_records_and_the_table_are_the_same_run_counted_twice() {
     }
 }
 
+/// The reconciliation above is against `--format json`, which is what the
+/// harness consumes. A person reads the other one, and nothing said they hold
+/// the same numbers — so a digest's shares could have been computed from a
+/// denominator nobody could see.
+///
+/// The two renderings do not carry the same columns, which is why this is not
+/// a string comparison: the text table prints `coverage` and `precision` as
+/// percentages where the JSON carries the three agreement counters they are
+/// computed from. Recomputing them here is the assertion that matters, because
+/// it is the one place §7's two-field stratum is visible in a *rendering*:
+/// coverage is reported on `stratum_prior` and precision on `stratum_final`, so
+/// a handler that refines puts the two halves of one query in two rows.
+///
+/// [`ReportingHandler`] against a truth file the oracle answered `null`
+/// everywhere is exactly that case, and it is what makes the check bite. Its
+/// prior is `explicitly_imported` and its settled stratum `ambiguous_name`, and
+/// an empty commit against a `null` answer is the mutual "no definition here"
+/// §6 calls a match. So one row is all coverage and no judgement and the other
+/// is all judgement and no coverage — and `Row::precision`'s denominator, which
+/// its doc comment argues at length must be the three agreement counters and
+/// not `committed`, is the difference between 100% and 0% in the second row.
+#[test]
+fn the_printed_table_and_the_json_report_are_one_table() {
+    let corpus = fixture("one_table");
+    enumerate(&corpus);
+    write_truth(&corpus);
+
+    let printed = replay_report(&ReportingHandler, &corpus, measure_core::Format::Table);
+    let report = replay_report(&ReportingHandler, &corpus, measure_core::Format::Json);
+
+    let replayed = reported(&report, "explicitly_imported", "queries");
+    assert!(replayed > 1, "the fixture replayed {replayed} queries");
+    assert_eq!(
+        reported(&report, "ambiguous_name", "match_top1"),
+        replayed,
+        "the refined half of every query should be judged under the stratum the \
+         search settled on, and the fixture is built so that all of them match"
+    );
+    assert_eq!(
+        reported(&report, "ambiguous_name", "queries"),
+        0,
+        "the refined stratum should carry no coverage denominator at all, which \
+         is what makes the precision denominator below distinguishable from \
+         `committed`"
+    );
+
+    let mut rows = 0;
+    for line in printed.lines() {
+        let columns: Vec<&str> = line.split_whitespace().collect();
+        let [
+            stratum,
+            queries,
+            committed,
+            abstained,
+            failed,
+            coverage,
+            precision,
+            contained,
+        ] = columns[..]
+        else {
+            continue;
+        };
+        if !STRATUM_NAMES.contains(&stratum) {
+            continue;
+        }
+        rows += 1;
+
+        let counted = |field: &str| reported(&report, stratum, field);
+        for (column, printed, field) in [
+            ("queries", queries, "queries"),
+            ("commit", committed, "committed"),
+            ("abstain", abstained, "abstained"),
+            ("fail", failed, "failed"),
+            ("contained", contained, "match_contained"),
+        ] {
+            assert_eq!(
+                printed.parse::<u64>().expect("a printed count"),
+                counted(field),
+                "the {stratum} row prints {printed} for {column} and the report \
+                 carries {} for {field}. §7's command line offers both formats \
+                 of one table; two renderings that disagree mean a gate reading \
+                 the JSON and a person reading the text are looking at different \
+                 runs",
+                counted(field)
+            );
+        }
+
+        assert_eq!(
+            coverage.trim_end_matches('%'),
+            percent(counted("committed"), counted("queries")),
+            "the {stratum} row prints {coverage} coverage over {} committed of \
+             {} queries. §7 reports coverage on stratum_prior so the denominator \
+             is fixed by the reference and does not move when the implementation \
+             changes",
+            counted("committed"),
+            counted("queries")
+        );
+        assert_eq!(
+            precision.trim_end_matches('%'),
+            percent(
+                counted("match_top1"),
+                counted("match_top1") + counted("match_contained") + counted("mismatch"),
+            ),
+            "the {stratum} row prints {precision} precision. §7 reports precision \
+             on stratum_final, so on a refined query the coverage and the \
+             judgement live in different rows and `committed` is the wrong row's \
+             number — which is why the denominator is the three agreement \
+             counters"
+        );
+    }
+
+    assert_eq!(
+        rows,
+        STRATUM_NAMES.len(),
+        "the printed table has {rows} of the nine strata, so the reconciliation \
+         above skipped rows the JSON carries\n{printed}"
+    );
+}
+
 /// §7's "the table is not enough" on what a group shows after its count and its
 /// share: "a **small seeded sample** of concrete cases — repository, file, line,
 /// the identifier, what we returned, what the server said".
@@ -2221,6 +2340,20 @@ fn decision_of(line: &str) -> &str {
 /// unjudged row belongs in none of the three agreement counters.
 fn agreement_of(line: &str) -> &str {
     between(line, "\"agreement\":\"", "\"")
+}
+
+/// A ratio as the text table prints it, computed here rather than read from
+/// `Row`: an assertion against the code that produced the number asserts
+/// nothing.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "two counts bounded by the fixture, formatted for comparison against a printed column"
+)]
+fn percent(part: u64, whole: u64) -> String {
+    if whole == 0 {
+        return "0.0".to_owned();
+    }
+    format!("{:.1}", part as f64 / whole as f64 * 100.0)
 }
 
 fn tally(text: &str, wanted: impl Fn(&str) -> bool) -> u64 {
