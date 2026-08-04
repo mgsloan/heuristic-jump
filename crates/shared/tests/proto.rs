@@ -558,6 +558,66 @@ fn absent_and_false_stay_distinguishable_in_server_capabilities() {
     ));
 }
 
+/// §8.6's fail-closed rule at the one field where "lenient" and "closed" point
+/// in opposite directions on the same JSON string.
+///
+/// A *client* offering an encoding we do not model has it dropped: that field
+/// is a menu, and refusing `initialize` over an entry we would never have
+/// chosen would be a modelling error failing open in the other direction. A
+/// *server* naming one is different — it is the negotiated value, every
+/// position on the wire is in it, and there is no reading of a position we
+/// cannot convert. So it takes the whole `InitializeResult` down with it, and
+/// that is deliberate: the fields beside it say what the server can do, and
+/// acting on them while unable to read a single position is worse than having
+/// no answer.
+#[test]
+fn a_negotiated_encoding_we_cannot_honour_fails_the_whole_initialize_result() {
+    let offered: InitializeParams = serde_json::from_value(json!({
+        "rootUri": "file:///work/repo",
+        "capabilities": {"general": {"positionEncodings": ["utf-64", "utf-16"]}}
+    }))
+    .unwrap();
+    assert_eq!(
+        offered.capabilities.general.unwrap().position_encodings,
+        vec![PositionEncoding::Utf16],
+        "a client's list is a menu, and an entry we would not have chosen is dropped"
+    );
+
+    let refused = serde_json::from_value::<InitializeResult>(json!({
+        "capabilities": {"positionEncoding": "utf-64", "definitionProvider": true}
+    }));
+    assert!(
+        refused.is_err(),
+        "a server named an encoding we cannot convert and the result was still read. Every \
+         position after this point is in that encoding, so `definitionProvider: true` beside \
+         it is an invitation to answer about the wrong place"
+    );
+}
+
+/// The three `PositionEncodingKind` strings, written twice: once by `serde`'s
+/// renames and once by `Display`. They have to agree, because one is what
+/// standalone advertises and the other is what a mismatch is reported in — and
+/// a report naming an encoding nobody negotiated sends the reader after the
+/// wrong thing.
+#[test]
+fn an_encoding_is_spelled_the_same_by_serde_and_by_display() {
+    for encoding in [
+        PositionEncoding::Utf8,
+        PositionEncoding::Utf16,
+        PositionEncoding::Utf32,
+    ] {
+        assert_eq!(
+            serde_json::to_value(encoding).unwrap(),
+            json!(encoding.to_string()),
+            "the wire spelling and the reported spelling of {encoding} have drifted"
+        );
+        assert_eq!(
+            serde_json::from_value::<PositionEncoding>(json!(encoding.to_string())).unwrap(),
+            encoding
+        );
+    }
+}
+
 #[test]
 fn the_sync_union_reads_both_shapes_and_refuses_a_fourth_kind() {
     let integer: InitializeResult =
