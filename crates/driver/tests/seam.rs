@@ -2107,6 +2107,23 @@ fn the_workspace_lints_reach_our_crates_and_not_the_vendored_ones() {
                      indistinguishable from a crate somebody forgot"
                 );
             }
+
+            // The other end of that pointer, which §14 asks for in the same
+            // breath: "It is worth restating in `vendor/README.md` as one of
+            // the recorded differences from upstream." A manifest comment
+            // sending a reader to a file that no longer records it is worse
+            // than one that says nothing, and neither end can see the other.
+            let differences = section_of(
+                &workspace_file("vendor/README.md"),
+                "\n## Recorded differences",
+            );
+            assert!(
+                differences.contains("[lints] workspace = true"),
+                "vendor/README.md's recorded differences no longer state that the vendored \
+                 crates do not take `[lints] workspace = true`: every vendored manifest sends a \
+                 reader there for the reason, which deps.md §14 asks for because an exemption \
+                 recorded only as an absence is one a re-sync repairs"
+            );
         } else {
             assert!(
                 inherits,
@@ -2619,6 +2636,26 @@ fn the_workspace_manifest_has_the_shape_section_14_states() {
          and a selection rather than a duplicate, and they are only both true while they agree \
          — above the channel every build fails, below it the floor is a fiction \
          (conformance-002)"
+    );
+    // §14's tree writes the version out a third time: "rust-toolchain.toml
+    // pin 1.95.0, so grammar/rope behaviour is reproducible". The two files
+    // above are edited together, because a build fails the moment they are
+    // not; the document is edited by whoever remembers it exists, and a
+    // toolchain bump is logged as an intervention precisely because it moves
+    // every latency number without a diff explaining it. A section printing
+    // the superseded version is the one place that record is read from.
+    let printed = section_of(&workspace_file("design/deps.md"), "\n## 14. Workspace")
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("rust-toolchain.toml"))
+        .and_then(|rest| rest.split_whitespace().nth(1))
+        .map(|version| version.trim_end_matches(',').to_owned())
+        .unwrap_or_default();
+    assert_eq!(
+        printed, pinned,
+        "deps.md §14's file tree prints the pin as {printed:?} and rust-toolchain.toml selects \
+         {pinned:?}: a toolchain bump moves every latency number and every binary size with no \
+         diff in this repository explaining it, so the section that records which one is in \
+         force is the one place a reader can find out"
     );
 
     let members = workspace_members();
