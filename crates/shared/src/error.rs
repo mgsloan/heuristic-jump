@@ -161,8 +161,12 @@ pub enum CodecError {
     Truncated { expected: usize, read: usize },
     #[error("frame body is not valid UTF-8")]
     BodyNotUtf8,
-    #[error("frame body is not the JSON its length claimed")]
+    /// The length is `deps.md` §10's "which frame": a `serde_json::Error`
+    /// carries a line and column within a body nobody kept, so on its own it
+    /// names an offset into text that no longer exists.
+    #[error("a {length}-byte frame body is not the JSON its length claimed")]
     BodyNotJson {
+        length: usize,
         #[source]
         source: serde_json::Error,
     },
@@ -379,8 +383,9 @@ pub enum ProjectError {
     /// `core.md` §4's background rescan thread could not be spawned. Fatal at
     /// construction rather than degrading to a list that never refreshes,
     /// which would cost recall silently and forever.
-    #[error("spawning the file-list scanner")]
+    #[error("spawning the file-list scanner for {} root(s)", roots.len())]
     Scanner {
+        roots: Box<[PathBuf]>,
         #[source]
         source: io::Error,
     },

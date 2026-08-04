@@ -1432,6 +1432,137 @@ fn sources_of(crate_name: &str) -> Vec<(String, String)> {
     sources
 }
 
+/// `deps.md` §10's rules for keeping the error set closed, which are the ones
+/// `anyhow` would erase one `?` at a time.
+///
+/// > **No `Other(String)`, no `Message(String)`, no `Box<dyn Error>` variant.**
+/// > Adding a failure mode means adding a variant, which is the point.
+///
+/// > **Foreign errors are the one unavoidable leak.** `std::io::Error` and
+/// > `serde_json::Error` are themselves open. They are wrapped as `#[source]`
+/// > fields on our own variants, always alongside our own context (which path,
+/// > which frame), so the *classification* is ours even though the detail is
+/// > theirs.
+///
+/// The second rule is the one with teeth and the one that had drifted: two
+/// variants wrapped a foreign error and carried nothing else —
+/// `CodecError::BodyNotJson` and `ProjectError::Scanner`. Neither is a
+/// compile error and neither reads as wrong; what they cost is that the
+/// classification stops being ours at the point it matters. A
+/// `serde_json::Error` names a line and column inside a body nobody kept, and
+/// an `io::Error` from a thread spawn says only that the process is out of
+/// something. Both now carry §10's "which frame" and "which path".
+///
+/// The document is the fixture, in the sense §15's test uses: the enum is read
+/// out of `shared/src/error.rs` rather than transcribed here, so a variant
+/// added tomorrow is checked without anyone updating a list. What that costs
+/// is a scan that assumes one field per line, which is how the file is written
+/// and what `cargo fmt` keeps true.
+///
+/// The `Box<dyn` ban is the one clause with a *partial* compiler backstop, and
+/// the boundary is worth writing down because it is not where it looks. A bare
+/// `Box<dyn Error>` variant does not compile: it costs `Error` its `Send`, and
+/// `files.rs` moves one into the scanner thread. A
+/// `Box<dyn Error + Send + Sync>` compiles perfectly — and is the form anyone
+/// reaching for an escape hatch would actually write, since it is the one the
+/// error ecosystem hands out. The control run for this test confirmed both, so
+/// the scan is checking exactly the case the compiler does not.
+#[test]
+fn every_foreign_error_is_wrapped_beside_context_of_ours() {
+    let source = workspace_file("crates/shared/src/error.rs");
+    assert!(
+        source.contains("pub enum Error {"),
+        "shared/src/error.rs holds no `pub enum Error`, so this test would read nothing"
+    );
+
+    for banned in ["Other(String)", "Message(String)", "Box<dyn"] {
+        assert!(
+            !source.contains(banned),
+            "shared/src/error.rs contains {banned}: deps.md §10 keeps the set closed, and an \
+             escape hatch is anyhow with extra steps — the failure classes are only a table \
+             shim.md §11 can match on while every one of them is a variant"
+        );
+    }
+
+    // Each variant runs from its `#[error(...)]` attribute to the next one, or
+    // to the end of the file. Within it, a field is a line reading `name:`.
+    let variants: Vec<&str> = source.split("#[error(").skip(1).collect();
+    assert!(
+        variants.len() > 40,
+        "only {} variants found in shared/src/error.rs, and §10's tree has more than that — \
+         the scan is not reading the file",
+        variants.len()
+    );
+
+    let mut checked = 0;
+    for variant in variants {
+        let body = variant.split("\n}").next().unwrap_or(variant);
+        if !body.contains("#[source]") {
+            continue;
+        }
+        let named = variant
+            .lines()
+            .find_map(|line| line.trim().strip_suffix(" {"))
+            .unwrap_or("<unnamed>");
+        let fields = body
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.starts_with('#') && !line.starts_with("//"))
+            .filter(|line| {
+                line.split_once(':').is_some_and(|(name, _)| {
+                    !name.is_empty()
+                        && name
+                            .chars()
+                            .all(|character| character.is_ascii_lowercase() || character == '_')
+                })
+            })
+            .count();
+        assert!(
+            fields > 1,
+            "{named} wraps a foreign error and carries nothing else: deps.md §10 keeps the \
+             classification ours by pairing every #[source] with context of our own — which \
+             path, which frame — because the foreign detail alone describes a failure in \
+             somebody else's vocabulary"
+        );
+        checked += 1;
+    }
+    assert!(
+        checked > 8,
+        "only {checked} variants wrap a foreign error, and error.rs has more than that — the \
+         field scan is matching nothing and would pass whatever the file said"
+    );
+
+    // §10 puts `#[non_exhaustive]` on the sub-enums and deliberately not on
+    // `Error`: "within one workspace, an exhaustive match on the top level is
+    // a feature", and it is what CLAUDE.md's ban on wildcard arms rests on.
+    let (before_total, sub_enums) = source
+        .split_once("pub enum Error {")
+        .expect("the total enum, asserted present above");
+    assert!(
+        !before_total.trim_end().ends_with("#[non_exhaustive]"),
+        "Error is #[non_exhaustive]: deps.md §10 marks the sub-enums and not the top level, \
+         because an exhaustive match on the nine classes is what makes shim.md §11's table a \
+         table"
+    );
+    for arm in [
+        "ConfigError",
+        "CodecError",
+        "ChildError",
+        "ProtocolError",
+        "DocumentError",
+        "ParseError",
+        "ProjectError",
+        "HandlerError",
+        "EncodingError",
+    ] {
+        assert!(
+            sub_enums.contains(&format!("#[non_exhaustive]\npub enum {arm} {{")),
+            "{arm} is not #[non_exhaustive]: deps.md §10 marks every sub-enum, so that adding \
+             a leaf is not a breaking change to the class table above it"
+        );
+    }
+}
+
 /// `deps.md` §9, whose three claims are each about something that is invisible
 /// from inside the process.
 ///
