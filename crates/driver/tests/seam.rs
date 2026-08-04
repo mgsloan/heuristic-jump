@@ -1587,9 +1587,24 @@ fn every_foreign_error_is_wrapped_beside_context_of_ours() {
 /// > with a fixed schema that `measure_core` also writes, and routing them
 /// > through a log subscriber would make the schema a formatting concern.
 ///
-/// The mechanism for that one is the subscriber being installed in exactly one
-/// place: a metrics writer routed through a log subscriber needs to reach
-/// `tracing_subscriber`, and only the binary can.
+/// The mechanism for that one is the subscriber being installed by the crate
+/// that owns a program's command line, and by nothing else: a metrics writer
+/// routed through a log subscriber would have to reach `tracing_subscriber`,
+/// and `driver` — which writes those records — cannot.
+///
+/// **Two such crates, not one.** `heuristic_jump` owns the shim's command line
+/// and `measure_core` owns `measure-<lang>`'s: `core.md` §7 puts `clap`, the
+/// flag set and `run` there precisely so a language binary is four lines, and
+/// a subscriber installed per language is one chance per language for one of
+/// them to be quiet where the others are not. What the rule is actually about
+/// is a *library* having an opinion about where logs go — `shared`, `driver`,
+/// `similarity` and every `lang_*` are linked into somebody else's program and
+/// must not.
+/// The crates that own a program's command line, and so the only ones that may
+/// reach `tracing_subscriber`. A list rather than a predicate because that is
+/// what makes adding one a decision somebody wrote down.
+const INSTALLS_THE_SUBSCRIBER: [&str; 2] = ["heuristic_jump", "measure_core"];
+
 #[test]
 fn our_log_lines_are_distinguishable_and_the_subscriber_is_installed_once() {
     assert_eq!(
@@ -1651,19 +1666,26 @@ fn our_log_lines_are_distinguishable_and_the_subscriber_is_installed_once() {
                 "{file} is missing or empty, so the scan below would pass vacuously"
             );
             assert!(
-                member == "heuristic_jump" || !source.contains("tracing_subscriber"),
+                INSTALLS_THE_SUBSCRIBER.contains(&&**member)
+                    || !source.contains("tracing_subscriber"),
                 "{file} names tracing_subscriber: deps.md §9 installs the subscriber in the \
-                 binary and nowhere else — a library with an opinion about where logs go is \
-                 one that fights whoever links it, and §7's JSONL records stay out of the log \
-                 subscriber by not being able to reach one"
+                 crate that owns the program's command line and nowhere else — a library with \
+                 an opinion about where logs go is one that fights whoever links it, and §7's \
+                 JSONL records stay out of the log subscriber by not being able to reach one"
             );
         }
     }
+    installs.sort();
+    let mut wanted: Vec<String> = INSTALLS_THE_SUBSCRIBER
+        .iter()
+        .map(|member| format!("{member} in [dependencies]"))
+        .collect();
+    wanted.sort();
     assert_eq!(
-        installs,
-        vec!["heuristic_jump in [dependencies]".to_owned()],
-        "deps.md §9 gives tracing-subscriber to the binary alone: driver and shared emit \
-         through the tracing facade and have no opinion about where it goes"
+        installs, wanted,
+        "deps.md §9 gives tracing-subscriber to the crates that own a command line: driver, \
+         shared and every language emit through the tracing facade and have no opinion about \
+         where it goes"
     );
 
     let declared = table_of(&workspace_file("Cargo.toml"), "workspace.dependencies")
