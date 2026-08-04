@@ -6,70 +6,76 @@ that one means a loop stalled and asked a question.
 
 ## Where things stand
 
-Both loops are **paused**, `main` is **green** (257 tests, all 7 gate steps),
-the working tree is clean, and the intervention queue is **empty**.
+Both loops are **paused**, `main` is **green** (271 tests, all 7 gate steps for
+both loops, `hj selftest` 56 checks), the working tree is clean, and **every
+branch is merged**. All four worktrees sit on `main`.
 
 | | clean | gaps | campaigns |
 |---|---|---|---|
 | `core` (core.md, deps.md, rope-modifications.md) | **60/71** | 12 open of 96 found | 39 |
 | `harness` (loops.md) | 13/75 | 16 open | 3 |
 
-42 campaigns closed, 87 interventions logged, ~$800 of API-equivalent spend.
+Waiting on a human: **7 decisions**, **11 spec changes not yet read**, 6
+provisional `DECISION-` tags. `harness/hj status` lists them.
 
-**Do not restart the fleet until the two branches below land**, or they keep
-diverging from a moving `main`.
+**The fleet can be restarted.** It has not been — that is a spending decision
+and it is the next person's to make, not a leftover.
 
-## The two things blocking a restart
+## What the merges cost, and what they say
 
-### 1. `loop/core-1` (41 commits) and `loop/core-2` (31) are unmerged
+The three branches the previous handoff left — `loop/core-1` (41 commits),
+`loop/core-2` (31) and `loop/harness` (58, which it did not mention) — are
+merged, in that order, each as a merge commit with its resolution reasoning in
+the message (`ed91c10`, `77c3c72`, `abf2099`). Read those before re-deriving
+any of it.
 
-Both are real, gated-green work that failed to merge. They are intact; nothing
-is lost. `archive/loop-core-3` is a third, deliberately dropped (see below).
+The rule that mattered is the one the previous attempt broke: **take one side
+whole**. It held everywhere except two places, and both are worth knowing:
 
-I tried to land `core-1` by hand and **got it wrong**: I "unioned" a conflict
-in `crates/measure_core/tests/pipeline.rs` assuming it sat between two whole
-test functions. It cut through a function body and spliced the tail of one test
-into the middle of another. It did not compile. I backed the merge out.
+* A **dict literal** and a **corpus file** are not things there can be two
+  versions of. Two campaigns adding different keys, or different captured
+  messages, at one insertion point is an append both sides made — union is the
+  resolution and picking a side loses work.
+* `measure_core/tests/pipeline.rs` **was not a conflict at all.** Both sides
+  added tests whose bodies share a prefix, and the diff aligned one against
+  the other; taking either side would have dropped three real tests. It was
+  rebuilt from the three merge stages (`git show :1: :2: :3:`) by diffing base
+  against each side and applying the additions separately. Histogram alignment
+  does not help — it produces the same hunks. If a conflict region starts or
+  ends mid-function, stop and do this instead.
 
-The lesson, which I had already written down and then ignored: **for a
-conflict where two campaigns wrote different versions of the same thing,
-splicing produces a third thing neither wrote.** Take one side whole, or leave
-it. Only append-only files (`golden-traffic.jsonl`, the JSONL logs) are safe to
-union.
+### `crates/driver/tests/seam.rs` is still the contended file
 
-What is known about the conflicts, from having worked through them once:
+2,300 lines, 71 functions, and it conflicted in **both** `core` merges again,
+exactly as predicted. Nothing about that has changed: splitting it by topic —
+manifests, licensing, lints, layout, vocabulary — is still the highest-value
+single target available, and still a campaign's work rather than a paragraph.
 
-* `crates/driver/tests/seam.rs` — a human inline `matches!(member.as_str(), …)`
-  fix against the campaign's named `INSTALLS_THE_SUBSCRIBER` constant. **Take
-  the campaign's**; it is the better factoring.
-* `crates/measure_core/tests/pipeline.rs` — two independent tests at the same
-  insertion point. Whole functions only. This is the one I broke.
-* `crates/shared/src/proto.rs`, `crates/shared/tests/differential.rs` —
-  competing doc comments for identical code. Either is defensible; take one
-  whole.
-* `state/spec-changelog/core.md` — two campaigns both wrote
-  `CHANGE-core-005` for different questions. Keep both, renumber one.
-* `state/decisions/core-018.md` — the branch has a stale copy; `main`'s carries
-  the human answer.
-* `state/audit/**` → take `main`'s. `state/findings/*` → take the worker's.
-  These two are mechanical and `merge_back` now does them automatically.
+### Four id collisions, and one of them was silent
 
-**Recommendation**: merge (not rebase) each branch into `main` one at a time,
-resolve the seven files above, run `harness/gate core` in the worktree, and only
-then fast-forward. `merge_back` now picks merge over rebase automatically above
-8 commits, so a fresh attempt will not repeat the rebase thrash.
+Two campaigns took `core-018` for different questions; five `CHANGE-core-*`
+numbers were used twice; and **one duplicate merged cleanly and passed all
+seven gate steps**, because the two entries sat in different parts of the
+changelog. `grep -o '^## CHANGE-core-[0-9]*' | sort | uniq -d` found it and
+nothing else would have. Raised as `harness-005`; until it is answered, a merge
+of any long-diverged branch needs that check run by hand.
 
-### 2. `crates/driver/tests/seam.rs` is a contended file
+Renumbering follows `allocate-id`'s rule — one past the highest, never the
+lowest free — and the side that moves is the one **not** already cited from
+code or from `state/interventions.jsonl`, which cannot be rewritten.
 
-2,300 lines, 71 functions. Almost every `deps.md` or `core.md` section is closed
-by appending a manifest assertion to it, so three workers append to one file and
-two lose. **It has blocked a merge in every round so far.**
+### One thing the merge settled
 
-The planner has been told to treat it as a resource one worker may hold
-(`harness/prompts/planner.md`), which is a mitigation. The fix is to split it by
-topic — manifests, licensing, lints, layout, vocabulary — and that is a
-campaign's work, not a paragraph. It is the highest-value single target
-available.
+`core-018` was answered "(a) the corpus is judged on its server half now, (b)
+capture the client half when convenient". `loop/core-1` did (b): the corpus
+holds Eglot-through-a-recording-proxy `didOpen`/`didChange`/`didSave`/
+`didClose` and an editor's own `initialize`, and `differential.rs` now requires
+a captured message of all eight kinds. The `DECISION-core-018: provisional`
+tags are gone with it. The deferred item in the old handoff — two minutes at a
+desktop with `harness/capture-editor-traffic` — **is no longer needed**.
+`core-020` is what is left of it: whether the headless Emacs driver, which
+needs no human, joins that tool in `harness/`.
+
 
 ## The one lesson that generalises
 
@@ -160,11 +166,11 @@ an audit table, campaign diffs, and a tracked-lines chart.
   — consolidation rounds, where the planner hands one worker a deletion brief
   every K rounds. Waiting on one round closing under rule 2 so the credit is
   observed firing before a scheduler depends on it.
-* **The client half of §8.5's golden corpus.** `harness/capture-editor-traffic
-  --install` prints a Zed setting; type in a Rust file for a minute; `--finish`
-  folds it in. Two minutes of a human's time, deliberately left as tooling
-  rather than a note (`state/decisions/core-018.md`).
-* **`archive/loop-core-3`** — dropped, not deleted. Its rope work was redundant
+* ~~**The client half of §8.5's golden corpus.**~~ Done by `loop/core-1` and
+  landed in the merge — see "One thing the merge settled" above. What is left
+  is `core-020`, which is a smaller question about where a script lives.
+* **`archive/loop-core-3`** — dropped, not deleted, and it is a **tag** rather
+  than a branch, so `git branch` does not show it. Its rope work was redundant
   with what `core-2` landed; its driver work conflicted semantically and its
   gaps remain open, so the planner will retarget them cleanly.
 
