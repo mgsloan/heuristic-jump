@@ -1668,6 +1668,57 @@ def size_baseline(owner: str, package: str) -> int | None:
     return min(sizes) if sizes else None
 
 
+# The phases in which size is gated. §11: "Gated only in phase 3, where the
+# ratchet is hard: neither may increase at all, since phase 3 may not buy size
+# with quality in the first place." Phase 7 is the second cost phase and
+# `harness/gate`'s own step already pairs the two.
+SIZE_RATCHET_PHASES = ("3", "7")
+
+
+def check_size_ratchet(config: LoopConfig, phase: Phase) -> int:
+    """§11's hard ratchet on the size proxy.
+
+    Silent outside a cost phase, and that is the design rather than a
+    convenience: §11 argues at length that a standing ratchet "would have
+    applied the pressure during exactly the iterations that should be free to
+    be wasteful", and that phase 3 existing to delete is most of the answer.
+
+    The failure wording is not the test ratchet's. A test count that falls is a
+    decision record the loop writes and then continues past; a size increase in
+    a cost phase "requires an approved escalation, not a self-written
+    justification", so the gate stays red until a human has answered.
+    """
+    if phase.phase not in SIZE_RATCHET_PHASES:
+        return 0
+    for package in measure_packages(config):
+        measured = binary_size(package)
+        if measured is None:
+            print(f"size: {package} could not be measured; the ratchet has nothing to hold")
+            continue
+        baseline = size_baseline(config.owner, package)
+        if baseline is None:
+            print(f"size: {measured['binary']} {measured['stripped']}; no baseline yet")
+            continue
+        if measured["stripped"] <= baseline:
+            print(f"size: {measured['binary']} {measured['stripped']}, ratchet at {baseline}")
+            continue
+        print(
+            f"size: {measured['binary']} is {measured['stripped']} bytes stripped against a "
+            f"ratchet of {baseline}. Phase {phase.phase} may not buy size with quality "
+            "(design/loops.md section 11), so this may not increase at all.\n"
+            "         An increase requires an *approved* escalation, not a "
+            "self-written justification: open a class-b decision record and wait "
+            "for it. This is the one gate failure a provisional choice does not "
+            "clear.\n"
+            f"         The baseline is the lowest this loop has recorded since "
+            f"{(size_rebaseline_commit() or 'the start of the history')[:12]}, which is "
+            "the last commit to crates/shared or crates/measure_core.",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
 # The ratchet baselines. `design/loops.md` §17 builds these rather than
 # adopting Bencher, and its reason decides the shape: our measurements are
 # deterministic, so the only threshold model that fits is the static one, and
@@ -1789,8 +1840,9 @@ def check_test_ratchet(config: LoopConfig) -> int:
     ratcheting it would make the loop's number unable to correct itself.
     `provisional_decisions` rises when the loop escalates, which is the
     behaviour §6 wants. `loc` is reported and never gated (§11). Binary size is
-    the phase-3 ratchet and belongs to the gate's own step, which stays
-    unimplemented until there is a `measure_<lang>` to weigh.
+    ratcheted too, by `check_size_ratchet`, but only in a cost phase and with a
+    harder failure — the two are kept apart because their directions and their
+    escape hatches differ.
     """
     for name in removed_tests_in(None, crate_paths(config)):
         print(f"metrics: FLAGGED — this diff deletes a test: {name}")
@@ -2279,7 +2331,7 @@ def cmd_check_metrics(args: argparse.Namespace) -> int:
     metric regression can be snapshot-accepted; without it, the gate read the
     metrics file only to ask whether a line existed.
     """
-    _, config = loop_config(args.loop)
+    phase, config = loop_config(args.loop)
     target = last_loop_commit(config.owner)
     if target is None:
         print("metrics: this loop has no commit in recent history; nothing to check")
@@ -2292,7 +2344,33 @@ def cmd_check_metrics(args: argparse.Namespace) -> int:
             )
             return 1
         print(f"metrics: {target[:12]} is recorded")
-    return check_test_ratchet(config)
+    # `harness/gate`'s own step 5 hard-fails in a cost phase with "the phase
+    # ratchets are not implemented", and it is denied to every loop, so the
+    # size ratchet is run from here — where §7's "the gate checks metric
+    # direction itself" already puts a metric check, and where the test ratchet
+    # went for the same reason. `harness-008` asks for step 5 to call
+    # `hj check-ratchets` instead of failing.
+    # Both, rather than short-circuiting: a loop that has deleted a test and
+    # grown the binary should be told about both in one gate run, or it fixes
+    # one and discovers the other on the next.
+    return 1 if check_test_ratchet(config) + check_size_ratchet(config, phase) else 0
+
+
+def cmd_check_ratchets(args: argparse.Namespace) -> int:
+    """`harness/gate` step 5, for whenever it is allowed to call this.
+
+    The step currently hard-fails in a cost phase — "the phase ratchets are not
+    implemented" — and `harness/gate` is denied to every loop, so this command
+    exists unreferenced by it and is run from `check-metrics` meanwhile.
+    `harness-008` is the request to swap the step's body for a call to this.
+    Having both routes is not duplication: the ratchet runs today either way,
+    and the day step 5 changes it stops being two places.
+    """
+    phase, config = loop_config(args.loop)
+    if phase.phase not in SIZE_RATCHET_PHASES:
+        print(f"size: not gated in phase {phase.phase} (design/loops.md section 11)")
+        return 0
+    return check_size_ratchet(config, phase)
 
 
 def cmd_record(args: argparse.Namespace) -> int:
@@ -5519,6 +5597,16 @@ def selftest_cases() -> list[tuple[str, object]]:
         rows = [{"commit": "aaa"}, {"commit": "bbb"}, {"commit": "ccc"}]
         assert rows_since(rows, None) == rows, "no re-baseline commit means the whole history"
 
+    def the_size_ratchet_is_silent_outside_a_cost_phase():
+        # It has to be silent rather than merely lenient: §11 argues that a
+        # standing ratchet applies pressure during the iterations that should
+        # be free to be wasteful, so the exploration phases must not even
+        # build the binary to find out.
+        assert "1a" not in SIZE_RATCHET_PHASES and "2a" not in SIZE_RATCHET_PHASES
+        assert set(SIZE_RATCHET_PHASES) == {"3", "7"}, "the two cost phases, and no others"
+        phase = Phase(phase="2a", loops={"lang-rust": _selftest_loop("lang-rust", "rust")})
+        assert check_size_ratchet(phase.loops["lang-rust"], phase) == 0
+
     def a_loop_without_a_language_measures_no_binary():
         assert measure_packages(_selftest_loop("core", None)) == [], (
             "a release build with lto per row costs minutes, and §11's bullet "
@@ -5938,6 +6026,10 @@ def main() -> int:
     p = sub.add_parser("record", help="append the metrics row for HEAD")
     p.add_argument("loop")
     p.set_defaults(run=cmd_record)
+
+    p = sub.add_parser("check-ratchets", help="the cost-phase size ratchet (loops.md §11)")
+    p.add_argument("loop")
+    p.set_defaults(run=cmd_check_ratchets)
 
     p = sub.add_parser("size", help="the stripped release size of measure_<lang> (loops.md §11)")
     p.add_argument("package", nargs="?", help="default: every measure_* in the workspace")
