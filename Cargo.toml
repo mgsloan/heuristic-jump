@@ -288,9 +288,27 @@ debug = "limited"
 lto = "thin"
 codegen-units = 1
 
-# `deps.md` §6: parsing in a debug build is otherwise slow enough to distort
-# every latency observation made while developing. `serde_json`'s bump from the
-# same section is still absent — cargo rejects a profile override naming a
-# package that is not in the graph, and nothing depends on it yet.
-[profile.dev.package.tree-sitter]
-opt-level = 3
+# `deps.md` §14, "we take exactly those": the crates that dominate debug
+# runtime, in Zed's inline form and no wider than Zed's list. Parsing in a
+# debug build is otherwise slow enough to distort every latency observation
+# made while developing, which for this project would mean tuning against a
+# fiction (§6).
+#
+# The proc-macro three are the ones inside Zed's `# proc-macros start/end`
+# block that are not Zed's own crates; the other seven there are `gpui_macros`
+# and friends and have nothing to do with us. They are here because every
+# derive in the workspace — `serde`, `thiserror`, `clap` — is compiled through
+# them, so an unoptimised `syn` is paid once per dependent crate on a cold
+# build.
+#
+# Held by `every_package_section_14_names_gets_its_opt_level` in
+# `crates/driver/tests/seam.rs`, which checks both directions and that each
+# package is really in the graph. Cargo does *not* reject an override naming a
+# package that is not — it prints "did not match any packages" and carries on,
+# so a bump for a crate that was renamed or dropped goes on looking applied.
+[profile.dev.package]
+tree-sitter = { opt-level = 3 }
+serde_json = { opt-level = 3 }
+proc-macro2 = { opt-level = 3 }
+quote = { opt-level = 3 }
+syn = { opt-level = 3 }

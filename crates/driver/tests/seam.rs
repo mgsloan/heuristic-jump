@@ -505,12 +505,17 @@ fn the_grammars_are_pinned_and_the_runtime_is_not() {
          version constraint, which is what lets them differ"
     );
 
+    // The entry is in Zed's inline form, under one `[profile.dev.package]`
+    // table rather than a table per package, since §14's first claim is that
+    // the workspace manifest follows Zed's conventions. `§14`'s own test holds
+    // the whole list; this holds the one entry §6 asks for.
     let manifest = workspace_file("Cargo.toml");
     assert!(
-        manifest.contains("[profile.dev.package.tree-sitter]")
-            && table_of(&manifest, "profile.dev.package.tree-sitter")
-                .iter()
-                .any(|line| line.replace(' ', "") == "opt-level=3"),
+        table_of(&manifest, "profile.dev.package")
+            .iter()
+            .any(|line| line
+                .replace(' ', "")
+                .starts_with("tree-sitter={opt-level=3")),
         "no `[profile.dev.package.tree-sitter] opt-level = 3`: deps.md §6 wants it because \
          parsing in a debug build is otherwise slow enough to distort every latency \
          observation made while developing, which would mean tuning against a fiction"
@@ -1300,6 +1305,69 @@ fn every_library_names_its_root_explicitly() {
              crate's sources from that convention"
         );
     }
+}
+
+/// `deps.md` §14: "**`[profile.dev.package]` opt-level bumps for the crates
+/// that dominate debug runtime.** Zed sets `tree-sitter` and `serde_json` to
+/// `opt-level = 3`, plus the proc-macro crates. We take exactly those".
+///
+/// Two directions, because "exactly" is a claim in both: a package the section
+/// names and the manifest does not is a debug build that parses at the speed
+/// §6 says distorts every latency observation made while developing, and a
+/// package the manifest names and the section does not is the profile growing
+/// by imitation, which is what "exactly those" refuses.
+///
+/// The proc-macro three are Zed's `# proc-macros start/end` block minus its
+/// seven own crates, which are not in our graph at all.
+///
+/// The graph-membership half is the part that is not a transcription. Cargo
+/// **warns** on a spec that matches nothing — "profile package spec `x` in
+/// profile `dev` did not match any packages" — and builds anyway, so a bump
+/// for a crate that was renamed, dropped, or never arrived reads as applied
+/// forever. It is exactly what happened here: this table carried a comment
+/// saying `serde_json`'s bump was waiting because "cargo rejects a profile
+/// override naming a package that is not in the graph, and nothing depends on
+/// it yet", where `serde_json` had been a dependency of three crates for some
+/// time and cargo would not have rejected it either way.
+#[test]
+fn every_package_section_14_names_gets_its_opt_level() {
+    // Sorted, and deliberately a second copy of the manifest's list: with only
+    // a membership check, deleting a line from the manifest to make this pass
+    // is the failure the test claims to catch.
+    const BUMPED: [&str; 5] = ["proc-macro2", "quote", "serde_json", "syn", "tree-sitter"];
+
+    let manifest = workspace_file("Cargo.toml");
+    let mut bumped: Vec<String> = table_of(&manifest, "profile.dev.package")
+        .into_iter()
+        .filter_map(|entry| {
+            let (package, value) = entry.split_once('=')?;
+            value
+                .contains("opt-level = 3")
+                .then(|| package.trim().to_owned())
+        })
+        .collect();
+    bumped.sort();
+
+    assert_eq!(
+        bumped,
+        BUMPED.map(str::to_owned).to_vec(),
+        "[profile.dev.package] is not the list deps.md §14 names. A missing one is a debug \
+         build slow enough to distort every latency observation; an extra one is the profile \
+         growing by imitation, which is what \"we take exactly those\" refuses"
+    );
+
+    let lock = workspace_file("Cargo.lock");
+    let absent: Vec<&&str> = BUMPED
+        .iter()
+        .filter(|package| !lock.contains(&format!("name = \"{package}\"")))
+        .collect();
+    assert!(
+        absent.is_empty(),
+        "a profile override names a package that is not in the graph: {absent:?}. Cargo only \
+         warns about this and builds anyway, so the bump goes on looking applied while doing \
+         nothing -- which is why §14's list is checked against the lockfile rather than \
+         against a build that would succeed either way"
+    );
 }
 
 /// §5's table, as a rule rather than a list, because six more `lang_*` and six
