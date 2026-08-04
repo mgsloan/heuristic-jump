@@ -3757,7 +3757,7 @@ def cmd_campaign_close(args: argparse.Namespace) -> int:
             # whole-tree snapshot and under workers carries whatever the
             # other two merged around it; this does not.
             "diff": campaign_diffstat().get(args.id, {}),
-            "loc_nontest": sum(loc_per_crate().values()),
+            "loc_nontest": sum(loc_per_crate()[0].values()),
             "tests_before": tests_before,
             "tests_after": tests_after,
             "worker": opened.get("worker") or config.owner,

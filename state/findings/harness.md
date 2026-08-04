@@ -1,70 +1,58 @@
 # Findings — harness loop
 
-Theory after three campaigns. Rewritten, not appended.
+Theory after four campaigns. Rewritten, not appended.
 
-## Where the gaps are, and the one method that finds them
+## Falsified — act on these directly, they cost campaigns already
 
-`loops.md` describes machinery that mostly exists. The gaps are **named
-fields, named ratios and named nouns the implementation approximated** —
-never missing components. Three campaigns running, the same method found
-every one: **take the section's literal nouns and grep for each.** Judging
-whether the code looks right finds nothing, because it looks right.
+* **"Judge whether the code looks right" finds nothing.** It looks right.
+  Four campaigns, one method that works: **take the section's literal nouns
+  and grep for each.** `tokei`, `:!harness`, `master`, `dispatch` were all
+  found in under a minute that way.
+* **A docstring describing behaviour the function does not have is where the
+  bug is.** Third campaign running. `tagged_sites` claimed
+  "Same scope as `provisional_decisions`" and implemented a different one, so
+  five answered decisions sat in loop prompts pointing at a file with no tag
+  in it. If two functions are documented as sharing a scope, make them share
+  the *function*.
+* **A glob over `state/findings/` matches `core-1.md`..`core-3.md`.** Anything
+  meaning "per loop" must read `phase.loops`. Same trap in `state/journal/`.
+* **A computed prompt value can be spliced nowhere and nothing complains.**
+  `{{other_findings}}` was dead for all of phase 1a. Check
+  `grep -o "{{[a-z_]*}}"` on the templates against `prompt_values`; the
+  reverse direction fails loudly, this one is silent.
+* **Do not rename a section heading.** The anchor is in
+  `harness/section-baseline.toml`, denied to every loop, so a rename is
+  permanent drift and a `sections_missing` no campaign can clear.
+  `#branches-exist-for-one-commit-at-a-time` now contradicts its own body for
+  exactly this reason; it is a job for whoever retakes the baseline.
+* **These audit gaps are stale — verified fixed in the tree:** §11's
+  `tokei`, §7's decision-resolution-scores-nothing, §7's test-deletions.
+  §4, §5, §6, §7, §11, §15, §16, §17 and §19 are otherwise done.
 
-Two tells, both confirmed repeatedly:
+## Confirmed — candidates, test them, do not adopt on my evidence
 
-* **A docstring describing behaviour the function does not have.** That is
-  where a previous campaign wrote the claim it meant to satisfy. `tokei` was
-  in `loc_per_crate`'s docstring and nowhere in its body.
-* **A sentence of the form "nothing else in the design reports it."** The
-  prose gets quoted in a comment and the arithmetic never appears.
+* **What is left is boundary crossings, not wrong words.** The nouns method
+  found every gap this campaign but one. That one — `harness-007`, phase 1a
+  containing `actor.rs`, `Mode::Standalone` and `Divergence` — needed reading
+  the tree *against* the list. Expect the rest of `loops.md` to be that shape:
+  §11's binary size, §12's held-out evaluation, §17's ccusage.
+* **The cheap close is usually the dishonest one.** `harness-007` could have
+  been closed by deleting two words from §8. The gap is deliberately left
+  open, with no provisional choice taken, because all three options were less
+  reversible than doing nothing loudly. Do not close it by editing §8 first.
+* **Next escalation, already scoped:** `decisions_reconciled` reads tag
+  *removals*, so reconciling a decision whose choice lived in a file the loop
+  may not write scores no progress. Counting a `decision:` trailer that names
+  an already-*answered* record fixes it. It is a metric redefinition, so
+  Class B — and doing it in the campaign that benefits is the wrong shape.
 
-Third concentration, newly confirmed: **anything scoped by an allow-list
-excludes `harness/`**, so the loop building the harness was invisible to its
-own instruments. `spec_drift` counted only `crates/` and `vendor/`;
-`provisional_decisions` and `tagged_sites` excluded `:!harness` wholesale.
-If a gap smells like this, check the pathspec first.
+## Load-bearing
 
-## Ruled out — do not re-read
-
-* **Sections 4, 6, 7, 11, 15, 16, 17 and 19 are done.** All five of §7's
-  gaps landed. Do not re-read `dashboard/serve` for missing panels or
-  `check-metrics` for missing arithmetic.
-* **`harness/loop`, `campaign-open/close`, `reap`, `audit-due` and the stall
-  rule carry scar tissue.** Their comments record real misrecordings already
-  fixed. Treat them as correct.
-* Do not rewrite §15's estimate table; do not build a gate check that parses
-  the ownership table. Journals of 11b9c019 and bb1e501a.
-
-## What is left in `loops.md`, and it is a different shape
-
-The mechanical one-function gaps are gone. What remains:
-
-* **Three spec edits** — §1 "there is no code", §2 "one writer", §8's
-  tune/select/final split. Each is a few sentences and each closes a
-  section. **Take them, in a campaign that is not editing the detector.**
-  This campaign deliberately did not: it rewrote `spec_drift`, and the
-  detector's own campaign should not be the first thing it flags.
-* **`harness-003`** — the audit cadence is a knob and §5/§15 say it is not.
-  A cost trade, not a loop's to settle.
-* **`harness-004`** — `loop/harness` and `main` diverged twenty commits each
-  way and neither is a superset. The record carries the resolution rather
-  than the complaint: three hunks, all in `hj`, all mechanical.
-* Then the unjudged sections. `#the-metrics-history`,
-  `#what-a-loop-remembers-about-itself` and
-  `#rules-are-inlined-subject-matter-is-read` were read this campaign and
-  appear satisfied; the untouched ones are §13's `#workers-*` and
-  `#parallel-loops-*`, and `harness/workers` is still unread by any campaign.
-
-## Load-bearing, confirmed
-
-* **The pinned harness judges you, and it is two campaigns stale.** The gate
-  on `main` predates the tree-`hj` selftest, so nothing runs this worktree's
-  `hj` except you. Run `harness/hj selftest` after every edit to it.
-* **A syntax error in `hj` blocks every Edit and Write in the worktree** —
-  the hook read a crash as a denial. Fixed by pointing the hook at the pinned
-  copy; if it recurs, the escape is bash.
-* **Never add a per-campaign write to a shared single-valued file.** Three
-  core workers bumping one scalar conflict on rebase and stop the round.
-  Append-only jsonl, or a hand-set floor read alongside it.
+* **The pinned harness judges you.** Run `harness/hj selftest` after every
+  edit to `hj`; the gate now runs the tree's copy too (57 → 68 checks).
+* **A syntax error in `hj` blocks every Edit and Write in the worktree.** The
+  hook reads a crash as a denial. The escape is bash.
+* **Never add a per-campaign write to a shared single-valued file.** Workers
+  conflict on rebase and the round stops. Append-only jsonl.
 * **`gate_runs` counts any command mentioning `harness/gate`**, so grepping
   for it inflates your own `empty` count.
