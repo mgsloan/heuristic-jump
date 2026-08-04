@@ -60,10 +60,32 @@ last_audited = "2026-08-04T00:48:03+00:00"
   where = "harness/gate:153"
 
 [section."loops.md#campaigns-are-the-unit-of-fresh-context"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-04T01:31:59+00:00"
+
+  [[section."loops.md#campaigns-are-the-unit-of-fresh-context".gap]]
+  claim = "a campaign is one target, one hypothesis \u2014 for a conformance loop, one open gap or one unjudged section"
+  found = "the conformance prompt authorises several targets and instructs the campaign to take another when one is done; the campaign-record template still says 'One target', so the two disagree with each other as well as with the spec"
+  where = "harness/prompts/conformance.md:46-49,111-121"
 
 [section."loops.md#campaigns-compare-notes-asymmetrically"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-04T01:31:59+00:00"
+
+  [[section."loops.md#campaigns-compare-notes-asymmetrically".gap]]
+  claim = "every loop reads every other loop's digest in its volatile tail"
+  found = "prompt_values builds other_findings but no template substitutes {{other_findings}}, and render() only fails on missing values, never on unused ones \u2014 so both live loops publish digests neither sees. A check that every produced value appears in some template would catch it"
+  where = "harness/hj:2323"
+
+  [[section."loops.md#campaigns-compare-notes-asymmetrically".gap]]
+  claim = "falsified is broadcast plainly, confirmed is published as a candidate and never as a result"
+  found = "the only prompt that writes a digest asks for the loop's current theory with no falsified/confirmed distinction and no 'untested elsewhere' marking"
+  where = "harness/prompts/conformance.md:136-150"
+
+  [[section."loops.md#campaigns-compare-notes-asymmetrically".minor]]
+  claim = "a digest of at most 512 words; the cap is the mechanism"
+  note = "the cap is prose in the prompt only \u2014 nothing counts words at close, and the digest on disk reads close to it"
+  where = "harness/prompts/conformance.md:136"
 
 [section."loops.md#what-a-loop-remembers-about-itself"]
 state = "unjudged"
@@ -86,10 +108,12 @@ last_audited = "2026-08-04T00:48:03+00:00"
 state = "unjudged"
 
 [section."loops.md#making-the-count-mean-something"]
-state = "unjudged"
+state = "clean"
+last_audited = "2026-08-04T01:31:59+00:00"
 
 [section."loops.md#properties-worth-keeping"]
-state = "unjudged"
+state = "clean"
+last_audited = "2026-08-04T01:31:59+00:00"
 
 [section."loops.md#6-spec-changes-what-the-loop-may-decide-alone"]
 state = "gaps"
@@ -157,20 +181,28 @@ last_audited = "2026-08-04T00:48:03+00:00"
 state = "unjudged"
 
 [section."loops.md#9-the-inner-loop-is-a-replay-and-its-cost-is-measured"]
-state = "unjudged"
+state = "clean"
+last_audited = "2026-08-04T01:31:59+00:00"
 
 [section."loops.md#there-is-no-replay-time-target-and-that-is-deliberate"]
 state = "unjudged"
 
 [section."loops.md#determinism-is-a-precondition-not-a-description"]
-state = "unjudged"
+state = "clean"
+last_audited = "2026-08-04T01:31:59+00:00"
 
 [section."loops.md#10-objectives-phases-and-the-frontier"]
 state = "clean"
 last_audited = "2026-08-04T00:48:03+00:00"
 
 [section."loops.md#phase-3-is-a-refactor-under-an-exact-oracle"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-04T01:31:59+00:00"
+
+  [[section."loops.md#phase-3-is-a-refactor-under-an-exact-oracle".gap]]
+  claim = "replay the corpus before and after and compare byte for byte; the gate has no carve-out and any difference fails it"
+  found = "there is no harness/equivalence and no equivalence step in the gate; the gate's only phase-3 behaviour is to hard-fail saying \u00a718 defers it past phase 1.5"
+  where = "harness/gate:152-155"
 
 [section."loops.md#the-metrics-history"]
 state = "unjudged"
@@ -179,7 +211,13 @@ state = "unjudged"
 state = "unjudged"
 
 [section."loops.md#measure_lang-size-covers-the-size-gap"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-04T01:31:59+00:00"
+
+  [[section."loops.md#measure_lang-size-covers-the-size-gap".gap]]
+  claim = "the stripped release size of measure_<lang> goes in every metrics row, with cargo bloat --crates reported beside it and a re-baseline when shared or measure_core changes"
+  found = "the metrics row carries loc, loc_counter, tests, tests_removed and provisional_decisions and no size at all; ratchets.toml has only a tests floor, and nothing in harness/ invokes cargo bloat or strips a binary. measure_rust exists and builds, so this is measurable now"
+  where = "harness/hj:1967-1983"
 
 [section."loops.md#the-frontier-and-why-it-stays-two-dimensional"]
 state = "unjudged"
@@ -192,6 +230,7 @@ state = "unjudged"
 
 [section."loops.md#going-back-is-not-a-reset"]
 state = "unjudged"
+last_audited = "2026-08-04T01:31:59+00:00"
 
 [section."loops.md#what-this-retires"]
 state = "unjudged"
@@ -220,19 +259,59 @@ state = "unjudged"
 state = "unjudged"
 
 [section."loops.md#extraction-is-phase-3-work"]
-state = "unjudged"
+state = "clean"
+last_audited = "2026-08-04T01:31:59+00:00"
 
 [section."loops.md#lang_-is-free"]
-state = "unjudged"
+state = "clean"
+last_audited = "2026-08-04T01:31:59+00:00"
 
 [section."loops.md#mechanics-isolation-in-four-layers"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-04T01:31:59+00:00"
+
+  [[section."loops.md#mechanics-isolation-in-four-layers".gap]]
+  claim = "layer 3 is an OS sandbox with an allowWrite list, and it is the real boundary because it covers subprocesses"
+  found = "no sandbox is configured for any loop; .claude/settings.json has only the PreToolUse edit-scope hook and a rustfmt PostToolUse hook, and nothing in the tree invokes bubblewrap. Escalated as state/decisions/harness-002.md, still open"
+  where = ".claude/settings.json:1"
+
+  [[section."loops.md#mechanics-isolation-in-four-layers".gap]]
+  claim = "the bounded harness/ exception may write the parts that judge later loops, and never the gate, the prompts, or the auditor that judge it now"
+  found = "DENIED_ALWAYS denies only harness/gate, harness/prompts/auditor.md, section-baseline.toml and ratchets.toml, so the harness loop may write harness/prompts/conformance.md \u2014 and cmd_campaign_open renders the template from HJ_REPO's worktree, not from the pinned harness, so an edit takes effect on its own next campaign. Mechanically fixable: deny harness/prompts/** or render templates from HJ_PINNED_HARNESS"
+  where = "harness/hj:87-90, harness/hj:2660"
+
+  [[section."loops.md#mechanics-isolation-in-four-layers".gap]]
+  claim = "the harness keeps one evaluation worktree, added once and checked out to each candidate sha in turn"
+  found = "the only git worktree add creates a per-loop worktree on a branch; nothing checks out a historical sha or measures one"
+  where = "harness/loop:105-121"
+
+  [[section."loops.md#mechanics-isolation-in-four-layers".minor]]
+  claim = "a harness change that touches measurement triggers the same recompute sweep as a metric redefinition"
+  note = "hj has `cost --refresh` and `backfill-lines` but no sweep tied to a harness change, and nothing records which harness commits touched measurement"
+  where = "harness/hj:3218"
 
 [section."loops.md#parallel-loops-and-what-they-share"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-04T01:31:59+00:00"
+
+  [[section."loops.md#parallel-loops-and-what-they-share".gap]]
+  claim = "with code and state both partitioned, nothing two loops write ever overlaps"
+  found = "core may write design/** and harness may write design/loops.md; both are granted state/handoff.md, which the dashboard has to guess the writer of"
+  where = "state/phase.toml:154,171,259,266"
 
 [section."loops.md#branches-exist-for-one-commit-at-a-time"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-04T01:31:59+00:00"
+
+  [[section."loops.md#branches-exist-for-one-commit-at-a-time".gap]]
+  claim = "merge after every green iteration; merging is a step in the iteration contract and the branch exists for the duration of one commit"
+  found = "merge_back runs once per campaign, after campaign-close, so a branch carrying a multi-commit campaign lives for the whole campaign and an unclosed campaign leaves it unmerged"
+  where = "harness/loop:352-356"
+
+  [[section."loops.md#branches-exist-for-one-commit-at-a-time".gap]]
+  claim = "the full-workspace gate still runs at phase gates, covering what no scoped gate does"
+  found = "harness/gate always builds `hj crates <loop>` and has no workspace mode or flag; nothing anywhere runs a workspace-wide gate"
+  where = "harness/gate:55-76"
 
 [section."loops.md#workers-one-loop-several-campaigns-at-once"]
 state = "unjudged"
@@ -245,13 +324,31 @@ last_audited = "2026-08-04T00:48:03+00:00"
 state = "unjudged"
 
 [section."loops.md#prompts-as-starting-points"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-04T01:31:59+00:00"
+
+  [[section."loops.md#prompts-as-starting-points".gap]]
+  claim = "the auditor is paired with the conformance loop and runs at every campaign close"
+  found = "harness/loop skips the auditor for any --worker campaign and harness/workers audits once per round, so core's cadence is one audit per three campaigns; hj audit-due gates it further on audit_every. Escalated as harness-003, still open"
+  where = "harness/loop:345-351, harness/workers:117"
+
+  [[section."loops.md#prompts-as-starting-points".minor]]
+  claim = "the auditor prompt carries `Prior audit: state/audit/ for those sections \u2014 verdicts and open gaps`"
+  note = "the deployed prompt deliberately withholds the prior verdict and substitutes a diffstat instead; the reasoning is stronger than the sketch, but no section records the reversal"
+  where = "harness/prompts/auditor.md:23-33"
 
 [section."loops.md#one-prompt-per-variety-of-phase"]
-state = "unjudged"
+state = "clean"
+last_audited = "2026-08-04T01:31:59+00:00"
+
+  [[section."loops.md#one-prompt-per-variety-of-phase".minor]]
+  claim = "not one template with a swapped middle"
+  note = "honoured across varieties, but core and harness share conformance.md with {{harness_note}}/{{reference_note}} swapped by writes_harness \u2014 a revision aimed at one loop changes the other, which is the blast-radius argument one level down"
+  where = "harness/hj:2290-2295"
 
 [section."loops.md#rules-are-inlined-subject-matter-is-read"]
-state = "unjudged"
+state = "clean"
+last_audited = "2026-08-04T01:31:59+00:00"
 
 [section."loops.md#15-cost-and-timing"]
 state = "clean"
@@ -297,25 +394,56 @@ last_audited = "2026-08-04T00:48:03+00:00"
 
 [section."loops.md#16-the-operator-view"]
 state = "clean"
-last_audited = "2026-08-04T00:48:03+00:00"
+last_audited = "2026-08-04T01:31:59+00:00"
 
 [section."loops.md#a-single-generated-html-file-auto-refreshing"]
-state = "unjudged"
+state = "clean"
+last_audited = "2026-08-04T01:31:59+00:00"
+
+  [[section."loops.md#a-single-generated-html-file-auto-refreshing".minor]]
+  claim = "a static server plus a filesystem watch; the page polls a version token every couple of seconds"
+  note = "there is no watch \u2014 version_token() stats every file under state/ on each 2-second /version request, which is O(state) per client per tick"
+  where = "harness/dashboard/serve:146-170"
+
+  [[section."loops.md#a-single-generated-html-file-auto-refreshing".minor]]
+  claim = "the page reloads when the token moves"
+  note = "it swaps <main> in place instead, which is better for the reason the section rejects <meta refresh> \u2014 but the document was never updated to say so"
+  where = "harness/dashboard/serve:2240-2264"
 
 [section."loops.md#what-is-on-it"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-04T01:31:59+00:00"
+
+  [[section."loops.md#what-is-on-it".gap]]
+  claim = "the metrics panel carries the per-language frontier chart, the per-stratum table (one per server), current versus the recorded baseline, and the held-out verdict"
+  found = "panel_metrics renders gaps found/closed, sections clean, and a tracked-lines chart; none of the four named items exists, and the panel's own note says the frontier is a phase 2a object. \u00a718 defers the frontier and held-out selection, which is a human's call"
+  where = "harness/dashboard/serve:1258-1348"
 
 [section."loops.md#decisions-carry-their-evidence"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-04T01:31:59+00:00"
+
+  [[section."loops.md#decisions-carry-their-evidence".gap]]
+  claim = "the evidence table's five escalation types each render their own evidence: class B, phase 3 behaviour change, frontier selection, stall handoff, held-out gap widened"
+  found = "only class B and stall handoff have cards; there is no renderer, escalation kind or data path for a phase-3 replay diff, frontier selection, or a widened held-out gap"
+  where = "harness/dashboard/serve:458-496"
 
 [section."loops.md#every-intervention-is-logged"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-04T01:31:59+00:00"
+
+  [[section."loops.md#every-intervention-is-logged".gap]]
+  claim = "the row is timestamp, kind, target, answer, rationale, resulting commit"
+  found = "both writers record head_sha() before making the commit the intervention causes, so `commit` is the preceding commit; hand_authored_commits documents the consequence rather than fixing it"
+  where = "harness/dashboard/serve:2384, harness/hj:4340"
 
 [section."loops.md#sessions-assign-the-id-own-the-transcript"]
-state = "unjudged"
+state = "clean"
+last_audited = "2026-08-04T01:31:59+00:00"
 
 [section."loops.md#reading-a-transcript"]
-state = "unjudged"
+state = "clean"
+last_audited = "2026-08-04T01:31:59+00:00"
 
 [section."loops.md#17-tooling-adopt-steal-reject"]
 state = "gaps"
@@ -371,7 +499,9 @@ last_audited = "2026-08-04T00:48:03+00:00"
   where = "harness/hj:2381, state/sessions.jsonl:87"
 
 [section."loops.md#decided"]
-state = "unjudged"
+state = "clean"
+last_audited = "2026-08-04T01:31:59+00:00"
 
 [section."loops.md#open-questions"]
-state = "unjudged"
+state = "clean"
+last_audited = "2026-08-04T01:31:59+00:00"
