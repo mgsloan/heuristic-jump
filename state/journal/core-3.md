@@ -374,3 +374,79 @@ seal always firing, a `std::process` marker in `replay.rs`, a second
 dropping the stratum again. The last printed the whole row with
 `"stratum_prior":"unimplemented"`, which is the gap's sentence verbatim. Two of
 the six passed against the *unplanted* wrong version first — worth the turns.
+
+## Campaign 636bbd45 — a spec claim whose second half an answered decision had already refused
+
+Assignment: `deps.md#8-parse-cache[fb0aa10250]`, one gap. Not stale — the first
+assignment in several rounds that was live when I got it, and the staleness
+check (`git log -1` on the `where:` file against `last_audited`) said so in one
+turn because the section had been re-audited that evening.
+
+### What the gap actually was, and why the fix is a document and not a cache
+
+§8 said the parse cache "is keyed by `(uri, version)` for open docs and
+`(path, mtime, len)` for disk files". The first is `driver::TreeCache` and is
+real. The second is a cache **nothing has and nothing here may build**: the
+only route to a disk-file parse is `ProjectView::parse`, behind the `Sync`
+`&Query` several fan-out threads hold, and `conformance-005` was answered *no*
+to a cache there — "no new caching or indexing until the corpus harness shows
+the change is worth it and there is a benchmark", plus the fact that a cache on
+`&self` is the lock this design does not have.
+
+So the ruling had been applied to the *code* — `project.rs`'s module doc and
+`trees.rs`'s `ParseKey` doc both say the disk half has no cache to be a key of
+— and never to the *document that the ruling contradicted*. That is the shape
+worth remembering: **when a decision record is answered, the code gets fixed
+and the design section that stated the refused thing usually does not.** The
+audit finds it later as a gap, one campaign per straggler. Anyone reconciling
+an answered decision should grep the design corpus for the sentence, not only
+the code.
+
+### The one thing this edit deliberately did not do
+
+`open-questions.md` question 5 asks whether `(path, mtime, len)` is sound at
+all, since second-granularity mtime serves a stale tree for a same-second
+rewrite of the same length. Deleting the disk key from §8 would have quietly
+answered it — the question would still be in `open-questions.md` and its
+subject would no longer be anywhere in `deps.md`. Numbered open questions are
+Class B. So the key stays written down as the one that *would* be used, marked
+as having no cache, and §8 now says in as many words that deferring the cache
+defers the question. That is the reading that trades nothing off, and it is the
+whole reason this stayed Class A.
+
+### The test, and why equal length is the entire point
+
+`a_second_parse_of_the_same_path_is_a_fresh_parse` writes `struct Beta;\n` over
+the fixture's `fn beta() {}\n` — thirteen bytes either way — and asserts that
+`read` returns the new text and `parse` returns a `struct_item`. Same path,
+same length, and on any filesystem whose mtime resolution is a second, the same
+mtime. So it fails against the exact key §8 claimed rather than against caching
+in general, which a shorter or longer rewrite would not have done.
+
+Planted both halves separately, each with a `thread_local` map so the plant
+needed no lock and no signature change: a path-keyed cache in `read` (the read
+assertion fired), then a `(path, len)`-keyed one in `parse` (the parse
+assertion fired). Two plants, two runs, and worth the four turns — the first
+assertion in this test is a *precondition* check (`function_item`), and a test
+whose first assertion is the only live one passes for a reason nobody chose.
+
+### Extending: two refusals and a stale grant
+
+`hj claim` refused `deps.md#10-errors[d50e2285d0]` and
+`deps.md#2-channels[8e707386b4]` — both live, both held by other workers, which
+matches three campaigns' worth of findings saying `actor.rs` and `dispatch.rs`
+are where the remaining work is. One turn each, and the right turns.
+
+It granted `deps.md#fxhashmap[e83fd58b7a]`, which is stale for the third round
+running: `shared::Map`/`Set` are at `shared.rs:85`, and
+`the_default_map_and_set_are_the_aliases_shared_exports` in
+`driver/tests/seam.rs` already scans **every** workspace member for
+`rustc_hash`, `FxHashMap` and `FxHashSet`, exempting only the file that defines
+the alias, with vacuity guards on both the member list and each source. There is
+nothing left to do to that section and no commit came of taking it. **Do not
+take it again** — the gap's own suggestion ("a scan for `rustc_hash::` outside
+shared would make this mechanical") was implemented by campaign 5cc94daa, and
+the gap has simply never been re-audited since.
+
+That is the round's cost lesson: a granted claim is not evidence the gap is
+live. The claim ledger knows who is working on what, not what is true.
