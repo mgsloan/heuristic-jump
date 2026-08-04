@@ -3731,6 +3731,70 @@ fn every_vendored_crate_records_the_patches_it_carries() {
          at all"
     );
 
+    // The revision the copy came from is written down five times: twice in
+    // full, in the README's table, and three times abbreviated -- once more in
+    // the README's own prose and once in `deps.md` §14's "checked against
+    // `../zed/Cargo.toml` at `90d024b8`". A re-sync updates the table, because
+    // that is the row anyone looks at; the abbreviations are where the old
+    // revision survives, and an abbreviated sha that no longer prefixes the
+    // real one sends a re-sync to the wrong upstream commit while looking
+    // exactly like a correct record.
+    let table: Vec<&str> = readme
+        .lines()
+        .filter(|line| line.starts_with("| `"))
+        .filter_map(|line| line.split('`').nth(5))
+        .filter(|cell| cell.len() == 40)
+        .collect();
+    assert_eq!(
+        table.len(),
+        vendored.len(),
+        "vendor/README.md's table records {} full revision(s) for {} vendored crate(s): the row \
+         is what a re-sync reads, and a crate whose revision is abbreviated there has no \
+         upstream commit anyone can check out",
+        table.len(),
+        vendored.len()
+    );
+    let upstream = table.first().copied().unwrap_or_default();
+    for revision in &table {
+        assert_eq!(
+            *revision, upstream,
+            "vendor/README.md's table gives the two crates different upstream revisions: they \
+             are one copy of one Zed checkout, and rope's sum_tree is the sum_tree that shipped \
+             beside it"
+        );
+    }
+
+    let abbreviated = |text: &str| -> Vec<String> {
+        text.split('`')
+            .skip(1)
+            .step_by(2)
+            .filter(|token| {
+                (7..40).contains(&token.len()) && token.chars().all(|c| c.is_ascii_hexdigit())
+            })
+            .map(str::to_owned)
+            .collect()
+    };
+    let mut mentions = abbreviated(&readme);
+    mentions.extend(abbreviated(&section_of(
+        &workspace_file("design/deps.md"),
+        "\n## 14. Workspace",
+    )));
+    assert!(
+        mentions.len() > 2,
+        "only {} abbreviated revision(s) found across vendor/README.md and deps.md §14, and \
+         there are three -- the reader is matching nothing and this assertion is vacuous",
+        mentions.len()
+    );
+    for mention in &mentions {
+        assert!(
+            upstream.starts_with(mention.as_str()),
+            "`{mention}` is not a prefix of the revision vendor/README.md's table records \
+             (`{upstream}`): the table is what a re-sync updates and the abbreviations are \
+             where the superseded one survives, pointing at a different upstream commit while \
+             reading as a correct record"
+        );
+    }
+
     // `deps.md` §5 lists the patches vendoring costs and says each is
     // "recorded in `vendor/README.md`". That is a claim about two documents
     // and it held in only one direction: the README's list has grown to eight
