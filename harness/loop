@@ -143,7 +143,8 @@ blocked() {
 	"$hj" intervene --kind merge-blocked --target "$identity" \
 		--answer "$branch left unmerged" \
 		--rationale "$reason. Conflicting paths: ${files:-unknown}. Two workers wrote the same file, which is a failure of the plan that divided them rather than of either campaign. The branch is intact and rebases once the other side lands or a human picks. Nothing is discarded automatically: a machine choosing a side here would hide the evidence the planner needs." \
-		>/dev/null 2>&1 || true
+		>/dev/null ||
+		echo "loop: could not log the block; it reached this log and nothing else." >&2
 }
 
 # Resolve the conflicts whose answer is not a judgement, escalate the rest.

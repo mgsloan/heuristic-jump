@@ -1081,6 +1081,16 @@ KINDS_IN_USE = (
     # deletions to be flagged for review regardless of count, and a review
     # that leaves no trace is indistinguishable from nobody looking.
     "test-deletion-reviewed",
+    # `design/loops.md` §13, "Branches exist for one commit at a time": a
+    # rebase that turns the gate red is escalated as a blocked item rather
+    # than repaired locally. `harness/loop`'s `blocked` is the only caller and
+    # it was logging a kind this vocabulary did not name, so `cmd_intervene`
+    # died on every one of them and the call site's `|| true` swallowed it —
+    # for long enough that the five rows already in the log all predate the
+    # vocabulary being closed. The escalation reached the worker's own log
+    # file and nothing else, which is the failure mode §13 describes: the
+    # branch keeps accumulating while nobody is told.
+    "merge-blocked",
 )
 
 KNOWN_KINDS = INTERVENTION_KINDS + KINDS_IN_USE
@@ -1093,6 +1103,47 @@ KIND_ALIASES = {"prompt-revision": "prompt-revised"}
 
 def canonical_kind(kind: str) -> str:
     return KIND_ALIASES.get(kind, kind)
+
+
+# Only a bare literal. `--kind "$computed"` is not checkable from here and is
+# skipped rather than guessed at, and the angle-bracket placeholder in the
+# post-commit hook's help text is not a kind.
+SHELL_KIND = re.compile(r"--kind[ \t]+([a-z][a-z0-9-]*)")
+
+
+def intervention_kinds_in(script: str) -> list[str]:
+    return sorted({match.group(1) for match in SHELL_KIND.finditer(script)})
+
+
+def shell_intervention_kinds() -> dict[str, list[str]]:
+    """Every intervention kind the scripts beside this file log, by file.
+
+    The vocabulary above is enforced in `cmd_intervene` at runtime, and its
+    callers are shell scripts that cannot import it. `harness/loop` logged
+    `merge-blocked` for as long as that kind was missing here, and because the
+    call site ends in `|| true` the only symptom was an escalation that never
+    arrived. This is the seam that had no check.
+
+    Missing files are skipped rather than failed: this reaches through
+    `HJ_REPO`, so it reads whichever tree is being judged, and a branch that
+    predates a script is not a branch that broke one.
+    """
+    found: dict[str, list[str]] = {}
+    roots = [HARNESS, HARNESS / "hooks"]
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for path in sorted(root.iterdir()):
+            if not path.is_file() or path.name == "hj":
+                continue
+            try:
+                script = path.read_text()
+            except (OSError, UnicodeDecodeError):
+                continue
+            kinds = intervention_kinds_in(script)
+            if kinds:
+                found[str(path.relative_to(HARNESS))] = kinds
+    return found
 
 
 def decision_status(identifier: str, recorded: str | None, answers: dict[str, dict] | None = None) -> str:
@@ -5928,6 +5979,27 @@ def selftest_cases() -> list[tuple[str, object]]:
         assert not set(INTERVENTION_KINDS) & set(KINDS_IN_USE), "a kind is named once"
         for routine in ROUTINE_KINDS:
             assert routine in KNOWN_KINDS, routine
+
+    def every_kind_the_shell_logs_is_a_kind_this_file_knows():
+        # The vocabulary is checked at runtime and populated from two places:
+        # this file, and the shell scripts beside it. `merge-blocked` sat in
+        # `harness/loop` and in neither tuple here, so every escalation of a
+        # blocked rebase died in `cmd_intervene` and was swallowed by the call
+        # site's `|| true`. The shell cannot import this list, so the list
+        # reads the shell.
+        for name, kinds in shell_intervention_kinds().items():
+            for kind in kinds:
+                assert canonical_kind(kind) in KNOWN_KINDS, (
+                    f"harness/{name} logs {kind!r}, which is not in KNOWN_KINDS; "
+                    "cmd_intervene would die on it and the caller would swallow the failure"
+                )
+
+    def a_shell_scan_reads_literals_and_skips_what_it_cannot():
+        script = 'hj intervene --kind loop-killed --target x\nhj intervene --kind "$computed" --t\n'
+        assert intervention_kinds_in(script) == ["loop-killed"], (
+            "a kind built at runtime is not a literal and cannot be checked here"
+        )
+        assert intervention_kinds_in("") == []
 
     def the_session_row_carries_tokens_or_nothing():
         assert token_counts({}) is None, "no measurement is absent, not four zeroes"
