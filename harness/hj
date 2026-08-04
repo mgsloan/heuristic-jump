@@ -5005,6 +5005,95 @@ def cmd_budget(args: argparse.Namespace) -> int:
     return 1 if exhausted else 0
 
 
+# --------------------------------------------------------------------------
+# Held-out integrity. `design/loops.md` §12.
+#
+# The section's first two bullets are a single mechanism stated twice, and the
+# second states why the first is not a convention: "the loop is given
+# `--corpus` pointing at one and never the other, and a rule it is never told
+# about is a rule it cannot weigh against making the number go up", then "the
+# separation must be physical, not rule-based ... the boundary is that the data
+# is outside the checkout entirely and the held-out path is never passed in."
+#
+# Both halves are exactly checkable and neither needs a corpus run, which is
+# what makes this worth doing during a phase that has no tuning loop in it. The
+# mistake they guard against is made once, in whichever campaign first writes a
+# tuning prompt, and it is invisible afterwards: a leaked split does not fail,
+# it just makes every number afterwards mean less than it says.
+
+HELD_OUT_SPLIT = "test"
+TUNING_SPLIT = "training"
+
+
+def corpus_root() -> Path | None:
+    selection = HARNESS / "corpus-selection.toml"
+    if not selection.exists():
+        return None
+    root = tomllib.loads(selection.read_text()).get("corpus_root")
+    return (REPO / root).resolve() if isinstance(root, str) else None
+
+
+def held_out_exposure(root: Path, texts: dict[str, str]) -> list[str]:
+    """Every place a text names the held-out split, as `<where>: <why>`.
+
+    Matched on the corpus root's own directory name joined to the split — a
+    bare `test` appears in every one of these files for unrelated reasons, and
+    a check with that false-positive rate gets suppressed rather than fixed.
+    """
+    held_out = f"{root.name}/{HELD_OUT_SPLIT}"
+    problems = []
+    for where, text in texts.items():
+        if held_out in text:
+            problems.append(f"{where}: names {held_out}, which the loop must never be told about")
+        elif re.search(rf"--corpus[= ]\S*/{HELD_OUT_SPLIT}\b", text):
+            problems.append(f"{where}: passes --corpus at the held-out split")
+    return problems
+
+
+def cmd_check_heldout(args: argparse.Namespace) -> int:
+    """§12's two structural claims, checked without a corpus run.
+
+    Not a gate step. It is about the *configuration* a campaign is launched
+    with rather than about a diff, so it belongs where `harness/loop` decides
+    what to launch — and running it per commit would say nothing new, since
+    nothing in a commit can move the corpus root.
+    """
+    root = corpus_root()
+    if root is None:
+        print("heldout: no corpus selection yet; nothing to separate")
+        return 0
+    problems = []
+    if REPO == root or REPO in root.parents:
+        problems.append(
+            f"the corpus root {root} is inside the checkout {REPO}. §12: the boundary "
+            "is that the data is outside the checkout entirely, because a denyRead rule "
+            "does not stop `cat` in a bash subprocess"
+        )
+    held_out, tuning = root / HELD_OUT_SPLIT, root / TUNING_SPLIT
+    if held_out.parent != tuning.parent:
+        problems.append(
+            f"{held_out} is not a sibling of {tuning}. §12 puts the held-out split "
+            "beside the tuning one rather than inside it, so that a path handed to a "
+            "loop cannot reach it by descending"
+        )
+    texts = {str(path.relative_to(REPO)): path.read_text() for path in sorted(
+        list((HARNESS / "prompts").rglob("*.md")) + [HARNESS / "loop"]
+    ) if path.exists()}
+    phase_file = CONTROL / "state" / "phase.toml"
+    if phase_file.exists():
+        texts["state/phase.toml"] = phase_file.read_text()
+    problems += held_out_exposure(root, texts)
+    if problems:
+        for problem in problems:
+            print(f"heldout: {problem}", file=sys.stderr)
+        return 1
+    print(
+        f"heldout: {held_out.name} is a sibling of {tuning.name} outside the checkout, "
+        f"and nothing a campaign is shown names it ({len(texts)} file(s) checked)"
+    )
+    return 0
+
+
 # §11's guardrail is on two things and only one of them is measurable today.
 # Naming the second anyway is what stops it being forgotten: a guardrail table
 # that silently covers half of what the section asks for reads, from the
@@ -5857,6 +5946,36 @@ def selftest_cases() -> list[tuple[str, object]]:
         rows = [{"commit": "aaa"}, {"commit": "bbb"}, {"commit": "ccc"}]
         assert rows_since(rows, None) == rows, "no re-baseline commit means the whole history"
 
+    def the_held_out_split_is_caught_wherever_it_is_named():
+        root = Path("/elsewhere/heuristic-jump-corpus")
+        found = held_out_exposure(
+            root,
+            {
+                "prompt": "measure against /elsewhere/heuristic-jump-corpus/test/rust",
+                "runner": "--corpus ../heuristic-jump-corpus/test",
+                "equals": "--corpus=/srv/corpora/test",
+            },
+        )
+        assert len(found) == 3, found
+        assert all("heldout" not in problem for problem in found)
+
+    def a_bare_test_is_not_an_exposure():
+        # Every file this scans says "test" for unrelated reasons — `cargo
+        # nextest`, `#[test]`, `selftest`. A check that fired on those would be
+        # suppressed rather than fixed, so it matches the corpus root's own
+        # directory name joined to the split.
+        root = Path("/elsewhere/heuristic-jump-corpus")
+        assert held_out_exposure(root, {"gate": "cargo nextest run; hj selftest"}) == []
+        assert held_out_exposure(root, {"prompt": "run the test suite"}) == []
+        assert held_out_exposure(root, {"ok": "--corpus ../heuristic-jump-corpus/training"}) == []
+
+    def the_tuning_split_is_never_the_one_flagged():
+        root = Path("/c/corpus")
+        assert held_out_exposure(root, {"p": "/c/corpus/training/rust"}) == [], (
+            "the loop is given one and never the other; naming the one it is "
+            "given is the mechanism working"
+        )
+
     def a_guardrail_is_not_a_ratchet():
         phase = Phase(phase="2a", guardrail={"measure_binary_bytes": 60_000_000})
         scopes = {entry["scope"]: entry for entry in guardrail_scopes(phase, None)}
@@ -6319,6 +6438,9 @@ def main() -> int:
     p = sub.add_parser("record", help="append the metrics row for HEAD")
     p.add_argument("loop")
     p.set_defaults(run=cmd_record)
+
+    p = sub.add_parser("check-heldout", help="the held-out split is separate, and unnamed")
+    p.set_defaults(run=cmd_check_heldout)
 
     p = sub.add_parser("guardrail", help="the standing ceilings of loops.md §11")
     p.add_argument("loop", nargs="?")
