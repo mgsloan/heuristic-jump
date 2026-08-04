@@ -2119,6 +2119,108 @@ fn the_workspace_lints_reach_our_crates_and_not_the_vendored_ones() {
     }
 }
 
+/// `deps.md` §14 closes with a file tree, and its third column is a licence per
+/// crate:
+///
+/// ```text
+/// crates/
+///   shared/           MIT -- vocabulary newtypes, LanguageHandler, proto, Error
+///   similarity/       GPL-3.0-or-later -- ported; see section 5
+///   lang_*/           GPL-3.0-or-later -- they depend on similarity
+/// ```
+///
+/// It is a second statement of §5's table, one section away from it, and
+/// nothing read it. `the_gpl_inputs_are_the_two_the_documents_name` reads §5's
+/// licensing subsection and `every_member_declares_the_licence_section_5_assigns_it`
+/// reads the manifests; both stop at §5's boundary, so §14 could go on printing
+/// the superseded answer indefinitely — which is the failure `core.md` §7's
+/// mode split had, where the section directly above a pinned claim restated it
+/// and drifted.
+///
+/// **A tree is not compared for membership, only for licence.** §14's ends by
+/// saying so: "`similarity`, `lang_*`, `measure_core`, and `measure_<lang>` are
+/// in `core.md` §9's layout but are not created by this piece of work" — the
+/// tree is deliberately the subset §14 is about, and `measure_core` and
+/// `measure_rust` are absent on purpose. §9's tree is the one that has to be
+/// exhaustive, and `the_workspace_is_the_layout_section_9_prints` holds it that
+/// way.
+///
+/// `lang_*` is expanded rather than read literally, for the reason
+/// `language_members` gives: six more arrive by copying the template, and a
+/// row that had to be edited for each would be a row nobody edits.
+#[test]
+fn the_tree_section_14_prints_carries_the_licence_each_manifest_declares() {
+    let section = section_of(&workspace_file("design/deps.md"), "\n## 14. Workspace");
+    let tree = section
+        .split("```")
+        .find(|block| block.contains("rust-toolchain.toml"))
+        .unwrap_or_default();
+    assert!(
+        tree.contains("crates/") && tree.contains("vendor/"),
+        "no file tree found under deps.md §14, so this test would compare nothing: it is the \
+         fenced block naming rust-toolchain.toml, and §14 has a second one showing the licence \
+         symlinks"
+    );
+
+    let mut parent = String::new();
+    let mut compared = Vec::new();
+    for line in tree.lines() {
+        let indented = line.starts_with(' ');
+        let mut fields = line.split_whitespace();
+        let Some(entry) = fields.next().and_then(|name| name.strip_suffix('/')) else {
+            continue;
+        };
+        if !indented {
+            entry.clone_into(&mut parent);
+            continue;
+        }
+
+        let printed = fields.next().unwrap_or_default();
+        assert!(
+            ["MIT", "GPL-3.0-or-later", "Apache-2.0"].contains(&printed),
+            "deps.md §14's tree gives {parent}/{entry} no licence, or one that is not among the \
+             three the section keeps texts for at the workspace root: the column is the whole \
+             reason the tree is in a dependency document rather than in core.md §9, and a row \
+             without it reads as a crate nobody assigned"
+        );
+
+        let members: Vec<String> = match entry {
+            "lang_*" => language_members()
+                .into_iter()
+                .map(|member| format!("crates/{member}"))
+                .collect(),
+            _ => vec![format!("{parent}/{entry}")],
+        };
+        assert!(
+            !members.is_empty(),
+            "deps.md §14's tree names {entry} and the workspace has no such member, so this row \
+             is compared against nothing"
+        );
+
+        for member in members {
+            let declared = licence_of(&workspace_file(&format!("{member}/Cargo.toml")));
+            assert_eq!(
+                declared.as_deref(),
+                Some(printed),
+                "{member} declares license = {declared:?} and deps.md §14's tree prints \
+                 {printed}: the tree is a second statement of §5's table one section away from \
+                 it, so the two go stale independently — and this is the copy a reader of the \
+                 dependency document sees"
+            );
+            compared.push(member);
+        }
+    }
+
+    for named in ["crates/similarity", "crates/lang_rust", "vendor/rope"] {
+        assert!(
+            compared.iter().any(|member| member == named),
+            "§14's tree was read and {named} was not among the {} rows compared: it names all \
+             three, and a reader that missed them is one that stopped at the first line",
+            compared.len()
+        );
+    }
+}
+
 /// `deps.md` §14, the bullet directly after the one about denying a short list
 /// of real hazards:
 ///
