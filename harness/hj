@@ -32,7 +32,7 @@ import textwrap
 import tomllib
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # The tree being operated on, which is not always the tree this script lives
@@ -126,6 +126,13 @@ HARNESS_PATHS = ["harness/**"]
 # dead. Covers the gap between `campaign-open` returning and the runner
 # reaching the process table, which several workers reach routinely.
 REAP_GRACE_SECONDS = 120
+
+# When a campaign that never wrote a close row stops being treated as running.
+# Not a timeout on anything — `hj campaign-reap` is the real recovery — only a
+# backstop so a crash between rounds cannot hold its targets indefinitely. Well
+# above any real campaign: the turn target is about 150 and a long one runs
+# under an hour.
+CAMPAIGN_MAX_LIFETIME_SECONDS = 6 * 3600
 
 # Bumped whenever `progress` changes meaning.
 #   1 — settled at close: sections clean up, or open gaps down, or tests up.
@@ -3782,8 +3789,64 @@ def cmd_campaign_close(args: argparse.Namespace) -> int:
     return 0
 
 
-def campaign_is_alive(campaign_id: str) -> bool:
-    """`pgrep -f` matches any command line containing the string, including a
+def campaign_is_alive(campaign_id: str, rows: list[dict] | None = None) -> bool:
+    """Is this campaign still running, as far as anyone outside it can tell?
+
+    Answered from `sessions.jsonl`, **never from the process table**, because
+    the process table is not shared. Campaigns run under the OS sandbox
+    (`design/loops.md` section 13, layer 3), which puts each in its own PID
+    namespace: from inside a campaign, `pgrep` and `/proc` cannot see a sibling
+    campaign's runner at all. The previous implementation asked exactly that,
+    so from inside any campaign every live sibling looked dead — and since a
+    stale claim is taken by design, `hj claim` granted every target another
+    worker already held. The round that found this ran two campaigns to one
+    result and left a thirteen-hunk merge for a person.
+
+    `sessions.jsonl` is in the integration checkout, written by the runner from
+    outside the sandbox and readable from every worktree, so it is the one
+    account of who is running that all parties see the same way.
+
+    **Uncertainty means alive**, which is the asymmetry: a claim refused in
+    error costs a worker picking a different target from a list it already has;
+    a claim granted in error costs a duplicate campaign and a merge. So a row
+    whose timestamp will not parse is treated as running.
+
+    The age backstop is only for what a crash leaves behind — a campaign that
+    dies without its close row has no `outcome` and would otherwise hold its
+    claims until someone noticed. `hj campaign-reap` is the real recovery and
+    runs at every loop start; this stops a claim outliving the fleet in between.
+    """
+    for row in rows if rows is not None else session_rows():
+        if row.get("campaign") != campaign_id:
+            continue
+        if row.get("outcome"):
+            return False
+    started = next(
+        (
+            row.get("started")
+            for row in (rows if rows is not None else session_rows())
+            if row.get("campaign") == campaign_id and row.get("started")
+        ),
+        None,
+    )
+    if started is None:
+        return False
+    try:
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(started)).total_seconds()
+    except ValueError:
+        return True
+    return age < CAMPAIGN_MAX_LIFETIME_SECONDS
+
+
+def campaign_process_is_running(campaign_id: str) -> bool:
+    """Whether the runner's process actually exists, for the reaper alone.
+
+    Valid only where the fleet's PID namespace is — `harness/loop` startup,
+    which is the one caller. Do not use this to answer "is a sibling working on
+    this", which is `campaign_is_alive`: inside a campaign's sandbox this
+    returns False for every live campaign in the fleet.
+
+    `pgrep -f` matches any command line containing the string, including a
     shell that merely mentions it — a watcher looking for the loop matched
     itself and reported the loop as running. So the match is confirmed against
     the process's actual argv: some argument must *be* the adapter, followed by
@@ -3832,7 +3895,10 @@ def cmd_campaign_reap(args: argparse.Namespace) -> int:
             if campaign.get("outcome"):
                 continue
             campaign_id = campaign.get("campaign", "")
-            if campaign_is_alive(campaign_id):
+            # The process table, not `campaign_is_alive`: this is the one place
+            # that wants to know whether the runner exists, and it is the one
+            # caller that runs where the fleet's PID namespace is.
+            if campaign_process_is_running(campaign_id):
                 print(f"reap: {campaign_id[:8]} is still running; left alone")
                 continue
             # A campaign is not alive between `campaign-open` returning and the
@@ -5164,6 +5230,33 @@ def selftest_cases() -> list[tuple[str, object]]:
         )
         assert tag_sites(output) == [("harness/hj", 100), ("crates/shared/src/proto:types.rs", 7)]
         assert tag_sites("") == []
+
+    def liveness_is_read_off_the_record_not_the_process_table():
+        recent = (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat()
+        ancient = (datetime.now(timezone.utc) - timedelta(hours=9)).isoformat()
+        rows = [
+            {"campaign": "running", "started": recent},
+            {"campaign": "closed", "started": recent},
+            {"campaign": "closed", "outcome": "confirmed"},
+            {"campaign": "abandoned", "started": ancient},
+            {"campaign": "unparseable", "started": "not a timestamp"},
+        ]
+        assert campaign_is_alive("running", rows), "open, recent, no outcome — a sibling is on it"
+        assert not campaign_is_alive("closed", rows), "an outcome ends it whatever else the rows say"
+        assert not campaign_is_alive("abandoned", rows), "past the backstop, so a crash cannot hold targets"
+        assert campaign_is_alive("unparseable", rows), (
+            "uncertainty means alive: a claim refused in error costs a different target, "
+            "a claim granted in error costs a duplicate campaign and a merge"
+        )
+        assert not campaign_is_alive("never-opened", rows)
+
+    def the_reaper_is_the_only_caller_that_asks_the_process_table():
+        source = (HARNESS / "hj").read_text()
+        callers = re.findall(r"^[^#\n]*\bcampaign_process_is_running\(", source, re.MULTILINE)
+        assert len(callers) == 2, (
+            "the definition and one call. Asking the process table from inside a "
+            "campaign's sandbox reports every live sibling as dead"
+        )
 
     def a_tuple_returning_helper_is_not_used_as_one_value():
         bad = "def f(a: int) -> tuple[dict, str]:\n    pass\n\nx = sum(f().values())\n"
