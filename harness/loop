@@ -146,6 +146,70 @@ blocked() {
 		>/dev/null 2>&1 || true
 }
 
+# Resolve the conflicts whose answer is not a judgement, escalate the rest.
+#
+# **`--ours` and `--theirs` are inverted during a rebase**, which is the trap
+# here: the commits are replayed *onto* main, so `--ours` is main and
+# `--theirs` is the worker's. Getting it backwards silently keeps the wrong
+# side, which is worse than any conflict.
+#
+# Only two classes are obvious, and both are obvious for a stated reason
+# rather than because they are inconvenient:
+#
+#   state/audit/**   -> main. Only the round runner audits (§13, "the audit
+#                       does not parallelise"), so a worker branch carrying a
+#                       verdict is carrying one it should not have written.
+#   state/findings/* -> the worker's. It is that worker's digest of its own
+#                       campaign; nothing else can have a better copy.
+#
+# Everything else escalates. A conflict in `crates/`, `vendor/` or `design/`
+# means two workers wrote one file, which is a failure of the plan that
+# divided them — picking a side there destroys the evidence and loses work.
+rebase_resolving() {
+	local attempt=0
+	git -C "$worktree" rebase main && return 0
+	while [ "$attempt" -lt 20 ]; do
+		attempt=$((attempt + 1))
+		local unresolved="" resolved=""
+		local conflicting
+		conflicting="$(git -C "$worktree" diff --name-only --diff-filter=U)"
+		if [ -z "$conflicting" ]; then
+			break
+		fi
+		local path
+		while IFS= read -r path; do
+			[ -n "$path" ] || continue
+			case "$path" in
+			state/audit/*)
+				git -C "$worktree" checkout --ours -- "$path" 2>/dev/null &&
+					git -C "$worktree" add -- "$path" && resolved="$resolved $path(main)"
+				;;
+			state/findings/*)
+				git -C "$worktree" checkout --theirs -- "$path" 2>/dev/null &&
+					git -C "$worktree" add -- "$path" && resolved="$resolved $path(worker)"
+				;;
+			*)
+				unresolved="$unresolved $path"
+				;;
+			esac
+		done <<-EOF
+			$conflicting
+		EOF
+		if [ -n "$unresolved" ]; then
+			git -C "$worktree" rebase --abort 2>/dev/null
+			blocked "conflict rebasing $branch onto main that is not mechanical" "$unresolved"
+			return 1
+		fi
+		echo "loop: resolved mechanically:$resolved"
+		if GIT_EDITOR=true git -C "$worktree" rebase --continue; then
+			return 0
+		fi
+	done
+	git -C "$worktree" rebase --abort 2>/dev/null
+	blocked "rebase of $branch did not converge after $attempt round(s)" ""
+	return 1
+}
+
 # Serialised across workers. Three of them close at their own pace, and two
 # `git merge --ff-only` into one checkout at the same moment is a race the
 # second one loses for no reason — its branch is fine, it just read `main`
@@ -175,10 +239,7 @@ merge_back_locked() {
 	if [ -z "$(git -C "$worktree" log --oneline "main..$branch" 2>/dev/null)" ]; then
 		return 0
 	fi
-	if ! git -C "$worktree" rebase main; then
-		files="$(git -C "$worktree" diff --name-only --diff-filter=U | tr '\n' ' ')"
-		git -C "$worktree" rebase --abort 2>/dev/null
-		blocked "conflict rebasing $branch onto main" "$files"
+	if ! rebase_resolving; then
 		return 1
 	fi
 	if git -C "$integration" merge --ff-only "$branch"; then
