@@ -83,6 +83,13 @@ const SOURCE: &str =
 const WORKSPACE_MANIFEST: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.toml"));
 
+/// `replay`'s own source, for the half of "replay enforces no deadline at all"
+/// that no record can observe: the `Deadline` the *snapshot parse* runs under.
+/// A bounded one there drops rows on a busy machine and nothing else, which is
+/// invisible to a fast fixture and is exactly the failure the requirement is
+/// about.
+const REPLAY_SOURCE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/replay.rs"));
+
 /// Two lockfiles differing only in which revision of the grammar they pin.
 /// Written out rather than generated, so what the pin has to distinguish is
 /// visible: the same crate at two versions, with the checksums cargo records
@@ -193,6 +200,49 @@ impl LanguageHandler for ReportingHandler {
             Vec::new(),
             trace,
         ))
+    }
+}
+
+/// A handler that reports the deadline it was handed, through the only channel
+/// a `&self` handler has: its own `Trace`. The labels are what
+/// [`a_replay_enforces_no_deadline_at_all`] reads back out of the record.
+struct DeadlineReportingHandler;
+
+impl LanguageHandler for DeadlineReportingHandler {
+    fn language_ids(&self) -> &'static [LanguageId] {
+        const IDS: &[LanguageId] = &[LanguageId::new("rust")];
+        IDS
+    }
+
+    fn file_extensions(&self) -> &'static [FileExtension] {
+        const EXTENSIONS: &[FileExtension] = &[FileExtension::new("rs")];
+        EXTENSIONS
+    }
+
+    fn grammar(&self) -> Language {
+        tree_sitter_rust::LANGUAGE.into()
+    }
+
+    fn goto_definition(&self, query: &Query<'_>) -> Result<Outcome, Error> {
+        let mut trace = Trace::new();
+        // `at()` is `None` only for `Deadline::none`, which is why it is an
+        // `Option` and not an instant very far away: a caller has to say what
+        // it does when there is no instant rather than compare against one.
+        trace.stage(StageLabel::new(if query.deadline.at().is_some() {
+            "deadline:bounded"
+        } else {
+            "deadline:unbounded"
+        }));
+        trace.stage(StageLabel::new(if query.deadline.expired() {
+            "deadline:expired"
+        } else {
+            "deadline:live"
+        }));
+        Ok(Outcome::Abstain {
+            reason: AbstainReason::NoCandidates,
+            strata: Strata::from_reference(Stratum::ExplicitImport),
+            trace,
+        })
     }
 }
 
@@ -394,6 +444,65 @@ fn the_printed_table_is_byte_identical_across_runs() {
              away, which is why `Table` holds counters and no `Duration`"
         );
     }
+}
+
+/// §7: "**Replay enforces no deadline at all.** This is the constraint that
+/// makes replay worth having, and it is easy to get wrong by doing the obvious
+/// thing. A wall-clock deadline makes abstention depend on machine load: the
+/// same handler on the same snapshot gives up on a busy machine and finishes on
+/// an idle one, so *coverage* — not just latency — becomes a property of what
+/// else was running."
+///
+/// `crates/driver/tests/deadline.rs` holds the type's half — that
+/// `Deadline::none` never expires and names no instant. This is the other half,
+/// and it is the one the requirement is actually about: that a **replay** hands
+/// the handler one of those. Nothing observed it, and the mistake it guards
+/// against is a one-line edit that no other test would notice, because a
+/// deadline generous enough to pass on this machine is what a wall-clock
+/// deadline looks like right up until the machine is busy.
+///
+/// Two assertions because the query is only half the surface. The parse runs
+/// under a deadline of its own that no handler can see, and an abandoned parse
+/// drops the row entirely — so that half is held by scanning `replay.rs` for
+/// the constructor instead. Planting `Deadline::new` in either place fails
+/// exactly one of these.
+#[test]
+fn a_replay_enforces_no_deadline_at_all() {
+    let corpus = fixture("no_deadline");
+    enumerate(&corpus);
+    write_truth(&corpus);
+
+    let records = corpus.scratch.join("records.jsonl");
+    replay_with(&DeadlineReportingHandler, &corpus, Some(&records));
+
+    let text = fs::read_to_string(&records).expect("replay wrote the records file");
+    assert!(
+        text.lines().count() > 1,
+        "the fixture replayed {} queries, and a loop over none of them holds \
+         nothing",
+        text.lines().count()
+    );
+    for line in text.lines() {
+        assert!(
+            line.contains(
+                "\"stages\":[\"deadline:unbounded\",\"deadline:live\",\
+                 \"abstain:no_candidates\"]"
+            ),
+            "a replayed query ran under a deadline the handler could see. \
+             core.md §7 makes an unbounded deadline the constraint that makes \
+             replay worth having: with a clock, the same handler on the same \
+             snapshot abstains on a busy machine and commits on an idle one, \
+             so two runs cannot be compared at all.\nrecord: {line}"
+        );
+    }
+
+    assert!(
+        !REPLAY_SOURCE.contains("Deadline::new") && REPLAY_SOURCE.contains("Deadline::none()"),
+        "replay builds a bounded Deadline somewhere. The snapshot parse takes \
+         one and no record can report it, so a wall clock there costs coverage \
+         silently — the row is dropped rather than abstained, and the metric \
+         moves with whatever else the machine was doing"
+    );
 }
 
 /// §7's command line: "`collect` drives the server named in `servers.toml`,
