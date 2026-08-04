@@ -1126,6 +1126,30 @@ def intervention_kinds_in(script: str) -> list[str]:
     return sorted({match.group(1) for match in SHELL_KIND.finditer(script)})
 
 
+def harness_scripts() -> list[tuple[str, str]]:
+    """The scripts beside this file, as (name, text).
+
+    Reaches through `HJ_REPO`, so it reads whichever tree is being judged
+    rather than the reviewed copy this file may have been run from. That is
+    deliberate and it is the only way the checks built on it catch anything:
+    the bug they exist for is a shell script changing while `hj` does not, and
+    in that case the tree's own `hj` is never run. Unreadable and missing files
+    are skipped — a branch that predates a script did not break it.
+    """
+    found = []
+    for root in (HARNESS, HARNESS / "hooks"):
+        if not root.is_dir():
+            continue
+        for path in sorted(root.iterdir()):
+            if not path.is_file() or path.name == "hj":
+                continue
+            try:
+                found.append((str(path.relative_to(HARNESS)), path.read_text()))
+            except (OSError, UnicodeDecodeError):
+                continue
+    return found
+
+
 def shell_intervention_kinds() -> dict[str, list[str]]:
     """Every intervention kind the scripts beside this file log, by file.
 
@@ -1134,27 +1158,30 @@ def shell_intervention_kinds() -> dict[str, list[str]]:
     `merge-blocked` for as long as that kind was missing here, and because the
     call site ends in `|| true` the only symptom was an escalation that never
     arrived. This is the seam that had no check.
-
-    Missing files are skipped rather than failed: this reaches through
-    `HJ_REPO`, so it reads whichever tree is being judged, and a branch that
-    predates a script is not a branch that broke one.
     """
-    found: dict[str, list[str]] = {}
-    roots = [HARNESS, HARNESS / "hooks"]
-    for root in roots:
-        if not root.is_dir():
-            continue
-        for path in sorted(root.iterdir()):
-            if not path.is_file() or path.name == "hj":
-                continue
-            try:
-                script = path.read_text()
-            except (OSError, UnicodeDecodeError):
-                continue
-            kinds = intervention_kinds_in(script)
-            if kinds:
-                found[str(path.relative_to(HARNESS))] = kinds
-    return found
+    return {name: kinds for name, text in harness_scripts() if (kinds := intervention_kinds_in(text))}
+
+
+# `"$hj" <subcommand>`, which is how every shell script here invokes this file.
+SHELL_HJ_CALL = re.compile(r'"\$hj"\s+([a-z][a-z-]*)')
+
+
+def hj_subcommands(source: str) -> set[str]:
+    return set(re.findall(r'sub\.add_parser\(\s*"([a-z][a-z-]*)"', source))
+
+
+def shell_hj_calls() -> dict[str, list[str]]:
+    """Every `hj` subcommand the scripts beside this file invoke, by file.
+
+    The same seam as `shell_intervention_kinds` and the same failure: a shell
+    script naming something this file does not have fails at run time, inside a
+    runner whose output nobody reads until a campaign is already lost.
+    """
+    return {
+        name: sorted(set(SHELL_HJ_CALL.findall(text)))
+        for name, text in harness_scripts()
+        if SHELL_HJ_CALL.search(text)
+    }
 
 
 def decision_status(identifier: str, recorded: str | None, answers: dict[str, dict] | None = None) -> str:
@@ -2910,6 +2937,42 @@ def staleness_note(gap: Gap) -> str:
     return f"  **{path} has changed since this was found ({moved}) — verify before taking it.**"
 
 
+def stall_notice_for(stalled: int, stall_n: int) -> str:
+    """What a campaign is told about the stall it is opening under.
+
+    Above the threshold this is the last campaign the loop runs, and
+    `design/loops.md` §7 wants an account out of it: what was being tried, what
+    was tried, what is believed to be blocking, and the question. Two of those
+    the harness can assemble and two only the campaign knows.
+
+    It asks for the account in the *campaign record* rather than in
+    `state/handoff.md`, which is the file §7 names. There is one writer for
+    that file and it is `hj handoff`, which runs as the loop stops and
+    overwrites — a stale handoff from an answered stall is worse than none,
+    because the dashboard renders it as a live request. So the campaign writes
+    where it already writes, and the loop quotes it.
+    """
+    if stalled < stall_n:
+        return (
+            f"Not stalled: {stalled} campaign(s) without progress, of {stall_n} that"
+            " would stop this loop."
+        )
+    return (
+        f"**This loop has stalled**: {stalled} campaigns have closed in a row with no\n"
+        f"progress, and N is {stall_n}. This is the last campaign the loop will\n"
+        "run before it stops and asks a human. **Do not pick a new target.**\n\n"
+        "Write the account instead, in the Outcome section of your campaign record:\n"
+        "what the loop was trying, what it tried, what you believe is blocking it, and\n"
+        "the one question whose answer would unblock it. Then close with\n"
+        "`OUTCOME: no-movement`.\n\n"
+        "Put it in the record and **not** in `state/handoff.md`. The loop writes that\n"
+        "file itself as it stops (`design/loops.md` §7 — the run of campaigns that\n"
+        "stalled is the half only the loop can see), quoting your Outcome section\n"
+        "verbatim for the half only you can. Anything written straight to\n"
+        "`state/handoff.md` is overwritten and lost."
+    )
+
+
 def prompt_values(
     phase: Phase,
     config: LoopConfig,
@@ -3050,16 +3113,7 @@ def prompt_values(
         journal_path = STATE / "journal" / f"{config.owner}.md"
 
     stalled = trailing_without_progress(config.owner)
-    if stalled >= config.stall_n:
-        stall_notice = (
-            f"**This loop has stalled**: {stalled} campaigns have closed in a row with no\n"
-            f"progress, and N is {config.stall_n}. Do not pick a new target. Write\n"
-            "`state/handoff.md` instead — what you were trying, what you tried, what you\n"
-            "believe is blocking it, and the one question whose answer would unblock it —\n"
-            "then close with `OUTCOME: no-movement`."
-        )
-    else:
-        stall_notice = f"Not stalled: {stalled} campaign(s) without progress, of {config.stall_n} that would stop this loop."
+    stall_notice = stall_notice_for(stalled, config.stall_n)
 
     return {
         "loop": config.owner,
@@ -5701,6 +5755,172 @@ def cmd_audit_cost(args: argparse.Namespace) -> int:
     return 0
 
 
+HANDOFF = STATE / "handoff.md"
+
+# `design/loops.md` §7 names four things a handoff carries, and they are kept
+# here as one list because the file has two authors: the harness assembles the
+# first two from the run of campaigns, and the last two are quoted from the
+# stalled campaign's own record. A heading that drifts on one side is a
+# question that silently stops being answered.
+HANDOFF_SECTIONS = {
+    "trying": "## What it was trying",
+    "tried": "## What it tried",
+    "blocking": "## What the last campaign believed was blocking it",
+    "question": "## The question",
+}
+
+
+def handoff_text(owner: str, config: LoopConfig) -> str:
+    """`design/loops.md` §7: on stall the loop stops and writes
+    `state/handoff.md` — what it was trying, what it tried, what it believes is
+    blocking, and the specific question that would unblock it.
+
+    Assembled by the loop rather than written by a campaign, because §7 says
+    the *loop* writes it and only the loop knows the run of campaigns that
+    stalled it; a campaign sees one of them. The campaign's own account is not
+    lost — it is quoted from the record it fills at close, which is where the
+    only two of §7's four things a campaign knows and the harness does not
+    live: what it believes is blocking, and the question.
+    """
+    closed = judged_campaigns(owner)
+    trailing = trailing_without_progress(owner)
+    stalled_run = closed[-trailing:] if trailing else []
+    counts = audit_counts(config.docs)
+
+    tried = [
+        f"| `{row.get('campaign', '?')[:8]}` | {row.get('target') or '(none named)'} "
+        f"| {row.get('outcome') or 'open'} | {row.get('commits') if row.get('commits') is not None else '?'} |"
+        for row in stalled_run
+    ]
+
+    named: list[str] = []
+    for row in stalled_run:
+        anchors, _, _ = named_targets(row)
+        for anchor in sorted(anchors):
+            if anchor and anchor not in named:
+                named.append(anchor)
+    still_open = sorted(
+        {f"{key}[{gap_id(key, gap.claim)}]" for key, gap in open_gaps(config.docs) if key in named}
+    )
+
+    # This loop's own records only. Another loop's open question is not what
+    # stopped this one, and a handoff that lists the fleet's whole queue asks
+    # a human to do the filtering the harness could have done.
+    waiting = [
+        identifier
+        for identifier, _ in waiting_decisions()
+        if identifier.startswith(f"{owner}-")
+    ]
+
+    account = ""
+    if stalled_run:
+        record = STATE / "campaigns" / owner / f"{stalled_run[-1].get('campaign', '')}.md"
+        if record.is_file():
+            body = record.read_text()
+            outcome = body.split("\n## Outcome", 1)
+            if len(outcome) == 2:
+                account = outcome[1].strip()
+
+    lines = [
+        f"# Stall handoff — `{owner}`",
+        "",
+        f"- loop: `{owner}`",
+        f"- written: {now()}",
+        f"- commit: `{head_sha()[:12]}`",
+        f"- rule: {trailing} campaign(s) closed in a row with no progress; N is {config.stall_n}",
+        f"- number: {counts['sections_clean']}/{counts['sections_total']} sections clean, "
+        f"{counts['open_gaps']} open gaps, {counts['sections_unjudged']} unjudged",
+        "",
+        "The loop has stopped and will not start again until `state/phase.toml`",
+        f"sets `{owner}` back to `running`. Unblocking it is a `stall-unblocked`",
+        "intervention.",
+        "",
+        HANDOFF_SECTIONS["trying"],
+        "",
+    ]
+    lines += [f"- `{anchor}`" for anchor in named] or [
+        "- Nothing recorded. The stalled campaigns named no target, which is"
+        " itself the finding: a loop with nothing to take is not a loop that"
+        " failed at something."
+    ]
+    lines += [
+        "",
+        HANDOFF_SECTIONS["tried"],
+        "",
+        "| campaign | target | outcome | commits |",
+        "|---|---|---|---|",
+    ]
+    lines += tried or ["| (none) | | | |"]
+    lines += ["", "## What is still open under those targets", ""]
+    lines += [f"- `{gap}`" for gap in still_open] or [
+        "- None of the named sections has an open gap left, which means the"
+        " stall is in the measurement rather than in the work: the campaigns"
+        " closed something the audit has not re-judged."
+    ]
+    if account:
+        lines += [
+            "",
+            HANDOFF_SECTIONS["blocking"],
+            "",
+            f"From `state/campaigns/{owner}/{stalled_run[-1].get('campaign', '')}.md`:",
+            "",
+            account,
+        ]
+    else:
+        lines += [
+            "",
+            HANDOFF_SECTIONS["blocking"],
+            "",
+            "Its record has no outcome section. That is a gap in the account and"
+            " not evidence of anything: read the journal and the diff instead.",
+        ]
+    lines += ["", HANDOFF_SECTIONS["question"], ""]
+    if waiting:
+        lines += [
+            "These records are open and are this loop's own. The stall and at least",
+            "one of them are likely the same blockage:",
+            "",
+        ]
+        lines += [f"- `state/decisions/{identifier}.md`" for identifier in waiting]
+        lines += [
+            "",
+            "If none of them is what stopped the loop, the question is below and",
+            "nobody has written it down yet.",
+        ]
+    else:
+        lines += [
+            "No decision record is open for this loop, so the loop did not know",
+            "what to ask — which is the more serious of the two shapes. Read the",
+            "journal entries for the campaigns above: §7 asks a stalled loop for",
+            "the one question that would unblock it, and a stall with no question",
+            "means the campaigns did not find the edge they were hitting.",
+        ]
+    lines += [
+        "",
+        "---",
+        "",
+        "Delete this file once the stall is answered. It is the dashboard's signal",
+        "that a loop is waiting, and one left behind reports a stall that is over.",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def cmd_handoff(args: argparse.Namespace) -> int:
+    """`design/loops.md` §7's handoff, written by the loop as it stops.
+
+    Always rewritten. The file is the account of *this* stall, and a leftover
+    from a previous one that a human forgot to delete is worse than no file —
+    the dashboard renders it as a live request.
+    """
+    _, config = loop_config(args.loop)
+    HANDOFF.parent.mkdir(parents=True, exist_ok=True)
+    HANDOFF.write_text(handoff_text(config.owner, config))
+    commit_harness_state([HANDOFF], f"stall handoff for {config.owner}")
+    print(f"handoff: wrote {HANDOFF.relative_to(REPO)}")
+    return 0
+
+
 def cmd_stall(args: argparse.Namespace) -> int:
     """`design/loops.md` section 7: stall is judged per campaign, not per
     experiment. N consecutive closed campaigns with no progress stops the
@@ -6162,6 +6382,42 @@ def selftest_cases() -> list[tuple[str, object]]:
         assert gap_attribution(campaign, {"9999999999": ""}, {"a.md#one"}) == "gap_named_round"
         assert gap_attribution(campaign, {"9999999999": ""}, {"b.md#two"}) == ""
         assert gap_attribution(campaign, {}, {"a.md#one"}) == "", "nothing closed is not credit"
+
+    def every_hj_subcommand_the_shell_calls_exists():
+        # Same seam as the intervention kinds and the same failure: the shell
+        # names something this file does not have, and it fails inside a runner
+        # whose output nobody reads until a campaign is already lost.
+        known = hj_subcommands(Path(__file__).read_text())
+        assert "handoff" in known, "the parser scan found nothing; the regex has rotted"
+        for name, called in shell_hj_calls().items():
+            for subcommand in called:
+                assert subcommand in known, (
+                    f"harness/{name} calls `hj {subcommand}`, which this file has no parser "
+                    "for. If the call is new, the subcommand belongs in the same commit; if "
+                    "this copy of hj is the reviewed one and the tree's is newer, merge main."
+                )
+
+    def a_stalled_campaign_is_not_told_to_write_the_file_the_loop_writes():
+        # Both would write `state/handoff.md`, and `hj handoff` overwrites as
+        # the loop stops — so a campaign that followed the old notice lost its
+        # account. One writer for that file; the campaign writes its record.
+        notice = stall_notice_for(3, 3)
+        assert "campaign record" in notice and "no-movement" in notice
+        assert "overwritten and lost" in notice, (
+            "the notice has to say why, or the next campaign writes the file anyway"
+        )
+        assert stall_notice_for(2, 3).startswith("Not stalled"), (
+            "below the threshold this is a status line, not an instruction"
+        )
+
+    def the_handoff_answers_the_four_things_section_7_asks_for():
+        text = "\n".join(
+            HANDOFF_SECTIONS[key] for key in ("trying", "tried", "blocking", "question")
+        )
+        assert len(set(HANDOFF_SECTIONS.values())) == 4, "four distinct headings"
+        for heading in HANDOFF_SECTIONS.values():
+            assert heading.startswith("## "), heading
+        assert text.count("## ") == 4
 
     def a_shell_scan_reads_literals_and_skips_what_it_cannot():
         script = 'hj intervene --kind loop-killed --target x\nhj intervene --kind "$computed" --t\n'
@@ -7057,6 +7313,10 @@ def main() -> int:
     p = sub.add_parser("stall", help="exit 1 when the loop has stalled")
     p.add_argument("loop")
     p.set_defaults(run=cmd_stall)
+
+    p = sub.add_parser("handoff", help="write state/handoff.md as the loop stops on a stall")
+    p.add_argument("loop")
+    p.set_defaults(run=cmd_handoff)
 
     p = sub.add_parser("status", help="the operator view, until there is a dashboard")
     p.set_defaults(run=cmd_status)
