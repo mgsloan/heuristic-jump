@@ -22,6 +22,21 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 hj="$(dirname "$here")/hj"
 adapter="$(dirname "$here")/adapter"
 
+# The reviewed copy when there is one, which is the same argument the gate
+# makes one layer up: a loop that may write `harness/` must not be checked by
+# the copy of `hj` it is halfway through editing.
+#
+# It is also the difference between a mistake and a deadlock. `hj` with a
+# syntax error in it exits non-zero for *every* call, and this hook reads
+# non-zero as "denied" — so a single bad edit to `hj` blocks every subsequent
+# Edit and Write in the worktree, including the one that would fix it. That
+# happened, and the way out was bash, which the hook does not cover. `HJ_REPO`
+# still aims the check at this worktree, so the paths judged are the right
+# ones under the right rules.
+if [ -n "${HJ_PINNED_HARNESS:-}" ] && [ -x "$HJ_PINNED_HARNESS/hj" ]; then
+	hj="$HJ_PINNED_HARNESS/hj"
+fi
+
 path="$("$adapter" hook-path)"
 [ -n "$path" ] || exit 0
 
