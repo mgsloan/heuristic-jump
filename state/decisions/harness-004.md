@@ -1,6 +1,6 @@
 ---
 id: harness-004
-status: open
+status: accepted
 opened: 2026-08-04T02:25:00+00:00
 campaign: 8564e2f1-4e5b-4e5d-bfbd-76e363b98d6b
 kind: class-b
@@ -88,7 +88,27 @@ merge nobody reads.
 
 ## Decision
 
-Undecided — waiting on a human.
+**accepted: Option C — refuse to open a campaign on a branch more than 8
+commits behind main**, answered 2026-08-04 and logged as a
+`decision-answered` intervention, which is what makes it answered —
+`design/loops.md` §16 derives the status from the log rather than from this
+line.
+
+The failure this record describes is not the conflict, which was three
+mechanical hunks, but that nothing announced the divergence: the branch sat
+two campaigns behind and the stale copy was the one grading every loop. C puts
+the failure at the top of a session where somebody reads it. N = 8, matching
+HJ_REBASE_LIMIT, because that is already the point the harness treats
+divergence as no longer mechanical — above it merge_back stops rebasing and
+merges, so it is the same judgement expressed once. B was rejected because a
+campaign's first act should not be resolving another writer's conflicts with
+no context for either side, and because rebasing moves the shas state/metrics/
+rows key on. A is what just cost two campaigns of staleness.
+
+### What is left
+
+The harness loop's work, in `harness/loop`, beside the `campaign-reap` call
+that already runs at that point.
 
 ## Provisional choice in force
 

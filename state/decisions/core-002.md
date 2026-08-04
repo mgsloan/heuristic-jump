@@ -1,6 +1,6 @@
 ---
 id: core-002
-status: open
+status: accepted
 opened: 2026-08-04T06:10:00+00:00
 campaign: a9937015-4ddb-46e6-a1aa-f85ab25f09ef
 kind: class-b
@@ -60,7 +60,29 @@ either way, to `measure_rust` rather than `measure_core`.
 
 ## Decision
 
-Undecided — waiting on a human.
+**accepted: Option A — the subscriber stays in measure_core**, answered
+2026-08-04 and logged as a
+`decision-answered` intervention, which is what makes it answered —
+`design/loops.md` §16 derives the status from the log rather than from this
+line.
+
+§9's stated reason is the shim's stderr interleaving with a forwarded child's
+in an editor panel, and a measure run has neither: it is a batch program with
+one process and no panel. measure_core is a binary body under a library's name
+— only the four-line measure_<lang> binaries link it — so the rule it is
+excused from, that a library a handler links must have no opinion about where
+logs go, is not the rule being broken. try_init means a test's scoped
+subscriber still wins. Option B would put a ~20-line install_logging in every
+language's main and require it not to drift, which is the exact failure
+core.md §7 gives as the reason clap lives in measure_core at all. Reconciling
+the tagged sites in measure_core.rs and deps.md §0/§9 is a core campaign's
+work, not this ruling's.
+
+### What is left
+
+The two sites tagged `DECISION-core-002: provisional` — `measure_core.rs` and
+`deps.md` §9 — plus §0's table row are a `core` campaign's to reconcile. The
+test already asserts this answer.
 
 ## Provisional choice in force
 

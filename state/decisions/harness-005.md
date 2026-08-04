@@ -1,6 +1,6 @@
 ---
 id: harness-005
-status: open
+status: accepted
 opened: 2026-08-04T06:20:00+00:00
 campaign: (none — raised by hand, landing the three worker branches)
 kind: harness-request
@@ -56,8 +56,24 @@ intervention log, which do not get to be rewritten.
 
 ## Decision
 
-Undecided — the harness loop's to make; this record exists so it is not
-rediscovered by the next person merging a stale branch.
+**accepted: Option B — fold the duplicate-id check into gate step 6**,
+answered 2026-08-04 and logged as a
+`decision-answered` intervention, which is what makes it answered —
+`design/loops.md` §16 derives the status from the log rather than from this
+line.
+
+Step 6 already bundles check-audit and check-links under 'audit consistency,
+and the design's own cross-references', so a third command there is consistent
+with what that step already is rather than a distinct check hidden inside it —
+which is the objection the record raises against B and which applies less than
+it looks. It should cover both id spaces at once, decisions and changelog
+entries, since the same two campaigns collided in both. Option C, leaving it
+to allocate-id, assumes no campaign ever writes an id by hand while the prompt
+still shows literal ids in its examples.
+
+### What is left
+
+The harness loop's work, in `harness/gate` step 6 and a new `hj` check.
 
 ## Provisional choice in force
 

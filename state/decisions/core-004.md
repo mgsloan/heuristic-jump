@@ -1,6 +1,6 @@
 ---
 id: core-004
-status: open
+status: accepted
 opened: 2026-08-04T05:20:00+00:00
 campaign: c601eeec-b30f-479c-8a7d-49e19e4c166d
 kind: harness-request
@@ -54,7 +54,25 @@ again.
 
 ## Decision
 
-Undecided — waiting on a human.
+**accepted: Options 2 and 3 together — claims not ids, and hj claim refuses an
+unknown id**, answered 2026-08-04 and logged as a
+`decision-answered` intervention, which is what makes it answered —
+`design/loops.md` §16 derives the status from the log rather than from this
+line.
+
+The two are complementary and neither is the expensive one. Option 2 makes the
+assignment checkable — a worker verifies a claim against its own tree in one
+grep instead of spending ten turns re-deriving a section — and option 3 makes
+the mismatch loud at the moment a worker acts on it rather than silent. Option
+1 is the right answer to a different question: auditing every worker branch
+before dividing a round pays the expensive half of the loop per worker per
+round to fix a problem two cheap changes make visible. The id stays as a hint,
+which is all it can honestly be across branches.
+
+### What is left
+
+Both halves are the harness loop's work: the planner's assignment format, and
+`hj claim` refusing an id the branch's own audit does not carry.
 
 ## Provisional choice in force
 

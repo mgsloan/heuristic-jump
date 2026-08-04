@@ -23,6 +23,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -696,7 +697,22 @@ def trailers_of(rev: str) -> dict[str, str]:
 
 
 def working_tree_paths() -> list[str]:
-    """Everything the next commit could contain: staged, unstaged, untracked."""
+    """Everything the next commit could contain: staged, unstaged, untracked.
+
+    Minus the sandbox's masks, which are not files anybody wrote. Layer 3
+    (`state/decisions/harness-002.md`) hides `~/.bashrc`, `.gitconfig`,
+    `.mcp.json`, `.claude/skills/` and eighteen others by bind-mounting
+    `/dev/null` over them, and inside the sandbox those mounts are visible in
+    the project root — so `git status` reports twenty-two untracked paths that
+    exist in no checkout and that every campaign would be told to revert. It
+    turned the gate red for every loop the moment the sandbox was switched on.
+
+    Filtering on the device node rather than on a name list, because the list
+    belongs to whoever wrote the sandbox and would go stale silently. Nothing
+    is hidden by this: creating a character device needs `mknod` privileges a
+    campaign does not have, so a path that is one was not written by the work
+    being judged.
+    """
     raw = git("status", "--porcelain=v1", "-z", "--untracked-files=all")
     fields = raw.split("\0")
     paths: list[str] = []
@@ -712,7 +728,14 @@ def working_tree_paths() -> list[str]:
             if index < len(fields):
                 paths.append(fields[index])
                 index += 1
-    return sorted(set(paths))
+    return sorted({path for path in set(paths) if not is_sandbox_mask(path)})
+
+
+def is_sandbox_mask(path: str) -> bool:
+    try:
+        return stat.S_ISCHR((REPO / path).lstat().st_mode)
+    except OSError:
+        return False
 
 
 def commit_paths(rev: str) -> list[str]:

@@ -1,6 +1,6 @@
 ---
 id: harness-002
-status: open
+status: accepted
 opened: 2026-08-04T01:20:00+00:00
 campaign: bb1e501a-8f20-4466-9bb5-391bae86785a
 kind: class-b
@@ -82,7 +82,54 @@ cannot break the harness's own writes, because they are all named.
 
 ## Decision
 
-Undecided — waiting on a human.
+**accepted: Option C — the coarse list, containing the worktree**, answered
+2026-08-04 and logged as a
+`decision-answered` intervention, which is what makes it answered —
+`design/loops.md` §16 derives the status from the log rather than from this
+line.
+
+The containment that matters when several worktrees run at once is that a
+campaign cannot escape its own, and C buys exactly that. It cannot break the
+harness's own writes because every path the harness needs is named — the
+worktree, the git directory, the integration checkout's state/, the transcript
+root — where B's per-loop, per-worker derivation makes every future harness
+write a new way for a campaign to die mid-run looking like a tool failure
+rather than a permission one. What C does not stop, a campaign writing another
+loop's files inside its own tree, layer 4 already catches at commit time. A
+gives up a boundary the section is right to call real. .claude/** is denied to
+every loop, correctly, so this is a human edit.
+
+### What is left
+
+Done in the same commit as this ruling: `.claude/settings.json` carries the
+sandbox, since `.claude/**` is denied to every loop. `design/loops.md` §13's
+`allowWrite` paragraph still describes the narrower list and is the harness
+loop's to reconcile.
+
+**What enabling it turned up, which the record did not predict.** The list
+cannot be "the worktree" in the singular. `harness/workers` runs in the
+integration checkout and writes into *each* worker's worktree — the
+`git merge --ff-only main` it does after an audit — so a list holding only the
+session's own project root breaks the round runner rather than a campaign. All
+five checkouts are named. This was found the way the record warned it would
+be: a `touch` that had worked minutes earlier began failing with
+`Read-only file system`, which reads as a tool fault and not a permission one.
+
+`~/.cargo` is on the list for the same reason and is worth stating, since it
+is the one entry outside the project: `cargo` writes its registry cache and
+`.package-cache` lock there, and without it step 2 of the gate fails before
+compiling anything.
+
+Verified rather than assumed, in a worker's worktree under the live sandbox:
+`harness/gate core` passes all seven steps, 271 tests. Containment bites where
+it should — `$HOME`, `~/.ssh` and `.claude/` itself are read-only, so a loop
+can no longer reach the file that configures its own sandbox, which is the
+property this record wanted. `design/` inside the checkout stays writable,
+which is option C's stated limit and layer 4's job.
+
+`failIfUnavailable` is set, so a machine without bubblewrap stops rather than
+running every campaign unsandboxed behind a warning. That is the same posture
+as abstaining rather than guessing, applied to the harness.
 
 ## Provisional choice in force
 

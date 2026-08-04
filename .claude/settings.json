@@ -1,4 +1,22 @@
 {
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": true,
+    "filesystem": {
+      "allowWrite": [
+        ".",
+        "/home/mgsloan/proj/heuristic_jump/.git",
+        "/home/mgsloan/proj/heuristic_jump/state",
+        "/home/mgsloan/proj/heuristic-jump-core-1",
+        "/home/mgsloan/proj/heuristic-jump-core-2",
+        "/home/mgsloan/proj/heuristic-jump-core-3",
+        "/home/mgsloan/proj/heuristic-jump-harness",
+        "/home/mgsloan/proj/heuristic-jump-transcripts",
+        "/home/mgsloan/proj/heuristic-jump-logs",
+        "/home/mgsloan/.cargo"
+      ]
+    }
+  },
   "hooks": {
     "PreToolUse": [
       {

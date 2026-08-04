@@ -1,6 +1,6 @@
 ---
 id: harness-003
-status: open
+status: accepted
 opened: 2026-08-04T02:10:00+00:00
 campaign: 8564e2f1-4e5b-4e5d-bfbd-76e363b98d6b
 kind: class-b
@@ -83,7 +83,28 @@ the kind of rule that is right for one phase and wrong for the next.
 
 ## Decision
 
-Undecided — waiting on a human.
+**accepted: Option B — §5 becomes 'every round close', §15 becomes 'not a knob
+a loop may turn'**, answered 2026-08-04 and logged as a
+`decision-answered` intervention, which is what makes it answered —
+`design/loops.md` §16 derives the status from the log rather than from this
+line.
+
+§5 was written before workers existed and §13's 'the audit does not
+parallelise' is the later and better argument: three workers auditing their
+own branches each judge a tree nobody ships and write three verdicts for one
+section with no rule for which wins. The round is the real unit, and a claim
+that describes a deployment that no longer exists should move. The stated cost
+— progress attributed to whichever campaign closes after the audit — is
+largely already paid off by attribution by named gap rather than count delta.
+Option A is defensible and costs roughly 40% on top of core's campaign bill to
+buy a per-campaign number and the deletion of one stall-rule exclusion; that
+is not worth it at this phase. The judged_campaigns exclusion stays and keeps
+its comment explaining why.
+
+### What is left
+
+`design/loops.md` §5 and §15 are the harness loop's to edit. `audit_every`
+stays where it is, and so does the `judged_campaigns` exclusion.
 
 ## Provisional choice in force
 

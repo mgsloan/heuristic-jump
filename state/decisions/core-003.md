@@ -1,6 +1,6 @@
 ---
 id: core-003
-status: open
+status: accepted
 opened: 2026-08-04T06:55:00+00:00
 campaign: a9937015-4ddb-46e6-a1aa-f85ab25f09ef
 kind: harness-request
@@ -62,7 +62,28 @@ clippy release that changes its default does not silently change ours. Costs:
 
 ## Decision
 
-Undecided — waiting on a human.
+**accepted: Option A — large-error-threshold = 113,
+enum-variant-size-threshold = 112**, answered 2026-08-04 and logged as a
+`decision-answered` intervention, which is what makes it answered —
+`design/loops.md` §16 derives the status from the log rather than from this
+line.
+
+deps.md §15 says the thresholds are tuned and they never were; the sentence
+has to become true or go, and it should become true. Zero headroom is what
+'tuned' means for a type that sits in the Err of every hot-path Result:
+shared::Error is 112 bytes and the lint should fire the moment it is not. The
+campaign verified clippy clean across all seven crates with exactly these two
+keys. The tax — a variant that grows Error fails the build until someone
+raises the number — is the mechanism working, and the number is in git where
+the raise is visible in a diff. Option B writes down a default that lets Error
+grow most of a PathBuf unnoticed, which is the state we are already in.
+clippy.toml is denied to every loop, so this edit is made by hand and logged
+here.
+
+### What is left
+
+Done in the same commit as this ruling: `clippy.toml` carries both keys, since
+it is denied to every loop and there is nobody else to write them.
 
 ## Provisional choice in force
 

@@ -11,6 +11,23 @@ allow-dbg-in-tests = true
 allow-print-in-tests = true
 allow-indexing-slicing-in-tests = true
 
+# The two thresholds `deps.md` §15 says are tuned here, which until now they
+# were not: both lints ran at clippy's defaults of 128 and 200 bytes, so the
+# sentence described a tuning nobody had done (`state/decisions/core-003.md`).
+#
+# `shared::Error` is 112 bytes today, and so is `Result<(), shared::Error>`.
+# The thresholds are inclusive, so 113 does not fire on the type as it stands
+# and 112 does — zero headroom, deliberately. `Error` sits in the `Err` of
+# every `Result` on the hot path, which is the whole reason §15 denies these
+# two lints rather than leaving them at warn; a threshold with slack in it
+# would let the type grow by most of a `PathBuf` before anything said so.
+#
+# Growing `Error` past this therefore fails the build until somebody raises
+# the number here, in a commit where the raise is visible. That is the cost,
+# and it is paid by whoever adds the variant.
+large-error-threshold = 113
+enum-variant-size-threshold = 112
+
 disallowed-methods = [
   # ── GROUP 1: blocking on a thread that owes an answer (latency budget) ──────
   # p50<=50ms, p99<=400ms, hard caps 750/2000ms; deadlines are Instant+AtomicBool

@@ -1,6 +1,6 @@
 ---
 id: core-020
-status: open
+status: accepted
 opened: 2026-08-04T05:24:00+00:00
 campaign: 44773a93-738f-4dd6-8ca1-fa951465ac44
 kind: harness-request
@@ -67,7 +67,24 @@ joins it there.
 
 ## Decision
 
-Undecided — waiting on a human.
+**accepted: harness/, which is where the tooling already went**, answered
+2026-08-04 and logged as a
+`decision-answered` intervention, which is what makes it answered —
+`design/loops.md` §16 derives the status from the log rather than from this
+line.
+
+Half of this was answered while the record sat on a branch: main landed
+harness/capture-editor-traffic and harness/capture_editor_traffic.py, so the
+location question has an answer in force and the first option is what
+happened. What remains is the narrower and more valuable half — the headless
+Emacs driver, which needs no human and so can be run by a loop, against a tool
+that needs someone typing into an editor. It joins them in harness/. Routed to
+the harness loop as a harness-request, which is the loop that may write there.
+
+### What is left
+
+The harness loop's work, as a `harness-request`: it is the loop that may write
+`harness/`.
 
 ## Provisional choice in force
 
