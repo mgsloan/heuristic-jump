@@ -820,6 +820,67 @@ def metrics_path(owner: str) -> Path:
 
 
 # --------------------------------------------------------------------------
+# Decisions, and the log that answers them
+
+
+INTERVENTIONS = STATE / "interventions.jsonl"
+
+DECISION_RULINGS = ("accepted", "rejected", "superseded")
+
+
+def decision_answers() -> dict[str, dict]:
+    """The newest logged answer per decision id.
+
+    `design/loops.md` section 16: answering a decision *means* appending to
+    `state/interventions.jsonl`, and "the harness derives the decision's status
+    from the log rather than from someone remembering to write both". Both
+    halves are written today — the dashboard edits the record's frontmatter and
+    appends a row in one action — so what this changes is which of the two is
+    authoritative when they disagree. A record hand-edited to `accepted` with
+    nothing in the log is the drift the section is guarding against, and it now
+    reads as still waiting.
+    """
+    answers: dict[str, dict] = {}
+    for row in read_jsonl(INTERVENTIONS):
+        if row.get("kind") != "decision-answered":
+            continue
+        target = (row.get("target") or "").strip()
+        if target:
+            answers[target] = row
+    return answers
+
+
+def ruling_of(row: dict) -> str:
+    """Which way a logged answer went.
+
+    `status` when the row carries one; otherwise the leading word of `answer`,
+    which is the shape every row written so far has (`accepted: Option A`).
+    Neither parses to `answered`, which is deliberately not one of the three
+    rulings: a logged answer whose text cannot be read is still an answer, and
+    reporting it as open would put a settled question back in front of a human.
+    """
+    explicit = str(row.get("status") or "").strip().lower()
+    if explicit in DECISION_RULINGS:
+        return explicit
+    head = str(row.get("answer") or "").strip().split(":", 1)[0].strip().lower()
+    return head if head in DECISION_RULINGS else "answered"
+
+
+def decision_status(identifier: str, recorded: str | None, answers: dict[str, dict] | None = None) -> str:
+    """The status the harness believes, which is the log's when there is one.
+
+    `answers` is passed in by callers that read every record, so the log is
+    parsed once rather than once per decision.
+    """
+    if answers is None:
+        answers = decision_answers()
+    answered = answers.get(identifier)
+    if answered:
+        return ruling_of(answered)
+    return str(recorded or "unknown").strip()
+
+
+# --------------------------------------------------------------------------
 # Cheap measurements that go in every metrics row
 
 
@@ -1528,13 +1589,14 @@ def prompt_values(
     # judgement call.
     requests = []
     decisions = []
+    answers = decision_answers()
     for path in sorted((STATE / "decisions").glob("*.md")):
         text = path.read_text()
         status = re.search(r"^status:\s*(.+)$", text, re.MULTILINE)
         title = re.search(r"^#\s+(.+)$", text, re.MULTILINE)
         if not status:
             continue
-        state = status.group(1).strip()
+        state = decision_status(path.stem, status.group(1), answers)
         name = title.group(1) if title else path.stem
         kind = re.search(r"^kind:\s*(.+)$", text, re.MULTILINE)
         is_request = bool(kind) and kind.group(1).strip() == "harness-request"
@@ -2932,7 +2994,13 @@ def cmd_status(args: argparse.Namespace) -> int:
     print()
     print(f"  provisional DECISION- tags: {provisional_decisions()}")
     decisions = sorted((STATE / "decisions").glob("*.md"))
-    waiting = [p for p in decisions if re.search(r"^status:\s*open\s*$", p.read_text(), re.MULTILINE)]
+    answers = decision_answers()
+    waiting = []
+    for path in decisions:
+        recorded = re.search(r"^status:\s*(.+)$", path.read_text(), re.MULTILINE)
+        state = decision_status(path.stem, recorded.group(1) if recorded else "", answers)
+        if state in ("open", "provisional"):
+            waiting.append(path)
     print(f"  decisions: {len(decisions)} recorded, {len(waiting)} waiting on a human")
     changes = spec_changes()
     unread = [entry for entry in changes if not entry["reviewed"]]
@@ -3162,6 +3230,27 @@ def selftest_cases() -> list[tuple[str, object]]:
     def a_moved_estimate_table_is_reported_not_guessed():
         moved = parse_estimate_table(["| Phase | Guess |", "|---|---|", "| 1a | cheap |"])
         assert moved == [], "a table that is not the one expected yields nothing, loudly"
+
+    def the_log_outranks_the_frontmatter():
+        answers = {"conformance-007": {"answer": "accepted: Option 1", "ts": "t1"}}
+        assert decision_status("conformance-007", "open", answers) == "accepted"
+        assert decision_status("harness-001", "open", answers) == "open"
+        assert decision_status("harness-001", "accepted", answers) == "accepted", (
+            "a record with no log row keeps what it says, so this cannot lose an "
+            "answer given before the derivation existed"
+        )
+
+    def an_unreadable_answer_is_still_an_answer():
+        answers = {"x-001": {"answer": "we talked about it", "ts": "t1"}}
+        assert decision_status("x-001", "open", answers) == "answered", (
+            "a logged answer that cannot be parsed must not read as open — that "
+            "would put a settled question back in front of a human"
+        )
+
+    def an_explicit_status_beats_the_prose():
+        row = {"status": "rejected", "answer": "accepted: this is the old shape"}
+        assert ruling_of(row) == "rejected"
+        assert ruling_of({"answer": "Superseded: the question changed"}) == "superseded"
 
     def adapter_measures_the_gate():
         events = [

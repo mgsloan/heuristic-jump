@@ -72,7 +72,7 @@ STATE = hj.STATE
 FRONTMATTER = re.compile(r"\A---\n(?P<body>.*?)\n---\n", re.DOTALL)
 
 
-def parse_decision(path: Path) -> dict:
+def parse_decision(path: Path, answers: dict[str, dict] | None = None) -> dict:
     text = path.read_text()
     meta: dict[str, str] = {}
     match = FRONTMATTER.match(text)
@@ -106,7 +106,12 @@ def parse_decision(path: Path) -> dict:
     return {
         "id": identifier,
         "path": str(path.relative_to(REPO)),
-        "status": meta.get("status", "unknown"),
+        # From the log, not from the frontmatter this page itself edits.
+        # `design/loops.md` section 16 makes the log the mechanism rather than
+        # a record of it, so a status hand-written into a record with no
+        # intervention behind it does not count as an answer.
+        "status": hj.decision_status(identifier, meta.get("status"), answers),
+        "recorded_status": meta.get("status", "unknown"),
         "kind": meta.get("kind", "class-b"),
         "opened": meta.get("opened", ""),
         "campaign": meta.get("campaign", ""),
@@ -130,7 +135,10 @@ def decisions() -> list[dict]:
     directory = STATE / "decisions"
     if not directory.exists():
         return []
-    return sorted((parse_decision(p) for p in directory.glob("*.md")), key=lambda d: d["id"])
+    answers = hj.decision_answers()
+    return sorted(
+        (parse_decision(p, answers) for p in directory.glob("*.md")), key=lambda d: d["id"]
+    )
 
 
 def version_token() -> str:
@@ -225,8 +233,17 @@ def decision_card(decision: dict) -> str:
     else:
         parts.append('<div class="field"><h4>sites running on the provisional choice</h4><p class="empty">No <code>DECISION-</code> tag found in the tree.</p></div>')
 
+    # A record whose frontmatter has been answered by hand shows up here
+    # anyway, because the log is what counts. Saying so is the whole value: it
+    # is the difference between "nobody has ruled" and "somebody ruled and the
+    # reasoning went nowhere".
+    drifted = (
+        f"frontmatter says {decision['recorded_status']}, and nothing in the intervention log does"
+        if decision["recorded_status"] != decision["status"]
+        else ""
+    )
     meta = " · ".join(
-        filter(None, [decision["kind"], decision["opened"], f"campaign {decision['campaign'][:8]}" if decision["campaign"] else "", decision["path"]])
+        filter(None, [decision["kind"], decision["opened"], f"campaign {decision['campaign'][:8]}" if decision["campaign"] else "", decision["path"], drifted])
     )
     return f"""
     <article class="decision" id="{esc(decision['id'])}">
@@ -1936,6 +1953,10 @@ def answer_decision(fields: dict[str, str]) -> tuple[int, str]:
             "ts": stamp,
             "kind": "decision-answered",
             "target": identifier,
+            # Explicit, so the status is read rather than parsed back out of
+            # the prose. `hj.ruling_of` still parses `answer` for the rows
+            # written before this field existed.
+            "status": status,
             "answer": f"{status}: {answer}" if answer else status,
             "rationale": rationale,
             "commit": hj.head_sha(),
