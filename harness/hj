@@ -68,6 +68,12 @@ DENIED_ALWAYS = [
     "state/audit/**",
     "state/interventions.jsonl",
     "state/sessions.jsonl",
+    # The held-out results. `design/loops.md` §12 shows the loop a verdict and
+    # not the numbers; a loop that could write the file the verdict is computed
+    # from would be shown whatever it wrote. It is denied here rather than
+    # merely absent from every ownership table, for `harness/`'s reason — the
+    # table is data and a loop that could widen it could widen its own reach.
+    "state/heldout/**",
     "CLAUDE.md",
     "clippy.toml",
     ".claude/**",
@@ -255,6 +261,11 @@ class Phase:
     # guessed one either never fires or suppresses the expensive experiments
     # §11 spends its first three paragraphs protecting.
     guardrail: dict[str, int] = field(default_factory=dict)
+    # §12's "held-out gap within threshold". Absent by default, and the section
+    # names no number — it is the *widening* that stops the loop, and that
+    # comparison needs no threshold at all. A ceiling on the absolute gap is
+    # the weaker of the two signals and the one that needs a human's number.
+    heldout_threshold: float | None = None
     budget: Budget = field(default_factory=Budget)
     loops: dict[str, LoopConfig] = field(default_factory=dict)
 
@@ -269,6 +280,7 @@ def load_phase() -> Phase:
         phase=raw["phase"],
         audit_every=raw.get("audit_every", 1),
         escalation_batch=raw.get("escalation_batch"),
+        heldout_threshold=(raw.get("heldout") or {}).get("gap_threshold"),
         guardrail={
             name: int(value)
             for name, value in (raw.get("guardrail") or {}).items()
@@ -5094,6 +5106,107 @@ def cmd_check_heldout(args: argparse.Namespace) -> int:
     return 0
 
 
+# The rest of §12: what the loop is shown, and what stops it.
+#
+# One row per phase gate, per language, in `state/heldout/<language>.jsonl`:
+#
+#   {"ts": ..., "phase": "2a", "language": "rust", "commit": "<candidate>",
+#    "strata": {"ExplicitImport": {"tuning": 0.91, "heldout": 0.84}, ...}}
+#
+# Nothing here evaluates anything, and that is the third bullet rather than an
+# omission: "held-out evaluation runs at phase gates, not at iterations. A
+# number reported every iteration is a number that gets optimised against,
+# whatever it is labelled." So the evaluation is a gate's to run and this reads
+# what it left — which also means the file only grows at gates, and a loop
+# consulting it between campaigns learns nothing new until one happens.
+#
+# `state/heldout/**` is in `DENIED_ALWAYS`. The commit is in the row because
+# §10's "selecting a version at a phase gate" evaluates the surviving frontier
+# points rather than HEAD; computing that frontier is §18-deferred, and this
+# half does not depend on it.
+HELDOUT = STATE / "heldout"
+
+
+def heldout_rows(language: str) -> list[dict]:
+    return read_jsonl(HELDOUT / f"{language}.jsonl")
+
+
+def stratum_gaps(row: dict) -> dict[str, float]:
+    """Tuning minus held-out, per stratum. `high-level.md`'s overfitting signal
+    is this difference rather than either number on its own."""
+    gaps = {}
+    for stratum, numbers in (row.get("strata") or {}).items():
+        if not isinstance(numbers, dict):
+            continue
+        tuning, held_out = numbers.get("tuning"), numbers.get("heldout")
+        if isinstance(tuning, (int, float)) and isinstance(held_out, (int, float)):
+            gaps[stratum] = float(tuning) - float(held_out)
+    return gaps
+
+
+def heldout_verdict(rows: list[dict], threshold: float | None) -> tuple[str, list[str]]:
+    """§12's fourth bullet: "The loop is shown a verdict, not the numbers.
+    'Held-out gap within threshold' / 'gap widened on `ExplicitImport`'. Enough
+    to know something went wrong and where; not enough to hill-climb."
+
+    So the return carries stratum *names* and never a value, and the tests
+    assert that rather than trusting it. Widening is measured against the
+    previous gate rather than against the threshold, because the two say
+    different things: a gap over threshold has been wrong for a while, and a
+    gap that widened is the signal §12 calls "the last several iterations were
+    probably net negative".
+    """
+    if not rows:
+        return "no held-out evaluation has run yet", []
+    current = stratum_gaps(rows[-1])
+    if not current:
+        return "the last held-out evaluation recorded no stratum", []
+    previous = stratum_gaps(rows[-2]) if len(rows) > 1 else {}
+    widened = sorted(name for name, gap in current.items() if gap > previous.get(name, gap))
+    over = sorted(
+        name for name, gap in current.items() if threshold is not None and gap > threshold
+    )
+    if widened:
+        return f"gap widened on {', '.join(widened)}", widened
+    if over:
+        return f"gap over threshold on {', '.join(over)}", []
+    return "held-out gap within threshold", []
+
+
+def cmd_heldout(args: argparse.Namespace) -> int:
+    """The verdict, and nothing else. Exit 1 when a gap widened.
+
+    `harness/loop` treats that the way it treats a budget: stop between
+    campaigns and escalate, because §12 says a widening gap "needs a human to
+    look at the diff" — which is not something the loop that produced the diff
+    can do for itself.
+    """
+    phase = load_phase()
+    languages = (
+        [args.language]
+        if args.language
+        else sorted({path.stem for path in HELDOUT.glob("*.jsonl")})
+    )
+    if not languages:
+        print("heldout: no held-out evaluation has run yet")
+        return 0
+    widened = []
+    for language in languages:
+        verdict, strata = heldout_verdict(heldout_rows(language), phase.heldout_threshold)
+        print(f"heldout: {language}: {verdict}")
+        widened += [f"{language}/{name}" for name in strata]
+    if widened:
+        print(
+            "heldout: " + ", ".join(widened) + " widened against the previous gate. "
+            "design/loops.md section 12 stops the loop here: it is the one signal that "
+            "means the last several iterations were probably net negative, and it needs "
+            "a human to look at the diff. The numbers are deliberately not shown — "
+            "enough to know something went wrong and where, not enough to hill-climb.",
+            file=sys.stderr,
+        )
+    return 1 if widened else 0
+
+
 # §11's guardrail is on two things and only one of them is measurable today.
 # Naming the second anyway is what stops it being forgotten: a guardrail table
 # that silently covers half of what the section asks for reads, from the
@@ -5946,6 +6059,64 @@ def selftest_cases() -> list[tuple[str, object]]:
         rows = [{"commit": "aaa"}, {"commit": "bbb"}, {"commit": "ccc"}]
         assert rows_since(rows, None) == rows, "no re-baseline commit means the whole history"
 
+    def the_verdict_carries_no_number_a_loop_could_climb():
+        rows = [
+            {"strata": {"ExplicitImport": {"tuning": 0.9137, "heldout": 0.8942}}},
+            {"strata": {"ExplicitImport": {"tuning": 0.9481, "heldout": 0.7113}}},
+        ]
+        verdict, widened = heldout_verdict(rows, None)
+        assert widened == ["ExplicitImport"], widened
+        assert "ExplicitImport" in verdict, "enough to know something went wrong and where"
+        for value in ("0.9137", "0.8942", "0.9481", "0.7113", "0.23", "0.019"):
+            assert value not in verdict, f"{value} is enough to hill-climb against"
+
+    def a_narrowing_gap_is_not_a_widening_one():
+        rows = [
+            {"strata": {"Reexport": {"tuning": 0.9, "heldout": 0.5}}},
+            {"strata": {"Reexport": {"tuning": 0.9, "heldout": 0.8}}},
+        ]
+        verdict, widened = heldout_verdict(rows, None)
+        assert widened == [] and verdict == "held-out gap within threshold", verdict
+
+    def a_first_gate_cannot_have_widened():
+        rows = [{"strata": {"Wildcard": {"tuning": 0.9, "heldout": 0.1}}}]
+        _, widened = heldout_verdict(rows, None)
+        assert widened == [], "there is nothing to have widened against"
+        verdict, _ = heldout_verdict(rows, 0.5)
+        assert verdict == "gap over threshold on Wildcard", verdict
+
+    def widening_outranks_the_threshold():
+        # The two say different things: over threshold has been wrong for a
+        # while, widened is §12's "the last several iterations were probably
+        # net negative". Only the second stops the loop, so it is the one
+        # reported when both hold.
+        rows = [
+            {"strata": {"A": {"tuning": 1.0, "heldout": 0.4}}},
+            {"strata": {"A": {"tuning": 1.0, "heldout": 0.2}}},
+        ]
+        verdict, widened = heldout_verdict(rows, 0.1)
+        assert widened == ["A"] and verdict.startswith("gap widened"), verdict
+
+    def a_stratum_that_only_appears_now_has_not_widened():
+        rows = [
+            {"strata": {"A": {"tuning": 1.0, "heldout": 0.9}}},
+            {"strata": {"A": {"tuning": 1.0, "heldout": 0.9}}, "B": None},
+        ]
+        rows[1]["strata"]["B"] = {"tuning": 1.0, "heldout": 0.2}
+        _, widened = heldout_verdict(rows, None)
+        assert widened == [], "a new stratum has no previous gate to be worse than"
+
+    def half_a_stratum_is_no_gap():
+        assert stratum_gaps({"strata": {"A": {"tuning": 0.9}}}) == {}
+        assert stratum_gaps({"strata": {"A": "0.9"}}) == {}
+        assert stratum_gaps({}) == {}, "no evaluation is not a gap of zero"
+
+    def the_held_out_results_are_denied_to_every_loop():
+        assert "state/heldout/**" in DENIED_ALWAYS, (
+            "a loop that could write the file the verdict is computed from "
+            "would be shown whatever it wrote"
+        )
+
     def the_held_out_split_is_caught_wherever_it_is_named():
         root = Path("/elsewhere/heuristic-jump-corpus")
         found = held_out_exposure(
@@ -6441,6 +6612,10 @@ def main() -> int:
 
     p = sub.add_parser("check-heldout", help="the held-out split is separate, and unnamed")
     p.set_defaults(run=cmd_check_heldout)
+
+    p = sub.add_parser("heldout", help="the held-out verdict, and never the numbers")
+    p.add_argument("language", nargs="?")
+    p.set_defaults(run=cmd_heldout)
 
     p = sub.add_parser("guardrail", help="the standing ceilings of loops.md §11")
     p.add_argument("loop", nargs="?")

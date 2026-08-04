@@ -394,6 +394,20 @@ while :; do
 		exit 1
 	fi
 
+	# §12's last bullet. The file only grows at a phase gate, so this reads the
+	# same verdict every campaign until one happens — which is the point: the
+	# evaluation is rare and the *consequence* of it is not.
+	if ! "$hj" heldout; then
+		echo
+		echo "loop: the held-out gap widened; stopping." >&2
+		echo "      design/loops.md section 12 calls this the one signal that means the" >&2
+		echo "      last several iterations were probably net negative. A human has to" >&2
+		echo "      look at the diff; the loop is shown where, and not by how much." >&2
+		log_stop "the held-out gap widened at the last phase gate" \
+			"design/loops.md section 12 stops the loop on a widening held-out gap because it means the last several iterations were probably net negative, and the loop is shown a verdict rather than the numbers so it cannot hill-climb its way out."
+		exit 1
+	fi
+
 	# §11's standing ceilings, which are not the phase-3 ratchet: crossing one
 	# does not mean the last change was wrong, it means the loop has wandered
 	# somewhere no legitimate experiment goes. So it stops here rather than

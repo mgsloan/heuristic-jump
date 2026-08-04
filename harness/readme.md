@@ -237,6 +237,45 @@ A check belongs in `selftest` only if it is hermetic — in-memory fixtures, or
 files resolved relative to `hj` itself. Nothing that reads repository state:
 a campaign is usually mid-flight in one of those trees.
 
+## Held-out is separate, rare, and shown as a verdict
+
+`design/loops.md` §12, in three commands:
+
+```sh
+harness/hj check-heldout      # the separation, before a campaign is launched
+harness/hj heldout [<lang>]   # the verdict, and never the numbers
+```
+
+**Nothing here evaluates anything.** That is the third bullet rather than an
+omission: a number reported every iteration is a number that gets optimised
+against whatever it is labelled, so the evaluation belongs to a phase gate and
+these read what it left in `state/heldout/<language>.jsonl` — one row per gate,
+per language, carrying the candidate commit and per-stratum tuning/held-out
+pairs. The file is in `DENIED_ALWAYS`: a loop that could write what the verdict
+is computed from would be shown whatever it wrote.
+
+**`check-heldout` is the separation, and it runs before a campaign starts.**
+The corpus root must be outside the checkout, the held-out split must be a
+sibling of the tuning one rather than inside it, and nothing a campaign is
+shown — any prompt, any fragment, the runner, `state/phase.toml` — may name
+it. It matches the corpus root's directory name joined to the split rather
+than a bare `test`, because these files say `nextest` and `selftest`
+constantly and a check with that false-positive rate gets suppressed instead
+of fixed. The mistake it guards against is made once, in whichever campaign
+first writes a tuning prompt, and is invisible afterwards.
+
+**The verdict carries stratum names and no values** — "gap widened on
+`ExplicitImport`" — and the selftest asserts that by looking for the fixture's
+own digits in the output. Widening is measured against the previous gate, not
+against a threshold, and only widening stops the loop: an over-threshold gap
+has been wrong for a while, where a widened one means the last several
+iterations were probably net negative. `[heldout] gap_threshold` in
+`state/phase.toml` sets the weaker of the two and is absent by default.
+
+Two things §18 defers and this does not pretend to have: the frontier over a
+phase's commits, and the evaluation itself. The row carries a `commit` so that
+selecting among candidate points is expressible when the frontier tool exists.
+
 ## Binary size is two numbers, and only one of them is cheap
 
 `design/loops.md` §11 keeps them apart and so does the harness.
