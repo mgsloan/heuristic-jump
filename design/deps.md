@@ -489,9 +489,21 @@ Alternatives:
   If the `lru` API fights the byte accounting, dropping to `HashMap` + a
   `VecDeque` of keys is not a large loss.
 
-Note the cache is keyed by `(uri, version)` for open docs and `(path, mtime,
-len)` for disk files, so it is a map keyed by our own types, not by
-attacker-controlled strings.
+Note the cache is keyed by `(uri, version)`, so it is a map keyed by our own
+types, not by attacker-controlled strings.
+
+**There is one cache, and it is the open-document one.** An earlier revision of
+this sentence named a second keyed `(path, mtime, len)`, for the files a search
+reads off disk. That one is not built, and it is not deferred work: it would
+have to live on `ProjectView`, which several fan-out threads hold at once
+behind a `Sync` `&Query`, so filling it means mutating through `&self` — a
+lock, which `CLAUDE.md` does not have, and a new cache, which `CLAUDE.md` says
+to ask about rather than add. `conformance-005` asked exactly that question for
+`ProjectView::read` and was answered *no corpus, no benchmark, no cache*; the
+parse half is the same question about the same struct, and
+`crates/shared/src/project.rs`'s `parse` records it where the cache would go.
+It takes the `ProjectPath` it would be keyed by regardless, so the day a corpus
+justifies one, the key is the one named here and the signature already has it.
 
 ### `FxHashMap` and `FxHashSet` are the default
 

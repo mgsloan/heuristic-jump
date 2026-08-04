@@ -707,3 +707,53 @@ survives the corpus being relocatable, and relocatability is the mechanism
 **No code moved with it.**
 
 **Campaign:** 9110a409-f685-4569-ba82-fbf938928727
+
+## CHANGE-core-022 — deps.md#8-parse-cache — there is one cache, and the disk-file key describes one that was refused
+
+**Contradiction:** §8 closed with "Note the cache is keyed by `(uri, version)`
+for open docs and **`(path, mtime, len)` for disk files**, so it is a map keyed
+by our own types".
+
+`state/decisions/conformance-005.md` is `status: accepted` and rules the second
+one out. It asked "How does `ProjectView` cache reads per query without a
+lock?", because the view is held behind a `Sync` `&Query` that
+[`core.md` §1](../../design/core.md#the-trait) fans out across threads, so any
+cache on it is "shared mutable state reached through `&self` from several
+threads at once, which is the definition of the thing `CLAUDE.md` says does not
+exist here". The ruling: "**Option A stands: no read cache**", with the
+rationale "`CLAUDE.md` line 112 decides it: no new caching or indexing until the
+corpus harness shows the change is worth it and there is a benchmark, and ask
+before adding caching. There is no corpus, so nothing could justify B or C yet."
+
+A disk-file *parse* cache is that same question about that same struct — it
+would live on `ProjectView`, be filled during a fan-out, and be reached through
+`&self` — and `crates/shared/src/project.rs:521` says so in as many words:
+"No LRU … the cache would be shared mutable state behind the `Sync` `&Query`
+several fan-out threads hold, which is a lock, and `conformance-005` already
+ruled that question the same way for reads."
+
+The open-document half is real and unaffected: `crates/driver/src/trees.rs:81`
+is "an LRU of tree-sitter trees, keyed by `(uri, version)` and bounded twice",
+which is the same line's other clause and the caveat the whole section is about.
+
+**Resolution:** §8 now names one cache, and a paragraph says the disk-file one
+was refused rather than postponed, why the refusal follows from `CLAUDE.md`
+rather than from taste, and that `parse` takes the `ProjectPath` such a cache
+would be keyed by anyway — so the sentence's key survives as the key it *would*
+have, which is the honest version of what it was recording.
+
+Nothing is traded off here because the trade was made in `conformance-005` and
+answered by a human. The sentence's own argument — the map is keyed by our own
+types and not by attacker-controlled strings, which is what leads into
+`#fxhashmap-and-fxhashset-are-the-default` — needs one key and not two.
+
+**Left for a separate campaign, deliberately:** `resolution.md` §3 carries the
+same expectation from the other side ("from the parse LRU when possible", and
+"each file is read at most once"), and conformance-005's answer names that
+correction explicitly — "resolution.md section 3 is what is wrong … it should
+say what it means instead". `resolution.md` is not in this phase's audit scope,
+and one document per correction is what keeps the changelog readable.
+
+**No code moved with it.**
+
+**Campaign:** 9110a409-f685-4569-ba82-fbf938928727
