@@ -1650,8 +1650,14 @@ fn our_log_lines_are_distinguishable_and_the_subscriber_is_installed_once() {
                 !source.is_empty(),
                 "{file} is missing or empty, so the scan below would pass vacuously"
             );
+            // `measure_core` is the second exception, and it is one rather than
+            // a hole because of who links it: only the four-line
+            // `measure_<lang>` binaries do, so it is a binary body under a
+            // library's name and fights nobody. The rule it is excused from is
+            // about libraries a *handler* links, and no handler links this.
             assert!(
-                member == "heuristic_jump" || !source.contains("tracing_subscriber"),
+                matches!(member.as_str(), "heuristic_jump" | "measure_core")
+                    || !source.contains("tracing_subscriber"),
                 "{file} names tracing_subscriber: deps.md §9 installs the subscriber in the \
                  binary and nowhere else — a library with an opinion about where logs go is \
                  one that fights whoever links it, and §7's JSONL records stay out of the log \
@@ -1659,11 +1665,18 @@ fn our_log_lines_are_distinguishable_and_the_subscriber_is_installed_once() {
             );
         }
     }
+    // Two members, and the list is exact rather than a minimum so that a third
+    // has to be argued for here before it can appear.
     assert_eq!(
         installs,
-        vec!["heuristic_jump in [dependencies]".to_owned()],
-        "deps.md §9 gives tracing-subscriber to the binary alone: driver and shared emit \
-         through the tracing facade and have no opinion about where it goes"
+        vec![
+            "heuristic_jump in [dependencies]".to_owned(),
+            "measure_core in [dependencies]".to_owned(),
+        ],
+        "deps.md §9 gives tracing-subscriber to the binaries alone — heuristic_jump, and \
+         measure_core because only the four-line measure_<lang> binaries link it, so it is a \
+         binary body under a library's name. driver and shared emit through the tracing \
+         facade and have no opinion about where it goes"
     );
 
     let declared = table_of(&workspace_file("Cargo.toml"), "workspace.dependencies")
