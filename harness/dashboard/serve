@@ -1703,7 +1703,7 @@ def panel_live(tail: int = 30, loop: str = "") -> str:
     if not path.exists():
         return panel("Live", empty(f"No transcript for {identifier[:8]} yet."))
 
-    events = [json.loads(line) for line in adapter("parse-stream", str(path)).splitlines() if line.strip()]
+    _, events = transcript_events(owner, identifier)
     running = campaign_is_running(identifier)
     state = "running" if running else "finished"
     head = (
@@ -1711,8 +1711,16 @@ def panel_live(tail: int = 30, loop: str = "") -> str:
         f'{len(events)} events · showing the last {min(tail, len(events))} · '
         f'<a href="/transcript/{urllib.parse.quote(owner)}/{urllib.parse.quote(identifier)}">whole transcript</a></p>'
     )
-    body = "".join(render_event(event) for event in events[-tail:])
-    return panel("Live", head + (body or empty("Nothing yet.")), note="written as it happens; the journal is not")
+    start = max(0, len(events) - tail)
+    body = "".join(
+        render_event(event, index, owner, identifier)
+        for index, event in enumerate(events[start:], start=start)
+    )
+    return panel(
+        "Live",
+        head + (body or empty("Nothing yet.")) + f"<script>{LAZY_SCRIPT}</script>",
+        note="written as it happens; the journal is not",
+    )
 
 
 def campaign_is_running(identifier: str) -> bool:
@@ -1820,27 +1828,109 @@ bottom();
 addEventListener('load', bottom);
 """
 
+# Both halves of section 16's "lazy loading, and truncation of large tool
+# results with expand-on-demand". Nothing is fetched until it is clicked, and
+# loading an earlier window keeps the reading position: prepending above the
+# viewport would otherwise jump the page by the height of what arrived.
+LAZY_SCRIPT = """
+addEventListener('click', async (event) => {
+  const button = event.target.closest('button.load, button.rest');
+  if (!button) return;
+  const label = button.textContent;
+  button.textContent = 'loading…';
+  button.disabled = true;
+  try {
+    if (button.classList.contains('rest')) {
+      const rest = await (await fetch(button.dataset.src)).text();
+      const block = button.closest('details').querySelector('pre');
+      block.textContent += rest;
+      button.closest('p').remove();
+      return;
+    }
+    const before = document.body.scrollHeight;
+    const html = await (await fetch(button.dataset.src + '?end=' + button.dataset.end)).text();
+    const holder = button.closest('p');
+    holder.insertAdjacentHTML('afterend', html);
+    holder.remove();
+    window.scrollBy(0, document.body.scrollHeight - before);
+  } catch (error) {
+    button.textContent = label + ' — failed, click to retry';
+    button.disabled = false;
+  }
+});
+"""
 
-def render_transcript(owner: str, campaign: str) -> str:
+
+# How many events a transcript view renders at once. `design/loops.md`
+# section 16 asks for lazy loading by name, and the reason is concrete: a
+# campaign that read fifty files inlines every one of them, and at 2 MB a
+# transcript dumped into a tab is worse than useless. 150 is about one
+# screenful of turns.
+WINDOW = 150
+
+
+def transcript_events(owner: str, campaign: str) -> tuple[Path, list[dict]]:
     path = Path(adapter("transcript-path", owner, campaign).strip() or "/nonexistent")
     if not path.exists():
-        return page("Transcript", empty(f"No transcript at {esc(path)}."))
-
+        return path, []
     events = []
     for line in adapter("parse-stream", str(path)).splitlines():
         if line.strip():
             events.append(json.loads(line))
+    return path, events
 
-    parts = [render_event(event) for event in events]
+
+def earlier_button(owner: str, campaign: str, end: int) -> str:
+    """Fetches the previous window and prepends it. Nothing loads until it is
+    asked for, which is the whole point — the alternative is a tab that
+    freezes on the transcripts most worth reading."""
+    if end <= 0:
+        return ""
+    return (
+        f'<p class="earlier"><button class="load" data-end="{end}" '
+        f'data-src="/transcript-part/{urllib.parse.quote(owner)}/{urllib.parse.quote(campaign)}">'
+        f"load the {min(WINDOW, end)} events before this</button> "
+        f'<span class="note">{end} earlier event(s) not loaded</span></p>'
+    )
+
+
+def render_transcript(owner: str, campaign: str) -> str:
+    path, events = transcript_events(owner, campaign)
+    if not events:
+        return page("Transcript", empty(f"No transcript at {esc(path)}."))
+
+    start = max(0, len(events) - WINDOW)
+    parts = [
+        render_event(event, index, owner, campaign)
+        for index, event in enumerate(events[start:], start=start)
+    ]
 
     header = (
         f'<p class="meta"><a href="/">&larr; dashboard</a> · {esc(owner)} · <code>{esc(campaign)}</code> · '
-        f'{len(events)} events · <a href="/raw/{urllib.parse.quote(owner)}/{urllib.parse.quote(campaign)}">raw</a></p>'
+        f'{len(events)} events, showing the last {len(parts)} · '
+        f'<a href="/raw/{urllib.parse.quote(owner)}/{urllib.parse.quote(campaign)}">raw</a></p>'
     )
     return page(
         "Transcript",
-        header + "".join(parts) + f"<script>{TAIL_SCRIPT}</script>",
+        header
+        + '<div id="events">'
+        + earlier_button(owner, campaign, start)
+        + "".join(parts)
+        + "</div>"
+        + f"<script>{TAIL_SCRIPT}{LAZY_SCRIPT}</script>",
         poll=False,
+    )
+
+
+def render_transcript_part(owner: str, campaign: str, end: int) -> str:
+    """One earlier window, as a fragment: the button that asked for it is
+    replaced by the events plus a button for the window before that."""
+    _, events = transcript_events(owner, campaign)
+    end = max(0, min(end, len(events)))
+    start = max(0, end - WINDOW)
+    return earlier_button(owner, campaign, start) + "".join(
+        render_event(event, index, owner, campaign)
+        for index, event in enumerate(events[start:end], start=start)
     )
 
 
@@ -1851,7 +1941,7 @@ def truncate(text: str, keep: int = 1200) -> tuple[str, bool]:
     return (text[:keep], True) if len(text) > keep else (text, False)
 
 
-def render_event(event: dict) -> str:
+def render_event(event: dict, index: int = -1, owner: str = "", campaign: str = "") -> str:
     kind = event.get("kind")
     if kind == "text":
         return f'<div class="turn text">{markdownish(event.get("text", ""))}</div>'
@@ -1869,7 +1959,7 @@ def render_event(event: dict) -> str:
             f'<code>{esc(str(event.get("summary", ""))[:160])}</code></summary>{body}</details>'
         )
     if kind == "tool_result":
-        return render_result(event.get("text", ""))
+        return render_result(event.get("text", ""), index, owner, campaign)
     if kind == "result":
         # Verbatim: the last two lines are the TARGET / OUTCOME contract the
         # runner reads, and reflowing them hides whether they were actually on
@@ -1884,7 +1974,7 @@ def render_diff(diff: dict) -> str:
     return f'<pre class="diff">{"<br>".join(lines)}</pre>'
 
 
-def render_result(text: str) -> str:
+def render_result(text: str, index: int = -1, owner: str = "", campaign: str = "") -> str:
     # The gate's verdict and a metrics row are the decision points the rest of
     # the turn is reasoning about, so they come out of the fold.
     highlights = GATE_LINE.findall(text)
@@ -1894,10 +1984,22 @@ def render_result(text: str) -> str:
         banner = f'<pre class="highlight {css}">{esc(chr(10).join(highlights[:20]))}</pre>'
 
     body, truncated = truncate(text)
-    tail = '<p class="note">truncated</p>' if truncated else ""
+    # Expand-on-demand rather than a dead end. The rest is fetched when asked
+    # for, so a fifty-file campaign does not ship fifty files to the browser to
+    # show fifty summaries — which is the same reason the page is windowed.
+    tail = ""
+    if truncated:
+        rest = (
+            f' <button class="rest" data-src="/event/{urllib.parse.quote(owner)}/'
+            f'{urllib.parse.quote(campaign)}/{index}">show the remaining '
+            f"{len(text) - len(body):,} bytes</button>"
+            if index >= 0 and owner and campaign
+            else ""
+        )
+        tail = f'<p class="note">truncated at {len(body):,} bytes{rest}</p>'
     return (
         f'{banner}<details class="turn result-block"><summary>tool result '
-        f'({len(text)} bytes)</summary><pre>{esc(body)}</pre>{tail}</details>'
+        f'({len(text):,} bytes)</summary><pre>{esc(body)}</pre>{tail}</details>'
     )
 
 
@@ -2051,6 +2153,11 @@ summary { cursor:pointer; color:var(--dim); font-size:12px; }
 .tool-name { color:var(--accent); font-weight:600; }
 .diff .del { color:var(--bad); }
 .diff .add { color:var(--good); }
+button.load, button.rest { font:inherit; font-size:12px; padding:3px 10px; cursor:pointer;
+  border:1px solid var(--line); border-radius:4px; background:var(--card); color:var(--fg); }
+button.load:hover, button.rest:hover { border-color:var(--accent); color:var(--accent); }
+button[disabled] { opacity:.6; cursor:default; }
+.earlier { margin:10px 0 18px; }
 .highlight { border-left:3px solid var(--dim); }
 .highlight.good { border-left-color:var(--good); }
 .highlight.bad { border-left-color:var(--bad); }
@@ -2328,6 +2435,24 @@ class Handler(BaseHTTPRequestHandler):
             elif route.startswith("/transcript/"):
                 _, _, owner, campaign = route.split("/", 3)
                 self.send(200, render_transcript(owner, campaign))
+            elif route.startswith("/transcript-part/"):
+                _, _, owner, campaign = route.split("/", 3)
+                try:
+                    end = int(query.get("end", ["0"])[0])
+                except ValueError:
+                    end = 0
+                self.send(200, render_transcript_part(owner, campaign, end))
+            elif route.startswith("/event/"):
+                # The tail of one truncated tool result, as text: the fold
+                # above it already holds the first 1200 bytes.
+                _, _, owner, campaign, index = route.split("/", 4)
+                _, events = transcript_events(owner, campaign)
+                try:
+                    text = events[int(index)].get("text", "")
+                except (ValueError, IndexError):
+                    text = ""
+                body, _ = truncate(text)
+                self.send(200, text[len(body):], "text/plain; charset=utf-8")
             elif route.startswith("/raw/"):
                 _, _, owner, campaign = route.split("/", 3)
                 path = Path(adapter("transcript-path", owner, campaign).strip() or "/nonexistent")
