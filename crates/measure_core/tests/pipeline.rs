@@ -1164,6 +1164,126 @@ fn a_resume_refuses_every_provenance_field_that_moved() {
     }
 }
 
+/// §7: "**`replay` — read `truth.jsonl`, reconstruct the `DocumentSnapshot` and
+/// `Query` for each recorded position, run the handler, classify agreement,
+/// emit the metric table. No server, no network, no `didOpen` round trips.**"
+///
+/// The section says in as many words why this is written down rather than left
+/// to follow from the design: "the requirement that replay run *without a
+/// server at all* is stated here rather than left implicit because nothing else
+/// in this document requires it, and discovering it later means discovering it
+/// after the corpus has been collected in a shape that cannot be replayed."
+///
+/// Every replay in this file already runs with no server — and only because the
+/// fixture has none. The corpus names `oracle`, `servers.toml` does not, and a
+/// replay never resolves it, so the property is one of the *fixtures* rather
+/// than of the code. It would go on holding the day a replay learned to spawn
+/// something, which is what makes this a claim about what `replay.rs` must not
+/// reach for, and that is a shape only a scan can hold.
+///
+/// It is scoped to this crate because `collect` is the other half of the same
+/// file and does every one of these things legitimately. The claim is not that
+/// nothing here starts a server; it is that the module named `replay` does not.
+#[test]
+fn a_replay_names_nothing_that_could_reach_a_server() {
+    // Each marker with the mechanism it stands for, because "it mentions
+    // `Command`" is the problem rather than the explanation.
+    const A_SERVER_NEEDS: [(&str, &str); 6] = [
+        (
+            "crate::client",
+            "this crate's LSP client, which is `collect`'s",
+        ),
+        (
+            "Client",
+            "and every wire type whose name says a client is what sends it",
+        ),
+        ("std::process", "spawning a child at all"),
+        ("Command", "however the spawn is spelled"),
+        ("std::net", "a socket, for a server reached over one"),
+        ("TcpStream", "the same, spelled by its type"),
+    ];
+
+    let text = fs::read_to_string(measure_core_source("replay.rs")).expect("reading replay.rs");
+    // The module doc says "No server, no network, no `didOpen` round trips",
+    // which is the record of the rule and not a breach of it.
+    let code: String = text
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<&str>>()
+        .join("\n");
+
+    let reached: Vec<&str> = A_SERVER_NEEDS
+        .into_iter()
+        .filter(|(marker, _)| code.contains(marker))
+        .map(|(marker, why)| marker.split(' ').next().unwrap_or(why))
+        .collect();
+
+    assert!(
+        reached.is_empty(),
+        "`replay.rs` names {reached:?}. A replay reads a frozen truth file and \
+         runs the handler; the moment it can reach a server, the corpus stops \
+         being replayable at the speed the whole two-mode split exists to buy \
+         — and it stops being replayable at all on a machine that has no \
+         server installed, which is every machine the gate runs on"
+    );
+
+    // The control: the scan has to find these where they genuinely are, or it
+    // is asserting that a file it failed to read mentions nothing.
+    let collect =
+        fs::read_to_string(measure_core_source("collect.rs")).expect("reading collect.rs");
+    let found: Vec<&str> = A_SERVER_NEEDS
+        .into_iter()
+        .map(|(marker, _)| marker)
+        .filter(|marker| collect.contains(marker))
+        .collect();
+    assert!(
+        found.contains(&"Client"),
+        "the scan found none of {A_SERVER_NEEDS:?} in `collect.rs`, which is \
+         the module that does spawn a server — so it is reading nothing, and \
+         the assertion above is vacuous"
+    );
+}
+
+/// §7's two modes: "the two modes supply its two halves ... **Only `replay`
+/// writes the record.**"
+///
+/// `collect` supplies the oracle's half as a truth row, which "is its own
+/// smaller shape" — so a `QueryRecord` minted anywhere else in this crate is
+/// the join being made twice, once with a half-filled record. That is the
+/// design §8.2 forecloses from the other side by giving the read projections no
+/// `Serialize` at all, and this is the same rule where a `serde` derive is not
+/// what would stop it.
+///
+/// The count is exact rather than a ceiling: the record is built at one site so
+/// the field set cannot be assembled two ways, which is what
+/// [`a_replay_row_carries_section_7s_field_set_in_section_7s_order`] asserts
+/// the shape of and this asserts the singularity of.
+#[test]
+fn only_a_replay_mints_section_7s_record() {
+    let mut sites: Vec<String> = Vec::new();
+    for name in ["collect.rs", "replay.rs", "truth.rs", "table.rs", "cli.rs"] {
+        let text = fs::read_to_string(measure_core_source(name)).expect("reading a source file");
+        let minted = text
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .filter(|line| line.contains("QueryRecord::new"))
+            .count();
+        for _ in 0..minted {
+            sites.push(name.to_owned());
+        }
+    }
+
+    assert_eq!(
+        sites,
+        vec!["replay.rs".to_owned()],
+        "§7's record is minted somewhere other than `replay.rs`, or nowhere at \
+         all. `collect` writes a truth row and replay writes the record: a \
+         second minting site is the oracle's half and the heuristic's being \
+         joined twice, and the two copies diverge on the first field either one \
+         gains"
+    );
+}
+
 /// §7: "**a truth file is regenerated, never edited**", and "a partially
 /// collected truth file is marked incomplete and is never consumed by replay".
 ///
@@ -2457,6 +2577,12 @@ struct Fixture {
     split: PathBuf,
     scratch: PathBuf,
     commit: String,
+}
+
+/// One of `measure_core`'s own source files, for the scans that hold a claim
+/// about which module does what.
+fn measure_core_source(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(name)
 }
 
 /// Two tests naming one fixture is a race and not a duplicate, which is why it
