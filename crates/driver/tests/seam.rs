@@ -200,6 +200,141 @@ fn the_language_list_is_enumerated_in_heuristic_jump() {
     }
 }
 
+/// `core.md#adding-a-language`, which is a price rather than a description:
+/// "New `crates/lang_<x>/` … `crates/measure_<x>/`, which is four lines; then
+/// one line in `heuristic_jump`. **No crate other than `heuristic_jump`
+/// changes**, which is the whole cost and the point of the graph above."
+///
+/// `the_language_list_is_enumerated_in_heuristic_jump` above holds the one
+/// line. This holds the rest of the price, and every part of it is a claim
+/// that decays quietly rather than breaking: the two template manifests are
+/// correct until somebody adds a dependency that a later language then
+/// inherits by copying; the four lines are four until a `measure_<x>` grows a
+/// fifth; and "no crate other than `heuristic_jump`" is true until one crate
+/// reaches for one language and nothing anywhere reports it.
+///
+/// The template's contents are asserted in **both** directions, which is what
+/// makes them a template. A missing `similarity` is a language crate that
+/// cannot rank, discovered by the seventh author rather than the first; an
+/// extra dependency is the shape §9 fixes "once, by hand, before seven of
+/// them exist" drifting after the first copy.
+///
+/// > **No tests.** … an empty `tests/fixtures/` directory in the template is
+/// > an invitation to fill it, which converts a self-graded oracle into the
+/// > thing a campaign optimises.
+///
+/// That one cannot be enforced by anything but a scan. A `tests/` directory
+/// added to `crates/lang_python/` is a directory somebody made; nothing fails,
+/// the suite gets larger, and the oracle quietly becomes the expectations the
+/// session that wrote them held.
+///
+/// One clause here has no runnable control, and it is the `[workspace
+/// .dependencies]` entry: deleting it does not fail this test, it stops the
+/// workspace resolving, because `heuristic_jump` and `measure_<x>` both
+/// inherit from it. The assertion is kept for the case the compiler does not
+/// cover — a `lang_<x>` that arrives as a member before anything depends on
+/// it, which resolves fine and is the state one commit before the entry is
+/// needed.
+#[test]
+fn adding_a_language_costs_the_template_and_one_line() {
+    /// Everything a `lang_*` may name, besides its own grammar. `tree-sitter`
+    /// is the runtime rather than a grammar and is forced by
+    /// `LanguageHandler::grammar` returning a `tree_sitter::Language`
+    /// (CHANGE-core-008).
+    const LANGUAGE: &[&str] = &["shared", "similarity", "tree-sitter"];
+
+    /// Everything a `measure_*` may name, besides its own language. `clap` and
+    /// `shared` are the four lines' own requirements — `Cli::parse()` needs
+    /// the trait in scope and `main` returns `Result<(), shared::Error>`.
+    const MEASURE: &[&str] = &["measure_core", "clap", "shared"];
+
+    let languages = language_members();
+    assert!(
+        !languages.is_empty(),
+        "no crates/lang_* workspace member, so this test would pass vacuously"
+    );
+
+    let path_dependencies = workspace_path_dependencies();
+    for language in &languages {
+        let measure = format!("measure_{}", language.trim_start_matches("lang_"));
+        let grammar = format!("tree-sitter-{}", language.trim_start_matches("lang_"));
+
+        let mut expected: Vec<String> = LANGUAGE.iter().map(|name| (*name).to_owned()).collect();
+        expected.push(grammar);
+        expected.sort();
+        let mut declared = dependencies_in(&manifest_text(language));
+        declared.sort();
+        assert_eq!(
+            declared, expected,
+            "{language}'s [dependencies] is not core.md §9's template. Every entry there is \
+             forced by a signature: shared for the seam, similarity for the ranking, the \
+             runtime because grammar() returns a tree_sitter::Language, and the grammar itself. \
+             One more is what the next six languages inherit by copying"
+        );
+
+        let mut expected: Vec<String> = MEASURE.iter().map(|name| (*name).to_owned()).collect();
+        expected.push(language.clone());
+        expected.sort();
+        let mut declared = dependencies_in(&manifest_text(&measure));
+        declared.sort();
+        assert_eq!(
+            declared, expected,
+            "{measure}'s [dependencies] is not core.md §9's template. It is the one crate that \
+             may depend on both measure_core and a language, and it contains four lines — a \
+             dependency it does not need is one every measure_<x> after it acquires"
+        );
+
+        let main = workspace_file(&format!("crates/{measure}/src/{measure}.rs"));
+        let four_lines: Vec<&str> = main
+            .lines()
+            .filter(|line| !line.trim().is_empty() && !line.trim_start().starts_with("//"))
+            .collect();
+        assert_eq!(
+            four_lines.len(),
+            4,
+            "crates/{measure}/src/{measure}.rs is {n} lines of code and core.md §7 calls it \
+             four: the count is the claim — it is what makes a language measurable without any \
+             other language building, and what stops per-language logic accumulating on the \
+             measurement side of the seam. {four_lines:?}",
+            n = four_lines.len()
+        );
+
+        assert!(
+            path_dependencies.contains(language),
+            "{language} is a workspace member and has no [workspace.dependencies] entry: \
+             core.md §9 makes that one of the four manifest lines a language costs \
+             (CHANGE-core-009), and without it the two crates that name it would each write a \
+             version — which deps.md §14 is what stops"
+        );
+
+        for member in workspace_members() {
+            let named = member
+                .trim_start_matches("crates/")
+                .trim_start_matches("vendor/");
+            if named == "heuristic_jump" || named == measure || named == *language {
+                continue;
+            }
+            assert!(
+                !declares(&workspace_file(&format!("{member}/Cargo.toml")), language),
+                "{member} declares {language}: core.md §9 prices a language at two crate \
+                 directories and one line in heuristic_jump, and no crate other than \
+                 heuristic_jump changes — a second crate that knows a language by name is the \
+                 graph the section exists to keep flat"
+            );
+        }
+
+        for template in [language.clone(), measure] {
+            assert!(
+                !workspace_path(&format!("crates/{template}/tests")).exists(),
+                "crates/{template}/tests exists: core.md §9's template has **No tests**, \
+                 because the corpus is the oracle and is made of real repositories nobody here \
+                 wrote — a fixture directory beside the template is an invitation to fill it, \
+                 and what it converts the oracle into is the thing a campaign optimises"
+            );
+        }
+    }
+}
+
 /// `core.md` §8.4: `PositionEncoding` "reaches the dispatch wrapper and stops
 /// there", which is §3's rule that no encoding crosses the handler seam, seen
 /// from the outbound side.

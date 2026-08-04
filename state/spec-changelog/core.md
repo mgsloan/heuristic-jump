@@ -218,3 +218,63 @@ the three sources against each other rather than trusting any of them, and
 fails if a third GPL input arrives in any one of them.
 
 **Campaign:** c601eeec-b30f-479c-8a7d-49e19e4c166d
+
+## CHANGE-core-008 — core.md#adding-a-language — the template manifests omit two dependencies each, and neither is a choice
+
+**Contradiction:** the template prints
+
+> ```
+> crates/lang_<x>/
+>   Cargo.toml          shared, similarity, tree-sitter-<x>. Nothing else
+> crates/measure_<x>/
+>   Cargo.toml          measure_core, lang_<x>
+> ```
+
+and neither manifest compiles as printed. §1's trait is
+`fn grammar(&self) -> tree_sitter::Language`, so a `lang_<x>` has to name the
+tree-sitter *runtime* — the grammar crate supplies a `LANGUAGE` constant and
+not that type. §7's four lines are
+`measure_core::run(&Handler::new(), Cli::parse())` inside
+`fn main() -> Result<(), shared::Error>`, so a `measure_<x>` has to name
+`clap`, whose trait must be in scope for `parse()`, and `shared`, which is the
+only route to the error type `main` returns.
+
+**Resolution:** the block now lists all four on each side, and the paragraph
+below it says which signature forces each. This trades nothing off — the two
+existing manifests already declared exactly these, with a comment beside each
+explaining why, and what was wrong was the document they claimed to be
+verbatim copies of. It is the same failure `CHANGE-conformance-009` recorded
+in §9's printed `main`, which omitted `shared` for the identical reason: a
+manifest derived from a code block by reading it rather than compiling it.
+
+Held by `adding_a_language_costs_the_template_and_one_line` in
+`crates/driver/tests/seam.rs`, which compares both manifests against the
+template in both directions, so a missing entry and an extra one each fail.
+
+**Campaign:** c601eeec-b30f-479c-8a7d-49e19e4c166d
+
+## CHANGE-core-009 — core.md#adding-a-language — "nothing else in the workspace changes" omits the four manifest lines cargo requires
+
+**Contradiction:** "then one line in `heuristic_jump`. Nothing else in the
+workspace changes. That is the whole cost" — against §14 of `deps.md`, which
+requires that every member be listed in `[workspace] members` and that "every
+dependency version lives in `[workspace.dependencies]`. Member crates never
+name a version." Adding a language therefore changes the workspace manifest in
+four places: two member entries, one `[workspace.dependencies]` entry for
+`lang_<x>`, and `heuristic_jump`'s dependency line — before the one line of
+Rust the section prices it at.
+
+**Resolution:** the claim now reads "**No crate other than `heuristic_jump`
+changes**", which is what it was actually asserting — the graph stays flat, no
+existing crate learns a language's name — followed by the manifest bookkeeping
+named explicitly and marked as bookkeeping. `measure_<x>` needs no
+`[workspace.dependencies]` entry, since nothing depends on a binary.
+
+This trades nothing off: the strong reading is unaffected and is now
+mechanized, where the literal reading was false and unmechanizable. The test
+asserts the sharper claim — that no member other than `heuristic_jump` and
+`measure_<x>` names a `lang_*` in its manifest — which is stronger than the
+sentence it replaces, since "nothing changes" says nothing about a workspace
+where a second crate already knew.
+
+**Campaign:** c601eeec-b30f-479c-8a7d-49e19e4c166d

@@ -2046,8 +2046,14 @@ It is split anyway, for two reasons:
 
 New `crates/lang_<x>/` depending on `shared` + `similarity` + its grammar,
 implementing `LanguageHandler`; `crates/measure_<x>/`, which is four lines; then
-one line in `heuristic_jump`. Nothing else in the workspace changes. That is
-the whole cost, and keeping it at that is the point of the graph above.
+one line in `heuristic_jump`. **No crate other than `heuristic_jump` changes**,
+which is the whole cost and the point of the graph above.
+
+The workspace manifest changes too, and it is bookkeeping rather than design:
+cargo needs each new directory in `[workspace] members`, and `lang_<x>` in
+`[workspace.dependencies]` so that the two crates naming it inherit one version
+(§14 of `deps.md`). `measure_<x>` needs no entry there — nothing depends on a
+binary. Four lines, none of which is a decision (CHANGE-core-009).
 
 **Phase 1a builds this as an instantiable template**, not as prose. Adding a
 language is then a copy and a rename, and — more importantly — the shape every
@@ -2055,12 +2061,22 @@ language crate inherits is fixed once, by hand, before seven of them exist.
 
 ```
 crates/lang_<x>/
-  Cargo.toml          shared, similarity, tree-sitter-<x>. Nothing else
+  Cargo.toml          shared, similarity, tree-sitter, tree-sitter-<x>
   src/lang_<x>.rs     the Handler impl, longhand
 crates/measure_<x>/
-  Cargo.toml          measure_core, lang_<x>
+  Cargo.toml          measure_core, lang_<x>, clap, shared
   src/measure_<x>.rs  the four lines
 ```
+
+Every one of those six is forced by a signature and none is a choice
+(CHANGE-core-008). The tree-sitter *runtime* is there because
+`LanguageHandler::grammar` returns a `tree_sitter::Language`, which is a name
+the grammar crate cannot supply; `clap` and `shared` are there because the four
+lines are `measure_core::run(&Handler::new(), Cli::parse())` inside a
+`fn main() -> Result<(), shared::Error>`, and a trait method needs its trait in
+scope. This is the same omission `CHANGE-conformance-009` found in §9's printed
+`main`, which is the other place a manifest was derived from a code block by
+reading it rather than compiling it.
 
 **No tests.** The corpus is the oracle, it replays without a language server,
 and it is made of real repositories nobody here wrote. Hand-built fixtures are a slower,
