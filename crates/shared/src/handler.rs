@@ -61,8 +61,10 @@ pub struct Query<'a> {
 /// per-language configuration format `resolution.md` §1.2 rules out. A handler
 /// reads a field describing a behaviour; it does not ask who it is talking to.
 ///
-/// The field is private and the constructors are the two situations `core.md`
-/// §7 describes, rather than `id: Option<ServerId>` left open. The absence has
+/// The field is private and there is a constructor per situation — standalone,
+/// proxying the child on a command line, and standing in for the server a
+/// corpus run names (`core.md` §1) — rather than `id: Option<ServerId>` left
+/// open. The absence has
 /// to be representable — standalone has no oracle, and a proxied server we
 /// have no profile for is a different thing from one we do — but with a public
 /// field the third case is representable too: a call site that *knows* which

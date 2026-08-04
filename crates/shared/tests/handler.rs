@@ -78,6 +78,9 @@ fn members(text: &str, header: &str) -> Vec<String> {
             let Some((name, rest)) = piece.split_once(':') else {
                 continue;
             };
+            // `Query`'s fields are `pub` and `Outcome`'s are not, because one
+            // is a struct a handler reads and the other is an enum it builds.
+            let name = name.trim_start_matches("pub ");
             if rest.starts_with(':') || name.is_empty() {
                 continue;
             }
@@ -161,6 +164,77 @@ fn the_printed_trait_has_the_methods_a_language_implements() {
 /// `Stratum` specifically is the one where the count is load-bearing beyond the
 /// seam: §7 groups coverage by it, so the denominator is the variant list, and
 /// `Unimplemented` is the gate check that the template has been replaced.
+/// The input side of the seam. `Outcome` is what a handler builds and `Query`
+/// is everything it is given, so a field printed here and absent there is a
+/// handler that does not compile, and a field present there and unprinted is a
+/// capability no language author knows they have — `policy`, before
+/// `conformance-013`, was exactly that shape of omission.
+#[test]
+fn the_printed_query_gives_a_handler_what_the_real_one_gives_it() {
+    let documented = members(&printed(&document()), "pub struct Query<'a> {");
+    let declared = members(&source(), "pub struct Query<'a> {");
+
+    assert!(
+        !documented.is_empty(),
+        "§1 prints a `Query` with no fields, so this comparison is vacuous"
+    );
+    assert_eq!(
+        documented, declared,
+        "§1's printed `Query` and `shared::handler`'s disagree. This is the whole \
+         of what a handler is handed — the snapshot, the position, the project \
+         view, the deadline, the server it stands in for and the commit policy — \
+         and the block is where a language author reads it"
+    );
+}
+
+/// §1 argues at length that `ServerProfile`'s identity is private behind "one
+/// constructor per situation", so that the case which silently loses
+/// information — a caller that knows which server it is standing in for and
+/// passes `None` anyway — is not expressible.
+///
+/// That argument is exactly as good as the constructor list, which is why the
+/// list is what is held. The prose beside it had already drifted: the source
+/// said "the constructors are the two situations" while three were declared
+/// under it, which is the same sentence in the same shape as the one
+/// CHANGE-core-018 found in the document.
+#[test]
+fn the_printed_server_profile_has_one_constructor_per_situation() {
+    let documented = functions(&printed(&document()), "impl ServerProfile {");
+    let declared = functions(&source(), "impl ServerProfile {");
+
+    assert!(
+        documented.len() > 1,
+        "§1 prints {documented:?} for `ServerProfile`, so there is no list here to \
+         hold"
+    );
+    assert_eq!(
+        documented, declared,
+        "§1's printed `ServerProfile` and the real one disagree on their \
+         constructors. A situation with no constructor is one a caller spells as \
+         another, which is the absence §1 spends a paragraph making unspellable"
+    );
+}
+
+/// Function names declared directly inside the block `header` opens, in order.
+///
+/// Separate from [`methods`] because an inherent impl writes `pub fn` and
+/// `pub const fn` where a trait writes a bare `fn`.
+fn functions(text: &str, header: &str) -> Vec<String> {
+    let start = text
+        .find(header)
+        .unwrap_or_else(|| panic!("no `{header}` in this side of the comparison"));
+    enclosed(&text[start + header.len() - 1..])
+        .lines()
+        .map(str::trim)
+        .filter_map(|line| {
+            let rest = line.trim_start_matches("pub ").trim_start_matches("const ");
+            rest.strip_prefix("fn ")
+        })
+        .filter_map(|rest| rest.split('(').next())
+        .map(str::to_owned)
+        .collect()
+}
+
 #[test]
 fn the_printed_enums_a_handler_returns_have_the_variants_it_may_return() {
     let block = printed(&document());
