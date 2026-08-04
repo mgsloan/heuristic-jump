@@ -115,7 +115,7 @@ anchors = [
   "lang_-is-free",
   "mechanics-isolation-in-four-layers",
   "parallel-loops-and-what-they-share",
-  "branches-exist-for-one-commit-at-a-time",
+  "branches-exist-for-one-campaign-at-a-time",
   "workers-one-loop-several-campaigns-at-once",
   "14-what-runs-the-loops",
   "the-supervisor-is-a-reconciler-not-a-scheduler",
