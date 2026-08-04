@@ -189,7 +189,14 @@ impls live in `rope`.
   `log` without Zed's `kv_unstable_serde`/`serde` features, and crates.io
   `proptest` rather than Zed's git rev.
 
-* **Neither crate is in the conformance loop's gate crate list**, so
-  `harness/gate` does not build, lint or run them — decision
-  `conformance-003`. Until that is answered, a campaign that touches `vendor/`
-  runs `cargo nextest run -p rope -p sum_tree` itself and says so.
+* **Both crates are built and tested by the gate, and neither is linted or
+  format-checked.** That is the answer to `conformance-003`, now accepted:
+  `state/phase.toml`'s `crates` list holds `rope` and `sum_tree` so their
+  upstream tests run — they are the only independent check that the newtype
+  sweep changed no behaviour — while `hj crates --lintable` drops any member
+  whose manifest sits under `vendor/`, because both `clippy -D warnings` and
+  `fmt --check` fail on unedited upstream text.
+
+  So a campaign that touches `vendor/` gets its answer from `harness/gate`
+  like any other. `cargo nextest run -p rope -p sum_tree` is still the quicker
+  loop while iterating, but it is no longer the only thing that runs them.

@@ -693,6 +693,237 @@ gpui = { path = \"../gpui\" }
     );
 }
 
+/// §4: "**The constructors take newtypes.**" The declared bindings above hold
+/// that `Point::new(LineIndex(3), ByteColumn(4))` compiles, which is not the
+/// same claim — it compiles just as well against the `impl Into<LineIndex>`
+/// constructor §4 considers and rejects: "it is a `u32`-shaped hole in the
+/// constructor", rejected for the same reason as the lenient operators.
+///
+/// So the signature is asserted literally. This is the one place where a
+/// generic parameter would let bare integers back in without any impl for the
+/// other scans to find.
+#[test]
+fn the_constructors_take_the_newtype_and_not_something_convertible_to_it() {
+    let expected = [
+        ("point.rs", "(row: LineIndex, column: ByteColumn) -> Self"),
+        (
+            "point_utf16.rs",
+            "(row: LineIndex, column: Utf16Column) -> Self",
+        ),
+    ];
+
+    for (file, signature) in expected {
+        let text = fs::read_to_string(source(file)).expect("reading a newtype module");
+        let constructors: Vec<String> = public_signatures(&text)
+            .into_iter()
+            .filter(|(name, _)| *name == "new")
+            .map(|(_, signature)| signature.split_whitespace().collect::<Vec<_>>().join(" "))
+            .collect();
+
+        assert_eq!(
+            constructors,
+            vec![signature.to_owned()],
+            "{file}'s constructor no longer takes the newtype itself. A generic \
+             parameter here is the `u32`-shaped hole `design/rope-modifications.md` \
+             §4 rejects, and no impl anywhere would give the other scans \
+             something to find"
+        );
+    }
+}
+
+/// §4: `Offset` "gains the two impls that make it usable as a seek dimension,
+/// mirroring what `OffsetUtf16` already has", and — the part that matters
+/// beyond rope — "**`sum_tree` needs no changes at all.** `Dimension` is
+/// generic over the summary type, so the impls live in rope. That matters:
+/// `sum_tree` stays a pristine copy".
+///
+/// Seeking with `Offset` is what proves the impls are there and reachable;
+/// `sum_tree` not naming any of rope's types is what proves they did not have
+/// to be paid for on the other side.
+#[test]
+fn offset_seeks_the_rope_and_sum_tree_never_hears_about_it() {
+    let rope = Rope::from("aé\nbb\n");
+    let mut cursor = rope.cursor(Offset::ZERO);
+    let reached: Offset = cursor.summary::<Offset>(Offset(4));
+    assert_eq!(
+        reached,
+        Offset(4),
+        "a seek total is a position advanced by a length, which is the one \
+         place §4's position/quantity split is crossed on purpose"
+    );
+
+    let mentions: Vec<String> = sources_in(
+        &Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("sum_tree")
+            .join("src"),
+    )
+    .into_iter()
+    .flat_map(|path| {
+        let text = fs::read_to_string(&path).expect("reading a sum_tree source file");
+        let file = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        text.lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .filter(|line| {
+                ["Offset", "ByteLen", "ByteRange", "LineIndex", "rope::"]
+                    .iter()
+                    .any(|name| line.contains(name))
+            })
+            .map(|line| format!("{file}: {}", line.trim()))
+            .collect::<Vec<_>>()
+    })
+    .collect();
+
+    assert!(
+        mentions.is_empty(),
+        "`sum_tree` names one of rope's vocabulary types. §4's argument for \
+         putting the dimension impls in rope is that `sum_tree` needs no \
+         changes at all and stays a pristine copy, and this is that claim:\n{}",
+        mentions.join("\n")
+    );
+}
+
+/// §4's `util` fold-in, in the three parts that are checkable: `vendor/` holds
+/// two crates rather than three, each relocated item carries the attribution
+/// §4 calls not optional, and `debug_panic!` is the only macro and is not
+/// exported.
+///
+/// The attribution is the part worth a test rather than a review. §4:
+/// "each relocated item carries a comment naming its upstream path and
+/// original license... The items are trivial enough that whether they are
+/// copyrightable at all is arguable; attributing anyway costs a comment and
+/// settles the question." A comment is exactly what an edit deletes without
+/// anything noticing.
+#[test]
+fn util_is_folded_in_and_says_where_each_piece_came_from() {
+    let vendor = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut crates: Vec<String> = fs::read_dir(&vendor)
+        .expect("reading vendor/")
+        .map(|entry| entry.expect("a directory entry").path())
+        .filter(|path| path.is_dir())
+        .map(|path| {
+            path.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    crates.sort();
+    assert_eq!(
+        crates,
+        vec!["rope".to_owned(), "sum_tree".to_owned()],
+        "§4: the items move into rope and `vendor/util` does not exist, so \
+         `vendor/` drops from three crates to two and `sum_tree` is the only \
+         Apache-2.0 input"
+    );
+
+    // Each relocated item, at the site §4's table sends it to.
+    let attributions = [
+        (
+            "chunk.rs",
+            "is_utf8_char_boundary",
+            "crates/util/src/util.rs",
+        ),
+        ("rope.rs", "debug_panic", "crates/gpui_util/src/lib.rs"),
+        (
+            "test_support.rs",
+            "RandomCharIter",
+            "crates/util/src/util.rs",
+        ),
+    ];
+    for (file, item, upstream) in attributions {
+        let text = fs::read_to_string(source(file)).expect("reading a source file of this crate");
+        assert!(
+            text.contains(item) && text.contains(upstream) && text.contains("Apache-2.0"),
+            "{file} holds {item}, which came from {upstream} under a different \
+             licence than this crate's. §4: attribution is not optional"
+        );
+    }
+
+    let rope = fs::read_to_string(source("rope.rs")).expect("reading rope.rs");
+    assert_eq!(
+        rope.matches("macro_rules!").count(),
+        1,
+        "§8 settles that the conversion is hand-written and not generated: \
+         \"a macro over function signatures is unreadable in exactly the code \
+         where readability is the only safety argument we have\". `debug_panic!` \
+         is the crate's one macro and it generates no signatures"
+    );
+    // Comments again: the line above `macro_rules! debug_panic` is the one
+    // that says it is deliberately not `#[macro_export]`ed, and saying so is
+    // not doing it.
+    assert!(
+        !rope
+            .lines()
+            .any(|line| !line.trim_start().starts_with("//") && line.contains("#[macro_export]")),
+        "`debug_panic!` is deliberately not exported -- §4: `rope::debug_panic!` \
+         has no business being in a public API"
+    );
+}
+
+/// §7's dependency plan, which is a list of versions and so is exactly the
+/// kind of claim a manifest can be asked about directly.
+///
+/// `rand` must be **0.9**: "what Zed pins, and the API the tests are written
+/// against (`rng.random_range(..)`). crates.io is at 0.10, and taking it would
+/// mean editing test bodies, which defeats the point." And `criterion` is
+/// here because §7 keeps the benchmark — "`deps.md` §12 previously declined;
+/// the justification now exists".
+#[test]
+fn the_dependency_plan_is_the_one_section_7_settled() {
+    let workspace = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("Cargo.toml"),
+    )
+    .expect("reading the workspace manifest");
+    assert!(
+        workspace.contains("rand = \"0.9\""),
+        "`rand` is pinned to 0.9 rather than crates.io's current major, because \
+         0.10 would mean editing the test bodies the sweep is verified by \
+         (`design/rope-modifications.md` §7)"
+    );
+
+    for crate_name in ["rope", "sum_tree"] {
+        let manifest = fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join(crate_name)
+                .join("Cargo.toml"),
+        )
+        .expect("reading a vendored manifest");
+        assert!(
+            manifest.contains("[dev-dependencies]") && manifest.contains("rand.workspace = true"),
+            "§7: `rand` becomes a dev-dependency of both vendored crates, since \
+             `RandomCharIter` needs it and {crate_name}'s randomised tests are \
+             kept"
+        );
+    }
+
+    let rope = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))
+        .expect("reading rope's manifest");
+    assert!(
+        rope.contains("criterion.workspace = true") && rope.contains("name = \"rope_benchmark\""),
+        "§7 keeps `benches/rope_benchmark.rs`, which is what answers whether \
+         the wrapper indirection costs anything, and taking `criterion` is what \
+         that costs"
+    );
+    assert!(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("benches")
+            .join("rope_benchmark.rs")
+            .exists(),
+        "the benchmark the manifest declares is the sixth `util` import site \
+         and the reason `test_support.rs` is a file rather than an inline \
+         module (§4)"
+    );
+}
+
 /// The crates §7 removed, in the order it names them, so a failure reads the
 /// way the section does.
 const BANISHED: [&str; 4] = ["gpui", "zlog", "ctor", "util"];
