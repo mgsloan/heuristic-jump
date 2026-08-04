@@ -1,62 +1,59 @@
 # Findings — core, worker 1
 
-## Confirmed — candidates, test them on your own evidence
-
-**A spec-vs-code gap is only editable toward the code when somebody else
-already ruled.** Five corrections this campaign, each decided by a document or
-a record I did not write: `conformance-013` (accepted) for §1's seam block,
-`conformance-005` (accepted) for `deps.md` §8's disk cache,
-`data-collection.md` §2 for `#two-modes`' subcommands, §8.2's third list for
-§8.3's derive. The test is one grep of `state/decisions/` for the type name. No
-ruling, no Class A edit — and naming the ruling in the changelog is what makes
-the edit checkable rather than plausible.
-
-**A printed block is prose, and prose is where a stale count survives.**
-`measure_core/tests/pipeline.rs` has pinned `#the-command-line` against `clap`
-for months, with a doc comment saying the document must be the fixture because
-editing it is how progress is faked. It stops at the section boundary — which
-is exactly how the section *directly above* it said "two subcommands" while
-three were pinned below. **A fact pinned in one section is unpinned in the
-section next door that restates it.** Three tests now read the document: the
-mode split (`pipeline.rs`), §1's seam block (`shared/tests/handler.rs`, new),
-§8.2's third table (`proto.rs`).
-
-**Pin by names and arity, never by transcription.** A test demanding the block
-match the source would make the block unwritable — it elides bodies, derives
-and doc comments on purpose — and would be repaired by weakening it.
-
 ## Falsified — act on these directly
 
-* **`core.md#83[f9ad1766b7]` was stale**, closed by CHANGE-core-007 thirteen
-  minutes after the audit stamped the section. Sixth campaign running with a
-  stale assignment. It still had a real defect one sentence further along, so
-  **take a stale assignment and re-read the section**: that produced three of
-  this campaign's five corrections.
-* **You cannot assert that a `BOTH` type carries both serde derives.** Written,
-  passing, removed in the same commit: dropping `Serialize` from any of the
-  five — derived, or the hand-written `impl Serialize for
-  TextDocumentSyncKind` — fails the *build*, because each is embedded in a type
-  on the other list. The pair is compiler-held; only the document was at risk.
-* **`deps.md#10-errors[d50e2285d0]` is held by another worker** — claimed,
-  refused, one turn. §1's deadline bullet is its normative source.
-* **`resolution.md` §3 carries the parse-cache expectation from the other
-  side**, and conformance-005's answer names that correction explicitly. Out of
-  this phase's audit scope, so it buys no number.
+* **Settle a stale gap from `state/audit/gap-log.jsonl`, in one turn.** Find
+  the run that *opened* it, then ask whether any **later** run's
+  `sections_audited` names its section. Timestamps decide nothing: a partial
+  audit moves the clock without moving the judgement. Two of my three
+  assignments were stale that way — opened by row 15, closed by my own
+  CHANGE-core-018/019, carried forward by row 16, which audited a different
+  section set. Seventh campaign running with one. Re-read the section anyway:
+  three of seven commits came from that.
+* **`core.md#two-modes-collect-and-replay` is exhaustively mechanised. Do not
+  go looking.** Eight tests in `measure_core/tests/pipeline.rs` cover the
+  deadline, the record's single writer, the no-server property, provenance
+  drift, resume and both wall-clock claims; the header carries every field the
+  section lists.
+* **A scan over a printed block must delimit by counting braces.** A
+  `}`-in-column-one rule swallowed the enum after §1's single-line `Refinement`
+  and compared the wrong two lists.
+* **`serde_json::Value` is `clippy::disallowed_types`.** Do not add a `serde`
+  dev-dependency to read one reference file — copy `seam.rs`'s `#[expect]`.
+* **`git checkout <file>` to revert a plant also reverts uncommitted work in
+  it.** Plant and revert with the same tool.
 
-## Still true from earlier campaigns
+## Confirmed — candidates, test on your own evidence
 
-* `harness/measure` (core-001), the capture tooling's home (core-020),
-  `clippy.toml` (core-003), `deny.toml` (core-021/023) — all need a human.
-* The transport is what `driver` is missing, and it lives in `shim.md`, which
-  this phase does not audit. Say so in the hypothesis rather than discovering
-  it.
-* `hard_cap` is not the only place a late answer dies: `encode` reads the
-  target file and `ProjectView` refuses an expired read, so a **cross-file**
-  late answer never reaches the cap. A gap that names one site is a hypothesis
-  about how many there are.
-* Free functions in a `tests/` file need the file-level
-  `#![expect(clippy::expect_used, clippy::panic, reason = ...)]` —
-  `clippy.toml`'s allowance reaches `#[test]` bodies only.
-* The machine has `rust-analyzer`, `gopls`, `pyright` and `emacs` 30.2 with
-  eglot (the only headless LSP *client* here). Check `which` before calling a
-  gap blocked.
+**When spec and code contradict, the direction is decided by which of the
+*spec's own* claims survives, not by which side is easier to edit.** §4 said the
+watcher catches what the on-demand path "structurally cannot", one paragraph
+before "nothing depends on it … the backstop that always works". The code took
+the losing side: a deleted candidate failed *every later query*, permanently in
+standalone. The other two ways out each cost a standing claim — a load-bearing
+watcher, or a non-exhaustive `scan`. Observing the failure cost nothing any
+claim depended on, so the **code** moved and the contradicting sentence went.
+Say in the changelog that both moved in one campaign.
+
+**Narrow a classifier to what the fix can actually fix.** Only a read that
+failed because the file is *gone* is evidence about the walk; a permissions
+error is a fact about the file, and the walker returns the same entry next
+pass — so marking stale on one is a rescan per query for as long as it lasts.
+
+**Pin against the protocol, not a second copy of our own string.**
+`reference/lsp-3.17/metaModel.json` gave the method name and its direction, and
+the direction is the half §4's argument rests on.
+
+**A printed block's *input* side drifts too, and so does prose beside code.**
+`Query` was unpinned where `Outcome` was; `ServerProfile`'s **source** comment
+said "the constructors are the two situations" with three declared under it. §1
+also named a `crates/lang_*` source scan as what holds the commit funnel, and
+nobody had written it — invisible until a precision floor arrives, which is
+when there are the most `lang_*` crates to audit by hand.
+
+## Still true
+
+`harness/measure` (core-001), `clippy.toml` (core-003) and `deny.toml`
+(core-021/023) need a human. The transport is what `driver` lacks and lives in
+`shim.md`, unaudited this phase — say so in the hypothesis rather than
+discovering it.
