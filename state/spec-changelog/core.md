@@ -459,3 +459,46 @@ members` in both directions, which without the marking would have demanded
 exactly the commit the gate rejects.
 
 **Campaign:** c601eeec-b30f-479c-8a7d-49e19e4c166d
+
+## CHANGE-core-016 — deps.md#licensing-our-crates-are-mit-the-binary-is-gpl — the "what that buys" paragraph still argued the retracted one-GPL-input position
+
+**Contradiction:** §5's licensing subsection said, four paragraphs before its
+own table, that "the portable and valuable part of this project is
+`similarity` and the `lang_*` handlers … Marking those MIT means anyone who
+supplies a different text layer can lift them, and it means that if `ropey`
+ever wins the argument above, the whole workspace becomes permissively
+licensable **without relicensing a line**."
+
+The table immediately below marks both `GPL-3.0-or-later`
+(`| crates/similarity | GPL-3.0-or-later (ported, see below) |`,
+`| crates/lang_* | GPL-3.0-or-later, because they depend on similarity |`),
+and the section retracts the argument in as many words two paragraphs later:
+"**There are two GPL inputs, not one.** An earlier revision of this section
+said `rope` was the only one, and treated keeping everything else permissive
+as an exit … `crates/similarity` closes that exit for the handler layer. …
+going permissive would now mean replacing two things instead of one."
+
+So one paragraph of the section describes two crates as MIT and names an exit,
+and two later paragraphs mark the same crates GPL and record that exit as
+closed.
+
+**Resolution:** the paragraph now states what the MIT marking buys under the
+position the section actually holds — the seam and the measurement program are
+the permissive surface, which is what the subsection's own last paragraph
+already says — and keeps the retracted argument as history, marked as
+retracted, pointing at the paragraph that settled it.
+
+This trades nothing off: the two claims cannot both stand, the section itself
+names one of them superseded, and CHANGE-core-011 already applied the same
+retraction to `high-level.md`'s License section. The straggler was a second
+copy of the sentence that revision was about, in the document that wrote it.
+
+**No code moved with it.** The manifests were already correct — `expected_licence`
+in `crates/driver/tests/seam.rs` has held them to the table since before this
+campaign — and the same commit adds `the_permissive_surface_is_exactly_what_does_not_reach_similarity`,
+which asserts the corrected claim positively rather than checking that the
+wrong sentence is absent: the members that depend on `similarity` are exactly
+`crates/lang_*`, and each of them is GPL. Planted the dependency on
+`measure_core` and watched it fail.
+
+**Campaign:** 20bbc1bf-03c5-4d3c-afda-a5c5791d47ce

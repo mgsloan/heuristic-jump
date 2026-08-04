@@ -346,14 +346,18 @@ crate combines into a GPL binary with no friction and no extra grant needed.
 Marking them GPL would be volunteering a restriction the license of `rope`
 imposes on the *combination* only.
 
-What that buys, concretely: the portable and valuable part of this project is
-`similarity` and the `lang_*` handlers — resolution logic that has nothing
-to do with which rope is underneath. Marking those MIT means anyone who
-supplies a different text layer can lift them, and it means that if `ropey`
-ever wins the argument above, the whole workspace becomes permissively
-licensable **without relicensing a line**. That option costs nothing today and
-is awkward to recover later, since relicensing needs every contributor's
-agreement.
+What that buys, concretely: the crates that carry no GPL input can be lifted
+with no extra grant needed — the seam and the measurement program, which the
+end of this section names. That option costs nothing today and is awkward to
+recover later, since relicensing needs every contributor's agreement.
+
+It is deliberately **not** the whole workspace, and an earlier revision of this
+paragraph said it was: that the portable and valuable part was `similarity` and
+the `lang_*` handlers — resolution logic with nothing to do with which rope is
+underneath — and that if `ropey` ever won the argument above, the whole
+workspace would become permissively licensable *without relicensing a line*.
+The table below marks both `GPL-3.0-or-later`, and "There are two GPL inputs,
+not one" further down is where that was settled and why.
 
 The honest caveat: `shared`'s `DocumentSnapshot` names `Rope` in its public
 API, so MIT source is not *drop-in* usable without rope — a taker would have

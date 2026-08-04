@@ -738,6 +738,84 @@ fn section_of(document: &str, heading: &str) -> String {
     body
 }
 
+/// The last claim of §5's licensing subsection, and the only one in it that is
+/// about an *edge* rather than a field:
+///
+/// > `shared`, `driver`, `measure_core` and `measure_<lang>` stay MIT: **none
+/// > of them depends on `similarity`**, which is a `lang_*` dependency and not
+/// > a driver one (`core.md` §9's graph). So the permissive surface is the seam
+/// > and the measurement program.
+///
+/// [`the_gpl_inputs_are_the_two_the_documents_name`] holds the fields, and a
+/// field is what a licence *claims*. This holds what makes the claim true. The
+/// day `similarity` is added to `shared`, every `license = "MIT"` in the
+/// workspace still reads `MIT`, every one of those tests still passes, and the
+/// permissive surface the section promises has silently gone — a dependency
+/// edge is not a licence violation, it is the fact that decides one.
+///
+/// Both directions, and the second is what keeps the table's rationale attached
+/// to something. A member naming `similarity` must be GPL, or its field is
+/// wrong; and the members naming it must be *exactly* `crates/lang_*`, because
+/// the table does not say the language crates are GPL, it says they are GPL
+/// "because they depend on `similarity`". A `lang_*` that stopped depending on
+/// it would leave that row true by assertion and false by reason, which is the
+/// state this whole subsection got into once already.
+///
+/// `[dev-dependencies]` are out of it, as they are in §9's graph tests: what a
+/// licence is about is what the shipped binary combines.
+#[test]
+fn the_permissive_surface_is_exactly_what_does_not_reach_similarity() {
+    let members = workspace_members();
+    assert!(
+        !members.is_empty(),
+        "no workspace members parsed out of Cargo.toml, so this test would pass vacuously"
+    );
+
+    let naming: Vec<String> = members
+        .iter()
+        // Not a dependency of itself, and the one member the rule is about
+        // rather than quantified over.
+        .filter(|member| *member != "crates/similarity")
+        .filter(|member| {
+            dependencies_in(&workspace_file(&format!("{member}/Cargo.toml")))
+                .iter()
+                .any(|dependency| dependency == "similarity")
+        })
+        .cloned()
+        .collect();
+
+    let expected: Vec<String> = language_members()
+        .into_iter()
+        .map(|member| format!("crates/{member}"))
+        .collect();
+    assert!(
+        !expected.is_empty(),
+        "no crates/lang_* members parsed out of Cargo.toml, so the comparison \
+         below would assert that nothing depends on similarity and pass for \
+         the wrong reason"
+    );
+
+    assert_eq!(
+        naming, expected,
+        "the crates that depend on `similarity` are not the language crates. \
+         An extra one widens the GPL surface deps.md §5 states — and it does so \
+         without changing a single `license` field, so nothing else in this \
+         file would notice. A missing one is a `lang_*` that no longer has the \
+         reason §5's table gives for marking it GPL"
+    );
+
+    for member in &naming {
+        let declared = licence_of(&workspace_file(&format!("{member}/Cargo.toml")));
+        assert_eq!(
+            declared.as_deref(),
+            Some("GPL-3.0-or-later"),
+            "{member} depends on `similarity` and declares license = \
+             {declared:?}. `similarity` is one of §5's two GPL inputs, so the \
+             dependency is what decides the field and not the other way round"
+        );
+    }
+}
+
 /// The other half of §14's licensing convention, and the half that was
 /// actually missing: "License texts live once at the workspace root and are
 /// symlinked into each crate. Zed does this without exception — 245 symlinks
