@@ -255,16 +255,26 @@ pub struct WireRange {
 /// What goes on the wire where a handler speaks of a
 /// [`Location`](crate::Location) (`core.md` §8.4).
 ///
-/// Handlers do not produce one, and it is worth being exact about what holds
-/// that: **not the types.** `new` is public, `WirePosition::encode` is public,
-/// and `PositionEncoding`'s variants are public unit variants, so a handler
-/// that named one would compile. What the types do give is that building a
-/// `WireLocation` is impossible *by accident* — every route runs through
-/// `encode`, which demands an encoding and a document, so a handler cannot
-/// arrive here by writing the obvious thing. The property itself is asserted
-/// by the source scan in `driver/tests/seam.rs`, which is where a claim about
-/// what a crate does not mention belongs. The conversion happens where the
-/// encoding already is, which is the dispatch wrapper on the worker thread.
+/// §8.4 says handlers "never see a `WireLocation` and cannot construct one",
+/// and it is worth being exact about what holds that up, because it is not the
+/// types. A `WireRange` is made of `WirePosition`s and their only constructor
+/// is `WirePosition::encode`, which demands a [`PositionEncoding`] — but that
+/// enum's variants are public unit variants in a public module, so a handler
+/// that wanted one could simply write `PositionEncoding::Utf16` and be right
+/// by luck or wrong in silence. What the *compiler* enforces is only the
+/// inbound half: `Query` has no encoding field, so nothing hands one to a
+/// handler.
+///
+/// The outbound half is enforced by a source scan,
+/// `driver/tests/seam.rs::no_language_crate_can_name_the_wire_vocabulary`,
+/// which fails if any `lang_*` crate names this vocabulary at all. That is a
+/// weaker mechanism than a private type and it is deliberate: making the
+/// encoding unnameable would also stop `measure_core`, which is an LSP client
+/// and legitimately encodes the position it *sends*
+/// (CHANGE-conformance-012).
+///
+/// The conversion therefore happens where the encoding already is, which is
+/// the dispatch wrapper on the worker thread.
 #[derive(Clone, PartialEq, Eq, Debug, Deserialize, Serialize)]
 pub struct WireLocation {
     #[serde(serialize_with = "uri_text")]

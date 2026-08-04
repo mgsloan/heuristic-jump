@@ -113,7 +113,45 @@ touched.
 
 **Campaign:** 37a6d098-e7c7-4fb3-af7a-5f1562728e56
 
-## CHANGE-core-005 — core.md#two-modes-collect-and-replay — `stage_us` is a second field a replay does not reproduce
+## CHANGE-core-005 — core.md#84-location-is-byte-based-and-this-fixes-a-real-inconsistency — the conversion does not read the file the query came from
+
+**Contradiction:** §8.4 states without exception that "the conversion
+**re-reads the target file**, once per location, and the honest price is a
+syscall and a UTF-8 validation", and builds the paragraph after it on that:
+"the handler's read and the conversion's read are two reads of the same path,
+so a file edited between them yields offsets that are stale and *still in
+range*". The same section says a page earlier that the conversion is placed in
+the worker because "the target is frequently a file the editor never opened" —
+which concedes that frequently it is not, and for that case there is no second
+read to be stale against. A definition in the file the cursor is in is the
+most ordinary answer this tool gives, and it is the case the universal
+statement gets wrong.
+
+**Resolution:** the section now names the exception and says why it is not the
+thing `conformance-005` refused: when the target is the query's own document
+the conversion encodes against the `DocumentSnapshot` it was already handed,
+which is not a cache — nothing is stored, nothing is keyed, and nothing
+outlives the query — but the query declining to go and find text it is
+holding. The stale-offsets paragraph is scoped to "a target the editor does
+not have open", which is where the hazard it describes actually lives.
+
+This trades nothing off because it removes no claim: the re-read, its price,
+the carried row and `EncodingError::LineDisagreesWithRange` all stand exactly
+as they were for the case they were written about. What changes is that the
+sentence no longer says something about the open-document case that is not
+true of it.
+
+**The code this describes was not touched in this campaign.** The short
+circuit is `dispatch::target_text`'s first branch and predates it. What this
+campaign added beside the edit is
+`a_target_in_the_query_s_own_document_is_encoded_without_reading_it`, which
+deletes the document's file from disk and asserts the conversion still
+succeeds — so the sentence is now a checked claim rather than prose, and the
+next revision cannot quietly reintroduce a read.
+
+**Campaign:** 2c129b10-41f7-4292-a1f5-4e31ed08b7ea
+
+## CHANGE-core-009 — core.md#two-modes-collect-and-replay — `stage_us` is a second field a replay does not reproduce
 
 **Contradiction:** the two modes say of the replayed side that
 `heuristic_latency_us` "is therefore **the one field** in the record that a

@@ -1,18 +1,18 @@
 # One round's assignments, written by `hj plan-merge` from the planner's
 # answer. Regenerated every round; not history.
-planned = "2026-08-04T00:35:11+00:00"
+planned = "2026-08-04T04:59:55+00:00"
 
 [worker.1]
-targets = ["core.md#5-deadlines-and-abstention[f0a42a21e1]", "core.md#both-sides-are-sets[6e601d5bd1]", "core.md#7-observability-and-the-corpus-scan[10d2239070]", "deps.md#11-cli-parsing-clap[521f7f6b96]"]
-reading = "crates/driver/src/driver.rs, crates/driver/src/{config,dispatch,pending,documents,trees}.rs, crates/heuristic_jump/src/heuristic_jump.rs, crates/shared/src/deadline.rs, crates/driver/tests/{deadline,pending}.rs, design/core.md \u00a75-\u00a77, design/shim.md \u00a77 and \u00a713"
-why = "all four are the same missing thing \u2014 driver::run has no request path, so nothing mints a Deadline, keeps a PendingQuery, or emits a --trace record"
+targets = ["core.md#83-the-wire-position-type-is-inert[f9ad1766b7]", "core.md#85-the-untagged-unions-are-the-actual-risk[cfd3a3fbdc]"]
+reading = "crates/shared/src/proto.rs, crates/shared/src/agreement.rs, crates/shared/tests/proto.rs, crates/shared/tests/differential.rs, crates/shared/tests/golden-traffic.jsonl, design/core.md \u00a78"
+why = "both are \u00a78 protocol-type gaps living in proto.rs and its golden/differential tests; \u00a78.3 is a fresh audit and WirePosition::line is still public at proto.rs:106"
 
 [worker.2]
-targets = ["core.md#two-modes-collect-and-replay[f2e74dce26]", "core.md#two-modes-collect-and-replay[eb424449b6]", "core.md#the-command-line[d2a209c7a8]", "core.md#what-the-templates-handler-does[9adb0be268]", "core.md#the-table-is-not-enough-a-replay-has-to-show-its-failures"]
-reading = "crates/measure_core/src/{collect,truth,replay,table,record,cli}.rs, crates/measure_core/tests/{pipeline,codec}.rs, design/core.md \u00a77 measure sections"
-why = "the whole measure pipeline in one crate: both two-modes gaps are in collect.rs, and the table/replay pair carries determinism, the Unimplemented gate and the unjudged failure-output section"
+targets = ["core.md#adding-a-language[68be1693b1]", "deps.md#14-workspace-cargotoml-shape[cda6a3e9e2]", "deps.md#14-workspace-cargotoml-shape[4e5b9e1cfa]", "deps.md#licensing-our-crates-are-mit-the-binary-is-gpl[3723863fd7]"]
+reading = "crates/driver/tests/seam.rs, Cargo.toml, deny.toml (new), crates/lang_rust/Cargo.toml, crates/lang_rust/src/lang_rust.rs, design/high-level.md, design/deps.md \u00a75/\u00a714"
+why = "every one of these mechanizes as a manifest scan in seam.rs, and the two GPL gaps share deny.toml and high-level.md's superseded licence prose; \u00a714 can go clean"
 
 [worker.3]
-targets = ["rope-modifications.md#the-newtypes-are-opaque", "rope-modifications.md#offsets-and-lengths-are-separate-types-and-bytelen-is-shared", "rope-modifications.md#the-constructors-take-newtypes", "rope-modifications.md#the-signatures", "rope-modifications.md#the-dimension-impls", "rope-modifications.md#textsummary-is-converted-too", "rope-modifications.md#lineindex-is-ropes-and-shared-re-exports-it", "rope-modifications.md#folding-vendorutil-in", "rope-modifications.md#consequences-for-the-dependency-plan", "rope-modifications.md#7-testing", "rope-modifications.md#all-of-upstreams-tests-are-kept", "rope-modifications.md#beyond-upstreams-tests", "rope-modifications.md#8-decided-and-what-remains", "core.md#vocabulary-types[fbe658c158]"]
-reading = "vendor/rope/src/**, vendor/sum_tree/src/**, vendor/README.md, crates/shared/src/shared.rs (the re-export list only), design/rope-modifications.md"
-why = "a whole unjudged document over one crate nobody else opens, and the vocabulary-types gap is the same re-export list those sections describe"
+targets = ["core.md#the-table-is-not-enough-a-replay-has-to-show-its-failures", "core.md#what-the-templates-handler-does[9adb0be268]"]
+reading = "crates/measure_core/src/table.rs, crates/measure_core/src/replay.rs, crates/measure_core/tests/pipeline.rs"
+why = "the unjudged section and the Unimplemented-vs-Failed gate are the same two files and the same question \u2014 a replay table that shows its failures; core-2 left this partial"

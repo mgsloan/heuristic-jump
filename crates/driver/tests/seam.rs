@@ -1665,6 +1665,11 @@ fn our_log_lines_are_distinguishable_and_the_subscriber_is_installed_once() {
                 !source.is_empty(),
                 "{file} is missing or empty, so the scan below would pass vacuously"
             );
+            // `measure_core` is the second exception, and it is one rather than
+            // a hole because of who links it: only the four-line
+            // `measure_<lang>` binaries do, so it is a binary body under a
+            // library's name and fights nobody. The rule it is excused from is
+            // about libraries a *handler* links, and no handler links this.
             assert!(
                 INSTALLS_THE_SUBSCRIBER.contains(&&**member)
                     || !source.contains("tracing_subscriber"),

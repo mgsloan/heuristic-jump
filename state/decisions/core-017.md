@@ -1,6 +1,6 @@
 ---
 id: core-017
-status: open
+status: accepted
 opened: 2026-08-04T01:05:00+00:00
 campaign: 7aa74ea9-28d5-4745-943b-c2296fe4fa93
 kind: class-b
@@ -51,7 +51,36 @@ and so to every consumer of the metric.
 
 ## Decision
 
-Undecided — waiting on a human.
+**Not a seam question — the document was ambiguous**, answered 2026-08-04.
+
+Both options priced a cost that does not exist, because the premise under them
+is wrong. `core.md` §7 said two things about `stratum_prior` and never
+reconciled them: "everything from `stratum_prior` through `files_parsed` is
+reported *by the handler*", and "`resolution.md` §8 assigns a stratum a-priori
+*from the reference* … the denominator is fixed by the reference". Read
+together they suggest the field is the handler's to produce and therefore the
+handler's to lose.
+
+*A-priori* is about the **rule**. The handler evaluates it; what makes the
+prior stable is that the rule reads only the query and the reference and never
+what the search found. So the prior is knowable without the search finishing,
+and **a query whose outcome the hard cap discards has not lost its prior** —
+it was never the outcome's to carry away. §7 now says this in as many words.
+
+That makes **A wrong** and **B free**. A loses a query from its true stratum's
+denominator, which is the movement `stratum_prior` exists to prevent, and
+overloads `Unimplemented`, which `core.md` makes self-identifying. B needs
+neither a new `Stratum` variant nor a nullable field: the prior is available
+before the outcome is, so `DeadlineExpired` carrying it — or the driver
+holding it from before dispatch — costs nothing on the frozen seam.
+
+The parse-expiry case resolves the same way. A query abandoned before any
+handler ran still has a prior, because the reference and the query are all its
+rule needs.
+
+**Work left, and it is ordinary rather than an escalation:** make the prior
+reachable without a completed outcome, and record it for capped and abandoned
+queries. That is a normal campaign target.
 
 ## Provisional choice in force
 

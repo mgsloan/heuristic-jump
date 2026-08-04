@@ -55,7 +55,7 @@ code does. Nothing cheap is left in `proto.rs`.
 ## Do not spend time on
 
 * `harness/measure` (`core-001`) and where the capture tooling lives
-  (`core-018`) — both open, both need a human, `harness/` is denied.
+  (`core-020`) — both open, both need a human, `harness/` is denied.
 * A `PositionEncoding::settle` in `shared`: `measure_core` has one already.
 * Making "handlers cannot build a `WireLocation`" type-level: the variants are
   public unit variants, so it needs a newtype only the driver can build —

@@ -4,7 +4,12 @@
 
 [section."rope-modifications.md#1-rope-already-works-this-way-byte-offsets-are-the-omission"]
 state = "clean"
-last_audited = "2026-08-03T23:07:08+00:00"
+last_audited = "2026-08-04T05:37:37+00:00"
+
+  [[section."rope-modifications.md#1-rope-already-works-this-way-byte-offsets-are-the-omission".minor]]
+  claim = "the change is completing rope's existing newtype family, the omission being the byte offset as a bare usize \u2014 including as a sum_tree::Dimension and a TextDimension (rope.rs:1567, rope.rs:1577)"
+  note = "Offset gained both impls (rope.rs:1600/:1610) but the two bare-usize impls remain at exactly the cited lines, so a usize-dimensioned seek still compiles; tests/newtype_api.rs scans signatures and fields, not trait impls"
+  where = "vendor/rope/src/rope.rs:1567"
 
 [section."rope-modifications.md#2-where-the-types-live-is-forced"]
 state = "clean"
@@ -33,26 +38,17 @@ last_audited = "2026-08-04T00:27:32+00:00"
 
 [section."rope-modifications.md#the-signatures"]
 state = "gaps"
-last_audited = "2026-08-04T00:27:32+00:00"
+last_audited = "2026-08-04T04:57:16+00:00"
 
   [[section."rope-modifications.md#the-signatures".gap]]
-  claim = "the four non-byte-offset functions get the correct newtype rather than being left bare; longest_row's `total_chars` is a CharCount"
-  found = "ChunkSlice::longest_row returns (LineIndex, CharCount) but still takes `total_chars: &mut usize`, exempted as the single entry in allowed-primitives.txt. Deleting that entry turns the existing signature scanner into the exact check"
+  claim = "ChunkSlice::longest_row's out parameter gets the correct newtype: `total_chars` is a `CharCount`, not left bare"
+  found = "the signature is `longest_row(&self, total_chars: &mut usize) -> (LineIndex, CharCount)`; the return is converted and the parameter is not, and vendor/rope/allowed-primitives.txt:17 makes the exemption permanent so the newtype_api scan passes. \u00a76's allowlist sanctions exactly this, so the document disagrees with itself and the fix may be \u00a74's sentence rather than the code"
   where = "vendor/rope/src/chunk.rs:400"
-
-  [[section."rope-modifications.md#the-signatures".minor]]
-  claim = "the converted surface is asserted by declared bindings"
-  note = "the surface test binds `let mut total_characters = 0usize`, so it documents the bare out-parameter in the assertion meant to hold the claim"
-  where = "vendor/rope/tests/newtype_api.rs:410"
+  found_at = "e23d2149549728b19f61bbdd3fb2490dcb8256d2"
 
 [section."rope-modifications.md#textsummary-is-converted-too"]
-state = "gaps"
-last_audited = "2026-08-04T00:27:32+00:00"
-
-  [[section."rope-modifications.md#textsummary-is-converted-too".gap]]
-  claim = "TextSummary is converted to the newtypes, and a conversion edit changes representation and never arithmetic"
-  found = "TextSummary::add_newline computes `self.len_utf16 += OffsetUtf16(self.len_utf16.0 + 1)`, which is 2*len_utf16 + 1 rather than len_utf16 + 1 \u2014 the sibling line one above is the correct shape. The method has no caller or test in the vendored copy, so upstream's kept tests cannot catch it; a round-trip over newline()/add_newline() in tests/newtype_api.rs would"
-  where = "vendor/rope/src/rope.rs:1405"
+state = "clean"
+last_audited = "2026-08-04T04:57:16+00:00"
 
 [section."rope-modifications.md#the-dimension-impls"]
 state = "clean"

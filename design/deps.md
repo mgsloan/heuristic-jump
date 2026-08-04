@@ -38,7 +38,7 @@ pin that is a design constraint rather than a resolution detail.
 | `lru` | driver | chosen, with a caveat — see §8 |
 | `thiserror` | shared | chosen; `anyhow` explicitly rejected — see §10 |
 | `tracing` | all | chosen |
-| `tracing-subscriber` | heuristic_jump | chosen |
+| `tracing-subscriber` | heuristic_jump, measure_core | chosen |
 | `rustc-hash` | driver, shared | chosen — the default map/set, see §8 |
 | `heapless` | vendored rope/sum_tree | forced by rope |
 | `unicode-segmentation` | vendored rope | forced by rope |

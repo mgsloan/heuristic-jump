@@ -297,6 +297,57 @@ fn a_target_file_that_moved_under_the_query_is_refused_rather_than_encoded() {
     }
 }
 
+/// §8.4's one exception to "the conversion re-reads the target file": a target
+/// in the query's own document is encoded against the snapshot the wrapper was
+/// already handed, whose rope costs three refcount bumps whatever the file's
+/// size (`core.md` §2).
+///
+/// Asserted by taking the file away. Deleting it makes the read that the rest
+/// of this file's fixtures depend on impossible, so a conversion that reached
+/// for the disk here fails loudly rather than being merely slower — which is
+/// the only way to tell "did not read" from "read and got the same bytes",
+/// since the snapshot and the file hold the same text by construction.
+///
+/// The distinction matters beyond the syscall. With no second read there is no
+/// second version of the text for the offsets to be stale against, so the
+/// carried row cannot disagree and
+/// `a_target_file_that_moved_under_the_query_is_refused_rather_than_encoded`
+/// above has nothing to detect in this case. `CHANGE-core-005` is the section
+/// edit that says so.
+#[test]
+fn a_target_in_the_query_s_own_document_is_encoded_without_reading_it() {
+    let root = fixture("own_document");
+    let view = view(&root);
+    let location = definition_in(&view, &root, "src/lib.rs");
+    let document = seed(&root);
+
+    fs::remove_file(root.join("src").join("lib.rs")).expect("removing the fixture document");
+
+    let handler = Committing {
+        locations: vec![location.clone()],
+    };
+    let answer = decided(&handler, document, &view, PositionEncoding::Utf16);
+
+    let wire = answer
+        .wire()
+        .first()
+        .expect("the one location the handler committed");
+    assert_eq!(
+        wire.range().start.line(),
+        location.line(),
+        "core.md §8.4: a target in the query's own document is encoded against the snapshot, \
+         and this one came back describing some other row"
+    );
+    assert_eq!(
+        wire.range()
+            .start
+            .resolve(PositionEncoding::Utf16, &Rope::from(DOCUMENT))
+            .ok(),
+        Some(location.range().start),
+        "the wire position did not resolve back to the byte offset the handler returned"
+    );
+}
+
 /// A handler that commits what it was built with, which `lang_rust`'s template
 /// cannot do: it abstains on everything by design, so the answer §8.4 is about
 /// has no producer in the workspace yet.

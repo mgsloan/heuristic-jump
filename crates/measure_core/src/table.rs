@@ -109,7 +109,19 @@ impl Table {
     /// implementation changes, and the agreement counters go under
     /// `strata.settled()`, so an answer is judged against the class it turned
     /// out to be.
-    pub(crate) fn observe(&mut self, strata: Strata, decision: Decision, agreement: Agreement) {
+    ///
+    /// `agreement` is an `Option` rather than a value the second half filters
+    /// by `decision`, because there is exactly one caller and it is the one
+    /// that mints the verdict: an abstention has no answer of ours to compare
+    /// (§6), so there is no `Agreement` to hand over rather than one to ignore.
+    /// That is also what keeps this table and the per-query record from holding
+    /// different verdicts for the same row — they are given the same option.
+    pub(crate) fn observe(
+        &mut self,
+        strata: Strata,
+        decision: Decision,
+        agreement: Option<Agreement>,
+    ) {
         if let Some(row) = self.row(strata.prior()) {
             row.queries += 1;
             match decision {
@@ -119,21 +131,14 @@ impl Table {
             }
         }
 
-        match decision {
-            Decision::Committed => {
-                let Some(row) = self.row(strata.settled()) else {
-                    return;
-                };
-                match agreement {
-                    Agreement::MatchTop1 => row.match_top1 += 1,
-                    Agreement::MatchContained => row.match_contained += 1,
-                    Agreement::Mismatch { .. } => row.mismatch += 1,
-                }
-            }
-            // There is nothing to judge, so the settled stratum has nothing to
-            // say. Written out rather than wildcarded: a fourth decision would
-            // have to state which of the two rows it belongs in.
-            Decision::Abstained | Decision::Failed => {}
+        let Some(agreement) = agreement else { return };
+        let Some(row) = self.row(strata.settled()) else {
+            return;
+        };
+        match agreement {
+            Agreement::MatchTop1 => row.match_top1 += 1,
+            Agreement::MatchContained => row.match_contained += 1,
+            Agreement::Mismatch { .. } => row.mismatch += 1,
         }
     }
 

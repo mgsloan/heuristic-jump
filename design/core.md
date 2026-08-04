@@ -903,7 +903,20 @@ exactly.
 **The stratum is two fields, not one.** `resolution.md` §8 assigns a stratum
 a-priori from the reference, then permits one refinement during search — to
 `AmbiguousName` or `ExternalDependency`, neither of which is knowable before
-the search runs. Coverage is reported on `stratum_prior` so the denominator
+the search runs.
+
+*A-priori* is about the **rule**, not about who evaluates it. The handler
+computes both fields and reports them, as the paragraph above says; what makes
+the prior stable is that its rule reads only the query and the reference, and
+never what the search found. Two consequences follow, and the second is easy
+to miss: the prior does not move when the implementation changes, **and it is
+knowable without the search finishing.** A query whose outcome is discarded
+after the fact — by §5's hard cap, say — has not thereby lost its prior. The
+prior was never the outcome's to carry away, and code that reads it off a
+completed outcome is taking the only path that happens to be convenient rather
+than the only one there is.
+
+Coverage is reported on `stratum_prior` so the denominator
 is fixed by the reference and does not move when the implementation changes;
 precision is reported on `stratum_final` so an answer is judged against the
 class it turned out to be. One field cannot do both, and collapsing them
@@ -1655,10 +1668,21 @@ corpus and a benchmark say it is worth it. So the conversion **re-reads the
 target file**, once per location, and the honest price is a syscall and a
 UTF-8 validation that the page cache makes cheap rather than free.
 
+**With one exception, which is not a cache.** When the target is the query's
+own document, the conversion encodes against the snapshot it was already
+handed rather than reading anything: `DocumentSnapshot` holds the rope, and
+cloning it is three refcount bumps whatever the file's size
+([section 2](#2-document-snapshots)). That is not the cache
+`conformance-005` refused — nothing is stored, nothing is keyed, and nothing
+outlives the query — it is the query declining to go and find text it is
+holding. The case is common rather than exotic: a definition in the file the
+cursor is in is the most ordinary answer this tool gives.
+
 That re-read is not only a cost, and the consequence is load-bearing enough
-to state here: the handler's read and the conversion's read are two reads of
-the same path, so a file edited between them yields offsets that are stale
-and *still in range*. Nothing downstream could notice —
+to state here: for a target the editor does not have open, the handler's read
+and the conversion's read are two reads of the same path, so a file edited
+between them yields offsets that are stale and *still in range*. Nothing
+downstream could notice —
 `WirePosition::encode` refuses only offsets that are not character
 boundaries, and a shifted file offers plenty that are. The carried row is the
 witness, and the conversion compares it against the text it actually read

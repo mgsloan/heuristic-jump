@@ -254,7 +254,7 @@ All three came from reading a whole file rather than the sites the gaps named.
   `heuristic_latency_us` was "the one field" a replay does not reproduce.
   Nothing failed because every fixture handler reports a constant; the first
   real handler with a timed stage would have made the determinism test flaky,
-  and the cheap repair for that is one more mask. CHANGE-core-005, and the
+  and the cheap repair for that is one more mask. CHANGE-core-009, and the
   mask is now a list with `the_mask_is_not_the_whole_record` holding its size.
 
 ### Approaches considered and not taken
@@ -342,7 +342,7 @@ and a server that does not advertise `save` in `textDocumentSync` never makes
 the editor send a `didSave` (pyright does not, gopls does).
 
 The scripts are in `/tmp/hj-capture`. That is the second campaign to write
-them there — `core-018` escalates where they should live, and the recipe is in
+them there — `core-020` escalates where they should live, and the recipe is in
 the corpus header meanwhile.
 
 ### Approaches considered and not taken
