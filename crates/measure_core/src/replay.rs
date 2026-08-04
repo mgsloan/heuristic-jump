@@ -109,33 +109,48 @@ impl Replay<'_> {
                 continue;
             }
 
-            if current.as_ref().map(|(file, _)| &**file) != Some(&*row.file) {
-                current = self
-                    .snapshot(repository, &row.file)?
-                    .map(|document| (row.file.clone(), document));
-            }
-            let Some((_, document)) = &current else {
-                continue;
+            // Taken and put back rather than borrowed across the read, which is
+            // what lets the miss build a document without the match holding a
+            // borrow of what it replaces.
+            let open = match current.take() {
+                Some((file, document)) if *file == *row.file => (file, document),
+                _ => (row.file.clone(), self.snapshot(repository, &row.file)?),
             };
-
-            records.push(self.one(&files, document, row, table)?);
+            records.push(self.one(&files, &open.1, row, table)?);
+            current = Some(open);
         }
 
         Ok(())
     }
 
+    /// The document a recorded position is into.
+    ///
+    /// A failure here is refused rather than skipped, and that is the same rule
+    /// §7 states about the commit: a replay refuses a truth file whose checkout
+    /// does not match "rather than silently reporting metrics for positions
+    /// that have since moved". A file the truth names and this checkout cannot
+    /// read is that condition, arriving one row at a time — and skipping it
+    /// takes those positions out of the denominator, so the table reads as a
+    /// smaller corpus rather than as a broken one, which is the shape of a
+    /// coverage regression that never happened.
+    ///
+    /// It cannot be reached by a corpus that was enumerated and collected
+    /// against the checkout the header names: `enumerate` skips a file it
+    /// cannot read, so no position exists for one. What reaches it is a truth
+    /// file from another enumeration, which is exactly what the header checks
+    /// above are about.
     fn snapshot(
         &self,
         repository: &Repository,
         file: &str,
-    ) -> Result<Option<shared::DocumentSnapshot>, Error> {
+    ) -> Result<shared::DocumentSnapshot, Error> {
         let absolute = repository.path.join(file);
-        let Ok(text) = fs::read_to_string(&absolute) else {
-            tracing::warn!(path = %absolute.display(), "a recorded file is unreadable");
-            return Ok(None);
-        };
+        let text = fs::read_to_string(&absolute).map_err(|source| shared::ProjectError::Read {
+            path: absolute.clone(),
+            source,
+        })?;
         let Some(uri) = DocumentUri::from_file_path(&absolute) else {
-            return Ok(None);
+            return Err(shared::ConfigError::RepositoryMissing { path: absolute }.into());
         };
         let language = self.corpus.language();
         // The same `Deadline::none()` the query below runs under, and for the
@@ -143,16 +158,14 @@ impl Replay<'_> {
         // entirely, so *coverage* — not just latency — would vary with load
         // (`core.md` §7, "replay enforces no deadline at all").
         let deadline = shared::Deadline::none();
-        Ok(Some(
-            SnapshotSeed::fresh(
-                uri,
-                Rope::from(text.as_str()),
-                DocumentVersion(0),
-                language,
-                self.handler.grammar(),
-            )
-            .realise(&deadline)?,
-        ))
+        SnapshotSeed::fresh(
+            uri,
+            Rope::from(text.as_str()),
+            DocumentVersion(0),
+            language,
+            self.handler.grammar(),
+        )
+        .realise(&deadline)
     }
 
     fn one(

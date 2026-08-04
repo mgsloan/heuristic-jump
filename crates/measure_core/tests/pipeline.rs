@@ -1246,6 +1246,48 @@ fn a_replay_refuses_a_truth_file_whose_header_names_another_run() {
     }
 }
 
+/// The fourth way a truth file can be untrustworthy, and the one that arrives
+/// a row at a time rather than in the header: it names a file this checkout
+/// does not hold.
+///
+/// §7's rule for the header is to refuse "rather than silently reporting
+/// metrics for positions that have since moved", and a row whose file cannot
+/// be read is that condition — a truth file from another enumeration, since
+/// `enumerate` skips a file it cannot read and so leaves no position for one.
+/// Skipping it instead takes those positions out of the denominator, and a
+/// table over a smaller corpus does not look like a broken corpus. It looks
+/// like coverage that improved.
+#[test]
+fn a_replay_refuses_a_position_whose_file_it_cannot_read() {
+    let corpus = fixture("unreadable_file");
+    enumerate(&corpus);
+    write_truth(&corpus);
+
+    let path = truth_path(&corpus, "oracle");
+    let mut text = fs::read_to_string(&path).expect("the truth file");
+    let rows = text.lines().count();
+    text.push_str(
+        "{\"file\":\"src/gone.rs\",\"offset\":0,\"outcome\":\"none\",\
+         \"answer\":null,\"latency_us\":1}\n",
+    );
+    fs::write(&path, text).expect("a truth row for a file the checkout lost");
+
+    let Err(refused) = replay_result(&corpus, measure_core::Format::Json) else {
+        panic!(
+            "a truth file naming a file the checkout does not hold was \
+             replayed, and {rows} of its {} rows were measured",
+            rows + 1
+        );
+    };
+    assert!(
+        matches!(refused, Error::Project(shared::ProjectError::Read { .. })),
+        "the unreadable file was refused as {refused}, which does not name the \
+         file. Which one it is, is the whole of what an operator needs: the \
+         repair is re-enumerating the corpus, and nothing else in the refusal \
+         says which enumeration the truth came from"
+    );
+}
+
 /// §7's "the table is not enough": `replay --records <path>` writes the
 /// per-query JSONL "unchanged and unfiltered", and digesting those into
 /// something readable is the harness's job — the same split that keeps
