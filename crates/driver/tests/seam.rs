@@ -2064,6 +2064,139 @@ fn the_workspace_lints_reach_our_crates_and_not_the_vendored_ones() {
     }
 }
 
+/// `deps.md` §14, the bullet directly after the one about denying a short list
+/// of real hazards:
+///
+/// > **Each `allow` carries a comment saying why.** Zed does this consistently
+/// > and it is the difference between a lint config and a pile of silenced
+/// > warnings.
+///
+/// Nothing read it. `the_workspace_lints_are_the_ones_section_15_prints` above
+/// compares §15's printed block against the manifest and drops trailing
+/// comments on *both* sides — which it has to, since the two are formatted
+/// differently — so a level is held and the argument for it is not. Deleting
+/// the CAUTION block above `style` passes every other test in this file, and
+/// what it takes with it is the note that `disallowed_fields` is in the style
+/// group and is therefore currently off.
+///
+/// The comment has to **name the lint**, which is the whole of the assertion.
+/// Requiring merely that some comment sits nearby makes the section header the
+/// argument, and a decorative `# -- misc ---` satisfies that. It is also the
+/// weaker reading of §14's own sentence: a pile of silenced warnings with a
+/// banner over it is still a pile.
+///
+/// Two comment runs govern an entry, because both forms are in use here and
+/// both are right. The root manifest argues per group — one run above several
+/// entries — and `vendor/rope` argues once above `[lints.clippy]` for the two
+/// beneath it. A blank line ends a run, which is what stops an unrelated block
+/// from three tables up counting as an argument for anything.
+///
+/// The clippy attribute lints are a different claim and do not cover this one.
+/// `allow_attributes` and `allow_attributes_without_reason` hold `#[allow]` at
+/// a *source* site; §14's bullet is about the lint table, where nothing is
+/// compiled and no lint fires.
+#[test]
+fn every_allow_in_a_lint_table_names_the_lint_it_argues_for() {
+    let mut manifests = vec![("Cargo.toml".to_owned(), workspace_file("Cargo.toml"))];
+    let members = workspace_members();
+    assert!(
+        !members.is_empty(),
+        "no workspace members parsed out of Cargo.toml, so this test would read one manifest"
+    );
+    for member in &members {
+        let relative = format!("{member}/Cargo.toml");
+        let text = workspace_file(&relative);
+        assert!(
+            !text.is_empty(),
+            "no manifest for {member}, so every assertion below is vacuous"
+        );
+        manifests.push((relative, text));
+    }
+
+    let mut allowed = Vec::new();
+    for (relative, manifest) in &manifests {
+        for (table, lint, argument) in lint_allowances(manifest) {
+            assert!(
+                argument.contains(&lint),
+                "{relative}'s [{table}] allows {lint} and no comment governing it names it: \
+                 deps.md §14 wants each allow to carry the reason it exists, because that is \
+                 the difference between a lint config and a pile of silenced warnings — and a \
+                 level survives a diff where the argument for it does not"
+            );
+            allowed.push(format!("{relative}: {lint}"));
+        }
+    }
+
+    assert!(
+        allowed.contains(&"Cargo.toml: style".to_owned()),
+        "the scan did not find the workspace's own `style` allowance, which deps.md §14 names \
+         in the bullet above this one -- so it is reading no lint table at all, and {} \
+         allowance(s) is what an empty reader reports",
+        allowed.len()
+    );
+    assert!(
+        allowed.len() > 3,
+        "only {} lint allowance(s) found across {} manifest(s): the vendored crates carry three \
+         between them, so a smaller number means the reader stopped at the first table",
+        allowed.len(),
+        manifests.len()
+    );
+}
+
+/// Every `allow` in every lint table of one manifest, as
+/// `(table, lint, the comment text governing it)`.
+///
+/// A comment run accumulates until a blank line or a table header ends it; the
+/// run before a header governs every entry in that table, and a run inside the
+/// table governs the entries after it until the next blank line. Deliberately
+/// *not* cleared by an entry, since the root manifest's style is one comment
+/// over a group of them.
+fn lint_allowances(manifest: &str) -> Vec<(String, String, String)> {
+    let mut found = Vec::new();
+    let mut table = String::new();
+    let mut header = String::new();
+    let mut run = String::new();
+
+    for line in manifest.lines() {
+        let line = line.trim();
+        if let Some(comment) = line.strip_prefix('#') {
+            run.push_str(comment);
+            run.push('\n');
+            continue;
+        }
+        if line.is_empty() {
+            run.clear();
+            continue;
+        }
+        if let Some(name) = line
+            .strip_prefix('[')
+            .and_then(|rest| rest.strip_suffix(']'))
+        {
+            name.clone_into(&mut table);
+            header = std::mem::take(&mut run);
+            continue;
+        }
+        if !table.split('.').any(|part| part == "lints") {
+            continue;
+        }
+        let Some((lint, value)) = line.split_once('=') else {
+            continue;
+        };
+        // The trailing comment counts too: it is where a one-line argument
+        // goes, and dropping it would demand a block above an entry that
+        // already says why beside itself.
+        let (value, trailing) = value.split_once('#').unwrap_or((value, ""));
+        if value.contains("\"allow\"") {
+            found.push((
+                table.clone(),
+                lint.trim().to_owned(),
+                format!("{header}{run}{trailing}"),
+            ));
+        }
+    }
+    found
+}
+
 /// `deps.md` §14: "**Explicit `[lib] path`.** Zed writes
 /// `path = "src/rope.rs"` rather than relying on `src/lib.rs`. We keep this for
 /// the vendored crates because it is how they arrive, **and for our own crates
