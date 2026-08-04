@@ -150,7 +150,7 @@ fi
 step=$((step + 1))
 printf '\n--- %d. ratchets\n' "$step"
 case "$phase" in
-3 | 7) fail "the phase $phase ratchets are not implemented; design/loops.md section 18 defers them past phase 1.5" ;;
+3 | 7) "$hj" check-ratchets "$loop" || fail "the phase $phase size ratchet" ;;
 *) echo "skipped: ratchets are a cost-phase gate, and this is phase $phase" ;;
 esac
 

@@ -31,7 +31,7 @@ import tempfile
 import textwrap
 import tomllib
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -2478,27 +2478,27 @@ def cmd_check_metrics(args: argparse.Namespace) -> int:
             )
             return 1
         print(f"metrics: {target[:12]} is recorded")
-    # `harness/gate`'s own step 5 hard-fails in a cost phase with "the phase
-    # ratchets are not implemented", and it is denied to every loop, so the
-    # size ratchet is run from here — where §7's "the gate checks metric
-    # direction itself" already puts a metric check, and where the test ratchet
-    # went for the same reason. `harness-008` asks for step 5 to call
-    # `hj check-ratchets` instead of failing.
-    # Both, rather than short-circuiting: a loop that has deleted a test and
-    # grown the binary should be told about both in one gate run, or it fixes
-    # one and discovers the other on the next.
-    return 1 if check_test_ratchet(config) + check_size_ratchet(config, phase) else 0
+    # The test-count ratchet only. The size ratchet ran here too while step 5
+    # of `harness/gate` hard-failed in a cost phase, since that file is denied
+    # to every loop; `harness-008` is answered and step 5 now calls
+    # `hj check-ratchets`, so this stops being the second route to it.
+    #
+    # The test ratchet stays because it is not the same mechanism: §4 scopes the
+    # gate's ratchets step to §11's *size* ratchets in phase 3, and §7's test
+    # count is a per-commit check that belongs with the metrics row it is
+    # computed from.
+    return 1 if check_test_ratchet(config) else 0
 
 
 def cmd_check_ratchets(args: argparse.Namespace) -> int:
-    """`harness/gate` step 5, for whenever it is allowed to call this.
+    """`harness/gate` step 5.
 
-    The step currently hard-fails in a cost phase — "the phase ratchets are not
-    implemented" — and `harness/gate` is denied to every loop, so this command
-    exists unreferenced by it and is run from `check-metrics` meanwhile.
-    `harness-008` is the request to swap the step's body for a call to this.
-    Having both routes is not duplication: the ratchet runs today either way,
-    and the day step 5 changes it stops being two places.
+    It was written before the step could call it: the step hard-failed in a
+    cost phase with "the phase ratchets are not implemented", which stopped
+    being true once `hj size` and the re-baselining existed, and
+    `harness/gate` is denied to every loop — so this ran from `check-metrics`
+    meanwhile. `harness-008` answered that, the step now calls this, and
+    `check-metrics` no longer does: the size ratchet has one route again.
     """
     phase, config = loop_config(args.loop)
     if phase.phase not in SIZE_RATCHET_PHASES:
@@ -3749,6 +3749,67 @@ def prompt_drift(campaign_id: str, config: LoopConfig) -> dict | None:
     }
 
 
+def live_prompt_templates(phase: Phase) -> set[str]:
+    """Prompt files that some loop is currently generated from.
+
+    Not every file under `harness/prompts/` is one. `design/loops.md` §18 gives
+    the harness loop the tuning and optimisation prompts, which belong to phases
+    that have not run — editing those changes no generator and is ordinary work.
+    """
+    return {f"harness/prompts/{loop.prompt}" for loop in phase.loops.values() if loop.prompt}
+
+
+def log_prompt_revision(campaign_id: str, phase: Phase, drift: dict) -> list[str]:
+    """Record a campaign's edit to a live prompt as a `prompt-revised` row.
+
+    `harness-009` is answered: a loop may edit the prompt that generates it, and
+    the edit is logged rather than prevented. Logged rather than merely flagged
+    because §16 calls a prompt revision the one intervention that cannot be
+    replayed — it changes the *generator* of campaigns, so metrics either side
+    of it are not comparable — and the dashboard flag alone left the log, which
+    §16 calls the mechanism rather than a record of it, with no entry at all.
+
+    Written here rather than through `hj intervene` because nobody is present to
+    give a rationale: this is the harness noticing, and the row says so. A human
+    reading the queue can still add their own row with the reasoning.
+
+    Only live templates. A tuning prompt for a phase that has not run changes no
+    campaign that has been measured.
+    """
+    revised = sorted(set(drift["prompts"]) & live_prompt_templates(phase))
+    if not revised:
+        return []
+    append_jsonl(
+        INTERVENTIONS,
+        {
+            "ts": now(),
+            "kind": "prompt-revised",
+            "phase": phase.phase,
+            "target": ", ".join(revised),
+            "answer": "logged automatically at campaign close",
+            "rationale": (
+                f"Campaign {campaign_id[:8]} edited "
+                + ", ".join(revised)
+                + (
+                    ", which is the template its own prompt was rendered from. "
+                    if drift["touches_own_prompt"]
+                    else ", a prompt another loop is generated from. "
+                )
+                + "design/loops.md §16: a prompt revision changes the generator of "
+                "campaigns rather than a campaign, so metrics either side of it are "
+                "not comparable and it cannot be replayed. Recorded by the harness "
+                "rather than by a person — state/decisions/harness-009.md is answered "
+                "'flag it and log it', so no rationale was given at the time. The diff "
+                "is in the campaign's commits."
+            ),
+            "campaign": campaign_id,
+            "automatic": True,
+            "commit": head_sha(),
+        },
+    )
+    return revised
+
+
 PYTHON_SHEBANG = re.compile(rb"^#!.*python")
 
 # `design/loops.md` section 7's better ralph heuristic, and its constant.
@@ -4372,6 +4433,15 @@ def cmd_campaign_close(args: argparse.Namespace) -> int:
             "intervention that cannot be replayed, so the metrics either side of "
             "it are not comparable. Not a failure; see harness-009."
         )
+        # `harness-009` is answered "flag it and log it": the flag above reaches
+        # the dashboard, and this reaches the log §16 calls the mechanism. The
+        # commit is folded into the close rather than taken separately, so a
+        # campaign that revised a prompt and a campaign that did not leave the
+        # same number of commits behind.
+        revised = log_prompt_revision(args.id, phase, prompts)
+        if revised:
+            commit_harness_state([INTERVENTIONS], f"prompt-revised by {args.id[:8]}")
+            print(f"campaign: logged a prompt-revised intervention for {', '.join(revised)}")
     return 0
 
 
@@ -6270,6 +6340,47 @@ def selftest_cases() -> list[tuple[str, object]]:
         assert set(SIZE_RATCHET_PHASES) == {"3", "7"}, "the two cost phases, and no others"
         phase = Phase(phase="2a", loops={"lang-rust": _selftest_loop("lang-rust", "rust")})
         assert check_size_ratchet(phase.loops["lang-rust"], phase) == 0
+
+    def only_a_prompt_in_use_is_a_prompt_revision():
+        core = _selftest_loop("core", "rust")
+        harness = replace(_selftest_loop("harness", None), prompt="conformance.md")
+        phase = Phase(phase="1a", loops={"core": core, "harness": harness})
+        live = live_prompt_templates(phase)
+        assert live == {"harness/prompts/conformance.md"}, live
+        assert "harness/prompts/tuning.md" not in live, (
+            "§18 gives this loop the tuning and optimisation prompts, and a phase "
+            "that has not run has no metrics for an edit to make incomparable"
+        )
+        assert "harness/prompts/auditor.md" not in live, "the auditor generates no campaign"
+
+    def gate_step_5_calls_the_command_that_exists():
+        # `harness/gate` is denied to every loop and reaches `hj` by name, so a
+        # rename here breaks a step that only runs in a phase nobody has run —
+        # the failure would surface as the first cost-phase campaign's gate
+        # dying on an unrecognised subcommand. `harness-008` is the record; the
+        # step spent a whole phase hard-failing before anyone looked.
+        gate = (HARNESS / "gate").read_text()
+        assert '"$hj" check-ratchets "$loop"' in gate, (
+            "step 5 no longer calls check-ratchets; see state/decisions/harness-008.md"
+        )
+        assert "ratchets are not implemented" not in gate, "the false message is back"
+        assert "cmd_check_ratchets" in globals(), "the command the gate names must exist"
+
+    def the_size_ratchet_has_one_route():
+        # It ran from `check-metrics` too while step 5 could not call it. Two
+        # routes meant a loop could be failed twice for one regression, and the
+        # answer to `harness-008` was explicit that the second goes away.
+        source = (HARNESS / "hj").read_text()
+        first, past = selftest_line_range(source)
+        callers = [
+            number
+            for number, line in enumerate(source.splitlines(), start=1)
+            if re.match(r"^[^#]*\bcheck_size_ratchet\(", line) and not first <= number < past
+        ]
+        assert len(callers) == 2, (
+            "expected the definition and cmd_check_ratchets outside the selftest, "
+            f"found {len(callers)}: lines {callers}"
+        )
 
     def a_loop_without_a_language_measures_no_binary():
         assert measure_packages(_selftest_loop("core", None)) == [], (
