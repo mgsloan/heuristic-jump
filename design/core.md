@@ -1286,11 +1286,31 @@ collected in a shape that cannot be replayed.
 
 Constraints that make a replay trustworthy:
 
-* **`truth.jsonl` carries its provenance in a header record**: repository
-  path and commit, language server name and version, grammar revision, and
-  the `measure` version that wrote it. Replay refuses to run against a truth
-  file whose repository commit does not match the checkout, rather than
+* **`truth.jsonl` carries its provenance in a header record**: the
+  repository's corpus *name* and its commit, the language, the server name and
+  version, the grammar revision, the `measure` version that wrote it, and
+  whether the collection ran to completion. Replay refuses to run against a
+  truth file whose repository commit does not match the checkout, rather than
   silently reporting metrics for positions that have since moved.
+
+  **The repository is named and not located**, and the distinction is the
+  whole reason a truth file is portable. Every other identity in the corpus is
+  a name — [`data-collection.md` §0](data-collection.md) keys `repos/<name>/`,
+  `positions/<name>.jsonl` and `truth/<server>/<name>.jsonl` all the same way —
+  and the root those sit under is supplied at run time by `--corpus`, which
+  [the command line](#the-command-line) requires precisely so that it can
+  differ. A header that recorded the path it was collected under would make the
+  one part of the layout that is deliberately not fixed the part the drift
+  check fires on: moving the corpus, or handing the held-out split to a
+  different machine, would look exactly like a misfiled truth file.
+
+  **A partially collected file says so in the same header, and replay refuses
+  it.** A hundred machine-hours will be interrupted
+  ([`data-collection.md` §4](data-collection.md)), so `collect` is resumable
+  and a truth file spends much of its life incomplete. The alternative to the
+  flag is not a stricter rule but a quieter one — an interrupted collection
+  replays as a smaller corpus, which is the shape of a coverage regression that
+  never happened.
 * **Replay enforces no deadline at all.** This is the constraint that makes
   replay worth having, and it is easy to get wrong by doing the obvious
   thing. A wall-clock deadline makes abstention depend on machine load: the

@@ -658,3 +658,52 @@ and closing the first did not make anybody re-read the first line of it.
 **No code moved with it.**
 
 **Campaign:** 9110a409-f685-4569-ba82-fbf938928727
+
+## CHANGE-core-021 — core.md#two-modes-collect-and-replay — the header names the repository, it does not locate it
+
+**Contradiction:** the constraint list under "Two modes" said the provenance
+header carries "**repository path** and commit, language server name and
+version, grammar revision, and the `measure` version that wrote it".
+
+Two other statements do not allow a path there:
+
+* [`data-collection.md` §0](../../design/data-collection.md) prints the corpus
+  layout as `repos/<name>/`, `positions/<name>.jsonl` and
+  `truth/<server>/<name>.jsonl` — every identity in the corpus is a name — and
+  the root they sit under is passed at run time.
+  [`#the-command-line`](../../design/core.md#the-command-line) requires
+  `--corpus <dir>` and gives it no default *so that it can differ*: "held-out
+  is selected by passing a different `--corpus` path". A frozen artifact that
+  recorded the path it was collected under would make the deliberately
+  unfixed part of the layout the part the drift check fires on — relocating
+  the corpus, or handing `test/` to another machine, would be indistinguishable
+  from a misfiled truth file.
+* `crates/measure_core/src/replay.rs:76` compares `provenance.repository`
+  against `repository.name`, alongside `server` and `language`, before
+  verifying the checkout.
+
+The same list omits two fields the header has always had to carry, and both
+are named by the document that owns the artifact:
+
+* `language`, which is one of the three identity fields replay checks.
+* `complete`. [`data-collection.md` §4](../../design/data-collection.md): "A
+  partially collected truth file is marked incomplete in its header and is
+  never consumed by replay." It belongs in *this* list, whose heading is
+  "constraints that make a replay trustworthy", because `collect` is resumable
+  by design — a hundred machine-hours will be interrupted — so a truth file
+  spends much of its life incomplete, and replaying one silently reports a
+  smaller corpus rather than a broken one.
+
+**Resolution:** the bullet lists the corpus *name*, the commit, the language,
+the server name and version, the grammar revision, the `measure` version and
+the completion flag, with a paragraph each on why the repository is named
+rather than located and why the incompleteness flag is a replay constraint and
+not a collection detail.
+
+Nothing is traded off: "path" and "name" cannot both be right, only one of them
+survives the corpus being relocatable, and relocatability is the mechanism
+`loops.md` §12's held-out isolation is built on rather than a convenience.
+
+**No code moved with it.**
+
+**Campaign:** 9110a409-f685-4569-ba82-fbf938928727
