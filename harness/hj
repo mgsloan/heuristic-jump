@@ -3949,6 +3949,16 @@ def cmd_campaign_open(args: argparse.Namespace) -> int:
     claimed_now, _ = claim_targets(config.owner, campaign_id, list(assigned))
     rendered = render(template, values)
     prompt_sha = hashlib.sha256(rendered.encode()).hexdigest()
+    constitution = constitution_sha()
+    changed_from = log_constitution_change(campaign_id, phase, config.owner, constitution)
+    if changed_from:
+        # stderr: `harness/loop` reads this command's stdout as the campaign id.
+        print(
+            f"campaign: CLAUDE.md changed from {changed_from[:12]} since this loop's last "
+            "campaign, and it is loaded into every session. Logged as an intervention; "
+            "metrics either side of it are not strictly comparable.",
+            file=sys.stderr,
+        )
 
     record = STATE / "campaigns" / config.owner / f"{campaign_id}.md"
     record.parent.mkdir(parents=True, exist_ok=True)
@@ -3984,6 +3994,11 @@ def cmd_campaign_open(args: argparse.Namespace) -> int:
             "template_sha": hashlib.sha256(
                 (HARNESS / "prompts" / config.prompt).read_bytes()
             ).hexdigest(),
+            # The other file that is in every session's context and that no
+            # campaign can write. Recorded for the prompt sha's reason (§16):
+            # a campaign's behaviour is a function of both, and the join is
+            # only possible if both are on the row.
+            "constitution_sha": constitution,
             "cli_version": cli_version(),
             "started": now(),
             "start_commit": head_sha(),
@@ -4137,6 +4152,89 @@ def prompt_drift(campaign_id: str, config: LoopConfig) -> dict | None:
         "touches_own_prompt": own in edits,
         "own": own,
     }
+
+
+def constitution_sha() -> str:
+    """The blob sha of `CLAUDE.md` at HEAD, or empty if it is not tracked."""
+    return git("rev-parse", "HEAD:CLAUDE.md", check=False).strip()
+
+
+def constitution_change_unlogged(previous: str, current: str, rows: list[dict]) -> bool:
+    """Whether this constitution change still needs a row.
+
+    False when there is nothing to report and false when a sibling worker
+    opening seconds earlier already reported it — three workers open against
+    one `main`, so the first one to notice is the one that logs.
+    """
+    if not current or not previous or previous == current:
+        return False
+    return not any(
+        row.get("kind") == "spec-edited-by-hand"
+        and row.get("target") == "CLAUDE.md"
+        and current[:12] in str(row.get("answer") or "")
+        for row in rows
+    )
+
+
+def log_constitution_change(campaign_id: str, phase: Phase, owner: str, current: str) -> str:
+    """`CLAUDE.md` changing between campaigns, as an intervention row.
+
+    `design/loops.md` §14, on why the prompts splice its precedence rather than
+    its text: "Editing it is still logged as an intervention, for the same
+    reason a prompt revision is: it changes every subsequent campaign and
+    nothing downstream can tell." `CLAUDE.md`'s own rules-hygiene section makes
+    the same claim from the other side — an edit there "is a human change,
+    logged as an intervention like a prompt revision".
+
+    `hand_authored_commits` already *reports* the commit as an intervention
+    with no reasoning, and that is not the same thing: §16 calls the log the
+    mechanism rather than a record of it, and a candidate on a dashboard leaves
+    the log with no entry at all. This is `log_prompt_revision`'s argument
+    applied to the other file that changes every campaign, and the row carries
+    the commit so the dashboard's unlogged list agrees with it.
+
+    Detected against the last campaign of *this* loop rather than the fleet,
+    because that is the boundary the incomparability falls on: the campaigns
+    either side of the change are this loop's.
+
+    Returns the sha it changed from, so the caller can say so, and empty when
+    there was nothing to report.
+    """
+    previous = next(
+        (
+            str(row.get("constitution_sha"))
+            for row in reversed(campaigns_of(owner))
+            if row.get("constitution_sha")
+        ),
+        "",
+    )
+    if not constitution_change_unlogged(previous, current, read_jsonl(INTERVENTIONS)):
+        return previous if current and previous and previous != current else ""
+    append_jsonl(
+        INTERVENTIONS,
+        {
+            "ts": now(),
+            # §16's vocabulary is closed and names no constitution kind. This is
+            # the one it has for normative text a human changed outside the loop
+            # mechanism, and `target` is what keeps "which kinds recur" readable:
+            # a row naming CLAUDE.md is a different event from one naming a
+            # design document, and the field says which.
+            "kind": "spec-edited-by-hand",
+            "phase": phase.phase,
+            "target": "CLAUDE.md",
+            "answer": f"CLAUDE.md is now {current[:12]}, was {previous[:12]}",
+            "commit": git("log", "-1", "--format=%H", "--", "CLAUDE.md", check=False).strip(),
+            "rationale": (
+                f"Noticed at the open of campaign {campaign_id[:8]} ({owner}): the "
+                "constitution changed since this loop's last campaign. It is loaded into "
+                "every session, so like a prompt revision it changes the generator rather "
+                "than a campaign, and metrics either side of it are not strictly "
+                "comparable. Logged by the harness because nobody is present at a campaign "
+                "open to give a reason; whoever made the edit can add a row with theirs."
+            ),
+        },
+    )
+    return previous
 
 
 def live_prompt_templates(phase: Phase) -> set[str]:
@@ -6682,6 +6780,24 @@ def selftest_cases() -> list[tuple[str, object]]:
         over = digest_note(DIGEST_WORD_CAP + 120)
         assert "over the 512-word cap by 120" in over, over
         assert "part of this close" in over, "an overrun with no instruction is a statistic"
+
+    def a_constitution_change_is_logged_once_for_the_fleet():
+        rows = [{"kind": "spec-edited-by-hand", "target": "CLAUDE.md", "answer": "CLAUDE.md is now bbbbbbbbbbbb, was aaaaaaaaaaaa"}]
+        assert constitution_change_unlogged("a" * 40, "b" * 40, []) is True
+        assert constitution_change_unlogged("a" * 40, "b" * 40, rows) is False, (
+            "a sibling worker that opened first already reported this one"
+        )
+        assert constitution_change_unlogged("a" * 40, "a" * 40, []) is False
+        assert constitution_change_unlogged("", "b" * 40, []) is False, (
+            "the first campaign to record a sha has nothing to compare against"
+        )
+        assert constitution_change_unlogged("a" * 40, "", []) is False, (
+            "an untracked CLAUDE.md is not an edit"
+        )
+        other = [{"kind": "spec-edited-by-hand", "target": "design/loops.md", "answer": "b" * 40}]
+        assert constitution_change_unlogged("a" * 40, "b" * 40, other) is True, (
+            "a row about another document is not this row"
+        )
 
     def the_estimate_table_parses():
         rows = parse_estimate_table([
