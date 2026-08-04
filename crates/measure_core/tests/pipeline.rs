@@ -1442,6 +1442,133 @@ fn the_digests_precision_key_separates_every_way_an_answer_can_be_wrong() {
     }
 }
 
+/// The last thing §7's failure digest is made of, after the two keys: "Each
+/// group carries its count, its share of that stratum, and only then a **small
+/// seeded sample** of concrete cases — repository, file, line, the identifier,
+/// what we returned, what the server said."
+///
+/// Three of those six are not fields of the record and must not become ones:
+/// §7 gives the record a byte offset rather than a line/column pair "in the one
+/// place the two halves of the metric have to line up exactly", and the digest
+/// is the harness's job precisely so `measure_core` stays ignorant of it. So
+/// what this crate owes is not a digest but a *join* — that everything the
+/// sample names is recoverable from what a replay wrote plus the corpus it was
+/// given, with nothing derived twice.
+///
+/// This test is that join, built the way a harness would build it and asserted
+/// against a fixture whose answers are known. Two of the six come from outside
+/// the record: `line` from the file at the offset, and the identifier from
+/// `positions/<repo>.jsonl` on `(file, offset)` — which is why enumeration
+/// stores the token text it already had rather than leaving a reader to
+/// re-derive "what is an identifier" from a byte offset, in a project where
+/// that rule is deliberately one function.
+///
+/// The seeding and the sample size are the harness's and are not here. What
+/// would make them unimplementable is a missing join, and that is what this
+/// holds.
+#[test]
+fn the_digests_concrete_sample_is_recoverable_from_what_a_replay_wrote() {
+    let corpus = fixture("digest_sample");
+    enumerate(&corpus);
+    write_truth_answered(&corpus);
+
+    let records = corpus.scratch.join("records.jsonl");
+    replay_with(&MismatchingHandler, &corpus, Some(&records));
+
+    let text = fs::read_to_string(&records).expect("replay wrote the records file");
+    let positions = positions_of(&corpus);
+
+    let mut sampled = 0;
+    for row in text
+        .lines()
+        .filter(|row| row.contains("\"agreement\":\"mismatch\""))
+    {
+        let offset = between(row, "\"position\":", ",");
+        let at: usize = offset.parse().expect("the record's position is a number");
+
+        // Repository and file. The corpus layout is `data-collection.md` §0's,
+        // and a harness has the split path because it is what it passed as
+        // `--corpus`.
+        let (_, under) = between(row, "\"uri\":\"", "\"")
+            .split_once("/repos/")
+            .expect("a replayed query names a file under the corpus's repos/");
+        let (repository, file) = under
+            .split_once('/')
+            .expect("a repository-relative path inside the repository");
+        assert_eq!(
+            (repository, file),
+            ("one", "src/lib.rs"),
+            "the record's uri does not decompose into the repository and the \
+             file the corpus holds, so a digest could name neither"
+        );
+
+        // The line, from the file the offset is into. Not carried in the
+        // record, and not needed there: the corpus is a checkout at a commit
+        // the replay verified, so the text at the offset is the text the
+        // measurement was taken against.
+        let source = fs::read_to_string(corpus.split.join("rust").join("repos").join(under))
+            .expect("the file the record names");
+        let line = source[..at].matches('\n').count();
+
+        // The identifier, from the position file on `(file, offset)`. The
+        // corpus wrote the token text at enumeration, where the tree was
+        // already in hand.
+        let enumerated = positions
+            .lines()
+            .find(|position| {
+                between(position, "\"file\":\"", "\"") == file
+                    && between(position, "\"offset\":", ",") == offset
+            })
+            .expect("every replayed position was enumerated");
+        let identifier = between(enumerated, "\"text\":\"", "\"");
+
+        assert_eq!(
+            source.get(at..at + identifier.len()),
+            Some(identifier),
+            "the position file's text for {file}:{offset} is not what is at \
+             that offset in the checkout, so the two artifacts a sample is \
+             joined from describe different files"
+        );
+        assert!(
+            !identifier.is_empty()
+                && source
+                    .lines()
+                    .nth(line)
+                    .is_some_and(|text| text.contains(identifier)),
+            "the sample would name `{identifier}` on line {line} of {file}, and \
+             that line does not hold it. The three are recovered three ways — \
+             the record's offset, the checkout, and the position file — and a \
+             digest that got any of them from somewhere else would be naming a \
+             case that does not exist"
+        );
+
+        for (side, labels) in [
+            (
+                "what we returned",
+                between(row, "\"heuristic_locations\":[", "]"),
+            ),
+            (
+                "what the server said",
+                between(row, "\"lsp_locations\":[", "]"),
+            ),
+        ] {
+            assert!(
+                labels.contains("file://"),
+                "the sample's `{side}` is `{labels}`. A mismatch is a row where \
+                 both sides answered and they disagree, so a group whose sample \
+                 shows one side is a finding nobody can act on"
+            );
+        }
+        sampled += 1;
+    }
+
+    assert!(
+        sampled > 1,
+        "the fixture produced {sampled} mismatched row(s), so the join above \
+         holds for a single case or for none"
+    );
+}
+
 /// The other half of that flag: "with no `--records` it **writes nothing**, so
 /// the default stays a pure function of its inputs and `measure_core` still
 /// needs no knowledge of `state/`".
