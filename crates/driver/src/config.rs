@@ -12,6 +12,9 @@ use std::ffi::OsString;
 use std::time::Duration;
 
 use shared::ServerProfile;
+use shared::record::Mode as RecordMode;
+
+use crate::trace::Tracing;
 
 /// The hard cap, in the unit `--deadline-ms` and both of `shim.md` §14.6's
 /// numbers are written in. A newtype because it is one of three durations in
@@ -182,6 +185,99 @@ impl Mode {
             Self::Standalone => "standalone",
         }
     }
+
+    /// The same fact as [`Mode::name`], in the type §7's record carries. Two
+    /// enums rather than one because they answer different questions: this one
+    /// says whether a second answer exists to compare against, and the argv is
+    /// none of the record's business.
+    pub fn recorded(&self) -> RecordMode {
+        match self {
+            Self::Proxy {
+                server: _,
+                heuristics: _,
+            } => RecordMode::Proxy,
+            Self::Standalone => RecordMode::Standalone,
+        }
+    }
+
+    /// Whether the shim answers anything itself. `Standalone` has no
+    /// `--proxy-only` to disable it: `requires = "server"` makes that
+    /// combination unreachable rather than silently ignored.
+    pub fn heuristics(&self) -> Heuristics {
+        match self {
+            Self::Proxy {
+                server: _,
+                heuristics,
+            } => *heuristics,
+            Self::Standalone => Heuristics::Enabled,
+        }
+    }
+}
+
+/// `deps.md` §9's default: "the default filter is `warn` so we are quiet unless
+/// asked". Here rather than beside `--log` for the reason `DeadlineMs`'s
+/// defaults are here — how loud the shipped binary is by default is a property
+/// of the binary, and a second copy of the string in `heuristic_jump` is one
+/// two crates could disagree about.
+pub const DEFAULT_LOG_FILTER: &str = "warn";
+
+/// What starts every line we emit.
+///
+/// `shim.md` §2 forwards the child's stderr to ours verbatim, so our lines and
+/// rust-analyzer's arrive interleaved in one editor log panel. `deps.md` §9's
+/// requirement is that ours are distinguishable there, and the failure without
+/// it is not that a line is hard to read — it is that a user reads one of our
+/// warnings as the language server's and reports it against the wrong project.
+pub const LOG_PREFIX: &str = "[heuristic-jump] ";
+
+/// `tracing-subscriber`'s writer, wrapped so that [`LOG_PREFIX`] starts every
+/// *line* rather than every event. An event whose message spans lines would
+/// otherwise carry the prefix on its first line only, and the continuation
+/// lines are precisely the ones that look like the child's output.
+///
+/// It lives in `driver` rather than in `heuristic_jump` — where §9 puts the
+/// subscriber, and where it is still installed — only so that it can be
+/// asserted on: a binary crate exports nothing, and an unasserted prefix
+/// survives exactly until someone tidies the log setup.
+///
+/// Generic over the writer rather than fixed to `Stderr` so a test can read
+/// back what was written. One extra instantiation, against a claim that has no
+/// other way to be checked.
+#[derive(Debug)]
+pub struct PrefixedWriter<W> {
+    inner: W,
+    at_line_start: bool,
+}
+
+impl<W: std::io::Write> PrefixedWriter<W> {
+    pub fn new(inner: W) -> Self {
+        Self {
+            inner,
+            at_line_start: true,
+        }
+    }
+}
+
+impl<W: std::io::Write> std::io::Write for PrefixedWriter<W> {
+    /// Returns the length of `buf` consumed, never counting the prefix bytes:
+    /// a `Write` that reported more than it was given makes every caller's
+    /// loop arithmetic wrong.
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let mut consumed = 0_usize;
+        for line in buf.split_inclusive(|byte| *byte == b'\n') {
+            if self.at_line_start {
+                self.inner.write_all(LOG_PREFIX.as_bytes())?;
+            }
+            self.inner.write_all(line)?;
+            consumed = consumed.saturating_add(line.len());
+            self.at_line_start = line.ends_with(b"\n");
+        }
+        Ok(consumed)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 /// Resolved once at startup and then read-only.
@@ -190,6 +286,7 @@ pub struct Config {
     mode: Mode,
     deadline: DeadlineMs,
     server: ServerProfile,
+    tracing: Tracing,
 }
 
 impl Config {
@@ -201,7 +298,7 @@ impl Config {
     /// says "at startup" and this is it: the child's argv cannot change while
     /// the process runs, so a resolution anywhere further in would be the same
     /// answer recomputed under a deadline.
-    pub fn new(mode: Mode, deadline: DeadlineOverride) -> Self {
+    pub fn new(mode: Mode, deadline: DeadlineOverride, tracing: Tracing) -> Self {
         let deadline = match deadline {
             DeadlineOverride::ModeDefault => mode.default_deadline(),
             DeadlineOverride::Explicit(milliseconds) => milliseconds,
@@ -211,7 +308,14 @@ impl Config {
             mode,
             deadline,
             server,
+            tracing,
         }
+    }
+
+    /// `--trace=<path>` (`deps.md` §11), resolved but not opened: the file is
+    /// the actor's, because the actor is what owns a sink nobody shares.
+    pub fn tracing(&self) -> &Tracing {
+        &self.tracing
     }
 
     pub fn mode(&self) -> &Mode {

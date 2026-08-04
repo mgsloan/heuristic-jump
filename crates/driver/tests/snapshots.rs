@@ -25,14 +25,15 @@
 
 use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use driver::{
-    DebounceMs, Dispatched, Documents, FileListCache, OpenDocument, Queried, Registry, Request,
-    Synced, TreeCache, dispatch,
+    CacheBytes, CacheEntries, DebounceMs, Dispatched, Documents, FileListCache, OpenDocument,
+    Queried, Registry, Request, Synced, TreeCache, dispatch,
 };
 use proptest::prelude::{Just, ProptestConfig, Strategy, prop_assert_eq};
 use proptest::prop_oneof;
@@ -42,23 +43,13 @@ use shared::proto::PositionEncoding;
 use shared::{
     ByteLen, ByteRange, Clock, CommitPolicy, Confidence, Deadline, DocumentUri, DocumentVersion,
     Error, FileExtension, InputEdit, LanguageHandler, LanguageId, Offset, Outcome, ParseKind,
-    ProjectView, Query, Rope, ServerProfile, SnapshotSeed, Strata, Stratum, SystemClock, Trace,
-    input_edit,
+    ProjectView, Query, Rope, ServerProfile, SnapshotSeed, Strata, Stratum, SystemClock, TestClock,
+    Trace, input_edit,
 };
 use tree_sitter::{Language, Parser, Point, Tree};
 
 const LANGUAGE_IDS: &[LanguageId] = &[LanguageId::new("rust")];
 const FILE_EXTENSIONS: &[FileExtension] = &[FileExtension::new("rs")];
-
-/// The clock the deadline tests read, since `clippy.toml` bans `Instant::now`.
-#[derive(Debug)]
-struct FrozenClock(Instant);
-
-impl Clock for FrozenClock {
-    fn now(&self) -> Instant {
-        self.0
-    }
-}
 
 /// The parse is in front of the handler, and the deadline is in front of the
 /// parse.
@@ -70,10 +61,11 @@ impl Clock for FrozenClock {
 #[test]
 fn a_parse_that_runs_out_of_time_never_reaches_the_handler() {
     let root = fixture("expired_parse");
-    let started = SystemClock.now();
+    let clock = Arc::new(TestClock::new());
+    let started = clock.now();
     let budget = Duration::from_millis(20);
-    let clock = FrozenClock(started + budget + Duration::from_millis(1));
-    let deadline = Deadline::new(Arc::new(clock), started, budget);
+    let deadline = Deadline::new(Arc::clone(&clock) as Arc<dyn Clock>, started, budget);
+    clock.advance(budget + Duration::from_millis(1));
     let view = view(&root, &deadline);
     let handler = Recording::default();
 
@@ -235,6 +227,104 @@ fn the_tree_a_worker_parsed_is_what_the_next_seed_reparses_from() {
         edited.len(),
         "the handler was given a tree that stops somewhere other than the end of its \
          text, which is the disagreement core.md §2 says cannot happen"
+    );
+}
+
+/// `deps.md` §8's whole content, which is a caveat rather than a crate choice:
+///
+/// > **`lru`**, with a caveat: `shim.md` §5 wants the cache bounded by *both*
+/// > entry count and total bytes, and `lru` bounds only entries. So `driver`
+/// > wraps it — track a running byte total, and after each `put`, `pop_lru`
+/// > until under the byte ceiling.
+///
+/// Both bounds are asserted, and separately, because either one alone passes a
+/// cache that has the other. The cache was previously bounded by neither: an
+/// unbounded map with a `forget` on `didClose`, which holds every tree a long
+/// session ever parsed for a document nobody closed.
+///
+/// The eviction is asserted through `version()` — a `None` for a document that
+/// was cached a moment ago is exactly the cold miss `shim.md` §5 calls correct.
+/// What would *not* be correct is the byte total drifting, which is why the
+/// second half fills past the ceiling twice: a total that only ever grew would
+/// evict on every insert forever, and one entry surviving each round is what
+/// says it did not.
+#[test]
+fn the_parse_cache_is_bounded_by_entries_and_by_bytes() {
+    let root = fixture("bounded_cache");
+    let deadline = Deadline::none();
+    let mut shared = Fixture {
+        documents: Documents::new(),
+        registry: registry(),
+        view: view(&root, &deadline),
+        deadline: &deadline,
+        handler: Recording::default(),
+    };
+
+    let text = Rope::from(document().as_str());
+    let uris: Vec<DocumentUri> = (0..3)
+        .map(|index| uri_of(&root.join("src").join(format!("file{index}.rs"))))
+        .collect();
+
+    // Three documents, two slots, no byte pressure at all.
+    let mut by_entries = TreeCache::new(
+        CacheEntries::new(NonZeroUsize::new(2).expect("two is not zero")),
+        CacheBytes::new(ByteLen::MAX),
+    );
+    for uri in &uris {
+        warm(&mut by_entries, &mut shared, uri, &text);
+    }
+    assert_eq!(
+        by_entries.version(&uris[0]),
+        None,
+        "the third document did not push the first out of a two-entry cache: lru's own bound \
+         is the half deps.md §8 does not wrap, so a cache that ignores it is not an lru at all"
+    );
+    for uri in &uris[1..] {
+        assert_eq!(
+            by_entries.version(uri),
+            Some(DocumentVersion(1)),
+            "a two-entry cache holding fewer than two: eviction is running past the bound, and \
+             a cache that evicts what it just took is a parse paid for twice every time"
+        );
+    }
+
+    // Room for three by entry count, room for two by bytes. `document()` is
+    // the same text every time, so the ceiling is stated in whole documents.
+    let ceiling = ByteLen(text.len().0.saturating_mul(2));
+    let mut by_bytes = TreeCache::new(
+        CacheEntries::new(NonZeroUsize::new(16).expect("sixteen is not zero")),
+        CacheBytes::new(ceiling),
+    );
+    for uri in &uris {
+        warm(&mut by_bytes, &mut shared, uri, &text);
+    }
+    assert_eq!(
+        by_bytes.version(&uris[0]),
+        None,
+        "three documents fit under a two-document ceiling: shim.md §5 wants bytes bounded \
+         because a single generated file can be enormous, and an entry count does not see size"
+    );
+    assert_eq!(
+        by_bytes.version(&uris[2]),
+        Some(DocumentVersion(1)),
+        "the document that was just inserted is not in the cache, so pop_lru ran past the \
+         ceiling rather than until under it"
+    );
+
+    // A second round over the same ceiling. If the running total had not been
+    // decremented on eviction it would now sit above the ceiling permanently,
+    // and every insert from here on would evict everything.
+    let more: Vec<DocumentUri> = (3..6)
+        .map(|index| uri_of(&root.join("src").join(format!("file{index}.rs"))))
+        .collect();
+    for uri in &more {
+        warm(&mut by_bytes, &mut shared, uri, &text);
+    }
+    assert_eq!(
+        by_bytes.version(&more[2]),
+        Some(DocumentVersion(1)),
+        "after six inserts the cache holds nothing: the byte total is drifting up on eviction, \
+         which turns the ceiling into a cache that discards every tree it is given"
     );
 }
 
@@ -606,6 +696,47 @@ struct Held {
     field: u32,
 }
 ";
+
+/// One full turn of §2's loop for one document, which is what filling the
+/// cache takes: a seed, a dispatch that realises it, and the `Parsed` going
+/// back in. `insert` is the only write and consumes a value only `dispatch`
+/// mints, so a bound cannot be exercised by putting trees in directly.
+fn warm(cache: &mut TreeCache, fixture: &mut Fixture<'_>, uri: &DocumentUri, text: &Rope) {
+    let edits = no_edits();
+    let seed = cache.seed(&open(
+        &mut fixture.documents,
+        &fixture.registry,
+        uri,
+        text,
+        1,
+        &edits,
+    ));
+    let completed = dispatch(
+        &fixture.handler,
+        request(
+            seed,
+            &fixture.view,
+            &fixture.deadline,
+            &ServerProfile::standalone(),
+            &CommitPolicy::permissive(),
+        ),
+        PositionEncoding::Utf16,
+    );
+    cache.insert(
+        completed
+            .parsed
+            .expect("a query whose parse succeeded hands the tree back"),
+    );
+}
+
+/// Everything `warm` needs that is the same for every document in one test.
+struct Fixture<'a> {
+    documents: Documents,
+    registry: Registry,
+    view: ProjectView,
+    deadline: &'a Deadline,
+    handler: Recording,
+}
 
 /// A document in the map at a version, and the seed input built from it.
 ///

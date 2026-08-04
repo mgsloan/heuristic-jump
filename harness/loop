@@ -126,6 +126,126 @@ cd "$repo" || exit 2
 # branch accumulates (`design/loops.md` §13). Code and state are partitioned by
 # owner, so the rebase is conflict-free by construction and the fast-forward
 # touches nothing the other loop has open.
+# A merge that cannot be made is escalated, never swallowed. `design/loops.md`
+# §13 says a rebase that turns the gate red is "escalated as a blocked item
+# rather than repaired locally", and until now it was only printed — to a log
+# nobody reads, while the branch kept accumulating and the next campaign on
+# that worker started from it.
+#
+# Deliberately not resolved automatically. A conflict here means two workers
+# wrote the same file, which is a failure of the plan that divided them, and a
+# machine that quietly picks a side hides the evidence that the planner needs.
+blocked() {
+	local reason="$1" files="$2"
+	echo "loop: $reason" >&2
+	[ -n "$files" ] && echo "loop:   conflicting: $files" >&2
+	echo "loop:   left unmerged on $branch; escalated as a blocked item." >&2
+	"$hj" intervene --kind merge-blocked --target "$identity" \
+		--answer "$branch left unmerged" \
+		--rationale "$reason. Conflicting paths: ${files:-unknown}. Two workers wrote the same file, which is a failure of the plan that divided them rather than of either campaign. The branch is intact and rebases once the other side lands or a human picks. Nothing is discarded automatically: a machine choosing a side here would hide the evidence the planner needs." \
+		>/dev/null 2>&1 || true
+}
+
+# Resolve the conflicts whose answer is not a judgement, escalate the rest.
+#
+# **`--ours` and `--theirs` are inverted during a rebase**, which is the trap
+# here: the commits are replayed *onto* main, so `--ours` is main and
+# `--theirs` is the worker's. Getting it backwards silently keeps the wrong
+# side, which is worse than any conflict.
+#
+# Only two classes are obvious, and both are obvious for a stated reason
+# rather than because they are inconvenient:
+#
+#   state/audit/**   -> main. Only the round runner audits (§13, "the audit
+#                       does not parallelise"), so a worker branch carrying a
+#                       verdict is carrying one it should not have written.
+#   state/findings/* -> the worker's. It is that worker's digest of its own
+#                       campaign; nothing else can have a better copy.
+#
+# Everything else escalates. A conflict in `crates/`, `vendor/` or `design/`
+# means two workers wrote one file, which is a failure of the plan that
+# divided them — picking a side there destroys the evidence and loses work.
+# The same two mechanical rules as `rebase_resolving`, with `--ours` and
+# `--theirs` the other way round: in a merge `--ours` is this branch and
+# `--theirs` is what is being merged in. Inverted between the two commands, so
+# they cannot share a helper without the inversion becoming a parameter that is
+# easy to pass wrongly.
+merge_resolving() {
+	git -C "$worktree" merge main -m "Merge main into $branch" && return 0
+	local unresolved="" resolved="" path
+	while IFS= read -r path; do
+		[ -n "$path" ] || continue
+		case "$path" in
+		state/audit/*)
+			git -C "$worktree" checkout --theirs -- "$path" 2>/dev/null &&
+				git -C "$worktree" add -- "$path" && resolved="$resolved $path(main)"
+			;;
+		state/findings/*)
+			git -C "$worktree" checkout --ours -- "$path" 2>/dev/null &&
+				git -C "$worktree" add -- "$path" && resolved="$resolved $path(worker)"
+			;;
+		*)
+			unresolved="$unresolved $path"
+			;;
+		esac
+	done <<-EOF
+		$(git -C "$worktree" diff --name-only --diff-filter=U)
+	EOF
+	if [ -n "$unresolved" ]; then
+		git -C "$worktree" merge --abort 2>/dev/null
+		blocked "conflict merging main into $branch that is not mechanical" "$unresolved"
+		return 1
+	fi
+	echo "loop: resolved mechanically:$resolved"
+	GIT_EDITOR=true git -C "$worktree" commit --no-edit >/dev/null 2>&1
+	return 0
+}
+
+rebase_resolving() {
+	local attempt=0
+	git -C "$worktree" rebase main && return 0
+	while [ "$attempt" -lt 20 ]; do
+		attempt=$((attempt + 1))
+		local unresolved="" resolved=""
+		local conflicting
+		conflicting="$(git -C "$worktree" diff --name-only --diff-filter=U)"
+		if [ -z "$conflicting" ]; then
+			break
+		fi
+		local path
+		while IFS= read -r path; do
+			[ -n "$path" ] || continue
+			case "$path" in
+			state/audit/*)
+				git -C "$worktree" checkout --ours -- "$path" 2>/dev/null &&
+					git -C "$worktree" add -- "$path" && resolved="$resolved $path(main)"
+				;;
+			state/findings/*)
+				git -C "$worktree" checkout --theirs -- "$path" 2>/dev/null &&
+					git -C "$worktree" add -- "$path" && resolved="$resolved $path(worker)"
+				;;
+			*)
+				unresolved="$unresolved $path"
+				;;
+			esac
+		done <<-EOF
+			$conflicting
+		EOF
+		if [ -n "$unresolved" ]; then
+			git -C "$worktree" rebase --abort 2>/dev/null
+			blocked "conflict rebasing $branch onto main that is not mechanical" "$unresolved"
+			return 1
+		fi
+		echo "loop: resolved mechanically:$resolved"
+		if GIT_EDITOR=true git -C "$worktree" rebase --continue; then
+			return 0
+		fi
+	done
+	git -C "$worktree" rebase --abort 2>/dev/null
+	blocked "rebase of $branch did not converge after $attempt round(s)" ""
+	return 1
+}
+
 # Serialised across workers. Three of them close at their own pace, and two
 # `git merge --ff-only` into one checkout at the same moment is a race the
 # second one loses for no reason — its branch is fine, it just read `main`
@@ -155,17 +275,29 @@ merge_back_locked() {
 	if [ -z "$(git -C "$worktree" log --oneline "main..$branch" 2>/dev/null)" ]; then
 		return 0
 	fi
-	if ! git -C "$worktree" rebase main; then
-		git -C "$worktree" rebase --abort 2>/dev/null
-		echo "loop: rebase onto main failed. Code and state are supposed to be" >&2
-		echo "      partitioned by owner, so a conflict here is a real finding:" >&2
-		echo "      two loops wrote the same file. Left unmerged on $branch." >&2
+	# Rebase replays every commit and re-resolves the same conflict on each of
+	# them; a merge resolves once. That is invisible while a branch is a few
+	# commits ahead and dominant once it has diverged — two branches at 26 and
+	# 41 commits each cost several rounds of the same hand-resolution before
+	# being merged in one.
+	#
+	# So linear history is kept where it is free and traded where it is not.
+	# The threshold is deliberately low: the merge commit is the record that
+	# this branch diverged, which is worth having.
+	local ahead
+	ahead="$(git -C "$worktree" rev-list --count "main..$branch" 2>/dev/null || echo 0)"
+	if [ "$ahead" -gt "${HJ_REBASE_LIMIT:-8}" ]; then
+		echo "loop: $branch is $ahead commits ahead; merging rather than rebasing."
+		if ! merge_resolving; then
+			return 1
+		fi
+	elif ! rebase_resolving; then
 		return 1
 	fi
 	if git -C "$integration" merge --ff-only "$branch"; then
 		echo "loop: merged $branch into main."
 	else
-		echo "loop: main would not fast-forward from $branch; left unmerged." >&2
+		blocked "main would not fast-forward from $branch" ""
 		return 1
 	fi
 }

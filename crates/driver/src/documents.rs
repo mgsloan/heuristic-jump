@@ -36,7 +36,6 @@
 //! right: nothing here is shared, nothing is locked, and every mutation needs
 //! `&mut self`, which only the owner has.
 
-use rustc_hash::FxHashMap;
 use serde_json::value::RawValue;
 use shared::proto::{
     ContentChange, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
@@ -44,7 +43,7 @@ use shared::proto::{
 };
 use shared::{
     ByteLen, ByteRange, DocumentError, DocumentNotification, DocumentUri, DocumentVersion,
-    LanguageId, Rope,
+    LanguageId, Map, Rope,
 };
 
 use crate::dispatch::Registry;
@@ -52,7 +51,7 @@ use crate::dispatch::Registry;
 /// One row per document the editor has opened and not closed.
 #[derive(Debug, Default)]
 pub struct Documents {
-    open: FxHashMap<DocumentUri, Open>,
+    open: Map<DocumentUri, Open>,
 }
 
 /// A row, in the two states §8.6 gives it.

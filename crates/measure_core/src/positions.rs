@@ -106,12 +106,16 @@ pub(crate) fn write(path: &Path, positions: &[Position]) -> Result<(), Error> {
 /// token and the handler must behave identically wherever it sits, but that
 /// invariance is better asserted by a property test than paid for with corpus
 /// positions.
+/// `language` is passed rather than looked up: `measure_core::run` has already
+/// resolved which language this binary is about, and a second lookup here was
+/// a second answer to that question — one that fell back to
+/// `LanguageId::new("unknown")` where the caller refuses.
 pub(crate) fn enumerate(
     handler: &dyn LanguageHandler,
+    language: LanguageId,
     files: &[ProjectPath],
     non_identifiers_wanted: usize,
 ) -> Result<Vec<Position>, Error> {
-    let language = first_language_id(handler);
     // Enumeration is offline corpus work with no user waiting on it, and a
     // wall-clock deadline here would make the *position set* depend on machine
     // load — which is the one thing `data-collection.md` §2 needs stable, since
@@ -261,16 +265,6 @@ pub(crate) fn non_identifier_quota(repositories: usize) -> usize {
         return 0;
     }
     NON_IDENTIFIER_TOTAL.div_ceil(repositories)
-}
-
-fn first_language_id(handler: &dyn LanguageHandler) -> LanguageId {
-    // A handler with no declared ids cannot be registered, so this is the
-    // shape of the invariant rather than a fallback anybody reaches.
-    handler
-        .language_ids()
-        .first()
-        .copied()
-        .unwrap_or(LanguageId::new("unknown"))
 }
 
 /// SplitMix64, written out rather than depended on: the sample has to be

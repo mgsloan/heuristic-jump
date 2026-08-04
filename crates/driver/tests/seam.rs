@@ -15,8 +15,8 @@
 //!
 //! This file is where the third one belongs rather than in `shared`'s own
 //! tests, because `shared` *does* depend on `rope`: the property is about a
-//! crate that may not, and `driver` is one (`rustc-hash`, `shared`, `tracing`,
-//! and no rope).
+//! crate that may not, and `driver` is one (`crossbeam-channel`, `serde_json`,
+//! `shared`, `tracing`, and no rope).
 
 use std::path::{Path, PathBuf};
 
@@ -200,6 +200,262 @@ fn the_language_list_is_enumerated_in_heuristic_jump() {
     }
 }
 
+/// `core.md` §9's directory tree, compared against the workspace in both
+/// directions, with the document as the fixture rather than a list
+/// transcribed here — the same arrangement `deps.md` §15's lint block gets,
+/// and for the same reason: a third copy is the thing that drifts.
+///
+/// Both directions are the claim. A crate the tree names and the workspace
+/// lacks is a crate nobody built; a crate the workspace has and the tree does
+/// not name is the layout growing without the section that argued for it,
+/// which is how `crates/` stops being "our code" and `vendor/` stops being
+/// "copied-in Zed crates, kept separate so provenance and licensing stay
+/// obvious".
+///
+/// The four `phase 2` entries are exempt and the marking is load-bearing:
+/// `loops.md`'s decided question 10 puts a new `crates/lang_*` outside every
+/// loop's owned paths, so a phase 1a campaign that tried to satisfy the tree
+/// by creating `crates/lang_python/` would have its commit rejected by the
+/// gate rather than merged (CHANGE-core-014). Without the marking this test
+/// would be demanding exactly that.
+///
+/// The two names §9 calls "chosen rather than mechanical" are asserted with
+/// it, since both are decisions that read as arbitrary later:
+///
+/// > **`driver`, not `core`.** A crate named `core` shadows Rust's own, and
+/// > this document already uses "`core`" throughout for the single-threaded
+/// > actor in section 2.
+///
+/// > **`heuristic_jump`** for the binary crate, with a two-line `[[bin]]`
+/// > rename so that the produced binary is `heuristic-jump`. Cargo names a
+/// > binary target after the package verbatim and does not hyphenate it.
+#[test]
+fn the_workspace_is_the_layout_section_9_prints() {
+    let printed = fenced_block_of(&workspace_file("design/core.md"), "## 9. Workspace layout");
+    assert!(
+        printed.contains("crates/"),
+        "no fenced block found under core.md §9, so this test would compare nothing"
+    );
+
+    let mut parent = String::new();
+    let mut expected = Vec::new();
+    for line in printed.lines() {
+        let indented = line.starts_with(' ');
+        let mut fields = line.split_whitespace();
+        let Some(entry) = fields.next().and_then(|name| name.strip_suffix('/')) else {
+            continue;
+        };
+        if !indented {
+            parent = entry.to_owned();
+            continue;
+        }
+        // The one thing phase 1a may not build. `state/phase.toml` names
+        // `crates/lang_rust/` rather than globbing `crates/lang_*/`, so the
+        // gate rejects the commit that would create the others.
+        if fields.clone().eq(["phase", "2"]) {
+            continue;
+        }
+        expected.push(format!("{parent}/{entry}"));
+    }
+    expected.sort();
+
+    let mut members = workspace_members();
+    members.sort();
+    assert_eq!(
+        members, expected,
+        "the workspace is not the layout core.md §9 prints. A crate the tree names and \
+         [workspace] members lacks is one nobody builds; a member the tree does not name is the \
+         layout growing without the section that argued for it, which is what keeps crates/ our \
+         code and vendor/ the copied-in Zed crates"
+    );
+
+    assert!(
+        !members.iter().any(|member| member.ends_with("/core")),
+        "a crate is named core: §9 chose `driver` deliberately, because a crate named core \
+         shadows Rust's own and these documents already call the single-threaded actor core — \
+         two things with that name in one system is the ambiguity the choice avoids"
+    );
+    assert!(
+        table_of(&workspace_file("Cargo.toml"), "workspace.package")
+            .iter()
+            .any(|line| line.replace(' ', "") == "publish=false"),
+        "[workspace.package] does not set publish = false: §9 makes it workspace-wide, and it \
+         is what lets the crate names carry no project prefix — an accidental publish of a \
+         crate named `shared` is not a mistake with a second chance"
+    );
+
+    for (member, artifact) in [
+        ("crates/heuristic_jump", "heuristic-jump"),
+        ("crates/measure_rust", "measure-rust"),
+    ] {
+        let named = table_of(&workspace_file(&format!("{member}/Cargo.toml")), "[bin]")
+            .iter()
+            .find_map(|line| {
+                let (key, value) = line.split_once('=')?;
+                (key.trim() == "name").then(|| value.trim().trim_matches('"').to_owned())
+            })
+            .unwrap_or_default();
+        assert_eq!(
+            named, artifact,
+            "{member} builds a binary named {named:?}: §9 wants {artifact:?}, and cargo names a \
+             binary target after the package verbatim without hyphenating it — so the two-line \
+             [[bin]] rename is the whole of what makes the artifact match the name every \
+             invocation in these documents uses (CHANGE-conformance-001)"
+        );
+    }
+}
+
+/// The first unlabelled fenced block after a heading. `fenced_toml_of` above
+/// takes the `toml` ones; §9's directory tree carries no language tag, and a
+/// reader that accepted either would take §15's `toml` block for a tree.
+fn fenced_block_of(document: &str, heading: &str) -> String {
+    let Some((_, after)) = document.split_once(heading) else {
+        return String::new();
+    };
+    let Some((_, block)) = after.split_once("```\n") else {
+        return String::new();
+    };
+    block
+        .split_once("\n```")
+        .map_or("", |(body, _)| body)
+        .to_owned()
+}
+
+/// `core.md#adding-a-language`, which is a price rather than a description:
+/// "New `crates/lang_<x>/` … `crates/measure_<x>/`, which is four lines; then
+/// one line in `heuristic_jump`. **No crate other than `heuristic_jump`
+/// changes**, which is the whole cost and the point of the graph above."
+///
+/// `the_language_list_is_enumerated_in_heuristic_jump` above holds the one
+/// line. This holds the rest of the price, and every part of it is a claim
+/// that decays quietly rather than breaking: the two template manifests are
+/// correct until somebody adds a dependency that a later language then
+/// inherits by copying; the four lines are four until a `measure_<x>` grows a
+/// fifth; and "no crate other than `heuristic_jump`" is true until one crate
+/// reaches for one language and nothing anywhere reports it.
+///
+/// The template's contents are asserted in **both** directions, which is what
+/// makes them a template. A missing `similarity` is a language crate that
+/// cannot rank, discovered by the seventh author rather than the first; an
+/// extra dependency is the shape §9 fixes "once, by hand, before seven of
+/// them exist" drifting after the first copy.
+///
+/// > **No tests.** … an empty `tests/fixtures/` directory in the template is
+/// > an invitation to fill it, which converts a self-graded oracle into the
+/// > thing a campaign optimises.
+///
+/// That one cannot be enforced by anything but a scan. A `tests/` directory
+/// added to `crates/lang_python/` is a directory somebody made; nothing fails,
+/// the suite gets larger, and the oracle quietly becomes the expectations the
+/// session that wrote them held.
+///
+/// One clause here has no runnable control, and it is the `[workspace
+/// .dependencies]` entry: deleting it does not fail this test, it stops the
+/// workspace resolving, because `heuristic_jump` and `measure_<x>` both
+/// inherit from it. The assertion is kept for the case the compiler does not
+/// cover — a `lang_<x>` that arrives as a member before anything depends on
+/// it, which resolves fine and is the state one commit before the entry is
+/// needed.
+#[test]
+fn adding_a_language_costs_the_template_and_one_line() {
+    /// Everything a `lang_*` may name, besides its own grammar. `tree-sitter`
+    /// is the runtime rather than a grammar and is forced by
+    /// `LanguageHandler::grammar` returning a `tree_sitter::Language`
+    /// (CHANGE-core-012).
+    const LANGUAGE: &[&str] = &["shared", "similarity", "tree-sitter"];
+
+    /// Everything a `measure_*` may name, besides its own language. `clap` and
+    /// `shared` are the four lines' own requirements — `Cli::parse()` needs
+    /// the trait in scope and `main` returns `Result<(), shared::Error>`.
+    const MEASURE: &[&str] = &["measure_core", "clap", "shared"];
+
+    let languages = language_members();
+    assert!(
+        !languages.is_empty(),
+        "no crates/lang_* workspace member, so this test would pass vacuously"
+    );
+
+    let path_dependencies = workspace_path_dependencies();
+    for language in &languages {
+        let measure = format!("measure_{}", language.trim_start_matches("lang_"));
+        let grammar = format!("tree-sitter-{}", language.trim_start_matches("lang_"));
+
+        let mut expected: Vec<String> = LANGUAGE.iter().map(|name| (*name).to_owned()).collect();
+        expected.push(grammar);
+        expected.sort();
+        let mut declared = dependencies_in(&manifest_text(language));
+        declared.sort();
+        assert_eq!(
+            declared, expected,
+            "{language}'s [dependencies] is not core.md §9's template. Every entry there is \
+             forced by a signature: shared for the seam, similarity for the ranking, the \
+             runtime because grammar() returns a tree_sitter::Language, and the grammar itself. \
+             One more is what the next six languages inherit by copying"
+        );
+
+        let mut expected: Vec<String> = MEASURE.iter().map(|name| (*name).to_owned()).collect();
+        expected.push(language.clone());
+        expected.sort();
+        let mut declared = dependencies_in(&manifest_text(&measure));
+        declared.sort();
+        assert_eq!(
+            declared, expected,
+            "{measure}'s [dependencies] is not core.md §9's template. It is the one crate that \
+             may depend on both measure_core and a language, and it contains four lines — a \
+             dependency it does not need is one every measure_<x> after it acquires"
+        );
+
+        let main = workspace_file(&format!("crates/{measure}/src/{measure}.rs"));
+        let four_lines: Vec<&str> = main
+            .lines()
+            .filter(|line| !line.trim().is_empty() && !line.trim_start().starts_with("//"))
+            .collect();
+        assert_eq!(
+            four_lines.len(),
+            4,
+            "crates/{measure}/src/{measure}.rs is {n} lines of code and core.md §7 calls it \
+             four: the count is the claim — it is what makes a language measurable without any \
+             other language building, and what stops per-language logic accumulating on the \
+             measurement side of the seam. {four_lines:?}",
+            n = four_lines.len()
+        );
+
+        assert!(
+            path_dependencies.contains(language),
+            "{language} is a workspace member and has no [workspace.dependencies] entry: \
+             core.md §9 makes that one of the four manifest lines a language costs \
+             (CHANGE-core-013), and without it the two crates that name it would each write a \
+             version — which deps.md §14 is what stops"
+        );
+
+        for member in workspace_members() {
+            let named = member
+                .trim_start_matches("crates/")
+                .trim_start_matches("vendor/");
+            if named == "heuristic_jump" || named == measure || named == *language {
+                continue;
+            }
+            assert!(
+                !declares(&workspace_file(&format!("{member}/Cargo.toml")), language),
+                "{member} declares {language}: core.md §9 prices a language at two crate \
+                 directories and one line in heuristic_jump, and no crate other than \
+                 heuristic_jump changes — a second crate that knows a language by name is the \
+                 graph the section exists to keep flat"
+            );
+        }
+
+        for template in [language.clone(), measure] {
+            assert!(
+                !workspace_path(&format!("crates/{template}/tests")).exists(),
+                "crates/{template}/tests exists: core.md §9's template has **No tests**, \
+                 because the corpus is the oracle and is made of real repositories nobody here \
+                 wrote — a fixture directory beside the template is an invitation to fill it, \
+                 and what it converts the oracle into is the thing a campaign optimises"
+            );
+        }
+    }
+}
+
 /// `core.md` §8.4: `PositionEncoding` "reaches the dispatch wrapper and stops
 /// there", which is §3's rule that no encoding crosses the handler seam, seen
 /// from the outbound side.
@@ -359,6 +615,129 @@ fn every_member_declares_the_licence_section_5_assigns_it() {
     }
 }
 
+/// The one claim in §5's licensing subsection that is not about a manifest
+/// field:
+///
+/// > That is a project-level commitment and it should be stated plainly in
+/// > `high-level.md`, with `rope`'s license text shipped alongside.
+///
+/// > **There are two GPL inputs, not one.** An earlier revision of this section
+/// > said `rope` was the only one, and treated keeping everything else
+/// > permissive as an exit: replace `rope`, relicense nothing, and the
+/// > workspace could go permissive. `crates/similarity` closes that exit for
+/// > the handler layer.
+///
+/// Three documents have to agree for that to be true — `high-level.md`'s
+/// licence section, §5's own table, and `expected_licence` above, which is
+/// what the manifests are held to — and until this test they were compared by
+/// nobody. `high-level.md` still carried the superseded position verbatim,
+/// two campaigns after §5 recorded it as superseded (CHANGE-core-011). That is
+/// the failure this catches, and the direction that matters is the *next* one:
+/// a third GPL input arriving is a licence surface that grew by a dependency
+/// rather than by a decision, and the crate that carries it would be correct
+/// on its own while every summary of the project's position stayed wrong.
+///
+/// The GPL *inputs* are not the GPL *members*. `crates/lang_*` is GPL and is
+/// not an input — §5 marks it by the dependency rule, downstream of
+/// `similarity` — so the inputs are the GPL members that are not language
+/// crates, which is the set this compares. `heuristic_jump` is the reverse
+/// case and is why "reaches GPL" is not the rule: it depends on every `lang_*`
+/// and is MIT, because a `license` field describes copyright in that crate's
+/// own text (`conformance-014`).
+#[test]
+fn the_gpl_inputs_are_the_two_the_documents_name() {
+    let members = workspace_members();
+    assert!(
+        !members.is_empty(),
+        "no workspace members parsed out of Cargo.toml, so this test would pass vacuously"
+    );
+
+    let inputs: Vec<String> = members
+        .into_iter()
+        .filter(|member| !member.starts_with("crates/lang_"))
+        .filter(|member| {
+            licence_of(&workspace_file(&format!("{member}/Cargo.toml")))
+                .is_some_and(|licence| licence.starts_with("GPL"))
+        })
+        .collect();
+    assert_eq!(
+        inputs,
+        vec!["crates/similarity".to_owned(), "vendor/rope".to_owned()],
+        "the GPL inputs are {inputs:?}, and deps.md §5 names exactly two — vendor/rope, which \
+         everything reaches through DocumentSnapshot, and crates/similarity, which is a port. \
+         A third is the licence surface growing by a dependency rather than by a decision, \
+         which is the shape §5 says the check exists to notice"
+    );
+
+    let commitment = section_of(&workspace_file("design/high-level.md"), "\n## License");
+    assert!(
+        commitment.contains("GPL-3.0-or-later"),
+        "high-level.md's licence section does not name GPL-3.0-or-later, so either the section \
+         moved or this test is reading nothing: deps.md §5 calls the binary's licence a \
+         project-level commitment that should be stated plainly there"
+    );
+    for input in &inputs {
+        assert!(
+            commitment.contains(input.as_str()),
+            "high-level.md's licence section does not name {input}: §5 has two GPL inputs and \
+             not one, and the revision that named only rope treated replacing it as an exit to \
+             a permissively licensable workspace — an exit that has not existed since \
+             similarity was ported"
+        );
+    }
+    // Positive rather than a ban on the superseded sentence. The section that
+    // supersedes it quotes it — "an earlier version of this section said `rope`
+    // was the only GPL input" — so a scan for that phrase fires on the fix as
+    // readily as on the fault, which is how a check gets deleted rather than
+    // repaired.
+    assert!(
+        commitment.contains("two GPL inputs, not one"),
+        "high-level.md's licence section does not state that there are two GPL inputs and not \
+         one: the superseded revision said rope was the only one and treated replacing it as \
+         an exit to a permissively licensable workspace — an exit that has not existed since \
+         similarity was ported, and the claim is what a reader deciding whether the permissive \
+         part is liftable would act on"
+    );
+
+    let subsection = section_of(&workspace_file("design/deps.md"), "\n### Licensing:");
+    assert!(
+        subsection.contains("two GPL inputs, not one"),
+        "deps.md §5's licensing subsection no longer states that there are two GPL inputs: it \
+         is the source both the manifests and high-level.md are checked against here, and a \
+         comparison whose fixture moved compares nothing"
+    );
+    for input in &inputs {
+        assert!(
+            subsection.contains(input.as_str()),
+            "deps.md §5's licensing subsection does not name {input} while its manifest \
+             declares GPL: the per-crate table is the whole content of the claim, so a crate \
+             the section never placed is one nobody decided to make GPL"
+        );
+    }
+}
+
+/// The body of one markdown section, up to the next heading at the same
+/// level, so a document can be a fixture the way `fenced_toml_of` makes §15's
+/// `toml` block one. The heading is given with its leading newline, which is
+/// what keeps `## License` from matching a link to it in a paragraph above.
+fn section_of(document: &str, heading: &str) -> String {
+    let Some((_, after)) = document.split_once(heading) else {
+        return String::new();
+    };
+    let level = heading.trim_start().split(' ').next().unwrap_or("#").len();
+
+    let mut body = String::new();
+    for line in after.lines().skip(1) {
+        let depth = line.len() - line.trim_start_matches('#').len();
+        if depth > 0 && depth <= level && line.get(depth..).is_some_and(|r| r.starts_with(' ')) {
+            break;
+        }
+        body.push_str(line);
+        body.push('\n');
+    }
+    body
+}
+
 /// The other half of §14's licensing convention, and the half that was
 /// actually missing: "License texts live once at the workspace root and are
 /// symlinked into each crate. Zed does this without exception — 245 symlinks
@@ -384,6 +763,22 @@ fn the_licence_text_is_symlinked_into_every_member() {
         !members.is_empty(),
         "no workspace members parsed out of Cargo.toml, so this test would pass vacuously"
     );
+
+    // The "live once" half. Every assertion below is about a link, and a link
+    // is only a link to something: a root text that was itself a symlink would
+    // satisfy all of them while the one copy nobody can find is somewhere else
+    // entirely.
+    for text in ["LICENSE-MIT", "LICENSE-GPL", "LICENSE-APACHE"] {
+        let path = workspace_path(text);
+        assert!(
+            std::fs::symlink_metadata(&path)
+                .ok()
+                .is_some_and(|meta| meta.is_file() && !meta.is_symlink()),
+            "{text} at the workspace root is missing, or is not a regular file: deps.md §14 \
+             keeps one copy of each licence text there and symlinks it into every crate, so the \
+             root is where the copy has to actually be"
+        );
+    }
 
     for member in &members {
         let manifest = workspace_file(&format!("{member}/Cargo.toml"));
@@ -505,12 +900,17 @@ fn the_grammars_are_pinned_and_the_runtime_is_not() {
          version constraint, which is what lets them differ"
     );
 
+    // The entry is in Zed's inline form, under one `[profile.dev.package]`
+    // table rather than a table per package, since §14's first claim is that
+    // the workspace manifest follows Zed's conventions. `§14`'s own test holds
+    // the whole list; this holds the one entry §6 asks for.
     let manifest = workspace_file("Cargo.toml");
     assert!(
-        manifest.contains("[profile.dev.package.tree-sitter]")
-            && table_of(&manifest, "profile.dev.package.tree-sitter")
-                .iter()
-                .any(|line| line.replace(' ', "") == "opt-level=3"),
+        table_of(&manifest, "profile.dev.package")
+            .iter()
+            .any(|line| line
+                .replace(' ', "")
+                .starts_with("tree-sitter={opt-level=3")),
         "no `[profile.dev.package.tree-sitter] opt-level = 3`: deps.md §6 wants it because \
          parsing in a debug build is otherwise slow enough to distort every latency \
          observation made while developing, which would mean tuning against a fiction"
@@ -1302,6 +1702,289 @@ fn every_library_names_its_root_explicitly() {
     }
 }
 
+/// `deps.md` §14: "**`[profile.dev.package]` opt-level bumps for the crates
+/// that dominate debug runtime.** Zed sets `tree-sitter` and `serde_json` to
+/// `opt-level = 3`, plus the proc-macro crates. We take exactly those".
+///
+/// Two directions, because "exactly" is a claim in both: a package the section
+/// names and the manifest does not is a debug build that parses at the speed
+/// §6 says distorts every latency observation made while developing, and a
+/// package the manifest names and the section does not is the profile growing
+/// by imitation, which is what "exactly those" refuses.
+///
+/// The proc-macro three are Zed's `# proc-macros start/end` block minus its
+/// seven own crates, which are not in our graph at all.
+///
+/// The graph-membership half is the part that is not a transcription. Cargo
+/// **warns** on a spec that matches nothing — "profile package spec `x` in
+/// profile `dev` did not match any packages" — and builds anyway, so a bump
+/// for a crate that was renamed, dropped, or never arrived reads as applied
+/// forever. It is exactly what happened here: this table carried a comment
+/// saying `serde_json`'s bump was waiting because "cargo rejects a profile
+/// override naming a package that is not in the graph, and nothing depends on
+/// it yet", where `serde_json` had been a dependency of three crates for some
+/// time and cargo would not have rejected it either way.
+#[test]
+fn every_package_section_14_names_gets_its_opt_level() {
+    // Sorted, and deliberately a second copy of the manifest's list: with only
+    // a membership check, deleting a line from the manifest to make this pass
+    // is the failure the test claims to catch.
+    const BUMPED: [&str; 5] = ["proc-macro2", "quote", "serde_json", "syn", "tree-sitter"];
+
+    let manifest = workspace_file("Cargo.toml");
+    let mut bumped: Vec<String> = table_of(&manifest, "profile.dev.package")
+        .into_iter()
+        .filter_map(|entry| {
+            let (package, value) = entry.split_once('=')?;
+            value
+                .contains("opt-level = 3")
+                .then(|| package.trim().to_owned())
+        })
+        .collect();
+    bumped.sort();
+
+    assert_eq!(
+        bumped,
+        BUMPED.map(str::to_owned).to_vec(),
+        "[profile.dev.package] is not the list deps.md §14 names. A missing one is a debug \
+         build slow enough to distort every latency observation; an extra one is the profile \
+         growing by imitation, which is what \"we take exactly those\" refuses"
+    );
+
+    let lock = workspace_file("Cargo.lock");
+    let absent: Vec<&&str> = BUMPED
+        .iter()
+        .filter(|package| !lock.contains(&format!("name = \"{package}\"")))
+        .collect();
+    assert!(
+        absent.is_empty(),
+        "a profile override names a package that is not in the graph: {absent:?}. Cargo only \
+         warns about this and builds anyway, so the bump goes on looking applied while doing \
+         nothing -- which is why §14's list is checked against the lockfile rather than \
+         against a build that would succeed either way"
+    );
+}
+
+/// The rest of `deps.md` §14's conventions — the ones no other test in this
+/// file reads, which is why they are grouped rather than argued one at a time.
+///
+/// They have a failure mode in common, and it is not that the workspace stops
+/// building. Every one of them is a value that is *correct now* and that
+/// nothing would report as wrong: `resolver = "2"` still resolves,
+/// `lto = false` still links, a `[lib]` without `doctest = false` still tests,
+/// and a `license` added to `[workspace.package]` still compiles while
+/// quietly overriding the per-crate answers §5 spends a subsection on. The
+/// only thing standing between each of them and a drift is that somebody
+/// reads §14 again.
+///
+/// > **`[workspace.package]` carries only what is genuinely uniform.** For Zed
+/// > that is `publish` and `edition`; members write `edition.workspace = true`
+/// > and `publish.workspace = true`. We add `rust-version` and keep `license`
+/// > out, since ours differs per crate (§5).
+///
+/// The inheritance half is asserted with it, because a `[workspace.package]`
+/// nobody inherits is three keys with no effect — and `rust-version` is the
+/// one whose absence is silent in the direction that matters: cargo enforces
+/// it as a floor per package, so a member that does not inherit it is a member
+/// with no minimum toolchain at all.
+///
+/// > **`[profile.release]`**: `lto = "thin"`, `codegen-units = 1`,
+/// > `debug = "limited"` — Zed's values, and the right ones for a binary whose
+/// > headline metric is latency but which still needs usable backtraces from
+/// > user reports.
+///
+/// > **`[workspace.metadata.cargo-machete] ignored`** for deps that are used
+/// > but invisible to static analysis. `rope` already needs `tracing` listed
+/// > this way upstream, and our patched copy still will.
+///
+/// That bullet named the wrong table and CHANGE-core-010 moved it to
+/// `[package.metadata.cargo-machete]`, which is where upstream's `rope` puts
+/// it and the precedent the bullet's own second sentence cites. The check is
+/// derived rather than listed: a crate whose only mention of `tracing` is the
+/// `#[instrument]` redirect is exactly a dependency "used but invisible to
+/// static analysis", so the condition computes which crates those are and
+/// requires the record of each. `heuristic_jump` deliberately does not match —
+/// it declares `tracing` and names it nowhere, which is a dependency that is
+/// not used rather than one that is invisible, and §14 does not cover it.
+///
+/// The `rust-toolchain.toml` half is §14's file tree, "pin 1.95.0, so
+/// grammar/rope behaviour is reproducible", read against `rust-version`. The
+/// two are different mechanisms — a selection and a floor — and
+/// `conformance-002` (answered) is the record of why both exist. What breaks
+/// silently is them disagreeing: `rust-version` above the pinned channel makes
+/// every build fail, and below it makes the floor a fiction, and neither is
+/// visible in either file alone.
+#[test]
+fn the_workspace_manifest_has_the_shape_section_14_states() {
+    let manifest = workspace_file("Cargo.toml");
+    assert!(
+        !manifest.is_empty(),
+        "no workspace Cargo.toml, so every assertion below is vacuous"
+    );
+
+    assert!(
+        table_of(&manifest, "workspace")
+            .iter()
+            .any(|line| line.replace(' ', "") == "resolver=\"3\""),
+        "[workspace] does not set resolver = \"3\": deps.md §14 names it as one of the two \
+         places we deliberately differ from Zed, whose \"2\" is legacy — and a resolver that \
+         reverts resolves a different feature set for every crate in the graph while building \
+         perfectly"
+    );
+
+    let mut uniform: Vec<String> = table_of(&manifest, "workspace.package")
+        .iter()
+        .filter_map(|line| Some(line.split_once('=')?.0.trim().to_owned()))
+        .collect();
+    uniform.sort();
+    assert_eq!(
+        uniform,
+        ["edition", "publish", "rust-version"]
+            .map(str::to_owned)
+            .to_vec(),
+        "[workspace.package] is not the three keys deps.md §14 calls genuinely uniform: Zed's \
+         publish and edition, plus the rust-version we add. `license` most of all belongs out \
+         of it — §5's answers differ per crate, and one here would override all seven while \
+         leaving every manifest looking right"
+    );
+
+    let release = table_of(&manifest, "profile.release");
+    for (key, expected) in [
+        ("debug", "\"limited\""),
+        ("lto", "\"thin\""),
+        ("codegen-units", "1"),
+    ] {
+        let set = release.iter().find_map(|line| {
+            let (name, value) = line.split_once('=')?;
+            (name.trim() == key).then(|| value.split('#').next().unwrap_or("").trim().to_owned())
+        });
+        assert_eq!(
+            set.as_deref(),
+            Some(expected),
+            "[profile.release] sets {key} to {set:?} and deps.md §14 takes Zed's {expected}: \
+             the three are one decision — a binary whose headline metric is latency, which \
+             still needs a usable backtrace out of a user's report"
+        );
+    }
+
+    let pinned = table_of(&workspace_file("rust-toolchain.toml"), "toolchain")
+        .iter()
+        .find_map(|line| {
+            let (name, value) = line.split_once('=')?;
+            (name.trim() == "channel").then(|| value.trim().trim_matches('"').to_owned())
+        })
+        .unwrap_or_default();
+    let floor = table_of(&manifest, "workspace.package")
+        .iter()
+        .find_map(|line| {
+            let (name, value) = line.split_once('=')?;
+            (name.trim() == "rust-version").then(|| value.trim().trim_matches('"').to_owned())
+        })
+        .unwrap_or_default();
+    assert!(
+        !pinned.is_empty(),
+        "rust-toolchain.toml names no [toolchain] channel: deps.md §14's file tree makes the \
+         pin what keeps grammar and rope behaviour reproducible across machines and across the \
+         life of the metrics history"
+    );
+    assert_eq!(
+        floor, pinned,
+        "rust-version is {floor:?} and rust-toolchain.toml pins {pinned:?}: the two are a floor \
+         and a selection rather than a duplicate, and they are only both true while they agree \
+         — above the channel every build fails, below it the floor is a fiction \
+         (conformance-002)"
+    );
+
+    let members = workspace_members();
+    assert!(
+        !members.is_empty(),
+        "no workspace members parsed out of Cargo.toml, so the scan below would pass vacuously"
+    );
+
+    let mut invisible = 0;
+    for member in &members {
+        let text = workspace_file(&format!("{member}/Cargo.toml"));
+        assert!(
+            !text.is_empty(),
+            "no manifest for {member}, so every assertion below is vacuous"
+        );
+
+        for key in ["edition", "publish"] {
+            assert!(
+                text.contains(&format!("{key}.workspace = true")),
+                "{member} does not write `{key}.workspace = true`: deps.md §14 puts the \
+                 uniform keys in [workspace.package], and a member that inherits none of \
+                 them is one the table does not reach"
+            );
+        }
+
+        if member.starts_with("crates/") {
+            assert!(
+                text.contains("rust-version.workspace = true"),
+                "{member} does not inherit rust-version: deps.md §14 adds it to Zed's two, and \
+                 cargo enforces it per package — a member that does not inherit it declares no \
+                 minimum toolchain at all, which is invisible until a build succeeds somewhere \
+                 it should not have"
+            );
+            if text.contains("[lib]") {
+                assert!(
+                    table_of(&text, "lib")
+                        .iter()
+                        .any(|line| line.replace(' ', "") == "doctest=false"),
+                    "{member}'s [lib] does not set doctest = false, which deps.md §14 asks for \
+                     on crates with no doctests. The vendored crates are exempt for the reason \
+                     §14 gives the [lib] path bullet — they arrive with upstream's answer — but \
+                     ours are written here, and a doctest harness nobody uses is a build \
+                     target nobody reads the output of"
+                );
+            }
+        }
+
+        if !declares(&text, "tracing") {
+            continue;
+        }
+        const REDIRECT: &str = "use tracing::instrument;";
+        let sources = member_sources(member);
+        let attribute_only = sources.iter().any(|source| source.contains(REDIRECT))
+            && !sources
+                .iter()
+                .any(|source| source.replace(REDIRECT, "").contains("tracing::"));
+        if !attribute_only {
+            continue;
+        }
+        invisible += 1;
+        assert!(
+            table_of(&text, "package.metadata.cargo-machete")
+                .iter()
+                .any(|line| line.starts_with("ignored") && line.contains("\"tracing\"")),
+            "{member} reaches tracing only through the #[instrument] redirect and records no \
+             cargo-machete exemption: deps.md §14 keeps the table for deps that are used but \
+             invisible to static analysis, and this is the case it names — an unused-dependency \
+             report that is wrong is one nobody acts on twice"
+        );
+    }
+    assert_eq!(
+        invisible, 2,
+        "{invisible} member(s) reach tracing through the #[instrument] redirect alone, and \
+         core.md §9 puts the redirect in rope and both of sum_tree's instrumented files — so \
+         either the redirect moved or this scan is reading nothing"
+    );
+}
+
+/// Every source file of a workspace member, whichever half of the workspace it
+/// is in. `sources_of` and `vendored_sources` differ in return type and in
+/// what they assert, because each grew for one caller; a rule quantified over
+/// `[workspace] members` needs both without caring which.
+fn member_sources(member: &str) -> Vec<String> {
+    match member.strip_prefix("vendor/") {
+        Some(crate_name) => vendored_sources(crate_name),
+        None => sources_of(member.strip_prefix("crates/").unwrap_or(member))
+            .into_iter()
+            .map(|(_, source)| source)
+            .collect(),
+    }
+}
+
 /// §5's table, as a rule rather than a list, because six more `lang_*` and six
 /// more `measure_*` arrive by copying the template and a hardcoded list would
 /// stop applying the moment one did.
@@ -1430,6 +2113,578 @@ fn sources_of(crate_name: &str) -> Vec<(String, String)> {
         }
     }
     sources
+}
+
+/// `deps.md` §10's rules for keeping the error set closed, which are the ones
+/// `anyhow` would erase one `?` at a time.
+///
+/// > **No `Other(String)`, no `Message(String)`, no `Box<dyn Error>` variant.**
+/// > Adding a failure mode means adding a variant, which is the point.
+///
+/// > **Foreign errors are the one unavoidable leak.** `std::io::Error` and
+/// > `serde_json::Error` are themselves open. They are wrapped as `#[source]`
+/// > fields on our own variants, always alongside our own context (which path,
+/// > which frame), so the *classification* is ours even though the detail is
+/// > theirs.
+///
+/// The second rule is the one with teeth and the one that had drifted: two
+/// variants wrapped a foreign error and carried nothing else —
+/// `CodecError::BodyNotJson` and `ProjectError::Scanner`. Neither is a
+/// compile error and neither reads as wrong; what they cost is that the
+/// classification stops being ours at the point it matters. A
+/// `serde_json::Error` names a line and column inside a body nobody kept, and
+/// an `io::Error` from a thread spawn says only that the process is out of
+/// something. Both now carry §10's "which frame" and "which path".
+///
+/// The document is the fixture, in the sense §15's test uses: the enum is read
+/// out of `shared/src/error.rs` rather than transcribed here, so a variant
+/// added tomorrow is checked without anyone updating a list. What that costs
+/// is a scan that assumes one field per line, which is how the file is written
+/// and what `cargo fmt` keeps true.
+///
+/// The `Box<dyn` ban is the one clause with a *partial* compiler backstop, and
+/// the boundary is worth writing down because it is not where it looks. A bare
+/// `Box<dyn Error>` variant does not compile: it costs `Error` its `Send`, and
+/// `files.rs` moves one into the scanner thread. A
+/// `Box<dyn Error + Send + Sync>` compiles perfectly — and is the form anyone
+/// reaching for an escape hatch would actually write, since it is the one the
+/// error ecosystem hands out. The control run for this test confirmed both, so
+/// the scan is checking exactly the case the compiler does not.
+#[test]
+fn every_foreign_error_is_wrapped_beside_context_of_ours() {
+    let source = workspace_file("crates/shared/src/error.rs");
+    assert!(
+        source.contains("pub enum Error {"),
+        "shared/src/error.rs holds no `pub enum Error`, so this test would read nothing"
+    );
+
+    for banned in ["Other(String)", "Message(String)", "Box<dyn"] {
+        assert!(
+            !source.contains(banned),
+            "shared/src/error.rs contains {banned}: deps.md §10 keeps the set closed, and an \
+             escape hatch is anyhow with extra steps — the failure classes are only a table \
+             shim.md §11 can match on while every one of them is a variant"
+        );
+    }
+
+    // Each variant runs from its `#[error(...)]` attribute to the next one, or
+    // to the end of the file. Within it, a field is a line reading `name:`.
+    let variants: Vec<&str> = source.split("#[error(").skip(1).collect();
+    assert!(
+        variants.len() > 40,
+        "only {} variants found in shared/src/error.rs, and §10's tree has more than that — \
+         the scan is not reading the file",
+        variants.len()
+    );
+
+    let mut checked = 0;
+    for variant in variants {
+        let body = variant.split("\n}").next().unwrap_or(variant);
+        if !body.contains("#[source]") {
+            continue;
+        }
+        let named = variant
+            .lines()
+            .find_map(|line| line.trim().strip_suffix(" {"))
+            .unwrap_or("<unnamed>");
+        let fields = body
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.starts_with('#') && !line.starts_with("//"))
+            .filter(|line| {
+                line.split_once(':').is_some_and(|(name, _)| {
+                    !name.is_empty()
+                        && name
+                            .chars()
+                            .all(|character| character.is_ascii_lowercase() || character == '_')
+                })
+            })
+            .count();
+        assert!(
+            fields > 1,
+            "{named} wraps a foreign error and carries nothing else: deps.md §10 keeps the \
+             classification ours by pairing every #[source] with context of our own — which \
+             path, which frame — because the foreign detail alone describes a failure in \
+             somebody else's vocabulary"
+        );
+        checked += 1;
+    }
+    assert!(
+        checked > 8,
+        "only {checked} variants wrap a foreign error, and error.rs has more than that — the \
+         field scan is matching nothing and would pass whatever the file said"
+    );
+
+    // §10 puts `#[non_exhaustive]` on the sub-enums and deliberately not on
+    // `Error`: "within one workspace, an exhaustive match on the top level is
+    // a feature", and it is what CLAUDE.md's ban on wildcard arms rests on.
+    let (before_total, sub_enums) = source
+        .split_once("pub enum Error {")
+        .expect("the total enum, asserted present above");
+    assert!(
+        !before_total.trim_end().ends_with("#[non_exhaustive]"),
+        "Error is #[non_exhaustive]: deps.md §10 marks the sub-enums and not the top level, \
+         because an exhaustive match on the nine classes is what makes shim.md §11's table a \
+         table"
+    );
+    for arm in [
+        "ConfigError",
+        "CodecError",
+        "ChildError",
+        "ProtocolError",
+        "DocumentError",
+        "ParseError",
+        "ProjectError",
+        "HandlerError",
+        "EncodingError",
+    ] {
+        assert!(
+            sub_enums.contains(&format!("#[non_exhaustive]\npub enum {arm} {{")),
+            "{arm} is not #[non_exhaustive]: deps.md §10 marks every sub-enum, so that adding \
+             a leaf is not a breaking change to the class table above it"
+        );
+    }
+}
+
+/// `deps.md` §9, whose three claims are each about something that is invisible
+/// from inside the process.
+///
+/// > The thing to be careful about: the child's stderr is forwarded verbatim to
+/// > our stderr (`shim.md` §2), so our own log lines interleave with
+/// > rust-analyzer's in the editor's log panel. Every line we emit gets a
+/// > distinguishing prefix, and the default filter is `warn` so we are quiet
+/// > unless asked.
+///
+/// The prefix was absent, and its absence produces no failure anywhere: the
+/// logs are correct, well-formatted and indistinguishable from the child's. The
+/// cost is paid by a user reading one editor panel who reports our warning
+/// against rust-analyzer.
+///
+/// It is asserted per *line* rather than per event, which is the part a
+/// hand-rolled prefix gets wrong: a multi-line message prefixed once carries it
+/// on the first line only, and the continuation lines are exactly the ones that
+/// look like somebody else's output.
+///
+/// > The JSONL metric records of `core.md` §7 are **not** tracing output. They
+/// > go to their own file via `serde_json`, because they are structured data
+/// > with a fixed schema that `measure_core` also writes, and routing them
+/// > through a log subscriber would make the schema a formatting concern.
+///
+/// The mechanism for that one is the subscriber being installed by the crate
+/// that owns a program's command line, and by nothing else: a metrics writer
+/// routed through a log subscriber would have to reach `tracing_subscriber`,
+/// and `driver` — which writes those records — cannot.
+///
+/// **Two such crates, not one.** `heuristic_jump` owns the shim's command line
+/// and `measure_core` owns `measure-<lang>`'s: `core.md` §7 puts `clap`, the
+/// flag set and `run` there precisely so a language binary is four lines, and
+/// a subscriber installed per language is one chance per language for one of
+/// them to be quiet where the others are not. What the rule is actually about
+/// is a *library* having an opinion about where logs go — `shared`, `driver`,
+/// `similarity` and every `lang_*` are linked into somebody else's program and
+/// must not.
+/// The crates that own a program's command line, and so the only ones that may
+/// reach `tracing_subscriber`. A list rather than a predicate because that is
+/// what makes adding one a decision somebody wrote down.
+const INSTALLS_THE_SUBSCRIBER: [&str; 2] = ["heuristic_jump", "measure_core"];
+
+#[test]
+fn our_log_lines_are_distinguishable_and_the_subscriber_is_installed_once() {
+    assert_eq!(
+        driver::DEFAULT_LOG_FILTER,
+        "warn",
+        "deps.md §9 makes `warn` the default so that we are quiet unless asked — our lines \
+         share a panel with the child's, and a chatty default spends the user's attention on \
+         a tool they did not ask to hear from"
+    );
+
+    let mut written = Vec::new();
+    let mut writer = driver::PrefixedWriter::new(&mut written);
+    let event = "a warning\nwith a second line\n";
+    assert_eq!(
+        std::io::Write::write(&mut writer, event.as_bytes()).expect("a write to a Vec"),
+        event.len(),
+        "PrefixedWriter reported a length that counted its own prefix: a Write that claims \
+         more than it was given makes every caller's loop arithmetic wrong"
+    );
+    let text = String::from_utf8(written).expect("the prefix and the event are both UTF-8");
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(
+        lines.len(),
+        2,
+        "a two-line event came out as {} line(s): {text:?}",
+        lines.len()
+    );
+    for line in lines {
+        assert!(
+            line.starts_with(driver::LOG_PREFIX),
+            "the line {line:?} carries no prefix: deps.md §9 wants every line distinguishable \
+             from the child's, and a continuation line is the one most easily read as the \
+             child's"
+        );
+    }
+
+    let members = crate_members();
+    assert!(
+        !members.is_empty(),
+        "no crates/* workspace member, so this test would pass vacuously"
+    );
+
+    let mut installs = Vec::new();
+    for member in &members {
+        let manifest = manifest_text(member);
+        assert!(
+            !manifest.is_empty(),
+            "no manifest for {member}, so every assertion below is vacuous"
+        );
+        for (table, key, _) in dependency_entries(&manifest) {
+            let name = key.strip_suffix(".workspace").unwrap_or(&key);
+            if name == "tracing-subscriber" {
+                installs.push(format!("{member} in [{table}]"));
+            }
+        }
+        for (file, source) in sources_of(member) {
+            assert!(
+                !source.is_empty(),
+                "{file} is missing or empty, so the scan below would pass vacuously"
+            );
+            // `measure_core` is the second exception, and it is one rather than
+            // a hole because of who links it: only the four-line
+            // `measure_<lang>` binaries do, so it is a binary body under a
+            // library's name and fights nobody. The rule it is excused from is
+            // about libraries a *handler* links, and no handler links this.
+            assert!(
+                INSTALLS_THE_SUBSCRIBER.contains(&&**member)
+                    || !source.contains("tracing_subscriber"),
+                "{file} names tracing_subscriber: deps.md §9 installs the subscriber in the \
+                 crate that owns the program's command line and nowhere else — a library with \
+                 an opinion about where logs go is one that fights whoever links it, and §7's \
+                 JSONL records stay out of the log subscriber by not being able to reach one"
+            );
+        }
+    }
+    installs.sort();
+    let mut wanted: Vec<String> = INSTALLS_THE_SUBSCRIBER
+        .iter()
+        .map(|member| format!("{member} in [dependencies]"))
+        .collect();
+    wanted.sort();
+    assert_eq!(
+        installs, wanted,
+        "deps.md §9 gives tracing-subscriber to the crates that own a command line: driver, \
+         shared and every language emit through the tracing facade and have no opinion about \
+         where it goes"
+    );
+
+    let declared = table_of(&workspace_file("Cargo.toml"), "workspace.dependencies")
+        .into_iter()
+        .find(|line| line.starts_with("tracing-subscriber"))
+        .unwrap_or_default();
+    assert!(
+        declared.contains("\"env-filter\""),
+        "tracing-subscriber is declared as `{declared}` without env-filter: deps.md §9 names \
+         it as one of the two features, and it is what --log is a string for"
+    );
+}
+
+/// `deps.md` §7, whose two claims are both about a manifest and neither about
+/// any code.
+///
+/// > **It is a dependency of `shared`, not `driver`.** `ProjectView` is a
+/// > concrete struct in `shared` (`core.md` §1), because `measure_core` needs
+/// > the same scope rules the shim uses and gets them a whole phase earlier.
+///
+/// The cost of getting that backwards is not a build error. `driver` walking
+/// with its own `ignore` and `shared` walking with another is two
+/// implementations of the rules that decide what a search can find, and §7
+/// states what that costs: "the corpus scores a tool that is not the one that
+/// ships."
+///
+/// > **`notify`** — **deferred behind a non-default `watch` feature.** … The
+/// > dependency is written into `Cargo.toml` as optional so the decision is
+/// > visible, not lost.
+///
+/// That sentence is the whole assertion, and it is unusual in being about a
+/// dependency that must be *declared and not used*. A deferral recorded only in
+/// prose is one the next person re-decides from scratch, and §7's reasons —
+/// the editor is already watching in proxy mode, inotify runs out of
+/// descriptors on large repos — are not re-derivable from an absence.
+///
+/// **`optional = true` has no negative control**, for the reason
+/// `the_workspace_lints_reach_our_crates_and_not_the_vendored_ones` records
+/// about `vendor/rope`: the mutation is rejected before a test runs. Dropping
+/// it while `watch = ["dep:notify"]` stands makes cargo refuse to parse the
+/// manifest — "feature `watch` includes `dep:notify`, but `notify` is not an
+/// optional dependency" — and a control that produces no test result is not a
+/// control. The assertion is kept because cargo's enforcement is incidental to
+/// it: delete the feature and the optionality stops being checked by anything,
+/// which is the state §7 is guarding against rather than a separate one.
+#[test]
+fn the_walker_belongs_to_shared_and_the_watcher_is_declared_but_off() {
+    assert!(
+        dependencies_in(&manifest_text("shared"))
+            .iter()
+            .any(|name| name == "ignore"),
+        "shared does not depend on ignore: deps.md §7 puts the walker there because \
+         ProjectView is shared's, so that measure_core scores the same scope rules the shim \
+         ships — two walkers would mean the corpus scores a tool that is not the one shipped"
+    );
+    assert!(
+        !dependencies_in(&manifest_text("driver"))
+            .iter()
+            .any(|name| name == "ignore"),
+        "driver depends on ignore directly: deps.md §7 says it is shared's, and a driver that \
+         can walk is one that can grow a second set of exclusion rules nobody compares to the \
+         first"
+    );
+
+    let manifest = manifest_text("driver");
+    let notify = dependency_entries(&manifest)
+        .into_iter()
+        .find(|(_, key, _)| key.strip_suffix(".workspace").unwrap_or(key) == "notify");
+    let Some((table, _, value)) = notify else {
+        panic!(
+            "driver declares no notify: deps.md §7 defers the watcher and asks for the \
+             dependency to be written in as optional \"so the decision is visible, not lost\" \
+             — an absent crate records no decision, and the next person re-derives it"
+        )
+    };
+    assert_eq!(
+        table, "dependencies",
+        "driver declares notify in [{table}]: §7 defers it behind a feature rather than \
+         moving it to the tests, which is a different decision"
+    );
+    assert!(
+        value.contains("optional = true"),
+        "driver declares notify as `{value}`, not optional: §7's deferral is the whole entry, \
+         and a non-optional notify is the watcher built rather than recorded"
+    );
+
+    let features = table_of(&manifest, "features");
+    assert!(
+        features.iter().any(|line| line.starts_with("watch")),
+        "driver has no `watch` feature: §7 names it, and an optional dependency no feature \
+         gates is one nothing can turn on"
+    );
+    assert!(
+        !features.iter().any(|line| line.starts_with("default")),
+        "driver declares a default feature set: §7 keeps `watch` non-default, because in \
+         proxy mode the editor is already watching and a notify watcher would be a second, \
+         worse copy of a signal already on the wire"
+    );
+
+    for member in crate_members() {
+        if member == "driver" {
+            continue;
+        }
+        for (table, key, _) in dependency_entries(&manifest_text(&member)) {
+            assert!(
+                key.strip_suffix(".workspace").unwrap_or(&key) != "notify",
+                "{member} declares notify in [{table}]: §7 places the watcher behind driver's \
+                 feature, and a second declaration is a watcher nobody deferred"
+            );
+        }
+    }
+}
+
+/// `deps.md` §12's last line, which is the one row of its table that names no
+/// crate: "The injected clock for `shim.md` §12's protocol race tests is a
+/// `trait Clock` with a `TestClock` impl in `shared`, not a dependency."
+///
+/// The trait and `SystemClock` were in `shared`; the test impl was not, and
+/// five suites had each written their own — four copies of a frozen clock and
+/// one drivable one, in `shared/tests/{project,document}.rs` and
+/// `driver/tests/{deadline,snapshots,file_list}.rs`. That is the failure §12
+/// describes with the dependency declined and the replacement never built, and
+/// it is not free: the driven copy converted through `as_millis`, so a suite
+/// advancing by less than a millisecond advanced by nothing and asserted
+/// against a clock that had not moved.
+///
+/// Placing it in `shared` rather than behind a `test-support` feature creates
+/// one risk in exchange — a clock production code could drive — so that is what
+/// the scan below checks. The behavioural half is asserted too, because "a
+/// `TestClock` in `shared`" is satisfied by a type of that name that does
+/// nothing, and the whole point is that `Deadline` reads it.
+///
+/// What this cannot reach is the `tests/` directories: `sources_of` follows the
+/// crate root's `mod` declarations, and a test file is reached by none. A sixth
+/// hand-rolled `impl Clock` in a suite would not fail here. What stops it is
+/// that there is now no reason to write one.
+#[test]
+fn the_injected_clock_is_shareds_and_only_the_tests_can_drive_it() {
+    let defined_in = std::any::type_name::<shared::TestClock>();
+    assert!(
+        defined_in.starts_with("shared::"),
+        "TestClock is defined in {defined_in}: deps.md §12 puts it in shared, so that every \
+         suite injects the same double rather than five that differ where nobody compared them"
+    );
+
+    // It is a `Clock`, and driving it moves a `Deadline` — which is the claim,
+    // rather than the existence of a type with the right name.
+    let clock = std::sync::Arc::new(shared::TestClock::new());
+    let arrived_at = shared::Clock::now(clock.as_ref());
+    let budget = std::time::Duration::from_millis(20);
+    let deadline = shared::Deadline::new(
+        std::sync::Arc::clone(&clock) as std::sync::Arc<dyn shared::Clock>,
+        arrived_at,
+        budget,
+    );
+    assert!(
+        !deadline.expired(),
+        "a deadline built against an unadvanced TestClock is already expired, so the clock is \
+         not the one it reads"
+    );
+    // Sub-millisecond, which is the resolution the driven copy in
+    // file_list.rs truncated away: it advanced in whole milliseconds, so this
+    // step would have moved nothing.
+    clock.advance(budget + std::time::Duration::from_micros(1));
+    assert!(
+        deadline.expired(),
+        "advancing the TestClock past the budget left the deadline live: core.md §5's cap is \
+         enforced by reading the clock, so a double the deadline does not read makes every \
+         expiry test assert on nothing"
+    );
+
+    let members = crate_members();
+    assert!(
+        !members.is_empty(),
+        "no crates/* workspace member, so this test would pass vacuously"
+    );
+
+    for member in &members {
+        for (file, source) in sources_of(member) {
+            assert!(
+                !source.is_empty(),
+                "{file} is missing or empty, so the scan below would pass vacuously"
+            );
+            let defines_it = file == "crates/shared/src/deadline.rs";
+            for line in source.lines() {
+                if !line.contains("TestClock") {
+                    continue;
+                }
+                // The crate root is the other place the name legitimately
+                // appears, and only on the re-export: a `TestClock` reached
+                // from a function body there would be the thing being caught.
+                let re_exports_it =
+                    file == "crates/shared/src/shared.rs" && line.starts_with("pub use deadline::");
+                assert!(
+                    defines_it || re_exports_it,
+                    "{file} names TestClock in `{line}`: it is exported unconditionally rather \
+                     than behind a feature, and the price of that is that production code must \
+                     not be able to reach a clock it can drive — a shim whose deadline never \
+                     expires abstains for nobody"
+                );
+            }
+            assert!(
+                defines_it || !source.contains("impl Clock for"),
+                "{file} implements Clock: deps.md §12 has one trait and the two impls shared \
+                 provides, and a third is a suite writing its own double again"
+            );
+        }
+    }
+}
+
+/// `deps.md`'s "`FxHashMap` and `FxHashSet` are the default", whose two rules
+/// are both about what a *use site* is allowed to name:
+///
+/// > **A type alias, not a naked import.** `shared` exports
+/// > `pub type Map<K, V> = FxHashMap<K, V>` and `pub type Set<T> = FxHashSet<T>`,
+/// > so switching hashers later is one line rather than a sweep, and so the
+/// > choice is visible at every use site.
+///
+/// > **Reach for `std::collections::HashMap` when a key is genuinely external
+/// > and unbounded** … When it happens, say so in a comment; an unexplained
+/// > `HashMap` should read as an oversight.
+///
+/// Neither is a claim the build can check on its own, and the failure is
+/// nothing: `use rustc_hash::FxHashMap` compiles, runs, hashes identically, and
+/// costs only that the alias's stated benefit — one line rather than a sweep —
+/// is false, which is invisible until the day someone tries the one line. Five
+/// files were in that state, and the alias did not exist to be preferred.
+///
+/// The first rule now has an enforcement stronger than this scan for `driver`,
+/// as a side effect of applying it: with every use site on `shared::Map`,
+/// `driver` no longer names `rustc_hash` at all, so its manifest stopped
+/// declaring it and a naked import there fails to resolve. That is `deps.md`
+/// §14's "each arrives with its first user" run backwards, and it is why §0's
+/// table still placing `rustc-hash` in `driver` is not a contradiction — the
+/// table is asserted as a subset by
+/// `the_core_crates_declare_only_what_section_0_places_there`, and a placed
+/// dependency with no user is the intended state.
+///
+/// **The second rule is vacuous today and is written down anyway.** No crate
+/// uses `std::collections::HashMap`, so the loop below has nothing to check;
+/// what it does is fix the shape of the exception in advance, so the first
+/// genuinely-external key arrives with the comment §8 asks for rather than
+/// with an argument about whether one is needed.
+#[test]
+fn the_default_map_and_set_are_the_aliases_shared_exports() {
+    // An alias to *std's* `HashMap` carrying rustc_hash's hasher, rather than a
+    // second map type of our own — which would compile, satisfy every use site,
+    // and quietly not be what `deps.md` argued for.
+    let map = std::any::type_name::<shared::Map<u8, u8>>();
+    let set = std::any::type_name::<shared::Set<u8>>();
+    assert!(
+        map.contains("HashMap") && map.contains("rustc_hash"),
+        "shared::Map is {map}: deps.md makes it an alias for rustc_hash's FxHashMap, whose \
+         argument is that nothing here is keyed by untrusted input and SipHash's fixed setup \
+         cost is pure overhead on the definition path"
+    );
+    assert!(
+        set.contains("HashSet") && set.contains("rustc_hash"),
+        "shared::Set is {set}: deps.md makes it an alias for rustc_hash's FxHashSet"
+    );
+
+    let members = crate_members();
+    assert!(
+        !members.is_empty(),
+        "no crates/* workspace member, so this test would pass vacuously"
+    );
+
+    for member in &members {
+        for (file, source) in sources_of(member) {
+            assert!(
+                !source.is_empty(),
+                "{file} is missing or empty, so the scan below would pass vacuously"
+            );
+
+            // `shared`'s root is where the alias is defined, so it is the one
+            // file that names the hasher crate. `similarity` is exempt from
+            // nothing here: its `FxHasher32` is a hand-rolled hasher rather
+            // than a map, and does not match.
+            let defines_the_alias = file == "crates/shared/src/shared.rs";
+            for named in ["rustc_hash", "FxHashMap", "FxHashSet"] {
+                assert!(
+                    defines_the_alias || !source.contains(named),
+                    "{file} names {named} directly: deps.md wants the map and set reached \
+                     through shared::Map and shared::Set, because a naked import makes \
+                     'switching hashers later is one line rather than a sweep' false without \
+                     anything saying so"
+                );
+            }
+
+            for (number, line) in source.lines().enumerate() {
+                if !line.contains("std::collections::HashMap")
+                    && !line.contains("std::collections::HashSet")
+                {
+                    continue;
+                }
+                let explained = source
+                    .lines()
+                    .take(number)
+                    .skip(number.saturating_sub(3))
+                    .any(|above| above.trim_start().starts_with("//"));
+                assert!(
+                    explained,
+                    "{file} reaches for std's hasher at line {}, with no comment above saying \
+                     why: deps.md keeps std::collections::HashMap for a key that is genuinely \
+                     external and unbounded, and wants an unexplained one to read as an \
+                     oversight rather than as a choice",
+                    number + 1
+                );
+            }
+        }
+    }
 }
 
 /// `core.md` §9 gives `shared`'s dependencies and says "this list is the
@@ -1597,6 +2852,139 @@ fn manifest_text(crate_name: &str) -> String {
 /// `unwrap_or_default` rather than a panic, because `panic` is denied outside a
 /// `#[test]` — and it is not a silent pass: every caller asserts that something
 /// is *present* in what comes back, so an empty string fails them all.
+/// `core.md` §9 makes two counting claims about the `ztracing` redirect, and
+/// they were wrong in the same way: "That is a single-line patch to `rope`" is
+/// right, but "`sum_tree` needs no patching" is not — the same redirect is in
+/// both of `sum_tree`'s instrumented files, beside a `ctor`/`zlog` deletion and
+/// a dropped `tree_map.rs` (CHANGE-core-004).
+///
+/// The section is where the claim was, and `vendor/README.md` is where the
+/// answer already was — it lists all three under "Patches to `sum_tree`". So
+/// what failed was not the record but the absence of anything comparing the
+/// two. That is what this is: the crates `vendor/` holds, the crates the
+/// README records patches for, and the redirect's actual site count, all
+/// checked against each other.
+///
+/// It sits here rather than in `vendor/rope/tests/` because it is a claim
+/// about `vendor/` as a whole and about a document that describes the
+/// workspace, and because the vendored crates are not linted — this file is.
+#[test]
+fn every_vendored_crate_records_the_patches_it_carries() {
+    let readme = workspace_file("vendor/README.md");
+    let vendored: Vec<String> = workspace_members()
+        .into_iter()
+        .filter_map(|member| Some(member.strip_prefix("vendor/")?.to_owned()))
+        .collect();
+
+    assert_eq!(
+        vendored.len(),
+        2,
+        "core.md §9 vendors `rope` and `sum_tree` and rope-modifications.md §4 \
+         says `vendor/util` does not exist, so a third here is a crate arriving \
+         without either document saying so: {vendored:?}"
+    );
+
+    for crate_name in &vendored {
+        assert!(
+            readme.contains(&format!("## Patches to `{crate_name}`")),
+            "vendor/README.md has no `## Patches to \\`{crate_name}\\`` section. \
+             §9: the README records, per crate, the upstream revision and the \
+             exact patches applied, \"so that a future re-sync can tell at a \
+             glance whether upstream changed anything that matters\" -- a \
+             vendored crate with no such section is patched by nobody's account"
+        );
+    }
+
+    // §9, after CHANGE-core-004: "one line in `rope` and one line in each of
+    // `sum_tree`'s two instrumented files -- three in all". The count is the
+    // claim, so the count is what is asserted.
+    let redirects: Vec<(String, usize)> = vendored
+        .iter()
+        .map(|crate_name| {
+            let sites = vendored_sources(crate_name)
+                .iter()
+                .filter(|source| source.contains("use tracing::instrument;"))
+                .count();
+            (crate_name.clone(), sites)
+        })
+        .collect();
+
+    assert_eq!(
+        redirects,
+        vec![("rope".to_owned(), 1), ("sum_tree".to_owned(), 2)],
+        "the `ztracing` -> `tracing` redirect is not where §9 says it is. It is \
+         the one patch the section counts rather than describes, and counting \
+         it wrong is what made the section claim `sum_tree` needs no patching \
+         at all"
+    );
+
+    let surviving: Vec<&String> = vendored
+        .iter()
+        .filter(|crate_name| {
+            vendored_sources(crate_name)
+                .iter()
+                .any(|source| source.contains("ztracing"))
+                || workspace_file(&format!("vendor/{crate_name}/Cargo.toml")).contains("ztracing")
+        })
+        .collect();
+    assert!(
+        surviving.is_empty(),
+        "§9: `ztracing` is not vendored, and its `instrument` is redirected to \
+         `tracing` because both crates already depend on it. A surviving \
+         reference is a dependency on a crate that is not here: {surviving:?}"
+    );
+}
+
+/// Every source file of a vendored crate, as text: its `[lib] path` root and
+/// the modules that root declares. `sources_of` above reads one file, and
+/// these claims are about all of them.
+///
+/// Reached through the `mod` declarations rather than by listing the
+/// directory, because `clippy.toml` disallows `std::fs::read_dir` — and the
+/// substitute is the better answer anyway: a `.rs` file the crate root does
+/// not declare is not compiled, so a patch hiding in one would not be a patch
+/// to the crate at all.
+fn vendored_sources(crate_name: &str) -> Vec<String> {
+    let manifest = workspace_file(&format!("vendor/{crate_name}/Cargo.toml"));
+    let root = manifest
+        .lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix("path = "))
+        .map(|path| path.trim_matches('"').to_owned())
+        .unwrap_or_default();
+    assert!(
+        root.ends_with(".rs"),
+        "vendor/{crate_name}/Cargo.toml names no [lib] path, so nothing below reaches its sources"
+    );
+
+    let root_text = workspace_file(&format!("vendor/{crate_name}/{root}"));
+    let mut sources = vec![root_text.clone()];
+    for line in root_text.lines() {
+        let line = line.trim();
+        let Some(module) = line
+            .strip_prefix("mod ")
+            .or_else(|| line.strip_prefix("pub mod "))
+            .and_then(|rest| rest.strip_suffix(';'))
+        else {
+            continue;
+        };
+        let source = workspace_file(&format!("vendor/{crate_name}/src/{module}.rs"));
+        assert!(
+            !source.is_empty(),
+            "vendor/{crate_name}/src/{module}.rs is declared by the crate root and is empty or \
+             unreadable, so a scan over it would pass vacuously"
+        );
+        sources.push(source);
+    }
+
+    assert!(
+        sources.len() > 1,
+        "vendor/{crate_name}'s root declares no modules, so the scans over them would pass \
+         vacuously"
+    );
+    sources
+}
+
 fn workspace_file(relative: &str) -> String {
     std::fs::read_to_string(workspace_path(relative)).unwrap_or_default()
 }

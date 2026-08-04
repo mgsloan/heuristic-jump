@@ -16,9 +16,12 @@ workspace = true
 path = "src/lang_rust.rs"
 doctest = false
 
-# `core.md` §9's template manifest, verbatim: shared, similarity, the grammar.
-# Nothing else — and in particular not `measure_core`, which is the whole
-# reason `measure_rust` is a crate rather than a `[[bin]]` here.
+# `core.md` §9's template manifest, verbatim: shared, similarity, the
+# tree-sitter runtime and the grammar. Nothing else — and in particular not
+# `measure_core`, which is the whole reason `measure_rust` is a crate rather
+# than a `[[bin]]` here. The runtime is not an extra: `grammar()` returns a
+# `tree_sitter::Language`, a name the grammar crate does not supply, and the
+# template listed only the grammar until CHANGE-core-012.
 #
 # `similarity` is declared and not yet used. It is what a real handler's
 # ranking is written against (`resolution.md` §5) and it is in the template's

@@ -18,7 +18,7 @@
 //! rather than against this file's author's memory.
 
 use serde::Deserialize;
-use shared::{DocumentUri, DocumentVersion, EditorRequestId};
+use shared::{DocumentUri, DocumentVersion, EditorRequestId, LanguageId};
 
 /// The fields of `textDocument/definition`'s params and of `didOpen`'s
 /// `textDocument` that `core` actually reads (`core.md` §8.2's inventory),
@@ -169,4 +169,35 @@ fn a_negative_id_keeps_its_sign() {
 
     assert_eq!(negative.as_str(), "-7");
     assert_ne!(negative, EditorRequestId::from_number(7));
+}
+
+/// `LanguageId` compares by its text and not by the address the text sits at.
+///
+/// The distinction is invisible in one crate, where the compiler is free to
+/// intern two equal literals into one `&'static str` and a pointer comparison
+/// would agree by accident. It stops being invisible across a crate boundary,
+/// which is where it is actually used: `driver`'s registry resolves an
+/// incoming id against the ids a `lang_*` crate declared, and those two
+/// `"rust"`s are written in different crates. An id that compared unequal to
+/// itself there would fail to find a handler that had declared it, with
+/// nothing to see but a language quietly going unhandled.
+///
+/// Written with a runtime-built string on one side so the comparison cannot be
+/// answered by the compiler having merged the two literals.
+#[test]
+fn a_language_id_compares_by_text_and_not_by_address() {
+    let elsewhere: &'static str = String::from("rust").leak();
+    assert!(
+        !std::ptr::eq(elsewhere, "rust"),
+        "the two spellings landed at the same address, so this test compares nothing"
+    );
+
+    assert_eq!(
+        LanguageId::new(elsewhere),
+        LanguageId::new("rust"),
+        "two crates each writing \"rust\" must produce the same id: the registry resolves an \
+         incoming languageId against the ids a lang_* crate declared, and those literals are \
+         written on either side of a crate boundary"
+    );
+    assert_ne!(LanguageId::new("rust"), LanguageId::new("ruby"));
 }

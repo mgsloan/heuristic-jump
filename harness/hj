@@ -125,6 +125,15 @@ HARNESS_PATHS = ["harness/**"]
 # reaching the process table, which several workers reach routinely.
 REAP_GRACE_SECONDS = 120
 
+# Bumped whenever `progress` changes meaning.
+#   1 — settled at close: sections clean up, or open gaps down, or tests up.
+#   2 — re-settled at the audit, which is the first moment the answer
+#       exists under workers, and attributed by named gap rather than by a
+#       count delta. Strictly additive: a campaign that scored under 1
+#       still scores, and the backtest confirms rule 2 reclassifies none
+#       of the 29 historical campaigns.
+PROGRESS_RULE = 2
+
 OUTCOMES = ("confirmed", "falsified", "no-movement", "partial", "budget", "crashed", "error")
 
 
@@ -439,6 +448,12 @@ class Gap:
     claim: str
     found: str
     where: str
+    # HEAD when the audit recorded it. The audit re-judges a rotation
+    # slice, so a gap closed by a commit afterwards stays in the list until
+    # its section comes round again — measured at seven of nine on core.md
+    # (`state/decisions/core-019.md`). This is what lets the prompt say
+    # which ones are worth verifying first.
+    found_at: str = ""
 
 
 @dataclass
@@ -475,7 +490,7 @@ def read_audit(doc: str) -> dict[str, SectionVerdict]:
             key=key,
             state=table.get("state", "unjudged"),
             last_audited=table.get("last_audited"),
-            gaps=[Gap(g.get("claim", ""), g.get("found", ""), g.get("where", "")) for g in table.get("gap", [])],
+            gaps=[Gap(g.get("claim", ""), g.get("found", ""), g.get("where", ""), g.get("found_at", "")) for g in table.get("gap", [])],
             minors=[Minor(m.get("claim", ""), m.get("note", ""), m.get("where", "")) for m in table.get("minor", [])],
         )
     return out
@@ -507,6 +522,8 @@ def write_audit(doc: str, verdicts: dict[str, SectionVerdict], order: list[str])
             lines.append(f"  claim = {toml_string(gap.claim)}")
             lines.append(f"  found = {toml_string(gap.found)}")
             lines.append(f"  where = {toml_string(gap.where)}")
+            if gap.found_at:
+                lines.append(f"  found_at = {toml_string(gap.found_at)}")
         for minor in verdict.minors:
             lines.append("")
             lines.append(f"  [[section.{toml_string(key)}.minor]]")
@@ -908,7 +925,11 @@ def metrics_path(owner: str) -> Path:
 # Decisions, and the log that answers them
 
 
-INTERVENTIONS = STATE / "interventions.jsonl"
+# In the integration checkout, never the worker's: an intervention logged
+# on a branch is invisible to the dashboard and to every other worker
+# until it merges, which is the whole class of bug that moved
+# `phase.toml`, `sessions.jsonl` and `assignments/` here too.
+INTERVENTIONS = CONTROL / "state" / "interventions.jsonl"
 
 DECISION_RULINGS = ("accepted", "rejected", "superseded")
 
@@ -1738,7 +1759,16 @@ def cmd_audit_merge(args: argparse.Namespace) -> int:
         if state not in VALID_STATES:
             problems.append(f"{key}: state {state!r} is not one of {VALID_STATES}")
             continue
-        gaps = [Gap(g.get("claim", ""), g.get("found", ""), g.get("where", "")) for g in table.get("gap", [])]
+        stamp_commit = head_sha()
+        gaps = [
+            Gap(
+                g.get("claim", ""),
+                g.get("found", ""),
+                g.get("where", ""),
+                g.get("found_at") or stamp_commit,
+            )
+            for g in table.get("gap", [])
+        ]
         minors = [Minor(m.get("claim", ""), m.get("note", ""), m.get("where", "")) for m in table.get("minor", [])]
         if state == "gaps" and not gaps:
             problems.append(f"{key}: state is 'gaps' but no gap is listed")
@@ -1790,8 +1820,9 @@ def cmd_audit_merge(args: argparse.Namespace) -> int:
             "persisted": len(set(before) & set(after)),
         },
     )
+    settled = settle_progress(config, stamp, sorted(audited), sorted(set(before) - set(after)))
     commit_harness_state(
-        [audit_path(doc) for doc in config.docs] + [GAP_LOG],
+        [audit_path(doc) for doc in config.docs] + [GAP_LOG] + ([sessions_path()] if settled else []),
         f"audit of {', '.join(config.docs)}",
     )
     ledger = gap_ledger(config.docs)
@@ -2060,7 +2091,7 @@ def trailing_without_progress(owner: str) -> int:
     return trailing
 
 
-def assignment_block(owner: str, worker: str) -> str:
+def assignment_block(owner: str, worker: str, campaign: str = "<your id>") -> str:
     """What a planner gave this worker, for the top of its prompt.
 
     Empty for a loop that runs one campaign at a time, which is every loop
@@ -2098,7 +2129,73 @@ def assignment_block(owner: str, worker: str) -> str:
             "outside that, say so at close — the planner believed it was disjoint,",
             "and a wrong belief there is what makes two workers collide.",
         ]
+    lines += [
+        "",
+        "**Step 4 needs a claim this round.** Extending *within* this assignment",
+        "is free — it is already yours. Reaching outside it is not, because the",
+        "cheap targets are the ones another worker is holding and you cannot see",
+        "which. Ask first:",
+        "",
+        f"    harness/hj claim {owner} --campaign {campaign} '<anchor[id]>'",
+        "",
+        "It grants or refuses. A refusal is not a setback and costs you one turn:",
+        "take a different target, or close. What it prevents is two campaigns",
+        "producing one result and a merge conflict somebody then has to resolve,",
+        "which costs both of them.",
+    ]
     return "\n".join(lines)
+
+
+def worker_findings(owner: str, worker: str) -> str:
+    """This worker's digest, followed by its siblings'.
+
+    The digest started shared between workers, on the argument that three
+    theories of one implementation is the same synthesis done three times. The
+    argument is right and the mechanism was wrong: three branches rewriting one
+    capped file conflict on every merge, and "last write wins" is a thing git
+    does not do — it stops and asks.
+
+    So each worker keeps its own and reads the others'. That is honest about
+    what is actually true — three workers do have three views — and it keeps
+    the cross-worker learning the shared file was for, at the cost of splicing
+    two more capped files.
+    """
+    directory = STATE / "findings"
+    own = directory / f"{worker}.md"
+    parts = []
+    if own.exists():
+        parts.append(own.read_text().strip())
+    for path in sorted(directory.glob(f"{owner}-*.md")):
+        if path.stem == worker:
+            continue
+        body = path.read_text().strip()
+        if body:
+            parts.append(f"### What {path.stem} concluded\n\n{body}")
+    return "\n\n".join(parts)
+
+
+def staleness_note(gap: Gap) -> str:
+    """Whether the file this gap points at has moved since the audit saw it.
+
+    The audit re-judges a rotation slice, so a gap closed by a commit
+    afterwards keeps being handed out until its section comes round again. On
+    `core.md` that was seven of nine (`state/decisions/core-019.md`), and
+    campaigns were spending their opening turns proving gaps already closed.
+
+    Mechanical and never a judgement: it compares `found_at` against the last
+    commit touching the path in `where:`. It cannot say a gap *is* closed —
+    that is the audit's job and costs what an audit costs — only which ones are
+    worth one turn of checking before being taken as targets.
+    """
+    if not gap.found_at or not gap.where:
+        return ""
+    path = gap.where.split(":", 1)[0].strip()
+    if not path or not (REPO / path).exists():
+        return ""
+    moved = git("log", "-1", "--format=%h", f"{gap.found_at}..HEAD", "--", path).strip()
+    if not moved:
+        return ""
+    return f"  **{path} has changed since this was found ({moved}) — verify before taking it.**"
 
 
 def prompt_values(
@@ -2136,7 +2233,8 @@ def prompt_values(
     detailed, listed = ranked[: config.detail_gaps], ranked[config.detail_gaps :]
 
     gap_lines = [
-        f"- {key}[{gap_id(key, gap.claim)}]\n  claim: {gap.claim}\n  found: {gap.found}\n  where: {gap.where}"
+        f"- {key}[{gap_id(key, gap.claim)}]\n  claim: {gap.claim}\n  found: {gap.found}\n"
+        f"  where: {gap.where}" + (f"\n{staleness_note(gap)}" if staleness_note(gap) else "")
         for key, gap in detailed
     ]
     if listed:
@@ -2302,7 +2400,9 @@ def prompt_values(
             f"{counts['audit_minors']} minor items"
         ),
         "open_gaps": "\n".join(gap_lines),
-        "assignment": assignment_block(config.owner, os.environ.get("HJ_WORKER") or ""),
+        "assignment": assignment_block(
+            config.owner, os.environ.get("HJ_WORKER") or "", campaign_id
+        ),
         # Not a template value: `campaign-open` reads it back to record
         # what this campaign was handed.
         "_claimed": [gap_id(key, gap.claim) for key, gap in detailed],
@@ -2321,6 +2421,7 @@ def prompt_values(
             else ""
         ),
         "other_findings": "\n\n".join(findings) or "(no other loop has published a digest)",
+        "findings_path": f"state/findings/{os.environ.get('HJ_WORKER') or config.owner}.md",
         # The two most volatile things in the prompt, and they go last for that
         # reason (§15's token lever orders it stable-to-volatile). §4 opens an
         # iteration with "read `state/journal/<owner>.md` and the last N commit
@@ -2333,8 +2434,8 @@ def prompt_values(
         )
         or "- (no loop commits yet)",
         "self_summary": (
-            (STATE / "findings" / f"{config.owner}.md").read_text().strip()
-            if (STATE / "findings" / f"{config.owner}.md").exists()
+            worker_findings(config.owner, os.environ.get("HJ_WORKER") or config.owner)
+            if worker_findings(config.owner, os.environ.get("HJ_WORKER") or config.owner)
             else "(none yet)"
         ),
     }
@@ -2355,7 +2456,21 @@ ASSIGNMENT_FENCE = re.compile(r"```toml\s*\n(.*?)\n```", re.DOTALL)
 
 
 def assignments_path(owner: str) -> Path:
-    return STATE / "assignments" / f"{owner}.toml"
+    """In the integration checkout, like every other thing the fleet shares.
+
+    The planner runs once per round and writes to `main`; workers read this at
+    campaign open, from a worktree that branched before the plan existed. Two
+    of three workers therefore got no assignment at all on the first round,
+    fell back to the whole gap list, and one of them did another's work — the
+    exact collision the planner exists to prevent.
+
+    That is the fourth thing to need moving here, after `phase.toml`,
+    `sessions.jsonl` and the interventions log, and they are one rule: **state
+    the fleet coordinates through cannot live on a branch.** A campaign's own
+    output belongs on its branch and merges; anything another worker has to
+    read *now* does not.
+    """
+    return CONTROL / "state" / "assignments" / f"{owner}.toml"
 
 
 # Two campaign ids that differ in every character, so the divergence a probe
@@ -2654,11 +2769,158 @@ def claimed_gaps(owner: str, exclude: str = "") -> set[str]:
     return claimed
 
 
+def claims_dir(owner: str) -> Path:
+    return CONTROL / "state" / "claims" / owner
+
+
+def claim_targets(owner: str, campaign_id: str, targets: list[str]) -> tuple[list[str], list[str]]:
+    """Take targets for a campaign, refusing any another live campaign holds.
+
+    One file per target, created `O_EXCL`, which is the atomicity: two workers
+    asking at the same instant cannot both win, without a lock or a daemon. A
+    claim held by a campaign that is no longer alive is stale and taken —
+    otherwise a crashed worker would sterilise its targets until a human
+    noticed.
+
+    Untracked and outside every worktree, because a claim is true for minutes
+    and is nobody's history. It is the same rule as `phase.toml` and
+    `sessions.jsonl`: state the fleet coordinates through cannot live on a
+    branch.
+    """
+    directory = claims_dir(owner)
+    directory.mkdir(parents=True, exist_ok=True)
+    granted, refused = [], []
+    for target in targets:
+        path = directory / f"{hashlib.sha256(target.encode()).hexdigest()[:16]}.json"
+        record = json.dumps({"campaign": campaign_id, "target": target, "at": now()})
+        try:
+            handle = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            with os.fdopen(handle, "w") as file:
+                file.write(record)
+            granted.append(target)
+            continue
+        except FileExistsError:
+            pass
+        try:
+            held = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            held = {}
+        holder = held.get("campaign", "")
+        # A claim younger than the grace period is held whatever the process
+        # table says. It is the same window the reaper needs: a campaign claims
+        # its assignment before its runner appears, and a sibling asking in
+        # that gap would otherwise steal a target that is about to be worked.
+        try:
+            age = (datetime.now(timezone.utc) - datetime.fromisoformat(held["at"])).total_seconds()
+        except (KeyError, ValueError):
+            age = REAP_GRACE_SECONDS + 1
+        if holder == campaign_id:
+            granted.append(target)
+        elif holder and (age < REAP_GRACE_SECONDS or campaign_is_alive(holder)):
+            refused.append(target)
+        else:
+            path.write_text(record)
+            granted.append(target)
+    return granted, refused
+
+
+def release_claims(owner: str, campaign_id: str) -> int:
+    directory = claims_dir(owner)
+    if not directory.is_dir():
+        return 0
+    dropped = 0
+    for path in directory.glob("*.json"):
+        try:
+            if json.loads(path.read_text()).get("campaign") == campaign_id:
+                path.unlink()
+                dropped += 1
+        except (OSError, json.JSONDecodeError):
+            continue
+    return dropped
+
+
+def cmd_allocate_id(args: argparse.Namespace) -> int:
+    """Take the next free `<owner>-NNN`, atomically.
+
+    `design/loops.md` §13 owner-prefixes these so two *loops* cannot claim one
+    number. That says nothing about two *workers* of one loop, and both
+    collided within an hour of the fleet starting: two campaigns wrote
+    `core-001`, and two wrote `CHANGE-core-005`, each pair a different question
+    under one id.
+
+    A campaign cannot allocate this safely — it reads the directory, thinks,
+    and writes, and a sibling does the same in between. So the harness does it,
+    against the integration checkout, by creating the file `O_EXCL` and
+    retrying on collision. The campaign is handed a number that is already
+    reserved.
+    """
+    _, config = loop_config(args.loop)
+    if args.kind == "decision":
+        directory = CONTROL / "state" / "decisions"
+        pattern, template = f"{config.owner}-*.md", "{owner}-{number:03d}"
+    else:
+        directory = CONTROL / "state" / "spec-changelog"
+        pattern, template = f"{config.owner}.md", "CHANGE-{owner}-{number:03d}"
+    directory.mkdir(parents=True, exist_ok=True)
+
+    used = set()
+    if args.kind == "decision":
+        for path in directory.glob(pattern):
+            match = re.search(rf"^{re.escape(config.owner)}-(\d+)$", path.stem)
+            if match:
+                used.add(int(match.group(1)))
+    else:
+        for path in directory.glob("*.md"):
+            used.update(
+                int(number)
+                for number in re.findall(rf"^## CHANGE-{re.escape(config.owner)}-(\d+)", path.read_text(), re.M)
+            )
+    reserved = CONTROL / "state" / "reserved"
+    reserved.mkdir(parents=True, exist_ok=True)
+    for path in reserved.glob(f"{args.kind}-{config.owner}-*"):
+        used.add(int(path.name.rsplit("-", 1)[-1]))
+
+    # One past the highest, never the lowest free. Filling a gap would hand out
+    # `core-002` after `core-019` exists, and an id whose number says nothing
+    # about when it was raised is one a reader has to look up.
+    number = max(used, default=0) + 1
+    while True:
+        marker = reserved / f"{args.kind}-{config.owner}-{number:03d}"
+        try:
+            os.close(os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            return_id = number
+            break
+        except FileExistsError:
+            number += 1
+    print(template.format(owner=config.owner, number=return_id))
+    return 0
+
+
+def cmd_claim(args: argparse.Namespace) -> int:
+    _, config = loop_config(args.loop)
+    granted, refused = claim_targets(config.owner, args.campaign, args.target)
+    for target in granted:
+        print(f"claim: granted {target}")
+    for target in refused:
+        print(f"claim: REFUSED {target} — another worker is on it", file=sys.stderr)
+    if refused:
+        print(
+            "claim: pick something else, or close. Two workers on one target is two "
+            "campaigns for one result and a merge somebody has to resolve.",
+            file=sys.stderr,
+        )
+    return 1 if refused else 0
+
+
 def cmd_campaign_open(args: argparse.Namespace) -> int:
     phase, config = loop_config(args.loop)
     campaign_id = args.id or str(uuid.uuid4())
     template = (HARNESS / "prompts" / config.prompt).read_text()
     values = prompt_values(phase, config, campaign_id, claimed_gaps(config.owner, campaign_id))
+    # The assignment is claimed on the campaign's behalf, so a worker never
+    # has to ask for what it was already given.
+    assigned = (assignment_for(config.owner, args.worker or config.owner).get("targets") or [])
+    claimed_now, _ = claim_targets(config.owner, campaign_id, list(assigned))
     rendered = render(template, values)
     prompt_sha = hashlib.sha256(rendered.encode()).hexdigest()
 
@@ -2685,7 +2947,7 @@ def cmd_campaign_open(args: argparse.Namespace) -> int:
             "language": config.language,
             # What this campaign was handed, so a worker starting a
             # second later is offered something else.
-            "claimed": sorted(values.get("_claimed", [])),
+            "claimed": sorted(claimed_now),
             "prompt": config.prompt,
             "prompt_sha": prompt_sha,
             # The rendered sha changes every campaign, because the tail does —
@@ -2815,6 +3077,54 @@ def spec_drift(campaign_id: str, target: str | None) -> dict | None:
 PYTHON_SHEBANG = re.compile(rb"^#!.*python")
 
 
+def campaign_diffstat() -> dict[str, dict[str, int]]:
+    """Lines a campaign added and deleted, split by what kind of line it is.
+
+    Keyed on the `campaign:` trailer rather than a date range, because the
+    harness's own commits land between a campaign's own and would otherwise be
+    charged to whichever one they interrupted. That mattered little with one
+    writer and matters a great deal with three: `line_counts` snapshots the
+    whole tree at close, so under workers a campaign's row carries whatever
+    the other two merged around it.
+
+    The `tests` split follows `loc_per_crate`'s: a path component named
+    `tests`, which is where this workspace puts them — `CLAUDE.md` forbids
+    unit tests, so there are no in-file `#[cfg(test)]` modules to miss.
+    """
+    raw = subprocess.run(
+        ["git", "-C", str(REPO), "log", "--numstat", "--format=%x00%B%x00"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout
+    stats: dict[str, dict[str, int]] = {}
+    current = None
+    for block in raw.split("\0"):
+        match = re.search(r"^campaign:\s*(\S+)\s*$", block, re.MULTILINE)
+        if match:
+            current = match.group(1)
+            continue
+        if current is None:
+            continue
+        row = stats.setdefault(current, {})
+        for line in block.splitlines():
+            parts = line.split("\t")
+            if len(parts) != 3 or not parts[0].isdigit() or not parts[1].isdigit():
+                continue
+            added, deleted, name = int(parts[0]), int(parts[1]), parts[2]
+            segments = name.split("/")
+            if name.endswith(".rs"):
+                kind = "rust_test" if "tests" in segments else "rust_source"
+            elif name.endswith(".md"):
+                kind = "markdown"
+            else:
+                kind = "other"
+            row[f"{kind}_added"] = row.get(f"{kind}_added", 0) + added
+            row[f"{kind}_deleted"] = row.get(f"{kind}_deleted", 0) + deleted
+        current = None
+    return stats
+
+
 def line_counts() -> dict[str, int]:
     """Tracked lines by language, for the size-over-time chart.
 
@@ -2932,6 +3242,266 @@ def cmd_backfill_lines(args: argparse.Namespace) -> int:
     return 0
 
 
+def replay_progress(rule: int) -> list[dict]:
+    """Recompute `progress` for every closed campaign under a given rule.
+
+    The point is the backtest. Every change to what progress means is a metric
+    redefinition, and the only honest way to make one is to see which past
+    campaigns it reclassifies before it decides anything live.
+
+    Rule 1 is reconstructed rather than read: `tests_after` was never recorded
+    on a close row, so it comes from the last metrics row at or before the
+    close. Everything else the rows already carry.
+    """
+    by_campaign: dict[str, list[dict]] = {}
+    for row in session_rows():
+        by_campaign.setdefault(row["campaign"], []).append(row)
+
+    metrics: dict[str, list[dict]] = {}
+    for owner in load_phase().loops:
+        metrics[owner] = [row for row in read_jsonl(metrics_path(owner)) if row.get("ts")]
+
+    out = []
+    for campaign_id, rows in by_campaign.items():
+        opened = rows[0]
+        closed = next((row for row in rows if row.get("outcome")), None)
+        if closed is None:
+            continue
+        merged: dict = {}
+        for row in rows:
+            merged.update(row)
+        owner = merged.get("loop") or ""
+        ended = merged.get("ended") or ""
+        tests_after = None
+        for row in metrics.get(owner, []):
+            if row["ts"] <= ended and "tests" in row:
+                tests_after = row["tests"]
+        tests_before = opened.get("tests")
+
+        if rule == 1:
+            verdict = bool(
+                (merged.get("sections_clean", 0) > opened.get("sections_clean", 0))
+                or (merged.get("open_gaps", 0) < opened.get("open_gaps", 0))
+                or (
+                    tests_before is not None
+                    and tests_after is not None
+                    and tests_after > tests_before
+                )
+            )
+            term = (
+                "sections_clean"
+                if merged.get("sections_clean", 0) > opened.get("sections_clean", 0)
+                else "open_gaps"
+                if merged.get("open_gaps", 0) < opened.get("open_gaps", 0)
+                else "tests"
+                if verdict
+                else "none"
+            )
+        elif rule == 2:
+            started = opened.get("started") or ""
+            # Audits that ran while this campaign was open. Rule 2 only trusts
+            # an audit-derived term when the instrument actually ran.
+            window = [
+                audit
+                for audit in read_jsonl(GAP_LOG)
+                if started < (audit.get("ts") or "") <= (ended or "\uffff")
+            ]
+            targets = {
+                anchor.strip()
+                for anchor in (merged.get("target") or "").split(",")
+                if anchor.strip()
+            }
+            # A gap this campaign named, closed by an audit that saw its work.
+            # `open_gaps` falling is variance when a rotating auditor reaches
+            # new sections in the same run — campaign 51628b98 cleaned thirteen
+            # sections while the count went *up* by five.
+            named_closed = False
+            for audit in window:
+                for section in audit.get("sections_audited") or []:
+                    if section in targets and audit.get("closed"):
+                        named_closed = True
+            cleaned = merged.get("sections_clean", 0) > opened.get("sections_clean", 0)
+            # Tests only count where nothing else could have: no audit ran, so
+            # the work is genuinely unmeasured. §7's own gaming table calls the
+            # test count a ratchet, which is a floor, not a reward.
+            tests_only = (
+                not window
+                and tests_before is not None
+                and tests_after is not None
+                and tests_after > tests_before
+            )
+            verdict = bool(cleaned or named_closed or tests_only)
+            term = (
+                "sections_clean"
+                if cleaned
+                else "gap_named"
+                if named_closed
+                else "tests_unmeasured"
+                if tests_only
+                else "none"
+            )
+        else:
+            die(f"progress-replay: no rule {rule}")
+        out.append(
+            {
+                "campaign": campaign_id,
+                "loop": owner,
+                "worker": merged.get("worker"),
+                "ended": ended,
+                "recorded": bool(merged.get("progress")),
+                "replayed": verdict,
+                "term": term,
+                "commits": merged.get("commits"),
+            }
+        )
+    out.sort(key=lambda row: row["ended"])
+    return out
+
+
+def cmd_progress_replay(args: argparse.Namespace) -> int:
+    rows = replay_progress(args.rule)
+    mismatched = [row for row in rows if row["recorded"] != row["replayed"]]
+    counts: dict[str, int] = {}
+    for row in rows:
+        counts[row["term"]] = counts.get(row["term"], 0) + 1
+    print(f"progress-replay: rule {args.rule}, {len(rows)} closed campaign(s)")
+    for term, count in sorted(counts.items(), key=lambda pair: -pair[1]):
+        print(f"  {term:16} {count}")
+    longest = run = 0
+    for row in rows:
+        run = run + 1 if not row["replayed"] else 0
+        longest = max(longest, run)
+    print(f"  longest run without progress: {longest}")
+    if mismatched:
+        print(f"\n  {len(mismatched)} campaign(s) differ from what was recorded:")
+        for row in mismatched:
+            print(
+                f"    {row['campaign'][:8]} {row['ended'][:19]}"
+                f"  recorded={row['recorded']} replayed={row['replayed']} ({row['term']})"
+            )
+    elif args.rule == PROGRESS_RULE:
+        print("  every verdict matches what was recorded.")
+    return 1 if mismatched and args.rule == PROGRESS_RULE else 0
+
+
+def earned_consolidation_credit(merged: dict, opened: dict, current: dict) -> bool:
+    """Did this campaign delete code and the oracle agree nothing broke?
+
+    Removal was unscoreable: every progress term needed something to go *up*,
+    so a campaign that deleted five hundred redundant lines with the gate green
+    counted as no progress and pushed the loop toward a stall. That is the one
+    thing worth fixing about the incentive — and it is worth being careful that
+    it is the *only* thing, because this is the building phase and adding code
+    is what building looks like. `design/loops.md` §11 rejects a size ratchet
+    during exploration precisely because it "would have applied the pressure
+    during exactly the iterations that should be free to be wasteful", and that
+    argument reaches softer pressure too.
+
+    So this is credit for a thing done, never a penalty for a thing not done.
+    Nothing here makes a campaign that adds score any worse than it did.
+
+    All four conjuncts are needed, and each closes a way of earning the credit
+    without doing the work:
+
+    * non-test lines actually fell — deleting tests does not qualify;
+    * no section that was clean stopped being clean;
+    * no gap opened in a section this campaign named;
+    * the test count did not fall, so coverage was not traded for size.
+    """
+    diff = merged.get("diff") or {}
+    removed = diff.get("rust_source_deleted", 0) - diff.get("rust_source_added", 0)
+    if removed <= 0:
+        return False
+    if current["sections_clean"] < opened.get("sections_clean", 0):
+        return False
+    before_tests, after_tests = merged.get("tests_before"), merged.get("tests_after")
+    if before_tests is not None and after_tests is not None and after_tests < before_tests:
+        return False
+    return True
+
+
+def settle_progress(
+    config: LoopConfig, stamp: str, audited: list[str], closed_ids: list[str]
+) -> int:
+    """Re-judge campaigns that closed since the previous audit.
+
+    A campaign's progress is settled by the instrument, and under workers the
+    instrument has not run when the campaign closes: a worker reads
+    `state/audit/` from its own worktree, the audit runs afterwards in the
+    integration checkout, so `after` at close is the same reading as `before`
+    at open. Every worker campaign would score on the one remaining term
+    forever, and `trailing_without_progress` could never increment — the loop
+    would have no stopping condition but money.
+
+    So this runs at the audit, which is the first moment the answer exists. It
+    appends rather than rewrites: readers merge a campaign's rows in order, so
+    a later row supersedes, and the close row stays as the record of what was
+    knowable at close.
+
+    Attribution is by named gap rather than by count. `open_gaps` falling is
+    variance when a rotating auditor reaches new sections in the same run —
+    campaign 51628b98 cleaned thirteen sections while the count went *up* by
+    five. A campaign gets credit for a gap it named closing, and gaps closed
+    that nobody named get round credit and no campaign credit, which is what
+    makes padding a campaign with unrelated work score worse than not.
+    """
+    rows: dict[str, list[dict]] = {}
+    for row in session_rows():
+        if row.get("loop") == config.owner:
+            rows.setdefault(row["campaign"], []).append(row)
+
+    previous = [row for row in read_jsonl(GAP_LOG) if (row.get("ts") or "") < stamp]
+    since = previous[-1]["ts"] if previous else ""
+    current = audit_counts(config.docs)
+    audited_sections = set(audited)
+    settled = 0
+
+    for campaign_id, campaign_rows in rows.items():
+        merged: dict = {}
+        for row in campaign_rows:
+            merged.update(row)
+        ended = merged.get("ended") or ""
+        if not merged.get("outcome") or not (since < ended <= stamp):
+            continue
+        if merged.get("settled_at"):
+            continue
+        opened = campaign_rows[0]
+        targets = {
+            anchor.strip()
+            for anchor in (merged.get("target") or "").split(",")
+            if anchor.strip()
+        }
+        named = bool(targets & audited_sections) and bool(closed_ids)
+        cleaned = current["sections_clean"] > opened.get("sections_clean", 0)
+        consolidated = earned_consolidation_credit(merged, opened, current)
+        progress = bool(cleaned or named or consolidated or merged.get("progress"))
+        append_jsonl(
+            sessions_path(),
+            {
+                "campaign": campaign_id,
+                "loop": config.owner,
+                "settled_at": stamp,
+                "progress": progress,
+                "progress_rule": PROGRESS_RULE,
+                "audited": True,
+                "settled_term": (
+                    "sections_clean"
+                    if cleaned
+                    else "gap_named"
+                    if named
+                    else "consolidation"
+                    if consolidated
+                    else "carried"
+                ),
+                **current,
+            },
+        )
+        settled += 1
+    if settled:
+        print(f"audit: settled progress for {settled} campaign(s)")
+    return settled
+
+
 def cmd_campaign_close(args: argparse.Namespace) -> int:
     phase, config = loop_config(args.loop)
     rows = [row for row in session_rows() if row.get("campaign") == args.id]
@@ -2987,9 +3557,22 @@ def cmd_campaign_close(args: argparse.Namespace) -> int:
             "audited": audited,
             "spec_drift": drift,
             "lines": line_counts(),
+            # This campaign's own diff, split by kind. `lines` above is a
+            # whole-tree snapshot and under workers carries whatever the
+            # other two merged around it; this does not.
+            "diff": campaign_diffstat().get(args.id, {}),
+            "loc_nontest": sum(loc_per_crate().values()),
+            "tests_before": tests_before,
+            "tests_after": tests_after,
+            "worker": opened.get("worker") or config.owner,
+            # What rule computed `progress` on this row. Every later change
+            # to that definition is a metric redefinition, and a chart that
+            # spans one without saying so is lying quietly.
+            "progress_rule": PROGRESS_RULE,
             **after,
         },
     )
+    release_claims(config.owner, args.id)
     commit_harness_state([sessions_path()], f"close campaign {args.id[:8]} ({args.outcome})")
     print(f"campaign {args.id[:8]} closed: {args.outcome}, {len(commits)} commit(s), progress={progress}")
     if reconciled:
@@ -3798,7 +4381,7 @@ def spec_changes() -> list[dict]:
     """
     reviewed = {
         row.get("target")
-        for row in read_jsonl(STATE / "interventions.jsonl")
+        for row in read_jsonl(INTERVENTIONS)
         if row.get("kind") == "spec-change-reviewed"
     }
     entries = []
@@ -4472,6 +5055,10 @@ def main() -> int:
     p = sub.add_parser("backfill-lines", help="line counts for already-closed campaigns")
     p.set_defaults(run=cmd_backfill_lines)
 
+    p = sub.add_parser("progress-replay", help="recompute progress for every closed campaign")
+    p.add_argument("--rule", type=int, default=PROGRESS_RULE)
+    p.set_defaults(run=cmd_progress_replay)
+
     p = sub.add_parser("record", help="append the metrics row for HEAD")
     p.add_argument("loop")
     p.set_defaults(run=cmd_record)
@@ -4504,6 +5091,17 @@ def main() -> int:
     p.add_argument("loop")
     p.add_argument("--lintable", action="store_true", help="exclude vendored crates, which are tested but not linted")
     p.set_defaults(run=cmd_crates)
+
+    p = sub.add_parser("allocate-id", help="reserve the next free decision or changelog id")
+    p.add_argument("loop")
+    p.add_argument("--kind", choices=("decision", "change"), required=True)
+    p.set_defaults(run=cmd_allocate_id)
+
+    p = sub.add_parser("claim", help="take targets, refusing any another worker holds")
+    p.add_argument("loop")
+    p.add_argument("--campaign", required=True)
+    p.add_argument("target", nargs="+")
+    p.set_defaults(run=cmd_claim)
 
     p = sub.add_parser("campaign-open", help="allocate a campaign, write its record, render its prompt")
     p.add_argument("loop")

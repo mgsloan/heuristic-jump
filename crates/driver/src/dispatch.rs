@@ -12,11 +12,10 @@ use std::fmt;
 use std::path::Path;
 use std::sync::Arc;
 
-use rustc_hash::FxHashMap;
 use shared::proto::{PositionEncoding, WireLocation, WirePosition, WireRange};
 use shared::{
-    CommitPolicy, Deadline, DocumentSnapshot, DocumentUri, DocumentVersion, EncodingError, Error,
-    FileText, HandlerError, LanguageHandler, LanguageId, Offset, Outcome, ProjectError,
+    ByteLen, CommitPolicy, Deadline, DocumentSnapshot, DocumentUri, DocumentVersion, EncodingError,
+    Error, FileText, HandlerError, LanguageHandler, LanguageId, Map, Offset, Outcome, ProjectError,
     ProjectPath, ProjectView, Query, RelPath, Rope, ServerProfile, SnapshotSeed, Tree,
 };
 
@@ -25,8 +24,8 @@ use shared::{
 /// handlers rather than knowing any of them.
 pub struct Registry {
     handlers: Vec<Arc<dyn LanguageHandler>>,
-    by_language_id: FxHashMap<&'static str, usize>,
-    by_extension: FxHashMap<&'static str, usize>,
+    by_language_id: Map<&'static str, usize>,
+    by_extension: Map<&'static str, usize>,
 }
 
 // By hand, and from `handlers` rather than from either map: a `LanguageHandler`
@@ -55,8 +54,8 @@ impl Registry {
     /// rather than dropped silently: two handlers claiming `rust` is a wiring
     /// mistake in the binary, not a runtime condition to recover from.
     pub fn new(handlers: Vec<Arc<dyn LanguageHandler>>) -> Self {
-        let mut by_language_id = FxHashMap::default();
-        let mut by_extension = FxHashMap::default();
+        let mut by_language_id = Map::default();
+        let mut by_extension = Map::default();
 
         for (index, handler) in handlers.iter().enumerate() {
             for language_id in handler.language_ids() {
@@ -189,6 +188,18 @@ impl Answer {
     pub fn wire(&self) -> &[WireLocation] {
         &self.wire
     }
+
+    /// Consuming, because `core` needs both halves and neither of them twice:
+    /// the wire form goes to the editor and the outcome goes into §7's record,
+    /// which takes the `Trace` apart and so cannot borrow it.
+    ///
+    /// Taking an `Answer` apart is safe where building one from parts is not.
+    /// What the private fields prevent is an `Answer` whose two halves describe
+    /// different answers; after this there is no `Answer` left to disagree with
+    /// itself.
+    pub fn into_parts(self) -> (Outcome, Vec<WireLocation>) {
+        (self.outcome, self.wire)
+    }
 }
 
 /// What `core` puts on the work channel, and the reason it can do so in O(1):
@@ -319,6 +330,11 @@ pub struct Completed {
 pub struct Parsed {
     uri: DocumentUri,
     version: DocumentVersion,
+    /// The length of the text it was parsed from, which is what the parse
+    /// cache's byte ceiling counts (`deps.md` §8). Taken here rather than in
+    /// the cache because this is where the document still exists — `Rope::len`
+    /// is a summary read and the tree carries no size of its own.
+    bytes: ByteLen,
     tree: Tree,
 }
 
@@ -329,6 +345,7 @@ impl Parsed {
         Self {
             uri: document.uri.clone(),
             version: document.version,
+            bytes: document.text.len(),
             tree: document.tree().clone(),
         }
     }
@@ -344,8 +361,8 @@ impl Parsed {
     /// `pub(crate)` and consuming, so `TreeCache` can take the tree out and
     /// nothing outside `driver` can put a `Parsed` back together from pieces
     /// it obtained some other way.
-    pub(crate) fn into_parts(self) -> (DocumentUri, DocumentVersion, Tree) {
-        (self.uri, self.version, self.tree)
+    pub(crate) fn into_parts(self) -> (DocumentUri, DocumentVersion, ByteLen, Tree) {
+        (self.uri, self.version, self.bytes, self.tree)
     }
 }
 

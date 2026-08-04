@@ -19,6 +19,15 @@ Concretely, in order of how much they matter:
    merge onto one branch, and a collision costs a rebase failure and a
    discarded campaign. When two gaps clearly land in the same file, they go to
    the same worker or one of them waits.
+
+   **`crates/driver/tests/seam.rs` is the file this goes wrong on.** Almost
+   every `deps.md` or `core.md` section is closed by adding a manifest
+   assertion to it, so three workers append to one file and two of them lose.
+   It has blocked a merge in every round so far. Treat it as a resource only
+   one worker may hold: if two assignments would both add to it, give both to
+   the same worker or leave one for the next round, and say in `why` that this
+   is what you did. The same applies to any file you can see two of your
+   assignments landing in.
 2. **Group by shared context.** Gaps in one section, or across sections that
    name the same type or the same code, belong together. A worker given three
    gaps that share a file does roughly three campaigns' work for one

@@ -4,15 +4,26 @@
 
 [section."deps.md#0-summary-table"]
 state = "clean"
-last_audited = "2026-08-03T23:07:08+00:00"
+last_audited = "2026-08-04T05:37:37+00:00"
+
+  [[section."deps.md#0-summary-table".minor]]
+  claim = "tempfile is rejected in favour of CARGO_TARGET_TMPDIR"
+  note = "absent from every manifest, but clippy.toml's std::env::temp_dir ban names tempfile::tempdir as the sanctioned replacement, which is how a rejected crate arrives without a decision"
+  where = "clippy.toml:38"
 
 [section."deps.md#1-async-runtime-none"]
 state = "clean"
-last_audited = "2026-08-03T23:07:08+00:00"
+last_audited = "2026-08-04T05:37:37+00:00"
 
 [section."deps.md#2-channels"]
-state = "clean"
-last_audited = "2026-08-03T23:07:08+00:00"
+state = "gaps"
+last_audited = "2026-08-04T05:37:37+00:00"
+
+  [[section."deps.md#2-channels".gap]]
+  claim = "with the unbounded lint withdrawn, the only mechanism left is to log the core inbox depth and watch it, since memory is bounded only by shim.md \u00a710's shed-load rule"
+  found = "nothing reads Receiver::len(): the actor's select!/recv_timeout loop logs no queue depth, and the only length logged is pending/traced at channel close. crossbeam's len() \u2014 \u00a71's stated reason for choosing it over std::sync::mpsc \u2014 has no caller in the workspace. Mechanisable: drive the actor with N queued events and assert a depth field on the log line, as pipeline.rs does for replay's wall clock"
+  where = "crates/driver/src/actor.rs:203"
+  found_at = "dd846068c786ddbbfe01f8970d7bd0914b1c1742"
 
 [section."deps.md#3-lsp-types-our-own-not-lsp-types"]
 state = "clean"
@@ -32,78 +43,115 @@ last_audited = "2026-08-03T23:07:08+00:00"
   where = "vendor/rope/src/rope.rs:2421"
 
 [section."deps.md#licensing-our-crates-are-mit-the-binary-is-gpl"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-04T05:37:37+00:00"
+
+  [[section."deps.md#licensing-our-crates-are-mit-the-binary-is-gpl".gap]]
+  claim = "there are two GPL inputs, not one \u2014 similarity and lang_* are GPL-3.0-or-later \u2014 and the project-level commitment is stated plainly in high-level.md"
+  found = "design/high-level.md still carries the retracted revision: \"The crates in crates/ are MIT\" and \"rope is the only GPL input, so replacing it would make the whole workspace permissively licensable\". The manifests are correct; the designated statement contradicts the section's table. Mechanisable: scan high-level.md's License section against every member's `license =` field, the way pipeline.rs already scans core.md"
+  where = "design/high-level.md:477"
+  found_at = "dd846068c786ddbbfe01f8970d7bd0914b1c1742"
 
 [section."deps.md#6-tree-sitter"]
-state = "unjudged"
+state = "clean"
+last_audited = "2026-08-04T00:27:32+00:00"
+
+  [[section."deps.md#6-tree-sitter".minor]]
+  claim = "driver depends on tree-sitter but on no grammar crate"
+  note = "driver's [dependencies] names no tree-sitter at all; Language/Tree/InputEdit arrive through shared's re-export, on core.md \u00a79's reading that driver has no tree-sitter edge \u2014 the two documents disagree and the manifest follows the other one"
+  where = "crates/driver/Cargo.toml:16"
+
+  [[section."deps.md#6-tree-sitter".minor]]
+  claim = "the grammars match Zed's pinned revisions"
+  note = "`tree-sitter-rust = \"0.24.2\"` is a caret range that cargo update may move to 0.24.3; the seam test's three-component rule accepts it as a pin, and only Cargo.lock actually holds the revision"
+  where = "crates/driver/tests/seam.rs:474"
 
 [section."deps.md#7-file-enumeration-and-watching"]
-state = "unjudged"
+state = "clean"
+last_audited = "2026-08-04T04:57:16+00:00"
 
 [section."deps.md#8-parse-cache"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-04T00:27:32+00:00"
+
+  [[section."deps.md#8-parse-cache".gap]]
+  claim = "lru, wrapped by driver to bound total bytes as well as entries, keyed by (uri, version) and (path, mtime, len)"
+  found = "the parse cache is an unbounded FxHashMap keyed by uri alone with no eviction and no byte accounting; lru is in neither Cargo.toml nor Cargo.lock, though clippy.toml:48 already bans lru::LruCache::put and points at a wrapper that does not exist"
+  where = "crates/driver/src/trees.rs:26"
+  found_at = "3dba8fae70beafb43851557f5d67a54115d53791"
 
 [section."deps.md#fxhashmap-and-fxhashset-are-the-default"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-04T00:27:32+00:00"
+
+  [[section."deps.md#fxhashmap-and-fxhashset-are-the-default".gap]]
+  claim = "a type alias, not a naked import: shared exports `pub type Map<K, V> = FxHashMap<K, V>` and `pub type Set<T> = FxHashSet<T>`"
+  found = "no `pub type` exists anywhere in the workspace; all five sites import rustc_hash::FxHashMap/FxHashSet directly. A scan for `rustc_hash::` outside shared would make this mechanical"
+  where = "crates/shared/src/shared.rs:49"
+  found_at = "3dba8fae70beafb43851557f5d67a54115d53791"
 
 [section."deps.md#9-logging-and-tracing"]
-state = "unjudged"
+state = "clean"
+last_audited = "2026-08-04T00:27:32+00:00"
+
+  [[section."deps.md#9-logging-and-tracing".minor]]
+  claim = "every line we emit gets a distinguishing prefix"
+  note = "nothing configures a prefix; what distinguishes our lines is tracing_subscriber::fmt's default timestamp/level/target, and the child's stderr forwarding does not exist yet to interleave with"
+  where = "crates/heuristic_jump/src/heuristic_jump.rs:84"
 
 [section."deps.md#10-errors-one-enumerated-type-no-anyhow"]
-state = "gaps"
-last_audited = "2026-08-03T23:07:08+00:00"
-
-  [[section."deps.md#10-errors-one-enumerated-type-no-anyhow".gap]]
-  claim = "every variant carries typed context, not a formatted string; foreign errors are wrapped as `#[source]` fields so the classification is ours and only the detail is theirs"
-  found = "ConfigError::ManifestMalformed carries the toml::de::Error's rendered message as `reason: Box<str>` instead of a #[source] field \u2014 the one place in the enum where a foreign error's detail is flattened to prose. Deliberate (the doc comment cites shared's dependency graph), so a human should rule."
-  where = "crates/shared/src/error.rs:77"
+state = "clean"
+last_audited = "2026-08-04T00:27:32+00:00"
 
   [[section."deps.md#10-errors-one-enumerated-type-no-anyhow".minor]]
-  claim = "an Error converted into an abstention is converted explicitly and logged"
-  note = "documents.rs:381 logs before marking untrusted; dispatch::classify converts HandlerError::DeadlineExpired into an abstention silently"
-  where = "crates/driver/src/dispatch.rs:405"
+  claim = "every variant carries typed context, not a formatted string; foreign errors are wrapped as #[source]"
+  note = "ConfigError::ManifestMalformed renders the TOML parser's message into a Box<str> instead of sourcing it, documented as avoiding a parser in shared's graph"
+  where = "crates/shared/src/error.rs:77"
 
 [section."deps.md#11-cli-parsing-clap"]
-state = "gaps"
-last_audited = "2026-08-03T23:07:08+00:00"
-
-  [[section."deps.md#11-cli-parsing-clap".gap]]
-  claim = "the Cli carries `trace: Option<PathBuf>` and `--trace=<path>` writes JSONL metric records (core.md \u00a77)"
-  found = "the implemented Cli has proxy_only, deadline_ms, log and server only; no trace field exists and Config::new takes no trace path. Mechanizable the way seam.rs already handles \u00a715: parse \u00a711's flag table out of design/deps.md and compare it against the #[arg(long)] names on Cli."
-  where = "crates/heuristic_jump/src/heuristic_jump.rs:34"
+state = "clean"
+last_audited = "2026-08-04T05:37:37+00:00"
 
 [section."deps.md#12-testing"]
 state = "gaps"
-last_audited = "2026-08-03T23:07:08+00:00"
+last_audited = "2026-08-04T00:27:32+00:00"
 
   [[section."deps.md#12-testing".gap]]
   claim = "the injected clock is a `trait Clock` with a `TestClock` impl in `shared`, not a dependency"
-  found = "shared exports only SystemClock; no TestClock exists, and five test files hand-roll their own impl (FrozenClock in driver/tests/snapshots.rs:55, shared/tests/document.rs:42, shared/tests/project.rs:320, driver/tests/deadline.rs:31; DrivenClock in driver/tests/file_list.rs:238). A check that no crates/*/tests file contains `impl Clock for` would hold this permanently."
-  where = "crates/shared/src/deadline.rs:19"
+  found = "shared defines the trait and SystemClock only; five test files each define their own clock impl. A scan asserting no `impl Clock for` outside shared/src/deadline.rs would hold it"
+  where = "crates/shared/src/deadline.rs:14"
+  found_at = "3dba8fae70beafb43851557f5d67a54115d53791"
 
   [[section."deps.md#12-testing".minor]]
-  claim = "tempfile is rejected; CARGO_TARGET_TMPDIR fixtures hold the property it was chosen for"
-  note = "clippy.toml's ban on std::env::temp_dir names `tempfile::tempdir` as its replacement, pointing whoever trips the lint at the declined crate"
+  claim = "tempfile is deliberately not added"
+  note = "clippy.toml still names tempfile::tempdir as the sanctioned replacement for std::env::temp_dir, so following the lint fails the seam test that enforces the declined list"
   where = "clippy.toml:38"
 
 [section."deps.md#13-explicitly-not-depended-on"]
 state = "clean"
-last_audited = "2026-08-03T23:07:08+00:00"
+last_audited = "2026-08-04T05:37:37+00:00"
+
+  [[section."deps.md#13-explicitly-not-depended-on".minor]]
+  claim = "gix/git2 \u2014 ignore reads .gitignore files directly; we never need to talk to git"
+  note = "the verdict holds (no git library anywhere) but the reason does not: verify_checkout shells out to git rev-parse and git status on every collect and replay"
+  where = "crates/measure_core/src/corpus.rs:394"
 
 [section."deps.md#14-workspace-cargotoml-shape"]
 state = "gaps"
-last_audited = "2026-08-03T23:07:08+00:00"
+last_audited = "2026-08-04T05:37:37+00:00"
 
   [[section."deps.md#14-workspace-cargotoml-shape".gap]]
-  claim = "Zed sets `tree-sitter` and `serde_json` to opt-level = 3, plus the proc-macro crates; we take exactly those"
-  found = "only [profile.dev.package.tree-sitter] is set. The comment justifies the omission as cargo rejecting a package not in the graph, but serde_json is a [dependencies] entry of shared, driver and measure_core and is resolved in Cargo.lock:1057 \u2014 the stated blocker no longer applies. A check that every package \u00a714 names has a [profile.dev.package.<name>] table would catch the next one."
-  where = "Cargo.toml:278"
+  claim = "a cargo-deny config asserting GPL reaches the graph only through vendor/rope and crates/similarity is worth having from the start, because it is what notices a third arriving without anyone deciding"
+  found = "no deny.toml and no [workspace.metadata.deny] anywhere in the repository; nothing checks the licence surface"
+  where = "deny.toml absent; Cargo.toml:1"
+  found_at = "dd846068c786ddbbfe01f8970d7bd0914b1c1742"
+
+  [[section."deps.md#14-workspace-cargotoml-shape".gap]]
+  claim = "[profile.dev.package] bumps tree-sitter and serde_json to opt-level 3, plus the proc-macro crates \u2014 \"we take exactly those\""
+  found = "only tree-sitter is bumped, justified by a comment claiming cargo would reject an override for a package not in the graph \u2014 but serde_json is a direct dependency of shared, driver and measure_core (Cargo.lock:1156), as are serde_derive, thiserror-impl, clap_derive and proc-macro2"
+  where = "Cargo.toml:291"
+  found_at = "dd846068c786ddbbfe01f8970d7bd0914b1c1742"
 
 [section."deps.md#15-clippy-in-workspace-toml"]
-state = "gaps"
-last_audited = "2026-08-03T23:07:08+00:00"
-
-  [[section."deps.md#15-clippy-in-workspace-toml".gap]]
-  claim = "result_large_err and large_enum_variant: \"Threshold tuned in clippy.toml.\""
-  found = "clippy.toml sets msrv, avoid-breaking-exported-api and six allow-*-in-tests keys and no threshold at all \u2014 neither large-error-threshold nor enum-variant-size-threshold \u2014 so both lints run at clippy's defaults. seam.rs's \u00a715 comparison checks lint names and levels only and passes without noticing. Extending it to assert that every clippy.toml key a \u00a715 comment names actually exists would close this."
-  where = "clippy.toml:3"
+state = "clean"
+last_audited = "2026-08-04T04:57:16+00:00"

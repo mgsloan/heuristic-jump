@@ -255,12 +255,26 @@ pub struct WireRange {
 /// What goes on the wire where a handler speaks of a
 /// [`Location`](crate::Location) (`core.md` §8.4).
 ///
-/// Handlers cannot produce one despite `new` being public, and the reason is
-/// the encoding rather than the visibility: a `WireRange` is made of
-/// `WirePosition`s, whose only constructor is `WirePosition::encode`, which
-/// takes a [`PositionEncoding`] — and no `PositionEncoding` reaches the
-/// handler seam (§3). The conversion therefore happens where the encoding
-/// already is, which is the dispatch wrapper on the worker thread.
+/// §8.4 says handlers "never see a `WireLocation` and cannot construct one",
+/// and it is worth being exact about what holds that up, because it is not the
+/// types. A `WireRange` is made of `WirePosition`s and their only constructor
+/// is `WirePosition::encode`, which demands a [`PositionEncoding`] — but that
+/// enum's variants are public unit variants in a public module, so a handler
+/// that wanted one could simply write `PositionEncoding::Utf16` and be right
+/// by luck or wrong in silence. What the *compiler* enforces is only the
+/// inbound half: `Query` has no encoding field, so nothing hands one to a
+/// handler.
+///
+/// The outbound half is enforced by a source scan,
+/// `driver/tests/seam.rs::no_language_crate_can_name_the_wire_vocabulary`,
+/// which fails if any `lang_*` crate names this vocabulary at all. That is a
+/// weaker mechanism than a private type and it is deliberate: making the
+/// encoding unnameable would also stop `measure_core`, which is an LSP client
+/// and legitimately encodes the position it *sends*
+/// (CHANGE-conformance-012).
+///
+/// The conversion therefore happens where the encoding already is, which is
+/// the dispatch wrapper on the worker thread.
 #[derive(Clone, PartialEq, Eq, Debug, Deserialize, Serialize)]
 pub struct WireLocation {
     #[serde(serialize_with = "uri_text")]

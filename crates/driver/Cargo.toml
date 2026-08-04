@@ -9,13 +9,26 @@ license = "MIT"
 [lints]
 workspace = true
 
+[features]
+# Non-default, per `deps.md` §7. On Linux `notify` is inotify, which needs a
+# watch descriptor per directory and hits `max_user_watches` on large repos —
+# a silent partial watch, which is worse than no watch at all.
+watch = ["dep:notify"]
+
 [lib]
 path = "src/driver.rs"
 doctest = false
 
 [dependencies]
 crossbeam-channel.workspace = true
-rustc-hash.workspace = true
+# `deps.md` §8's parse cache. The byte ceiling `lru` does not have is
+# `TreeCache`'s fifteen-line wrapper, which is what §8 budgets for it.
+lru.workspace = true
+# Optional, and the option is the point: `deps.md` §7 defers the watcher and
+# says "the dependency is written into `Cargo.toml` as optional so the decision
+# is visible, not lost". Nothing enables `watch` yet — §7's surviving reason to
+# build it is standalone mode, where no editor is watching on our behalf.
+notify = { workspace = true, optional = true }
 # `deps.md` §1's table lists `serde_json` (`raw_value`) for shared and driver.
 # It arrives here with `Documents`, which reads the four state-bearing
 # notifications itself: `core.md` §8.6's rule starts at "any failure while

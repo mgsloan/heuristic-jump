@@ -148,13 +148,13 @@ impl Ord for Point {
 // -- Ours, not upstream's ---------------------------------------------------
 //
 // `design/rope-modifications.md` §2 puts the line-shaped newtypes here, beside
-// the type whose fields they will become. They are inert until §4's signature
-// sweep converts `Point` itself; this file's own `row: u32` is still bare.
+// the type whose fields they are: §4's sweep is done, so `Point.row` above is
+// a `LineIndex` and `Point.column` a `ByteColumn`.
 //
 // `CharCount` lands here rather than in `point_utf16.rs` because it is not a
 // UTF-16 quantity: it counts Unicode scalar values, and it exists precisely
-// because `Chunk::first_line_chars` and `Point.column` are both "how far into
-// a line" in different units.
+// because `ChunkSlice::first_line_chars` and `Point.column` are both "how far
+// into a line" in different units.
 //
 // None of the four gets arithmetic. Adding two line numbers is meaningless and
 // there is no length interpretation to rescue it, so rope unwraps explicitly

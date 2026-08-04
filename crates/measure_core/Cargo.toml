@@ -32,6 +32,12 @@ shared.workspace = true
 # (`state/decisions/conformance-010.md`).
 toml.workspace = true
 tracing.workspace = true
+# `measure_core::run` is the whole of a `measure_<lang>` binary's `main`
+# (`core.md` §7), so the subscriber goes here for the same reason `clap` does:
+# seven four-line binaries installing their own is seven chances for one of
+# them to be quiet where the others are not. `deps.md` §9 already names this as
+# the logging choice; this is an edge to it, not a new dependency.
+tracing-subscriber.workspace = true
 
 # The tests build a fixture corpus and drive `run` end to end, which needs a
 # grammar and an argv. Both are dev-only and neither is a graph edge §9 forbids:

@@ -922,7 +922,11 @@ def elapsed(since: str) -> str:
 
 
 def live_campaign_row(opened: dict, closed: dict, diffs: dict) -> str:
-    """The campaign running right now, as the first row of the ledger.
+    """Every campaign running right now, one row each, above the ledger.
+
+    It rendered exactly one — `running[-1]` — which was right when a loop was
+    one campaign at a time and silently wrong from the moment there were three
+    workers: the other two were running, recorded, and invisible.
 
     Without it the page looks idle for the twenty-odd minutes a campaign
     takes, which is exactly the window in which someone is most likely to be
@@ -936,8 +940,10 @@ def live_campaign_row(opened: dict, closed: dict, diffs: dict) -> str:
     running = [key for key in opened if key not in closed]
     if not running:
         return ""
-    identifier = running[-1]
-    row = opened[identifier]
+    return "".join(one_live_row(identifier, opened[identifier], diffs) for identifier in running)
+
+
+def one_live_row(identifier: str, row: dict, diffs: dict) -> str:
     owner = row.get("loop") or next(iter(hj.load_phase().loops), "core")
     state, state_css = campaign_state(identifier)
     progress = {}
@@ -961,7 +967,10 @@ def live_campaign_row(opened: dict, closed: dict, diffs: dict) -> str:
 
     return (
         '<tr class="live">'
-        f'<td><a href="/record/{quoted_owner}/{quoted}"><code>{esc(identifier[:8])}</code></a></td>'
+        # The worker, then the id. Three rows that differ only by a hex prefix
+        # are three rows nobody can tell apart at a glance.
+        f'<td><a href="/record/{quoted_owner}/{quoted}"><code>{esc(identifier[:8])}</code></a>'
+        f'<br><span class="dim">{esc(row.get("worker") or owner)}</span></td>'
         f"<td>{shown}</td>"
         f'<td class="num"><span class="{state_css}">{esc(state)}</span> '
         f'<span class="dim">{esc(elapsed(row.get("started") or ""))}</span></td>'
@@ -1126,6 +1135,9 @@ def panel_audit_table(loop: str = "") -> str:
         seen |= slice_
 
     rows = []
+    live = live_audit_row()
+    if live:
+        rows.append(live)
     for index, audit in enumerate(reversed(audits), start=1):
         money = money_for(audit.get("ts") or "")
         stamp = when(audit.get("ts") or "")
@@ -1824,6 +1836,46 @@ def running_argv(*expected: str) -> bool:
             if argument.endswith("/adapter") and argv[index + 1 : index + 1 + len(expected)] == list(expected):
                 return True
     return False
+
+
+def live_audit_row() -> str:
+    """The audit running now, as the first row.
+
+    An audit is 40-60 turns and the only thing that moves the number, so a
+    table that shows nothing while one runs is blank during the interesting
+    part. Its transcript is `audit-<session>.jsonl.jsonl` — the adapter writes
+    the stream beside the extracted text — so the newest of those is the one
+    in flight.
+    """
+    if not audit_is_running():
+        return ""
+    root = Path(adapter("transcript-path", "x", "y").strip() or "").parent.parent
+    candidates = sorted(root.glob("*/audit-*.jsonl.jsonl"), key=lambda p: p.stat().st_mtime)
+    if not candidates:
+        return ""
+    newest = candidates[-1]
+    progress = {}
+    try:
+        progress = json.loads(adapter("progress", str(newest)) or "{}")
+    except json.JSONDecodeError:
+        pass
+    started = datetime.datetime.fromtimestamp(
+        newest.stat().st_ctime, tz=datetime.timezone.utc
+    )
+    return (
+        '<tr class="live">'
+        '<td class="num">—</td>'
+        f'<td>{esc(started.strftime("%b %d %H:%M"))} '
+        f'<span class="good">running</span> '
+        f'<span class="dim">{esc(elapsed(started.isoformat()))}</span></td>'
+        # sections, overlap, closed, opened, persisted and the baseline are all
+        # verdicts, and an audit in flight has reached none of them.
+        '<td class="num dim">—</td><td class="num dim">—</td><td class="num dim">—</td>'
+        '<td class="num dim">—</td><td class="num dim">—</td><td class="num dim">—</td>'
+        f'<td class="num">{esc(progress.get("turns") or "—")}</td>'
+        '<td class="num dim">—</td><td class="num dim">—</td>'
+        "</tr>"
+    )
 
 
 def audit_is_running() -> bool:

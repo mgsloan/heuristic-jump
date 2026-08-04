@@ -18,14 +18,19 @@ mod identifier;
 mod project;
 mod vocabulary;
 
-// The one public module rather than a re-export: `core.md` §8.3 and §8.7 name
-// the path `shared::proto`, and the wire types are a namespace rather than
-// vocabulary — `proto::WirePosition` is meant to read as "the wire's idea of a
-// position" at every use site.
+// Modules rather than re-exports: `core.md` §8.3 and §8.7 name the path
+// `shared::proto`, and the wire types are a namespace rather than vocabulary —
+// `proto::WirePosition` is meant to read as "the wire's idea of a position" at
+// every use site. `record` is the same shape of thing for §7's metric row, and
+// needs the namespace more than `proto` does: its `Mode` is proxy-or-standalone
+// as the *record spells it*, and `driver::Mode` is the resolved configuration
+// that carries the child's argv. Two bare `Mode`s in one prelude is how a
+// record ends up saying `"standalone"` about a proxied query.
 pub mod proto;
+pub mod record;
 
 pub use agreement::{Agreement, DefinitionSite, Severity};
-pub use deadline::{Clock, Deadline, SystemClock};
+pub use deadline::{Clock, Deadline, SystemClock, TestClock};
 pub use document::{DocumentSnapshot, ParseKind, SnapshotSeed, input_edit};
 pub use error::{
     ChildError, CodecError, ConfigError, DocumentError, DocumentNotification, EncodingError, Error,
@@ -58,3 +63,31 @@ pub use vocabulary::{
     Confidence, DocumentUri, DocumentVersion, EditorRequestId, FileExtension, LanguageId, Location,
     ServerId,
 };
+
+/// The workspace's map and set. `deps.md#fxhashmap-and-fxhashset-are-the-default`
+/// makes these an alias rather than a naked `use rustc_hash::FxHashMap`, for two
+/// reasons that a naked import gives up: switching hashers later is this line
+/// rather than a sweep, and the choice is visible at every use site instead of
+/// being hidden in an import block.
+///
+/// Nothing here is keyed by untrusted input — every map is keyed by a
+/// `DocumentUri`, an `Offset`, a `LanguageId`, an `EditorRequestId`, a
+/// `ProjectPath`, or a small tuple of those, all of which the shim itself
+/// constructed from one editor and one language server — so std's SipHash buys
+/// no protection anything needs and costs a fixed setup per lookup on the
+/// definition path.
+///
+/// Reach for `std::collections::HashMap` when a key is genuinely external and
+/// unbounded, and say so in a comment when you do: `deps.md` wants an
+/// unexplained `HashMap` to read as an oversight, and
+/// `driver/tests/seam.rs`'s scan is what makes that readable rather than
+/// conventional.
+pub type Map<K, V> = rustc_hash::FxHashMap<K, V>;
+pub type Set<T> = rustc_hash::FxHashSet<T>;
+
+/// The same choice, for the maps whose type we do not own. `lru::LruCache` is
+/// a `HashMap` inside and takes its hasher as a parameter, so a cache built
+/// with `LruCache::new` would be the SipHash exception without anybody
+/// choosing it — and `deps.md` §8's parse cache is keyed by a `DocumentUri` and
+/// a `DocumentVersion`, which is the case the section argues about by name.
+pub type Hasher = rustc_hash::FxBuildHasher;

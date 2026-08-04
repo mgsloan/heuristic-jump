@@ -27,7 +27,7 @@
 use std::ffi::OsString;
 use std::fs;
 
-use driver::{Config, DeadlineOverride, Heuristics, Mode};
+use driver::{Config, DeadlineOverride, Heuristics, Mode, Tracing};
 use shared::{ServerId, ServerProfile};
 
 /// The canonical server matrix, beside the code that is scored against it
@@ -112,6 +112,7 @@ fn the_startup_resolution_follows_the_child_command() {
     let standalone = Config::new(
         Mode::from_server_argv(Vec::new(), Heuristics::Enabled),
         DeadlineOverride::ModeDefault,
+        Tracing::Off,
     );
     assert_eq!(standalone.server(), &ServerProfile::standalone());
     assert_eq!(standalone.server().id(), None);
@@ -147,6 +148,7 @@ fn resolved(argv: &[&str]) -> ServerProfile {
             Heuristics::Enabled,
         ),
         DeadlineOverride::ModeDefault,
+        Tracing::Off,
     );
     config.server().clone()
 }

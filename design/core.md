@@ -903,7 +903,20 @@ exactly.
 **The stratum is two fields, not one.** `resolution.md` §8 assigns a stratum
 a-priori from the reference, then permits one refinement during search — to
 `AmbiguousName` or `ExternalDependency`, neither of which is knowable before
-the search runs. Coverage is reported on `stratum_prior` so the denominator
+the search runs.
+
+*A-priori* is about the **rule**, not about who evaluates it. The handler
+computes both fields and reports them, as the paragraph above says; what makes
+the prior stable is that its rule reads only the query and the reference, and
+never what the search found. Two consequences follow, and the second is easy
+to miss: the prior does not move when the implementation changes, **and it is
+knowable without the search finishing.** A query whose outcome is discarded
+after the fact — by §5's hard cap, say — has not thereby lost its prior. The
+prior was never the outcome's to carry away, and code that reads it off a
+completed outcome is taking the only path that happens to be convenient rather
+than the only one there is.
+
+Coverage is reported on `stratum_prior` so the denominator
 is fixed by the reference and does not move when the implementation changes;
 precision is reported on `stratum_final` so an answer is judged against the
 class it turned out to be. One field cannot do both, and collapsing them
@@ -1125,10 +1138,19 @@ the corpus*, not about our code, so it is collected once and frozen.
   `Query` for each recorded position, run the handler, classify agreement,
   emit the metric table. No server, no network, no `didOpen` round trips.
 
-The record in this section is the join. `collect` writes rows with the
-`lsp_*` fields populated and the heuristic side null; `replay` fills the
-heuristic side and computes `agreement` and `severity` with the same
-predicate the driver uses. A completed replay row is byte-comparable with a
+The record in this section is the join, and the two modes supply its two
+halves: `collect` supplies the oracle's — the answer and how long it took —
+and `replay` fills the heuristic side and computes `agreement` and `severity`
+with the same predicate the driver uses. **Only `replay` writes the record.**
+A truth row is its own smaller shape, because the oracle's answer is stored as
+the raw JSON the server sent rather than as a projection written back out:
+[section 8.2](#82-what-replaces-it-and-why-it-is-smaller-than-it-sounds) gives
+the read projections no `Serialize` at all, so a truth file of half-filled
+records could not hold what replay has to hand the same deserializer the shim
+reads a live answer with. What has to survive the join is the *content* of the
+`lsp_*` columns and not their spelling on the way.
+
+A completed replay row is byte-comparable with a
 row the shim emitted in the field, which is what keeps the measured metric and
 the shipped metric the same number.
 
@@ -1185,14 +1207,22 @@ Constraints that make a replay trustworthy:
   (`loops.md` §10). Handler coverage from replay is a statement
   about resolution, not a promise about the field.
 * **Only the heuristic side is re-measured, and its timing is an observation,
-  not a control input.** `heuristic_latency_us` is recorded during replay
-  because it is the same handler code on the same snapshot, but nothing in
-  the run branches on it. It is therefore the one field in the record that a
-  replay does not reproduce exactly, and the one that needs a quiet machine
-  to mean anything. `lsp_latency_us` comes from `collect` and is a property
+  not a control input.** `heuristic_latency_us` and `stage_us` are recorded
+  during replay because it is the same handler code on the same snapshot, but
+  nothing in the run branches on either. They are therefore the fields in the
+  record that a replay does not reproduce exactly, and the ones that need a
+  quiet machine to mean anything — the same two [the record
+  above](#7-observability-and-the-corpus-scan) calls observations that do not
+  have to be reproducible the way the rest of it does.
+  `lsp_latency_us` comes from `collect` and is a property
   of the frozen truth — which is exactly what `high-level.md`'s value weighting
   wants, since it is a fact about how slow the real server was, not about
   this run.
+
+  The distinction this does *not* blur is with the table, which is
+  byte-identical across runs and holds no clock reading at all
+  ([the command line](#the-command-line)): a replay's own wall clock is
+  reported on the log stream, and per-query timings live in the record.
 * **Replay measures the handler, not the driver**, same as `collect` — the
   paragraph above applies unchanged. Nothing in the proxy or the health model
   is under test in either mode.
@@ -1507,6 +1537,26 @@ rather than in `measure_core` per [section 8.7](#87-where-it-lives); the
 alternative is a second vocabulary for one protocol, in the one crate whose
 job is to agree with the shim.
 
+There is a third and much shorter list, and it is short because it is bounded
+rather than because nothing has been added to it yet:
+
+| Both | Why it travels twice |
+|---|---|
+| `WirePosition`, `WireRange` | [Section 8.3](#83-the-wire-position-type-is-inert) requires `WirePosition::encode`, so the type that arrives in a request is the type an answer is built from |
+| `WireLocation` | arrives from the oracle ([section 6](#6-the-agreement-predicate)) and leaves as our answer |
+| `PositionEncoding` | read from a child's `InitializeResult`, written by standalone's |
+| `TextDocumentSyncKind` | the same, one field further in |
+
+**"Nothing is ever round-tripped" is a claim about messages, and these are
+values.** A `WirePosition` that arrives is resolved to a `Offset` and
+dropped; one that leaves was built by `encode` from an offset this system
+produced. No instance makes the trip, so nothing a field we did not model
+could have been attached to is written back — which is the property the first
+bullet is protecting. What the rule does forbid is a *projection* carrying
+both derives, and the test that enforces the split keeps this list separate
+from the other two so that a sixth entry is a claim someone has to make
+deliberately.
+
 ### 8.3 The wire position type is inert
 
 This is the design's payoff and the reason the change is worth making.
@@ -1523,13 +1573,29 @@ impl WirePosition {
     /// which is exactly the information a correct conversion needs.
     pub fn resolve(self, enc: PositionEncoding, text: &Rope)
         -> Result<Offset, EncodingError>;
+
+    /// The row, which is the one part of a wire position that is not in the
+    /// negotiated encoding: every encoding LSP offers counts *columns*.
+    pub fn line(self) -> LineIndex;
 }
 ```
 
-`WirePosition` has private fields and no accessors. A `Offset` cannot be
-obtained from it without supplying both the negotiated encoding and the text,
-so the failure mode in [section 3](#3-position-encoding) — using a UTF-16 column
-as a byte index — is not something to be careful about. It does not compile.
+`WirePosition` has private fields, and `character` — the number that is in the
+negotiated encoding — has no accessor at all. A `Offset` cannot be obtained
+without supplying both the encoding and the text, so the failure mode in
+[section 3](#3-position-encoding) — using a UTF-16 column as a byte index — is
+not something to be careful about. It does not compile.
+
+`line` is readable, and that is not a hole in the above: a row is in no
+encoding, so it is not a number that can be misread as an offset.
+[Section 6](#6-the-agreement-predicate)'s predicate compares `(uri, line)` on
+the child's answer as well as on ours and **reads nothing** while doing it —
+and the child's row arrives only inside a `WirePosition`. Without the accessor
+it could be recovered only by resolving that position against the target
+document's text, which is the read section 6 may not do: divergence is
+classified seconds after the answer, with the per-query cache gone and the
+document possibly never opened. So the accessor is what makes section 6
+implementable, and it withholds nothing section 3 protects.
 
 The same applies outbound: `WirePosition::encode(Offset, enc, &Rope)` is
 the only constructor. Encoding is therefore applied in exactly two functions
@@ -1602,10 +1668,21 @@ corpus and a benchmark say it is worth it. So the conversion **re-reads the
 target file**, once per location, and the honest price is a syscall and a
 UTF-8 validation that the page cache makes cheap rather than free.
 
+**With one exception, which is not a cache.** When the target is the query's
+own document, the conversion encodes against the snapshot it was already
+handed rather than reading anything: `DocumentSnapshot` holds the rope, and
+cloning it is three refcount bumps whatever the file's size
+([section 2](#2-document-snapshots)). That is not the cache
+`conformance-005` refused — nothing is stored, nothing is keyed, and nothing
+outlives the query — it is the query declining to go and find text it is
+holding. The case is common rather than exotic: a definition in the file the
+cursor is in is the most ordinary answer this tool gives.
+
 That re-read is not only a cost, and the consequence is load-bearing enough
-to state here: the handler's read and the conversion's read are two reads of
-the same path, so a file edited between them yields offsets that are stale
-and *still in range*. Nothing downstream could notice —
+to state here: for a target the editor does not have open, the handler's read
+and the conversion's read are two reads of the same path, so a file edited
+between them yields offsets that are stale and *still in range*. Nothing
+downstream could notice —
 `WirePosition::encode` refuses only offsets that are not character
 boundaries, and a shifted file offers plenty that are. The carried row is the
 witness, and the conversion compares it against the text it actually read
@@ -1892,15 +1969,24 @@ crates/
   shared/           handler trait, vocabulary newtypes, ProjectView, proto, Error
   similarity/       ported from the prior implementation; frozen until phase 3
   lang_rust/        one crate per language
-  lang_python/
-  lang_typescript/
+  lang_python/      phase 2
+  lang_typescript/  phase 2
   driver/           the LSP driver
   heuristic_jump/   the shim binary -- `heuristic-jump`
   measure_core/        corpus scan library -- LSP client, replay, metrics
   measure_rust/        `measure-rust` -- four lines, section 7
-  measure_python/
-  measure_typescript/
+  measure_python/      phase 2
+  measure_typescript/  phase 2
 ```
+
+The four marked `phase 2` do not exist yet and **cannot** be created in phase
+1a, which is why they are marked rather than merely absent (CHANGE-core-014).
+`loops.md`'s decided question 10 — "The loop may never add a language" — makes
+a new `crates/lang_*` outside every loop's owned paths so the gate rejects the
+commit, and `state/phase.toml` names `crates/lang_rust/` rather than globbing
+for exactly that reason: "naming one path grants the template without granting
+the glob". Phase 1a instantiates the template once, and
+[adding a language](#adding-a-language) is what the other six cost.
 
 Crate names carry no project prefix, matching the vendored Zed crates
 alongside them (`rope`, `sum_tree`) and the workspace-wide `publish = false`.
@@ -2046,8 +2132,14 @@ It is split anyway, for two reasons:
 
 New `crates/lang_<x>/` depending on `shared` + `similarity` + its grammar,
 implementing `LanguageHandler`; `crates/measure_<x>/`, which is four lines; then
-one line in `heuristic_jump`. Nothing else in the workspace changes. That is
-the whole cost, and keeping it at that is the point of the graph above.
+one line in `heuristic_jump`. **No crate other than `heuristic_jump` changes**,
+which is the whole cost and the point of the graph above.
+
+The workspace manifest changes too, and it is bookkeeping rather than design:
+cargo needs each new directory in `[workspace] members`, and `lang_<x>` in
+`[workspace.dependencies]` so that the two crates naming it inherit one version
+(§14 of `deps.md`). `measure_<x>` needs no entry there — nothing depends on a
+binary. Four lines, none of which is a decision (CHANGE-core-013).
 
 **Phase 1a builds this as an instantiable template**, not as prose. Adding a
 language is then a copy and a rename, and — more importantly — the shape every
@@ -2055,12 +2147,22 @@ language crate inherits is fixed once, by hand, before seven of them exist.
 
 ```
 crates/lang_<x>/
-  Cargo.toml          shared, similarity, tree-sitter-<x>. Nothing else
+  Cargo.toml          shared, similarity, tree-sitter, tree-sitter-<x>
   src/lang_<x>.rs     the Handler impl, longhand
 crates/measure_<x>/
-  Cargo.toml          measure_core, lang_<x>
+  Cargo.toml          measure_core, lang_<x>, clap, shared
   src/measure_<x>.rs  the four lines
 ```
+
+Every one of those six is forced by a signature and none is a choice
+(CHANGE-core-012). The tree-sitter *runtime* is there because
+`LanguageHandler::grammar` returns a `tree_sitter::Language`, which is a name
+the grammar crate cannot supply; `clap` and `shared` are there because the four
+lines are `measure_core::run(&Handler::new(), Cli::parse())` inside a
+`fn main() -> Result<(), shared::Error>`, and a trait method needs its trait in
+scope. This is the same omission `CHANGE-conformance-009` found in §9's printed
+`main`, which is the other place a manifest was derived from a code block by
+reading it rather than compiling it.
 
 **No tests.** The corpus is the oracle, it replays without a language server,
 and it is made of real repositories nobody here wrote. Hand-built fixtures are a slower,
@@ -2170,15 +2272,20 @@ any workspace. `sum_tree` is unaffected; it does not depend on `util` at all.
 and the attribution rules.
 
 `ztracing` is not vendored. Its `instrument` is either `tracing::instrument`
-or a no-op passthrough depending on a cfg, and `rope` already depends on
-`tracing`, so the one import is redirected there. That is a single-line patch
-to `rope`, recorded as such.
+or a no-op passthrough depending on a cfg, and both crates already depend on
+`tracing`, so each import is redirected there. That is one line in `rope` and
+one line in each of `sum_tree`'s two instrumented files — three in all,
+recorded as such.
 
-`sum_tree` needs no patching, and the newtype work in
-`rope-modifications.md` does not change that: `sum_tree::Dimension` is
-generic over the summary type, so `Offset`'s impls live in `rope`. Its
-`tree_map.rs` is unused here and can be dropped; a whole-file deletion still
-leaves a clean diff.
+**`sum_tree` is patched, minimally, and the newtype work is not why.**
+`sum_tree::Dimension` is generic over the summary type, so `Offset`'s impls
+live in `rope` and `rope-modifications.md` costs `sum_tree` nothing — that is
+the claim that matters here and it holds. What the crate does carry is the
+mechanical fix-ups every vendored copy needs: the two `ztracing` redirects
+above, the `#[ctor::ctor]` logging initialiser deleted along with `ctor` and
+`zlog`, and `tree_map.rs` dropped as unused. Each is a whole-line or
+whole-file change that still leaves a clean diff, and `vendor/README.md` lists
+them.
 
 `vendor/README.md` records, per crate, the upstream revision it was taken at,
 the exact patches applied, and — for the items lifted out of `util` — where

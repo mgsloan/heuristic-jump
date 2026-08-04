@@ -253,11 +253,21 @@ fn read_lines(path: &Path) -> Result<(Provenance, Vec<Row>), Error> {
 /// Checkpointing is what makes a hundred machine-hours survivable: the file on
 /// disk is always a valid prefix, and its header says `complete: false` until
 /// the last row is in.
+///
+/// **It owns the rows, and that is the whole of why they are here rather than
+/// in `collect`.** A resume takes `done` to be the number of rows in the file
+/// on disk and asks the positions after it, so a row that is in memory and not
+/// in the file is a position that is never asked again — the file is a prefix
+/// of the *answers* only if every answer went through here. Holding the vector
+/// beside the file, as `collect` did, made "append this one too" a call that
+/// could be conditional; holding it inside makes the two impossible to
+/// disagree.
 #[derive(Debug)]
 pub(crate) struct Writer {
     path: PathBuf,
     file: File,
     provenance: Provenance,
+    rows: Vec<Row>,
 }
 
 impl Writer {
@@ -276,27 +286,35 @@ impl Writer {
             path: path.to_path_buf(),
             file,
             provenance,
+            rows: Vec::new(),
         };
         let header = encode(&writer.provenance, "a truth file's provenance header")?;
         writer.write_line(&header)?;
         Ok(writer)
     }
 
-    pub(crate) fn append(&mut self, row: &Row) -> Result<(), Error> {
-        let line = encode(row, "a truth row")?;
-        self.write_line(&line)
+    pub(crate) fn append(&mut self, row: Row) -> Result<(), Error> {
+        let line = encode(&row, "a truth row")?;
+        self.write_line(&line)?;
+        self.rows.push(row);
+        Ok(())
+    }
+
+    /// How many answers this run holds, which is also how many are on disk.
+    pub(crate) fn rows(&self) -> usize {
+        self.rows.len()
     }
 
     /// Rewrites the whole file with `complete: true`. A rewrite rather than an
     /// in-place header patch because the header's length changes, and a
     /// truncated header is a file nothing can read at all.
-    pub(crate) fn finish(self, rows: &[Row]) -> Result<(), Error> {
+    pub(crate) fn finish(self) -> Result<(), Error> {
         let mut provenance = self.provenance;
         provenance.complete = true;
 
         let mut text = encode(&provenance, "a truth file's provenance header")?;
         text.push('\n');
-        for row in rows {
+        for row in &self.rows {
             text.push_str(&encode(row, "a truth row")?);
             text.push('\n');
         }

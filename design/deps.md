@@ -38,7 +38,7 @@ pin that is a design constraint rather than a resolution detail.
 | `lru` | driver | chosen, with a caveat — see §8 |
 | `thiserror` | shared | chosen; `anyhow` explicitly rejected — see §10 |
 | `tracing` | all | chosen |
-| `tracing-subscriber` | heuristic_jump | chosen |
+| `tracing-subscriber` | heuristic_jump, measure_core | chosen — §9, DECISION-core-002: provisional |
 | `rustc-hash` | driver, shared | chosen — the default map/set, see §8 |
 | `heapless` | vendored rope/sum_tree | forced by rope |
 | `unicode-segmentation` | vendored rope | forced by rope |
@@ -542,6 +542,23 @@ Alternative: `log` + `env_logger`. Simpler, but `tracing` is already in the
 graph and its spans are the natural way to attribute the per-stratum latency
 `high-level.md` asks for.
 
+**Who installs the subscriber** — `DECISION-core-002: provisional`. The rule is
+that a crate the shim *links* has no opinion about where logs go: `driver` and
+`shared` emit through the facade and nothing else. That leaves the crate which
+owns the process, and there are two processes, not one. `heuristic_jump` is the
+shim's. `measure_<lang>`'s is `measure_core`, which is the whole of it —
+`core.md` §7 makes a `measure_<lang>` main four lines for the same reason it
+puts `clap` there, and the seventh copy of a log setup is the seventh chance
+for one binary to be quiet where the others are not. Its default filter is
+`info` where the shim's is `warn`, which is this section's reason rather than a
+disagreement with it: the shim is quiet because its stderr is an editor panel
+with the child's output interleaved, and a `measure` run has neither a child
+nor an editor while §7 requires it to report its own wall clock.
+
+The trade is a library that installs a global subscriber, and it is why this is
+a decision record rather than a fix. `state/decisions/core-002.md` has the
+option that does not.
+
 ## 10. Errors: one enumerated type, no `anyhow`
 
 **`anyhow` is rejected. `shared` defines a single total error enum, nested
@@ -861,9 +878,11 @@ deliberately rather than by imitation:
   `debug = "limited"` — Zed's values, and the right ones for a binary whose
   headline metric is latency but which still needs usable backtraces from user
   reports.
-* **`[workspace.metadata.cargo-machete] ignored`** for deps that are used but
-  invisible to static analysis. `rope` already needs `tracing` listed this way
-  upstream, and our patched copy still will.
+* **`[package.metadata.cargo-machete] ignored`** for deps that are used but
+  invisible to static analysis, in the crate that carries the dependency.
+  `rope` already needs `tracing` listed this way upstream, and our patched
+  copy still will — the redirect reaches `tracing` only through
+  `#[instrument]`, which no static scan follows (CHANGE-core-010).
 * **License texts live once at the workspace root and are symlinked into each
   crate.** Zed does this without exception — 245 symlinks and not one regular
   copy — and it is the right call: a crate directory that declares

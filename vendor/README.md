@@ -50,10 +50,16 @@ property (`deps.md` §14).
    `rope-modifications.md` changed nothing. Three substitutions made them run
    under a plain `cargo test`:
 
-   * `#[gpui::test(iterations = N)]` on nine functions → `#[test]` calling
-     `seeded(N, <name>_inner)`, bodies verbatim. `seeded` is in
-     `src/test_support.rs` and honours `SEED`/`ITERATIONS` the way gpui's
-     `calculate_seeds` does. The `gpui` dev-dependency is gone.
+   * `#[gpui::test]` on nine functions → `#[test]`. Eight carry
+     `iterations = N` and become a `#[test]` calling `seeded(N, <name>_inner)`,
+     bodies verbatim; `seeded` is in `src/test_support.rs` and honours
+     `SEED`/`ITERATIONS` the way gpui's `calculate_seeds` does. The ninth,
+     `test_point_utf16_to_offset_clips_to_correct_absolute_offset` in
+     `src/chunk.rs`, has no `iterations` and takes no `rng`, so it is a plain
+     `#[test]` with no `seeded`. Nine attributes, eight conversions — the
+     counts differ and `tests/newtype_api.rs` asserts both, because a dropped
+     test is exactly what a conflated count would hide. The `gpui`
+     dev-dependency is gone.
    * `#[ctor::ctor] fn init_logger` + `zlog::init_test()` deleted — they only
      initialised logging and nothing asserts on it. `ctor` and `zlog` go with
      them.
@@ -130,10 +136,39 @@ property (`deps.md` §14).
      every `pub fn` signature in `src/` for a bare `usize` or `u32` and fails
      on one that is not in `allowed-primitives.txt` — the case §6 says the
      diff cannot catch, because a new upstream public function with a bare
-     primitive is a hunk that looks entirely normal. The same file carries §7's
-     four-unit round-trip property test. Both are ours; upstream has neither.
+     primitive is a hunk that looks entirely normal. **That file has no
+     entries** (CHANGE-core-015): `ChunkSlice::longest_row`'s
+     `total_chars` was the last one and now takes a `&mut CharCount`, so the
+     scan forgives nothing and the file is there for what a re-sync brings.
+     The same file carries §7's four-unit round-trip property test. Both are
+     ours; upstream has neither.
    * **The verification is upstream's tests**, which is patch 3's whole point.
      All 24 pass unchanged.
+
+8. **Two upstream bugs in `TextSummary::add_newline` are fixed**, and this is
+   the one patch that is *not* patch 7's class — the distinction is the point
+   of listing it separately, because a re-sync that reads it as sweep fallout
+   will drop it. Upstream at `90d024b8` (`crates/rope/src/rope.rs:1328`):
+
+   ```rust
+   self.len_utf16 += OffsetUtf16(self.len_utf16.0 + 1);   // doubles
+   // and no `self.chars += 1` at all
+   ```
+
+   The first doubles the UTF-16 length it means to increment; the second leaves
+   `chars` behind, where `TextSummary::newline()` twelve lines above sets it to
+   1 for the same character. Neither shows upstream because **nothing calls
+   the method** — every other summary in the crate comes from `From<&str>` —
+   and that is also why none of the kept tests catch it.
+
+   Ours reads `+= OffsetUtf16(1)` and `self.chars.0 += 1`, which makes
+   `add_newline` agree with `From<&str>` and with `newline()`. Held by
+   `add_newline_agrees_with_the_summary_of_the_same_text_plus_a_newline` in
+   `tests/newtype_api.rs`, over `RandomCharIter` text; each half of the fix has
+   its own control and they fail in different places.
+
+   Re-sync cost: three lines that will conflict if upstream ever touches the
+   method, and a fix that must be re-applied if it does not.
 
 ## Patches to `sum_tree`
 
@@ -183,7 +218,14 @@ impls live in `rope`.
   `log` without Zed's `kv_unstable_serde`/`serde` features, and crates.io
   `proptest` rather than Zed's git rev.
 
-* **Neither crate is in the conformance loop's gate crate list**, so
-  `harness/gate` does not build, lint or run them — decision
-  `conformance-003`. Until that is answered, a campaign that touches `vendor/`
-  runs `cargo nextest run -p rope -p sum_tree` itself and says so.
+* **Both crates are built and tested by the gate, and neither is linted or
+  format-checked.** That is the answer to `conformance-003`, now accepted:
+  `state/phase.toml`'s `crates` list holds `rope` and `sum_tree` so their
+  upstream tests run — they are the only independent check that the newtype
+  sweep changed no behaviour — while `hj crates --lintable` drops any member
+  whose manifest sits under `vendor/`, because both `clippy -D warnings` and
+  `fmt --check` fail on unedited upstream text.
+
+  So a campaign that touches `vendor/` gets its answer from `harness/gate`
+  like any other. `cargo nextest run -p rope -p sum_tree` is still the quicker
+  loop while iterating, but it is no longer the only thing that runs them.

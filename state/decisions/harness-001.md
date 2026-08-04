@@ -1,6 +1,6 @@
 ---
 id: harness-001
-status: open
+status: accepted
 opened: 2026-08-04T00:12:00+00:00
 campaign: 11b9c019-6714-4563-a97b-fd9a00c5819f
 kind: class-b
@@ -76,7 +76,25 @@ on the loops that will do the expensive work.
 
 ## Decision
 
-Undecided — waiting on a human.
+**Option A — move the four references to the volatile tail**, answered
+2026-08-04. Applied together with the prompt's opening correction, as one
+revision.
+
+Two things this record undercounts, both in A's favour. The core loop now runs
+**three workers that start within seconds of each other against one template**,
+so a long shared prefix is paid for once and hit twice — the saving scales with
+worker count, and the record reasons as though campaigns were serial. And the
+prompt's opening is being rewritten regardless: it claims "Nothing else you do
+counts as progress" about sections clean, which is false, and under workers
+`tests up` is the only term that can fire.
+
+So the discontinuity §16 warns about is being spent anyway. Spending it once on
+both edits is strictly better than twice, and the moment is the cheapest there
+will be: before phase 2a, and after several revisions already made today.
+
+`hj prompt-prefix` stays, as this record proposes under B — it is what would
+notice a future edit shortening the prefix again, and it is how the change is
+verified rather than assumed.
 
 ## Provisional choice in force
 

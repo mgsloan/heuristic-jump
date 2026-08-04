@@ -143,8 +143,13 @@ impl Client {
 
     fn read_message<R: DeserializeOwned>(&mut self) -> Result<ChildFrame<R>, Error> {
         let body = read_frame(&mut self.stdout, &self.command)?;
-        serde_json::from_slice::<ChildFrame<R>>(&body)
-            .map_err(|source| CodecError::BodyNotJson { source }.into())
+        serde_json::from_slice::<ChildFrame<R>>(&body).map_err(|source| {
+            CodecError::BodyNotJson {
+                length: body.len(),
+                source,
+            }
+            .into()
+        })
     }
 }
 

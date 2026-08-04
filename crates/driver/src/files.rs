@@ -294,10 +294,20 @@ impl Scanner {
     fn spawn(roots: Vec<PathBuf>) -> Result<Self, Error> {
         let (requests, walks) = bounded(1);
         let (finished, results) = bounded(1);
+        // Cloned before the walk closure takes ownership, so the error can
+        // name what it failed to scan: `deps.md` §10 wants a foreign error
+        // wrapped alongside context of ours, and a bare `io::Error` from a
+        // thread spawn says only that the process is out of something.
+        let scanned: Box<[PathBuf]> = roots.clone().into_boxed_slice();
         let thread = Builder::new()
             .name("file-list-scanner".to_owned())
             .spawn(move || scan(&roots, &walks, &finished))
-            .map_err(|source| Error::Project(ProjectError::Scanner { source }))?;
+            .map_err(|source| {
+                Error::Project(ProjectError::Scanner {
+                    roots: scanned,
+                    source,
+                })
+            })?;
         Ok(Self {
             requests: Some(requests),
             results,

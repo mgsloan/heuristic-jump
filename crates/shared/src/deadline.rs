@@ -5,7 +5,7 @@
 
 use std::fmt;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// The one clock. `clippy.toml` bans `Instant::now` everywhere else, so that
@@ -25,6 +25,70 @@ impl Clock for SystemClock {
     )]
     fn now(&self) -> Instant {
         Instant::now()
+    }
+}
+
+/// The clock a test drives rather than reads. `deps.md` §12: "The injected
+/// clock for `shim.md` §12's protocol race tests is a `trait Clock` with a
+/// `TestClock` impl in `shared`, not a dependency."
+///
+/// It lives here rather than in each suite because five of them had written it
+/// already — four copies of a frozen clock and one drivable one — and a test
+/// double copied five times is one whose semantics differ in five places
+/// without anyone comparing them.
+///
+/// **Not behind a feature**, which is the obvious alternative and costs more
+/// than it saves. `#[cfg(test)]` is invisible to an integration test in another
+/// crate, which is every caller here; a `test-support` feature would mean two
+/// build configurations of `shared` and a self-referential dev-dependency, and
+/// `CLAUDE.md` asks for the build matrix not to grow. What guards it instead is
+/// `driver/tests/seam.rs`, which asserts no `src/` file outside this one names
+/// it — a production clock that can be driven is the actual risk, and that is
+/// the thing being checked.
+///
+/// The offset is an atomic rather than a cell because `Clock` is `Sync` and the
+/// scanner thread that reads it holds nothing. There is no lock here and none
+/// is wanted (`deps.md` §13 on `parking_lot`).
+#[derive(Debug)]
+pub struct TestClock {
+    base: Instant,
+    elapsed_nanos: AtomicU64,
+}
+
+impl TestClock {
+    /// One reading of the real clock, through the one type sanctioned to take
+    /// it, and every instant after this is that reading plus an offset a test
+    /// chose — so a suite built on this races nothing.
+    pub fn new() -> Self {
+        Self {
+            base: SystemClock.now(),
+            elapsed_nanos: AtomicU64::new(0),
+        }
+    }
+
+    /// Nanoseconds rather than the milliseconds the driven copy in
+    /// `driver/tests/file_list.rs` used: `as_millis` truncates, so a test
+    /// advancing by 500µs advanced by nothing and asserted on a clock that had
+    /// not moved.
+    pub fn advance(&self, by: Duration) {
+        let nanoseconds = u64::try_from(by.as_nanos()).unwrap_or(u64::MAX);
+        self.elapsed_nanos.fetch_add(nanoseconds, Ordering::Relaxed);
+    }
+}
+
+impl Default for TestClock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Clock for TestClock {
+    fn now(&self) -> Instant {
+        let elapsed = Duration::from_nanos(self.elapsed_nanos.load(Ordering::Relaxed));
+        // Saturating for the reason `Deadline::new` gives: `Instant + Duration`
+        // panics on overflow, and a test that advanced past the representable
+        // range wants a clock that stopped rather than a process that died.
+        self.base.checked_add(elapsed).unwrap_or(self.base)
     }
 }
 

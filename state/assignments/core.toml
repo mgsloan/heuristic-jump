@@ -1,18 +1,18 @@
 # One round's assignments, written by `hj plan-merge` from the planner's
 # answer. Regenerated every round; not history.
-planned = "2026-08-03T23:41:59+00:00"
+planned = "2026-08-04T04:59:55+00:00"
 
 [worker.1]
-targets = ["core.md#5-deadlines-and-abstention[f0a42a21e1]", "core.md#both-sides-are-sets[6e601d5bd1]", "deps.md#8-parse-cache", "deps.md#7-file-enumeration-and-watching"]
-reading = "crates/driver/src/driver.rs, crates/driver/src/{config.rs,pending.rs,dispatch.rs,files.rs,trees.rs}, crates/driver/tests/{deadline.rs,pending.rs}, design/shim.md \u00a713, design/core.md \u00a75"
-why = "both gaps are the missing request path in driver.rs \u2014 Deadline at arrival and the pending-query record wiring pending.rs's finished classifier in; the two deps sections are driver files nobody else may open, so they cost only reading"
+targets = ["core.md#83-the-wire-position-type-is-inert[f9ad1766b7]", "core.md#85-the-untagged-unions-are-the-actual-risk[cfd3a3fbdc]"]
+reading = "crates/shared/src/proto.rs, crates/shared/src/agreement.rs, crates/shared/tests/proto.rs, crates/shared/tests/differential.rs, crates/shared/tests/golden-traffic.jsonl, design/core.md \u00a78"
+why = "both are \u00a78 protocol-type gaps living in proto.rs and its golden/differential tests; \u00a78.3 is a fresh audit and WirePosition::line is still public at proto.rs:106"
 
 [worker.2]
-targets = ["core.md#the-table-is-not-enough-a-replay-has-to-show-its-failures", "core.md#the-command-line[d2a209c7a8]", "core.md#7-observability-and-the-corpus-scan[10d2239070]", "core.md#7-observability-and-the-corpus-scan[c4505d900b]"]
-reading = "crates/measure_core/src/{table.rs,record.rs,replay.rs,cli.rs,measure_core.rs}, crates/measure_core/tests/pipeline.rs, design/core.md \u00a77"
-why = "everything replay prints or writes, in one crate: the table's byte-for-byte determinism, the per-query record's fields, and the --records section that may already be conformant \u2014 enough to take two sections clean"
+targets = ["core.md#adding-a-language[68be1693b1]", "deps.md#14-workspace-cargotoml-shape[cda6a3e9e2]", "deps.md#14-workspace-cargotoml-shape[4e5b9e1cfa]", "deps.md#licensing-our-crates-are-mit-the-binary-is-gpl[3723863fd7]"]
+reading = "crates/driver/tests/seam.rs, Cargo.toml, deny.toml (new), crates/lang_rust/Cargo.toml, crates/lang_rust/src/lang_rust.rs, design/high-level.md, design/deps.md \u00a75/\u00a714"
+why = "every one of these mechanizes as a manifest scan in seam.rs, and the two GPL gaps share deny.toml and high-level.md's superseded licence prose; \u00a714 can go clean"
 
 [worker.3]
-targets = ["rope-modifications.md#the-newtypes-are-opaque", "rope-modifications.md#the-signatures", "rope-modifications.md#the-constructors-take-newtypes", "rope-modifications.md#offsets-and-lengths-are-separate-types-and-bytelen-is-shared", "rope-modifications.md#the-dimension-impls", "rope-modifications.md#textsummary-is-converted-too", "rope-modifications.md#lineindex-is-ropes-and-shared-re-exports-it", "core.md#vocabulary-types[fbe658c158]"]
-reading = "vendor/rope/src/{rope.rs,point.rs,point_utf16.rs,chunk.rs}, vendor/rope/tests/newtype_api.rs, vendor/rope/allowed-primitives.txt, vendor/README.md, crates/shared/src/{vocabulary.rs,shared.rs}, design/rope-modifications.md"
-why = "one unjudged doc over vendor/rope's newtype sweep plus the core.md gap that names the same three types; worker 3 owns shared's vocabulary and re-export surface, worker 1 stays inside crates/driver"
+targets = ["core.md#the-table-is-not-enough-a-replay-has-to-show-its-failures", "core.md#what-the-templates-handler-does[9adb0be268]"]
+reading = "crates/measure_core/src/table.rs, crates/measure_core/src/replay.rs, crates/measure_core/tests/pipeline.rs"
+why = "the unjudged section and the Unimplemented-vs-Failed gate are the same two files and the same question \u2014 a replay table that shows its failures; core-2 left this partial"

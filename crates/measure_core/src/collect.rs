@@ -22,9 +22,11 @@ use crate::corpus::{Corpus, Repository, ServerEntry, grammar_pin, verify_checkou
 use crate::positions::{self, Position};
 use crate::truth::{self, Outcome, Provenance, Row, Truth};
 
-/// How many positions between rewrites of the file on disk. A crash costs
-/// minutes rather than the repository.
-const CHECKPOINT_EVERY: usize = 200;
+/// How many answers between progress lines. Not how often the file is written:
+/// every answer is appended as it arrives, which is what makes a crash cost the
+/// query in flight rather than the repository, and what makes the row count on
+/// disk the number of positions a resume has already asked.
+const PROGRESS_EVERY: usize = 200;
 
 /// `data-collection.md` §4: after readiness is signalled, issue a small set of
 /// known-answerable probe queries and require them to resolve before starting
@@ -79,8 +81,8 @@ impl Collection<'_> {
         }
 
         let all = positions::read(&self.corpus.positions(&repository.name))?;
-        let done = existing.as_ref().map_or(0, |existing| existing.rows.len());
-        let mut rows = existing.map(|existing| existing.rows).unwrap_or_default();
+        let collected = existing.map(|existing| existing.rows).unwrap_or_default();
+        let done = collected.len();
 
         if done >= all.len() {
             tracing::info!(repository = %repository.name, "already collected");
@@ -90,7 +92,7 @@ impl Collection<'_> {
         let mut client = Client::start(&self.server.command)?;
         let encoding = self.initialize(&mut client, repository)?;
         let mut writer = truth::Writer::create(&path, provenance)?;
-        for row in &rows {
+        for row in collected {
             writer.append(row)?;
         }
 
@@ -108,12 +110,15 @@ impl Collection<'_> {
                 self.open(&mut client, repository, &position.file)?;
                 open = Some(position.file.clone());
             }
-            rows.push(self.ask(&mut client, repository, encoding, position)?);
+            let row = self.ask(&mut client, repository, encoding, position)?;
+            // Every answer, not every two hundredth. A server round trip is
+            // what a row costs, so a crash between checkpoints threw away up
+            // to CHECKPOINT_EVERY of them — and worse, left a file whose rows
+            // were not the answers to the first `n` positions, which is what a
+            // resume reads them as.
+            writer.append(row)?;
 
-            if rows.len() % CHECKPOINT_EVERY == 0
-                && let Some(row) = rows.last()
-            {
-                writer.append(row)?;
+            if writer.rows() % PROGRESS_EVERY == 0 {
                 tracing::info!(
                     repository = %repository.name,
                     done = index + 1,
@@ -124,7 +129,7 @@ impl Collection<'_> {
         }
 
         client.stop(self.clock);
-        writer.finish(&rows)
+        writer.finish()
     }
 
     fn initialize(

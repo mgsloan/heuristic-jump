@@ -15,10 +15,12 @@ members = [
 [workspace.package]
 edition = "2024"
 publish = false
-# `conformance-002` (answered). `deps.md` §14 puts the toolchain pin
-# in `rust-toolchain.toml`, which no loop owns, so it does not exist. This is a
-# floor rather than a selection: an older toolchain is refused, a newer one is
-# not, which is weaker than the reproducibility the pin was for.
+# `conformance-002` (answered): a human placed `rust-toolchain.toml`, and the
+# two are not a duplicate. That file *selects* a toolchain; this is a floor —
+# an older rustc is refused, a newer one is not — and cargo enforces it per
+# package, which `rust-toolchain.toml` does not. They are both true only while
+# they agree, which `the_workspace_manifest_has_the_shape_section_14_states`
+# in `crates/driver/tests/seam.rs` is what checks.
 rust-version = "1.95.0"
 
 # Every version lives here and members write `foo.workspace = true`, so the
@@ -65,6 +67,20 @@ clap = { version = "4.5", default-features = false, features = [
   "suggestions",
 ] }
 ignore = "0.4.31"
+# `deps.md` §8's parse cache, with the caveat the section states: `shim.md` §5
+# wants the cache bounded by *both* entry count and total bytes, and `lru`
+# bounds only entries — so `driver` wraps it, tracking a running byte total and
+# calling `pop_lru` until under the ceiling. `schnellru` supports custom
+# limiters and would need no wrapper; §8 declines it on maturity grounds and
+# says the choice is worth revisiting if the wrapper gets awkward.
+lru = "0.16"
+# `deps.md` §7's watcher, deferred: `core.md` §4 gives the file list two
+# invalidation paths that do not need it, and in proxy mode the editor is
+# already watching — its `workspace/didChangeWatchedFiles` notifications cross
+# the shim, so a `notify` watcher would be a second, worse copy of a signal
+# already on the wire. Declared anyway, behind `driver`'s non-default `watch`
+# feature, because §7 asks for the decision to be visible rather than lost.
+notify = "8"
 # `deps.md` §0's table and §1: chosen over tokio, and over `std::sync::mpsc`
 # because `core`'s loop needs `select!` over several receivers and std has
 # none. Arrives with its first user, which is `core.md` §4's background rescan.
@@ -274,9 +290,27 @@ debug = "limited"
 lto = "thin"
 codegen-units = 1
 
-# `deps.md` §6: parsing in a debug build is otherwise slow enough to distort
-# every latency observation made while developing. `serde_json`'s bump from the
-# same section is still absent — cargo rejects a profile override naming a
-# package that is not in the graph, and nothing depends on it yet.
-[profile.dev.package.tree-sitter]
-opt-level = 3
+# `deps.md` §14, "we take exactly those": the crates that dominate debug
+# runtime, in Zed's inline form and no wider than Zed's list. Parsing in a
+# debug build is otherwise slow enough to distort every latency observation
+# made while developing, which for this project would mean tuning against a
+# fiction (§6).
+#
+# The proc-macro three are the ones inside Zed's `# proc-macros start/end`
+# block that are not Zed's own crates; the other seven there are `gpui_macros`
+# and friends and have nothing to do with us. They are here because every
+# derive in the workspace — `serde`, `thiserror`, `clap` — is compiled through
+# them, so an unoptimised `syn` is paid once per dependent crate on a cold
+# build.
+#
+# Held by `every_package_section_14_names_gets_its_opt_level` in
+# `crates/driver/tests/seam.rs`, which checks both directions and that each
+# package is really in the graph. Cargo does *not* reject an override naming a
+# package that is not — it prints "did not match any packages" and carries on,
+# so a bump for a crate that was renamed or dropped goes on looking applied.
+[profile.dev.package]
+tree-sitter = { opt-level = 3 }
+serde_json = { opt-level = 3 }
+proc-macro2 = { opt-level = 3 }
+quote = { opt-level = 3 }
+syn = { opt-level = 3 }

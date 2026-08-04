@@ -4,7 +4,12 @@
 
 [section."rope-modifications.md#1-rope-already-works-this-way-byte-offsets-are-the-omission"]
 state = "clean"
-last_audited = "2026-08-03T23:07:08+00:00"
+last_audited = "2026-08-04T05:37:37+00:00"
+
+  [[section."rope-modifications.md#1-rope-already-works-this-way-byte-offsets-are-the-omission".minor]]
+  claim = "the change is completing rope's existing newtype family, the omission being the byte offset as a bare usize \u2014 including as a sum_tree::Dimension and a TextDimension (rope.rs:1567, rope.rs:1577)"
+  note = "Offset gained both impls (rope.rs:1600/:1610) but the two bare-usize impls remain at exactly the cited lines, so a usize-dimensioned seek still compiles; tests/newtype_api.rs scans signatures and fields, not trait impls"
+  where = "vendor/rope/src/rope.rs:1567"
 
 [section."rope-modifications.md#2-where-the-types-live-is-forced"]
 state = "clean"
@@ -24,25 +29,38 @@ state = "clean"
 last_audited = "2026-08-03T23:07:08+00:00"
 
 [section."rope-modifications.md#the-newtypes-are-opaque"]
-state = "unjudged"
+state = "clean"
+last_audited = "2026-08-04T00:27:32+00:00"
 
 [section."rope-modifications.md#the-constructors-take-newtypes"]
-state = "unjudged"
+state = "clean"
+last_audited = "2026-08-04T00:27:32+00:00"
 
 [section."rope-modifications.md#the-signatures"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-04T04:57:16+00:00"
+
+  [[section."rope-modifications.md#the-signatures".gap]]
+  claim = "ChunkSlice::longest_row's out parameter gets the correct newtype: `total_chars` is a `CharCount`, not left bare"
+  found = "the signature is `longest_row(&self, total_chars: &mut usize) -> (LineIndex, CharCount)`; the return is converted and the parameter is not, and vendor/rope/allowed-primitives.txt:17 makes the exemption permanent so the newtype_api scan passes. \u00a76's allowlist sanctions exactly this, so the document disagrees with itself and the fix may be \u00a74's sentence rather than the code"
+  where = "vendor/rope/src/chunk.rs:400"
+  found_at = "e23d2149549728b19f61bbdd3fb2490dcb8256d2"
 
 [section."rope-modifications.md#textsummary-is-converted-too"]
-state = "unjudged"
+state = "clean"
+last_audited = "2026-08-04T04:57:16+00:00"
 
 [section."rope-modifications.md#the-dimension-impls"]
-state = "unjudged"
+state = "clean"
+last_audited = "2026-08-04T00:27:32+00:00"
 
 [section."rope-modifications.md#offsets-and-lengths-are-separate-types-and-bytelen-is-shared"]
-state = "unjudged"
+state = "clean"
+last_audited = "2026-08-04T00:27:32+00:00"
 
 [section."rope-modifications.md#folding-vendorutil-in"]
-state = "unjudged"
+state = "clean"
+last_audited = "2026-08-04T00:27:32+00:00"
 
 [section."rope-modifications.md#5-what-deliberately-does-not-change"]
 state = "clean"
@@ -54,23 +72,29 @@ last_audited = "2026-08-03T23:07:08+00:00"
   where = "vendor/rope/src/rope.rs:1567"
 
 [section."rope-modifications.md#lineindex-is-ropes-and-shared-re-exports-it"]
-state = "unjudged"
+state = "clean"
+last_audited = "2026-08-04T00:27:32+00:00"
 
 [section."rope-modifications.md#6-consequences-for-re-syncing"]
 state = "clean"
 last_audited = "2026-08-03T23:07:08+00:00"
 
 [section."rope-modifications.md#7-testing"]
-state = "unjudged"
+state = "clean"
+last_audited = "2026-08-04T00:27:32+00:00"
 
 [section."rope-modifications.md#all-of-upstreams-tests-are-kept"]
-state = "unjudged"
+state = "clean"
+last_audited = "2026-08-04T00:27:32+00:00"
 
 [section."rope-modifications.md#consequences-for-the-dependency-plan"]
-state = "unjudged"
+state = "clean"
+last_audited = "2026-08-04T00:27:32+00:00"
 
 [section."rope-modifications.md#beyond-upstreams-tests"]
-state = "unjudged"
+state = "clean"
+last_audited = "2026-08-04T00:27:32+00:00"
 
 [section."rope-modifications.md#8-decided-and-what-remains"]
-state = "unjudged"
+state = "clean"
+last_audited = "2026-08-04T00:27:32+00:00"

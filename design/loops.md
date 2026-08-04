@@ -1590,7 +1590,13 @@ is small.
 
 Language crates are disjoint on disk, so the code never collides. What
 would collide is `state/`, and the fix is the same principle applied to
-data: **partition shared state by owner.**
+data: **partition shared state by owner** — and, for anything a *second*
+worker must read before the first has merged, keep it out of the branches
+altogether. `state/phase.toml`, `state/sessions.jsonl`,
+`state/assignments/` and the claim files live in the integration checkout
+for that reason: desired state that a worker reads from its own branch
+cannot be changed by pausing the fleet, and a claim nobody else can see is
+not a claim.
 
 * `state/metrics/<language>.jsonl` — one file per loop, never shared.
 * `state/journal/<language>.md` — likewise.
@@ -1673,27 +1679,30 @@ is the branch suffix, the worktree suffix and the campaign record's
 `worker` field. It is not a separate loop: it shares the loop's prompt,
 its documents, its baseline and its number.
 
-#### Disjointness is claimed, not constructed
+#### Disjointness is planned, then claimed
 
 The across-loops case gets disjointness from the filesystem: two language
 crates cannot collide. Workers have no such boundary — they read the same
 gap list, and the obvious failure is three workers opening the same
 highest-value gap within a second of each other and doing it three times.
 
-So a target is **claimed at campaign open**, by the harness rather than by
-the campaign:
+So a round is **divided before it starts**, by a short read-only session:
 
-* `hj campaign-open` records the gaps it is handing out in the session row,
-  and renders the prompt with every gap another *live* campaign has claimed
-  removed from the list.
-* A claim ends when the campaign closes, or when `campaign-reap` finds it
-  abandoned. It is not a lock: nothing enforces it after the prompt is
-  rendered.
-* A campaign that takes an additional target mid-run
-  ([section 4](#4-the-iteration-contract)) has not claimed it, and may
-  collide. This is accepted rather than solved — the alternative is a
-  claim protocol the campaign has to obey, which is a rule it can silently
-  break, and the backstop below is cheap.
+* `harness/workers` runs a **planner** per round. It reads the open gaps and
+  the code, and writes one assignment per worker — grouped so that each
+  worker's targets share their reading and no two workers share theirs. It
+  is a session rather than a rule because "which of these are the same
+  file" is a judgement about the code, and a first-come rule gets
+  disjointness and nothing else.
+* **An empty assignment is a real answer.** Three workers and two
+  independent targets should be two workers and an idle one; a session
+  spent inventing work costs what one spent doing it costs.
+* A campaign that wants a target **outside** its assignment asks for it:
+  `hj claim <loop> --campaign <id> <target>`, which grants or refuses
+  against what live campaigns hold. One file per target created `O_EXCL`,
+  so two workers asking at the same instant cannot both win. A claim is
+  released at close, and a claim held by a campaign that is no longer alive
+  is stale and taken.
 
 **The backstop is the rebase.** If two workers do touch the same file, the
 second to finish fails to rebase onto the first, and that is a loud,
@@ -1705,6 +1714,14 @@ rather than an impossibility.
 **Claiming is per gap, not per section.** Two workers in the same section
 on different gaps is normal and often good — they share the reading, which
 is the expensive part, without doing the same work.
+
+**A conflict that is not a judgement is resolved rather than escalated.**
+`state/audit/**` takes the integration checkout's copy, since only the round
+runner audits; `state/findings/*` takes the worker's, since it is that
+worker's digest of its own campaign. Everything else — `crates/`, `vendor/`,
+`design/` — escalates as a blocked item, because there the conflict *is* the
+finding: two workers wrote one file, which is a failure of the plan that
+divided them, and picking a side destroys the evidence and loses a campaign.
 
 #### What is per worker and what is shared
 
@@ -1718,19 +1735,18 @@ happens on the files where concurrent writes actually collide:
 | Worktree, branch | per worker | git refuses one branch in two worktrees |
 | `state/campaigns/<loop>/<id>.md` | shared directory | ids are unique; no two workers write one file |
 | `state/journal/<loop>-<n>.md` | per worker | append-only prose; a shared file conflicts on every merge |
-| `state/findings/<loop>.md` | **shared** | see below |
+| `state/findings/<loop>-<n>.md` | per worker | see below |
 | `state/metrics/<loop>.jsonl`, `cost/` | shared | append-only, union-merged |
 | `state/decisions/<loop>-NNN.md` | shared | the id is allocated by the harness, not the campaign |
 
-**The findings digest is deliberately shared and deliberately contended.**
-It is one loop's theory of one implementation, and three theories of the
-same code is not three times the value — it is the same synthesis done
-three times, each missing what the other two learned. So the digest is
-rewritten by whichever worker closes, last write wins, and each worker
-reads the current one at open. Losing an edit is acceptable here in a way
-it is not for the journal: a digest is a summary that the next campaign
-reconstructs anyway, and the cap already forces it to be rewritten rather
-than accumulated.
+**The findings digest is per worker, and each worker reads the others'.**
+An earlier revision made it one shared file, on the argument that three
+theories of one implementation is the same synthesis done three times, each
+missing what the other two learned. The argument holds; the mechanism did
+not. Three branches rewriting one capped file conflict on every merge, and
+"last write wins" is not something git does — it stops and asks. Splicing
+two more capped digests costs less than a conflict per round, and is honest
+about what is true, since three workers do have three views.
 
 #### The audit does not parallelise
 

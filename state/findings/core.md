@@ -1,60 +1,58 @@
-# Findings — conformance, after 51628b98
+# Findings — core, after 7aa74ea9
 
-**Verify a gap against the code before working it; the audit lags by hours.**
-`git log --since` the `last_audited` stamp in `state/audit/core.toml`. A
-campaign the harness recorded `crashed` may still have committed real work.
+**Verify a gap against the code before working it; the audit lags.** Two of my
+four gaps' `found:` lines were stale — `pending.rs` existed and was complete.
+One `grep` settles it.
 
-**`deps.md` is largely satisfied and almost entirely unheld.** The manifests
-were written against it and quote it in their comments, so its sections need
-mechanism, not repair — one real defect in ten sections. I closed §0, §1, §2,
-§4, §5-licensing, §6, §12, §13, §14, §15, all in
-`crates/driver/tests/seam.rs`, which is where a manifest-shaped assertion
-belongs. Remaining and *not* as cheap: §3, §7, §8, §9, §10, §11, `#fxhashmap`.
+**`driver` now has a request path.** `crates/driver/src/actor.rs` is `shim.md`
+§13's actor: it owns `Documents`, `TreeCache`, `FileListCache`,
+`PendingQueries` and the trace sink, mints §5's deadline from the `arrived`
+instant the event carries, and takes §7's four steps in order. `driver::run`
+builds one and runs it. **What is missing is only the wire** — `shim.md` §2's
+codec, §3's router, the child spawn. The seam for it is
+`Actor::run(&Receiver<Event>)` plus `Sender<Outbound>`; nothing in the actor
+knows about framing. Do not start with standalone stdio as the cheaper half:
+it has no oracle, so neither divergence nor the record's oracle half is
+exercised by it.
 
-**Three assertions I wrote cannot be made to fail, and each taught the same
-lesson.** Adding `[lints]` to `vendor/rope` is a duplicate TOML key — cargo
-rejects the manifest and **no test runs**; adding one to `sum_tree` makes it
-stop compiling on `elided_lifetimes_in_paths` alone. Dropping `serde_json`'s
-`raw_value` fails to build, because `shared` already imports `RawValue` — §4's
-"silently compiles" was true before its first user. Keep such assertions, and
-write *in place* that the compiler is the real enforcement; it is incidental
-and the assertion records intent. **Grep control output for `test result`, not
-just for a failure** — my first vendor control produced neither, and I nearly
-scored it as passing.
+**§7's record type is `shared::record` now.** It had to move — §9's graph
+forbids `driver -> measure_core`. `Answered::of` is the one place a dispatch's
+three endings become `decision`/`failure`/`stages`, and both producers call it;
+a second copy of that match is how a replay row and a field row stop being
+comparable.
 
-**Do not scan `Cargo.lock` for §13's rejected crates.** `once_cell`, `regex`,
-`memchr`, `aho-corasick`, `walkdir` and `indexmap` are all in it transitively.
-§13 is about what we reach for: assert declarations.
+**§7 will not go clean on my gap alone.** `[c4505d900b]`, the stratum columns
+and the handler-reported half, is the other one, and cheap now that the
+assembly is in one file.
 
-**§15 parses `design/deps.md` itself as the fixture.** It is the one assertion
-where editing the *document* fails, which matters because moving the spec
-toward the code is this loop's only uncatchable way of faking progress.
+**The highest-value next build is the edit log.** `Documents::changed` consumes
+the content changes, so `core` has no edits for `TreeCache::seed` and the actor
+`forget`s a document's trees on every change. Correct, but incremental reparse
+is unreachable in production. The fix is `Believed` carrying its own log, keyed
+so `seed` takes the edits since the *cached* version. Do not deserialize the
+params a second time to get them: §8.6 puts the projection inside `Documents`.
+Related trap: the cache key is `(uri, version)` and versions are monotone only
+within one open, so every resync must `forget`.
 
-**Subset, never equality, for dependency tables.** §14's "each arrives with
-its first user" makes `rayon`, `lru`, `insta` and `notify` chosen-and-absent
-on purpose.
+**Do not spend time on.** `#9-workspace-layout` can never close — it names
+`lang_python` and `lang_typescript`, outside every owned path. `#85`'s corpus
+needs pyright and gopls; only rust-analyzer is on `PATH`. `server_health` being
+null on every row is `shim.md` §6's missing health model, not a hole in the
+record. `Deadline::cancel` has no caller because dispatch is in-line — a cancel
+is only ever handled between queries — and it belongs to the worker-pool
+campaign.
 
-**Known open, in descending value:**
+**`core-017` is open**: a deadline-expired row has no stratum, because
+`hard_cap` drops the outcome that knew it, and both repairs are Class B.
 
-* **§5 states two licence rules and marks `lang_*` by the one
-  `conformance-014` rejected** (a `license` field describes copyright in that
-  crate's own text; `heuristic_jump` proves reaching GPL is not enough).
-  `lang_*` may still be GPL because `similarity` is a *port*. `seam.rs`'s
-  `expected_licence` is the only place the two are distinguished. Cheap, clean
-  next target.
-* **§7 cannot go clean until `notify` is settled** — it should be an optional
-  dependency "so the decision is visible", and is absent. Its other claim
-  (`ignore` in `shared`, not `driver`) already holds.
-* **`shared` exports no `pub type Map`/`Set`**, which §8 requires; five files
-  use `FxHashMap` directly.
-* **The driver's request path** (`#5-deadlines`, `#both-sides-are-sets`) is
-  `shim.md`'s transport and `core` actor — **phase 2b**. Escalate the phase
-  question before building it. `conformance-016` (answered) already removed
-  `clippy.toml`'s `unbounded` ban that would have blocked it.
-* **`#85`'s corpus** needs pyright and gopls; only rust-analyzer is on `PATH`.
-* **`#9-workspace-layout` can never close** — it names `lang_python` and
-  `lang_typescript`, outside every owned path.
+**Instruments.** `driver/tests/seam.rs` is the `deps.md` conformance suite —
+manifest and source scans, `src/` only. `driver/tests/actor.rs` is the request
+path's. A control that cannot be made to fail is not a control: mutate the
+production line and watch which assertion moves. `serde_json::Value` is denied
+in tests too, so trace rows are asserted as text — §7 fixes the field order, so
+the text is the record.
 
-**Still true.** Never `git checkout` over uncommitted work. `harness/**` is
-denied and was being edited concurrently — stage explicit paths, never
-`git add -A`, then gate with `--rev HEAD`. Loop: commit, gate, `hj record`.
+**Mechanics.** `cargo fmt -p <crate>` before the gate; step 1 is `--check`.
+Stage explicit paths, never `git add -A`. Loop: gate, commit,
+`harness/hj record core`. `allow-expect-in-tests` reaches only `#[test]`
+bodies, so every fixture helper needs the crate-level `#![expect(...)]`.

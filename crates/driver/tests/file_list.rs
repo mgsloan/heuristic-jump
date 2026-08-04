@@ -18,13 +18,12 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use driver::{Answer, DebounceMs, Dispatched, FileListCache};
 use shared::{
     AbstainReason, Clock, Confidence, Error, FileList, Generation, Outcome, ProjectError, Strata,
-    Stratum, SystemClock, Trace,
+    Stratum, TestClock, Trace,
 };
 
 /// Long enough that "before the window closes" is a state a test can be in
@@ -40,7 +39,7 @@ const QUIET: Duration = Duration::from_millis(250);
 #[test]
 fn the_list_is_walked_once_on_first_need_and_handed_back_by_refcount_after() {
     let root = fixture("first_need");
-    let clock = Arc::new(DrivenClock::new());
+    let clock = Arc::new(TestClock::new());
     let mut cache = cache(&root, &clock);
 
     let first = cache.list().expect("the first walk");
@@ -61,7 +60,7 @@ fn the_list_is_walked_once_on_first_need_and_handed_back_by_refcount_after() {
 #[test]
 fn a_watcher_frame_schedules_a_rescan_that_a_query_never_waits_for() {
     let root = fixture("watcher");
-    let clock = Arc::new(DrivenClock::new());
+    let clock = Arc::new(TestClock::new());
     let mut cache = cache(&root, &clock);
 
     let before = cache.list().expect("the first walk");
@@ -109,7 +108,7 @@ fn a_watcher_frame_schedules_a_rescan_that_a_query_never_waits_for() {
 #[test]
 fn no_candidates_is_the_only_abstention_that_invalidates_the_list() {
     let root = fixture("no_candidates");
-    let clock = Arc::new(DrivenClock::new());
+    let clock = Arc::new(TestClock::new());
     let mut cache = cache(&root, &clock);
     drop(cache.list().expect("the first walk"));
 
@@ -154,7 +153,7 @@ fn no_candidates_is_the_only_abstention_that_invalidates_the_list() {
 #[test]
 fn the_two_triggers_share_one_debounce_rather_than_one_each() {
     let root = fixture("shared_debounce");
-    let clock = Arc::new(DrivenClock::new());
+    let clock = Arc::new(TestClock::new());
     let mut cache = cache(&root, &clock);
     drop(cache.list().expect("the first walk"));
 
@@ -183,7 +182,7 @@ fn the_two_triggers_share_one_debounce_rather_than_one_each() {
     );
 }
 
-fn cache(root: &Path, clock: &Arc<DrivenClock>) -> FileListCache {
+fn cache(root: &Path, clock: &Arc<TestClock>) -> FileListCache {
     let clock: Arc<dyn Clock> = Arc::clone(clock) as Arc<dyn Clock>;
     FileListCache::new(vec![root.to_path_buf()], clock, DEBOUNCE).expect("the scanner thread")
 }
@@ -225,39 +224,6 @@ fn decided(outcome: Outcome) -> Dispatched {
     Dispatched::Decided(
         Answer::without_locations(outcome).expect("an outcome with nothing to encode"),
     )
-}
-
-/// A clock a test drives rather than reads. `clippy.toml` bans `Instant::now`
-/// outside `SystemClock`, and a debounce test needs time to move, so the base
-/// instant is read once and every reading after it is an offset a test chose.
-///
-/// The offset is an atomic rather than a cell because `Clock` is `Sync` and
-/// the scanner thread holds nothing — there is no lock here, and none is
-/// wanted.
-#[derive(Debug)]
-struct DrivenClock {
-    base: Instant,
-    elapsed_ms: AtomicU64,
-}
-
-impl DrivenClock {
-    fn new() -> Self {
-        Self {
-            base: SystemClock.now(),
-            elapsed_ms: AtomicU64::new(0),
-        }
-    }
-
-    fn advance(&self, by: Duration) {
-        let milliseconds = u64::try_from(by.as_millis()).expect("a duration a test wrote");
-        self.elapsed_ms.fetch_add(milliseconds, Ordering::Relaxed);
-    }
-}
-
-impl Clock for DrivenClock {
-    fn now(&self) -> Instant {
-        self.base + Duration::from_millis(self.elapsed_ms.load(Ordering::Relaxed))
-    }
 }
 
 /// The same shape `shared/tests/project.rs` uses: a real directory with an

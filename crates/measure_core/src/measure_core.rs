@@ -27,7 +27,6 @@ mod client;
 mod collect;
 mod corpus;
 mod positions;
-mod record;
 mod replay;
 mod table;
 mod truth;
@@ -40,7 +39,11 @@ use shared::{Error, FileList, LanguageHandler, ProjectPath, SystemClock};
 pub use cli::{Cli, Command, Format, Replay};
 pub use client::{MAX_FRAME_BYTES, MAX_HEADER_BYTES, read_frame};
 pub use corpus::{ServerEntry, grammar_pin, locked_grammar, resolve_server};
-pub use record::{Decision, Mode, QueryRecord, StratumName};
+// §7's record type is `shared`'s, because `deps.md` §9's graph gives
+// `driver` no edge to this crate and the shim has to emit the same shape.
+// Re-exported rather than reached through `shared::record` at every call site,
+// so a `measure_<lang>` binary keeps naming one crate.
+pub use shared::record::{Decision, Mode, QueryRecord, StratumName};
 pub use truth::{Provenance, check_resumable};
 
 /// The whole of a `measure_<lang>` binary, after `Cli::parse()`.
@@ -51,6 +54,7 @@ pub use truth::{Provenance, check_resumable};
 /// }
 /// ```
 pub fn run(handler: &dyn LanguageHandler, cli: Cli) -> Result<(), Error> {
+    install_logging();
     let clock = SystemClock;
     let language = first_language_id(handler)?;
 
@@ -63,7 +67,7 @@ pub fn run(handler: &dyn LanguageHandler, cli: Cli) -> Result<(), Error> {
             for repository in &repositories {
                 corpus::verify_checkout(repository, None)?;
                 let files = source_files(handler, repository)?;
-                let found = positions::enumerate(handler, &files, quota)?;
+                let found = positions::enumerate(handler, language, &files, quota)?;
                 let sampled = positions::sample(found, arguments.limit, arguments.seed);
                 positions::write(&corpus.positions(&repository.name), &sampled)?;
                 tracing::info!(
@@ -148,14 +152,71 @@ pub fn replay_table(
     table.render(arguments.format)
 }
 
+/// Here rather than in each `measure_<lang>` main, for the reason `core.md` §7
+/// gives for putting `clap` here: a `measure_<lang>` is four lines, and the
+/// seventh copy of a log setup is the seventh chance for one binary to be quiet
+/// where the others are not.
+///
+/// **The default is `info`, where the shim's is `warn`**, and that is not a
+/// disagreement with `deps.md` §9 but the scope of its reason: the shim is
+/// quiet by default because its stderr is the editor's log panel with the
+/// child's own output interleaved into it (`shim.md` §2). `measure` has no
+/// child forwarding anything and no editor reading it — and §7 requires it to
+/// *report* something, namely the replay's own wall clock beside the per-query
+/// work counters, which `loops.md` §9 records from the very first run. A `warn`
+/// default would emit that into nothing.
+///
+/// `RUST_LOG` still overrides, and there is deliberately no flag: §7's command
+/// line is a closed set (`tests/pipeline.rs`), and a flag is a thing a run can
+/// be misconfigured by where an environment variable is a thing an operator
+/// reaches for.
+// DECISION-core-002: provisional. A library installing a global subscriber is
+// the thing `deps.md` §9 warns about, and this one is here because a
+// `measure_<lang>` main is four lines. The alternative — the install in each
+// language binary — is the option that record leaves open.
+fn install_logging() {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+
+    if let Err(error) = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_ansi(false)
+        .with_writer(stderr_for_logging)
+        .try_init()
+    {
+        // Not discarded: a subscriber is already installed, and it is the one
+        // that gets told. That is the case a test drives, where the scoped
+        // subscriber is the point rather than an accident.
+        tracing::debug!(%error, "a log subscriber was already installed");
+    }
+}
+
+/// The single sanctioned `stderr` handle, the same one `heuristic_jump` has.
+/// `clippy.toml` bans the rest because an ad-hoc write interleaves with the
+/// child's forwarded stderr; its replacement is `tracing`, and this is where
+/// `tracing` comes out.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the log subscriber is what clippy.toml's stderr replacement points at"
+)]
+fn stderr_for_logging() -> std::io::Stderr {
+    std::io::stderr()
+}
+
 /// The binary is per-language, so the language is the handler's rather than an
 /// argument, and there is no flag that could disagree with it (`core.md` §7).
+///
+/// The one place it is recovered. Every stage below is handed the result — a
+/// second lookup elsewhere is a second answer to *which language is this run
+/// about*, and the interesting case is the one where they differ: this
+/// refuses, and the fallback it replaced invented `LanguageId::new("unknown")`
+/// and enumerated a corpus under it.
 fn first_language_id(handler: &dyn LanguageHandler) -> Result<shared::LanguageId, Error> {
     handler
         .language_ids()
         .first()
         .copied()
-        .ok_or_else(|| shared::HandlerError::DeadlineExpired.into())
+        .ok_or_else(|| shared::ConfigError::HandlerDeclaresNoLanguage.into())
 }
 
 /// The repository's files, filtered to the handler's own extensions and

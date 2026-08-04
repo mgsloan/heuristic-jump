@@ -38,7 +38,7 @@ pub struct Unclipped<T>(pub T);                   // unclipped.rs
 
 The *dimensions* are newtyped. What is not newtyped is one level down: the
 plain byte offset is a bare `usize` — including as a `sum_tree::Dimension` and
-a `TextDimension` (`rope.rs:1492`, `rope.rs:1502`) — and the row and column
+a `TextDimension` (`rope.rs:1577`, `rope.rs:1587`) — and the row and column
 inside `Point` and `PointUtf16` are bare `u32`.
 
 Both are reasonable upstream. The byte offset is the default dimension, the one
@@ -265,16 +265,19 @@ Converted:
 | Length | `Rope::len`, `ChunkSlice::len` — both return `ByteLen` |
 | Cursors and iterators | `Cursor::{new, seek_forward, slice, summary, offset}`, `Chunks::{new, seek, set_range, offset}`, `Bytes::new`, `Lines::{seek, offset}`, `chars_at`, `reversed_chars_at` |
 | Rows | `slice_rows(Range<LineIndex>)`, `line_len(row: LineIndex) -> ByteColumn` |
-| `ChunkSlice` | All 17 of its public functions. It is low-level and handlers have little reason to touch it, but a bare-`usize` island inside an otherwise converted crate is exactly the escape hatch the change is meant to close |
+| `ChunkSlice` | All 27 of its public functions. It is low-level and handlers have little reason to touch it, but a bare-`usize` island inside an otherwise converted crate is exactly the escape hatch the change is meant to close |
 
-Not converted, because these are not byte offsets:
+Not converted, because these are not byte offsets. All four are on
+`ChunkSlice` rather than `Chunk` — `Chunk` holds the storage and `ChunkSlice`
+does the measuring, so every function that answers "how far into a line" is on
+the slice:
 
 | Function | Unit |
 |---|---|
-| `Chunk::first_line_chars() -> u32` | `CharCount` |
-| `Chunk::last_line_chars() -> u32` | `CharCount` |
-| `Chunk::longest_row(&mut total_chars) -> (u32, u32)` | `(LineIndex, CharCount)`; `total_chars` is a `CharCount` |
-| `Chunk::last_line_len_utf16() -> u32` | `Utf16Column` |
+| `ChunkSlice::first_line_chars() -> u32` | `CharCount` |
+| `ChunkSlice::last_line_chars() -> u32` | `CharCount` |
+| `ChunkSlice::longest_row(&mut total_chars) -> (u32, u32)` | `(LineIndex, CharCount)`; `total_chars` is a `CharCount` |
+| `ChunkSlice::last_line_len_utf16() -> u32` | `Utf16Column` |
 
 These get the *correct* newtype rather than being left bare — which is the
 point of auditing rather than grepping. `CharCount` is the fourth member of the
@@ -310,7 +313,7 @@ it is called out rather than absorbed.
 ### The dimension impls
 
 `Offset` gains the two impls that make it usable as a seek dimension,
-mirroring what `OffsetUtf16` already has (`rope.rs:1516`, `rope.rs:1526`):
+mirroring what `OffsetUtf16` already has (`rope.rs:1634`, `rope.rs:1644`):
 
 ```rust
 impl<'a> sum_tree::Dimension<'a, ChunkSummary> for Offset { … }
@@ -438,7 +441,7 @@ were independent; they are not any more.
 ## 5. What deliberately does not change
 
 * **`OffsetUtf16` and `Unclipped`.** Already newtypes, already right.
-* **The `usize` dimension impls** (`rope.rs:1492`, `:1502`). rope uses `usize`
+* **The `usize` dimension impls** (`rope.rs:1577`, `:1587`). rope uses `usize`
   as a dimension internally in about seven places — `find::<usize, _>`,
   `Dimensions<usize, Point>` — and removing the impls would mean editing those
   bodies. They stay.
@@ -487,11 +490,14 @@ on:
 > **CI asserts that no `pub fn` signature in `vendor/rope` mentions bare
 > `usize` or `u32`**, outside an explicit allowlist.
 
-The allowlist is `vendor/rope/allowed-primitives.txt` and is short: the
-`total_chars: &mut usize` parameter of `Chunk::longest_row` and anything else
-[section 4](#the-signatures) records as a genuine primitive. Every entry needs
-a comment saying which unit it is, since "it is a `usize`" is the problem
-rather than the explanation.
+The allowlist is `vendor/rope/allowed-primitives.txt` and is **empty**.
+[Section 4](#the-signatures) audits the functions that are not byte offsets and
+gives each one the newtype for its unit, `ChunkSlice::longest_row`'s
+`total_chars` — a `CharCount` — included, so the conversion leaves nothing
+behind to forgive. The file exists for the re-sync case rather than for that
+one: an upstream `pub fn` arriving with a bare primitive that is genuinely one.
+Every entry needs a comment saying which unit it is, since "it is a `usize`" is
+the problem rather than the explanation, and an entry is a hole in the change.
 
 The check is cheap, it catches the one failure mode the diff cannot, and it
 turns "someone notices" into a build failure.
@@ -520,12 +526,12 @@ precisely the kind of test nobody would write from scratch.
 What they need turns out to be small. Only three things stand between the test
 modules and a plain `cargo test`:
 
-** `#[gpui::test(iterations = N)]` on nine functions.** Despite the name,
-nothing about gpui is involved for these: rope's randomised tests take
-`mut rng: StdRng` and nothing else —no `TestAppContext`, no async. The macro
-is doing one job, which is to run the body N times with deterministic seeds
-and print the seed on failure. That is replaced by a helper in rope's own test
-module ([above](#folding-vendorutil-in)):
+**`#[gpui::test]` on nine functions, eight of them with `iterations = N`.**
+Despite the name, nothing about gpui is involved for these: rope's randomised
+tests take `mut rng: StdRng` and nothing else —no `TestAppContext`, no async.
+The macro is doing one job, which is to run the body N times with
+deterministic seeds and print the seed on failure. That is replaced by a
+helper in rope's own test module ([above](#folding-vendorutil-in)):
 
 ```rust
 // upstream
@@ -538,11 +544,19 @@ fn test_random_rope() { seeded(100, test_random_rope_inner) }
 fn test_random_rope_inner(mut rng: StdRng) { /* body, untouched */ }
 ```
 
-Two changed lines per test, nine tests, bodies verbatim. `seeded` is
+Two changed lines per test, eight tests, bodies verbatim. `seeded` is
 about twenty lines: derive the seed list, honour `SEED` and `ITERATIONS`
 environment overrides as gpui does, print the seed, and run. **No proc macro
 is needed** — the alternative of writing our own attribute macro would mean a
-whole proc-macro crate to save nine lines.
+whole proc-macro crate to save eight lines.
+
+The ninth is `#[gpui::test]` with no `iterations`, on
+`test_point_utf16_to_offset_clips_to_correct_absolute_offset`
+(`chunk.rs:1235`). It takes no `rng` at all, so the attribute was buying it
+nothing beyond gpui's test harness, and it becomes a plain `#[test]` — one
+changed line, and no `seeded`. It is called out because the two counts are
+otherwise easy to conflate, and conflating them is how a dropped test would
+hide: nine attributes, eight conversions, and 24 test functions either side.
 
 **`#[ctor::ctor]` + `zlog::init_test()`** at `rope.rs:1735` and
 `sum_tree.rs:1399`. These only initialise logging; the tests assert nothing
