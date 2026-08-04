@@ -1,6 +1,6 @@
 ---
 id: core-001
-status: open
+status: accepted
 opened: 2026-08-04T00:48:00+00:00
 campaign: e797a506-29e9-4cb6-99b2-714f5a785c1a
 kind: harness-request
@@ -57,7 +57,32 @@ section can go clean on the measurement's half alone.
 
 ## Decision
 
-Undecided — waiting on a human.
+**Now, and the harness loop builds it**, answered 2026-08-04.
+
+The record's framing needs one correction: "this is not something a loop can
+fix" was true when it was written and is not now. `harness/**` is denied to
+every loop *except* one declaring `writes_harness`, which the harness loop
+does — and this record is already spliced into that loop's prompt under
+"Harness requests waiting on you". So the question was never who, only when.
+
+**When is now**, for the reason `loops.md` §18 gives for that loop existing:
+phase 1.5 is roughly a hundred machine-hours with no model in it, the harness
+loop has nothing else to build in that window, and `harness/measure` is
+exactly the phase-2 machinery §18 points it at.
+
+The objection to building early — that nothing exercises the grouping while
+the corpus yields one abstention reason — is already answered by the half that
+is done. `crates/measure_core/tests/pipeline.rs` asserts both digest keys fall
+out of an *exact* string group-by, so the harness half can be built and tested
+against synthetic records today and meet real ones later without its shape
+being a guess.
+
+The alternative's cost is the one the section names by itself: a tuning
+campaign that finds the digest missing reads raw JSONL by hand — "random
+twenty of them is an anecdote" — or writes its own grouping, forking the
+measurement in the way the loop prompt says nothing downstream can detect.
+That cost lands on a campaign with no way to escalate out of it mid-tuning,
+which is the worst place to put it.
 
 ## Provisional choice in force
 
