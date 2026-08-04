@@ -1484,6 +1484,77 @@ fn the_digests_precision_key_separates_every_way_an_answer_can_be_wrong() {
     }
 }
 
+/// Two claims about a corpus of more than one repository, which every other
+/// fixture here has exactly one of.
+///
+/// **The order is the repository name's**, not the directory walk's. §7 makes
+/// the printed table and the records file byte-identical across runs, and a
+/// corpus of ten repositories is where that stops being free: `read_dir` order
+/// is the filesystem's, it is not the same on two machines, and it is stable
+/// enough on one that a determinism assertion would not notice. So what is
+/// held is the order itself rather than two runs agreeing.
+///
+/// **`--repo` restricts the run**, which nothing exercised: the flag-set test
+/// pins that it exists and §7's usage line is where it comes from, but a flag
+/// that parsed and did nothing would pass both. It is also how a tuning loop
+/// runs one repository without re-reading the other nine.
+#[test]
+fn repositories_are_replayed_in_name_order_and_only_the_ones_named() {
+    let corpus = fixture("two_repositories");
+    // Sorts before `one`, and is created second — so a run that took the walk
+    // order would be likely to put it last.
+    let alpha = add_repository(&corpus, "alpha");
+    enumerate(&corpus);
+    write_truth(&corpus);
+    write_truth_headed_for(
+        &corpus,
+        "oracle",
+        "alpha",
+        &header_of("alpha", "rust", "oracle", &alpha, true),
+    );
+
+    let both = corpus.scratch.join("both.jsonl");
+    replay(&corpus, Some(&both));
+    let text = fs::read_to_string(&both).expect("replay wrote the records file");
+
+    let first_one = text
+        .lines()
+        .position(|line| line.contains("/repos/one/"))
+        .expect("the corpus's first repository was replayed");
+    let last_alpha = text
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| line.contains("/repos/alpha/"))
+        .map(|(at, _)| at)
+        .last()
+        .expect("the corpus's second repository was replayed");
+    assert!(
+        last_alpha < first_one,
+        "the records file interleaves the repositories or orders them by the \
+         walk. §7 makes replay byte-identical across runs, and `alpha` before \
+         `one` is the only order a name sort can produce — a directory order \
+         is the filesystem's and differs between two checkouts of one corpus"
+    );
+
+    let only = corpus.scratch.join("only.jsonl");
+    replay_repositories(&TestHandler, &corpus, &["one"], Some(&only));
+    let restricted = fs::read_to_string(&only).expect("replay wrote the records file");
+
+    assert!(
+        !restricted.contains("/repos/alpha/"),
+        "`--repo one` measured `alpha` as well. The flag is what runs one \
+         repository of ten, and one that parsed and selected nothing would pass \
+         every other test here"
+    );
+    assert_eq!(
+        restricted.lines().count(),
+        text.lines().count() - restricted.lines().count(),
+        "`--repo one` did not replay the whole of `one`: the two repositories \
+         hold the same source, so half of the unrestricted run is the whole of \
+         the restricted one"
+    );
+}
+
 /// The last thing §7's failure digest is made of, after the two keys: "Each
 /// group carries its count, its share of that stratum, and only then a **small
 /// seeded sample** of concrete cases — repository, file, line, the identifier,
@@ -1819,10 +1890,23 @@ fn fixture(name: &str) -> Fixture {
     let scratch = root.join("scratch");
     fs::create_dir_all(&scratch).expect("the scratch directory");
 
-    git(&repository, &["init", "--quiet"]);
-    git(&repository, &["add", "."]);
+    let commit = commit_fixture(&repository);
+
+    Fixture {
+        root,
+        split,
+        scratch,
+        commit,
+    }
+}
+
+/// One checkout, committed and clean, which is what `verify_checkout` requires
+/// of every repository in a split.
+fn commit_fixture(repository: &Path) -> String {
+    git(repository, &["init", "--quiet"]);
+    git(repository, &["add", "."]);
     git(
-        &repository,
+        repository,
         &[
             "-c",
             "user.name=fixture",
@@ -1834,14 +1918,19 @@ fn fixture(name: &str) -> Fixture {
             "fixture",
         ],
     );
-    let commit = git(&repository, &["rev-parse", "HEAD"]).trim().to_owned();
+    git(repository, &["rev-parse", "HEAD"]).trim().to_owned()
+}
 
-    Fixture {
-        root,
-        split,
-        scratch,
-        commit,
-    }
+/// A second repository in the same split, at a commit of its own.
+///
+/// Returned rather than stored, because what a truth file's header has to
+/// carry is *this* repository's commit — the corpus is several checkouts and
+/// the header describes one of them.
+fn add_repository(corpus: &Fixture, name: &str) -> String {
+    let repository = corpus.split.join("rust").join("repos").join(name);
+    fs::create_dir_all(repository.join("src")).expect("a second fixture repository");
+    fs::write(repository.join("src").join("lib.rs"), SOURCE).expect("the fixture source");
+    commit_fixture(&repository)
 }
 
 /// A limit well above what the fixture holds, so the sample is every position
@@ -1865,12 +1954,16 @@ fn enumerate_with(corpus: &Fixture, limit: &str, seed: &str) {
 }
 
 fn positions_of(corpus: &Fixture) -> String {
+    positions_of_repository(corpus, "one")
+}
+
+fn positions_of_repository(corpus: &Fixture, repository: &str) -> String {
     fs::read_to_string(
         corpus
             .split
             .join("rust")
             .join("positions")
-            .join("one.jsonl"),
+            .join(format!("{repository}.jsonl")),
     )
     .expect("enumerate wrote positions")
 }
@@ -1884,6 +1977,17 @@ fn replay(corpus: &Fixture, records: Option<&Path>) {
 /// `&dyn LanguageHandler` and depends on no language, so what a replay does
 /// with what a handler reports has to be assertable against any handler.
 fn replay_with(handler: &dyn LanguageHandler, corpus: &Fixture, records: Option<&Path>) {
+    replay_repositories(handler, corpus, &[], records);
+}
+
+/// `[--repo <name>]...`, which is the flag that decides which of a split's
+/// repositories a run reads at all. Empty is every one of them.
+fn replay_repositories(
+    handler: &dyn LanguageHandler,
+    corpus: &Fixture,
+    repositories: &[&str],
+    records: Option<&Path>,
+) {
     let mut arguments = vec![
         "replay".to_owned(),
         "--corpus".to_owned(),
@@ -1893,6 +1997,10 @@ fn replay_with(handler: &dyn LanguageHandler, corpus: &Fixture, records: Option<
         "--format".to_owned(),
         "json".to_owned(),
     ];
+    for repository in repositories {
+        arguments.push("--repo".to_owned());
+        arguments.push((*repository).to_owned());
+    }
     if let Some(path) = records {
         arguments.push("--records".to_owned());
         arguments.push(path.to_string_lossy().into_owned());
@@ -1950,12 +2058,16 @@ fn write_truth(corpus: &Fixture) {
 }
 
 fn truth_path(corpus: &Fixture, directory: &str) -> PathBuf {
+    truth_path_of(corpus, directory, "one")
+}
+
+fn truth_path_of(corpus: &Fixture, directory: &str, repository: &str) -> PathBuf {
     corpus
         .split
         .join("rust")
         .join("truth")
         .join(directory)
-        .join("one.jsonl")
+        .join(format!("{repository}.jsonl"))
 }
 
 /// The header `write_truth_as` writes, as a value: what a resume of that
@@ -2111,14 +2223,14 @@ fn header_of(
 }
 
 fn write_truth_headed(corpus: &Fixture, directory: &str, header: &str) {
-    let positions = fs::read_to_string(
-        corpus
-            .split
-            .join("rust")
-            .join("positions")
-            .join("one.jsonl"),
-    )
-    .expect("enumerate ran first");
+    write_truth_headed_for(corpus, directory, "one", header);
+}
+
+/// The same for a named repository, which is what a corpus of several is: one
+/// positions file and one truth file each, and a header that describes that
+/// checkout rather than the split.
+fn write_truth_headed_for(corpus: &Fixture, directory: &str, repository: &str, header: &str) {
+    let positions = positions_of_repository(corpus, repository);
 
     let mut text = format!("{header}\n");
     for line in positions.lines() {
@@ -2130,7 +2242,7 @@ fn write_truth_headed(corpus: &Fixture, directory: &str, header: &str) {
         ));
     }
 
-    let path = truth_path(corpus, directory);
+    let path = truth_path_of(corpus, directory, repository);
     fs::create_dir_all(path.parent().expect("a truth directory")).expect("the truth directory");
     fs::write(path, text).expect("the truth file");
 }
