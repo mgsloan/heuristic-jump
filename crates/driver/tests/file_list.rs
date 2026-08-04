@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use driver::{Answer, DebounceMs, Dispatched, FileListCache};
+use driver::{Answer, Classified, DebounceMs, Dispatched, FileListCache};
 use shared::{
     AbstainReason, Clock, Confidence, Error, FileList, Generation, Outcome, ProjectError, Strata,
     Stratum, TestClock, Trace,
@@ -124,7 +124,7 @@ fn no_candidates_is_the_only_abstention_that_invalidates_the_list() {
         abstention(AbstainReason::External {
             name: "std::vec::Vec".into(),
         }),
-        Dispatched::DeadlineExpired,
+        Dispatched::DeadlineExpired(Classified::Nothing),
         Dispatched::Failed(Error::Project(ProjectError::NotUtf8 {
             path: root.join("notes.md"),
         })),

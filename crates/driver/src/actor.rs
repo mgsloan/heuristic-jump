@@ -40,7 +40,7 @@ use shared::proto::{
 use shared::record::{Answered, ChildAnswer, QueryContext, QueryRecord, definition_labels, micros};
 use shared::{
     Clock, CommitPolicy, Deadline, DocumentNotification, EditorRequestId, Error, InputEdit, Micros,
-    Outcome, Strata, Stratum, Trace,
+    Outcome, Trace,
 };
 
 use crate::config::{Config, DebounceMs, Heuristics};
@@ -589,15 +589,16 @@ impl Actor {
                 }
                 Answered::of(Ok(outcome))
             }
-            // The outcome was dropped by the hard cap, and with it the stratum
-            // the handler had assigned — so this row lands in `unimplemented`
-            // rather than in the stratum it was really asked about, and §7's
-            // coverage denominator moves by one query. The alternatives both
-            // change something else's shape.
-            // DECISION-core-017: provisional
-            Dispatched::DeadlineExpired => Answered::of(Ok(Outcome::Abstain {
+            // The outcome was dropped, by the hard cap or by an expiry during
+            // the conversion. The stratum it was asked under was not dropped
+            // with it: `core-017` settles that the prior's rule "reads only the
+            // query and the reference and never what the search found", so it
+            // "was never the outcome's to carry away" — which is what keeps
+            // §7's coverage denominator from moving by one query every time a
+            // deadline expires.
+            Dispatched::DeadlineExpired(classified) => Answered::of(Ok(Outcome::Abstain {
                 reason: shared::AbstainReason::Deadline,
-                strata: Strata::from_reference(Stratum::Unimplemented),
+                strata: classified.strata(),
                 trace: Trace::new(),
             })),
             // Served as an abstention on the wire — which here means silence —

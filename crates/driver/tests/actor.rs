@@ -271,6 +271,102 @@ fn an_abstention_is_recorded_with_its_reason_in_the_stages() {
     );
 }
 
+/// `core.md` §1: `Stratum::Unimplemented` is the unmodified template's, no real
+/// handler may return it, and "its presence in a metrics table means the
+/// template has not been replaced".
+///
+/// The hard cap is what made that false. §5 drops an answer that arrives after
+/// its deadline, and the driver then had no stratum to record the row under, so
+/// it synthesised the template's — which means a *real* handler that misses its
+/// deadline writes an `unimplemented` **abstention**, and that is exactly the
+/// counter `measure_core`'s `Table::template` reads as an unreplaced template.
+/// `core-017` settles that nothing had to be synthesised: the prior's rule reads
+/// only the query and the reference, so it "was never the outcome's to carry
+/// away".
+///
+/// The two halves are asserted together because either alone passes on a
+/// mistake: a row under the right stratum that was never capped is just a
+/// commit, and a capped row under `unimplemented` is the bug.
+#[test]
+fn a_hard_capped_answer_keeps_the_stratum_the_handler_assigned() {
+    let fixture = Fixture::new("actor_hard_cap", Proxying::No);
+    // In the queried document, so §8.4's conversion needs no second read: a
+    // read is what would expire *before* the cap, and this test is about the
+    // cap.
+    let target = fixture.definition_in("src/lib.rs");
+    let mut actor = fixture.actor(Arc::new(Slow {
+        clock: Arc::clone(&fixture.clock),
+        locations: vec![target],
+    }));
+
+    fixture.open(&mut actor);
+    fixture.request(&mut actor, 1);
+
+    let rows = fixture.rows();
+    let [row] = rows.as_slice() else {
+        panic!("{} rows for one capped query", rows.len());
+    };
+    assert_eq!(
+        field(row, "decision"),
+        "\"abstained\"",
+        "the late answer was not dropped, so the assertion below is not about the hard \
+         cap: {row}"
+    );
+    assert_eq!(
+        field(row, "stages"),
+        "[\"abstain:deadline\"]",
+        "a capped answer was recorded under some other abstention reason: {row}"
+    );
+    for column in ["stratum_prior", "stratum_final"] {
+        assert_eq!(
+            field(row, column),
+            "\"explicitly_imported\"",
+            "{column} is the template's stratum for a query a real handler classified, so \
+             `Table::template` reads this row as an unreplaced template and §7's coverage \
+             denominator lost a query from the class it was really asked about: {row}"
+        );
+    }
+    assert!(
+        fixture.outbound().is_empty(),
+        "the capped answer reached the editor, which is the whole of what §5's hard cap \
+         exists to prevent"
+    );
+}
+
+/// The same claim on the other path that discards an answer, which is the one
+/// easy to miss: §8.4's conversion reads the target file, and `ProjectView`
+/// fails a read whose deadline has already expired — so a handler that answers
+/// late with a definition in *another* file never reaches the hard cap at all.
+/// It surfaces as `HandlerError::DeadlineExpired` from inside the conversion,
+/// where the outcome has already been consumed.
+///
+/// The only difference from the test above is which file the definition is in.
+#[test]
+fn a_conversion_that_expires_keeps_the_stratum_too() {
+    let fixture = Fixture::new("actor_expired_conversion", Proxying::No);
+    let target = fixture.definition_in("src/target.rs");
+    let mut actor = fixture.actor(Arc::new(Slow {
+        clock: Arc::clone(&fixture.clock),
+        locations: vec![target],
+    }));
+
+    fixture.open(&mut actor);
+    fixture.request(&mut actor, 1);
+
+    let rows = fixture.rows();
+    let [row] = rows.as_slice() else {
+        panic!("{} rows for one expired query", rows.len());
+    };
+    assert_eq!(field(row, "decision"), "\"abstained\"", "{row}");
+    assert_eq!(
+        field(row, "stratum_prior"),
+        "\"explicitly_imported\"",
+        "the classification a handler had already made was lost because the query ended \
+         downstream of it rather than at the cap, which is the same query counted under the \
+         template's stratum by a different route: {row}"
+    );
+}
+
 /// `core.md` §2: "text and tree can never disagree", which the parse cache is
 /// the one thing that can break — and `core.md` §8.6 makes `didOpen` a resync
 /// rather than a continuation, so the document behind a URI can be replaced by
@@ -974,6 +1070,47 @@ impl LanguageHandler for Declining {
             strata: Strata::from_reference(Stratum::LocalBinding),
             trace: Trace::new(),
         })
+    }
+}
+
+/// A handler that answers, and takes longer than its deadline doing it — which
+/// is the one thing `Committing` cannot be made to do, since a handler that
+/// respects its budget is never hard-capped.
+///
+/// It moves the clock rather than sleeping: `core.md` §10's whole reason for an
+/// injected clock is that a test which waits for a real 750ms is a test that
+/// fails on a loaded machine and is deleted.
+struct Slow {
+    clock: Arc<TestClock>,
+    locations: Vec<Location>,
+}
+
+impl LanguageHandler for Slow {
+    fn language_ids(&self) -> &'static [LanguageId] {
+        LANGUAGE_IDS
+    }
+
+    fn file_extensions(&self) -> &'static [FileExtension] {
+        FILE_EXTENSIONS
+    }
+
+    fn grammar(&self) -> Language {
+        grammar()
+    }
+
+    fn goto_definition(&self, query: &Query<'_>) -> Result<Outcome, Error> {
+        // Past the 750ms the fixture names, so what this returns is already
+        // late by the time it returns it.
+        self.clock.advance(Duration::from_millis(1_000));
+        // Not `LocalBinding`: every other double here reports that one, and a
+        // stratum that survives the cap has to be distinguishable from the one
+        // a mistake would most likely leave behind.
+        Ok(query.policy.decide(
+            Strata::from_reference(Stratum::ExplicitImport),
+            Confidence::ONE,
+            self.locations.clone(),
+            Trace::new(),
+        ))
     }
 }
 

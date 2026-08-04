@@ -421,6 +421,72 @@ fn the_unimplemented_stratum_identifies_the_template_and_not_a_broken_handler() 
     }
 }
 
+/// The counter above, read from the other side: what it costs that
+/// `Stratum::Unimplemented` is also where the driver files a query **nothing
+/// classified**.
+///
+/// `core-022` is open on that, and this is its consequence made executable
+/// rather than described. The driver's provisional choice writes exactly this
+/// row — an `AbstainReason::Deadline` under the template's stratum — whenever a
+/// parse is abandoned on the deadline or a read expires before the handler
+/// assigned a class, and the table cannot tell it from an unreplaced template.
+/// Under load a real handler produces it.
+///
+/// **This asserts the provisional, and is meant to fail when core-022 is
+/// answered.** Whichever way the answer goes — a seam method that supplies the
+/// prior, a nullable `stratum_prior`, or a narrower template check — this row
+/// stops reading `unreplaced`, and the test that has to change is the one
+/// holding the reason it changed.
+#[test]
+fn the_template_check_reads_an_abstention_no_handler_classified() {
+    let corpus = fixture("unclassified_deadline");
+    enumerate(&corpus);
+    write_truth(&corpus);
+
+    let report = measure_core::replay_table(
+        &UnclassifiedHandler,
+        &shared::SystemClock,
+        &replay_arguments(&corpus, measure_core::Format::Json),
+    )
+    .expect("replay");
+
+    assert!(
+        report.contains("\"template\": \"unreplaced\""),
+        "core-022's provisional stopped reaching the table, which is the answer landing \
+         rather than a test going stale: read the decision record before changing this \
+         assertion.\n{report}"
+    );
+}
+
+/// A handler that is not the template and reports the template's stratum,
+/// because its query ran out of time before anything classified it. See
+/// [`the_template_check_reads_an_abstention_no_handler_classified`].
+struct UnclassifiedHandler;
+
+impl LanguageHandler for UnclassifiedHandler {
+    fn language_ids(&self) -> &'static [LanguageId] {
+        const IDS: &[LanguageId] = &[LanguageId::new("rust")];
+        IDS
+    }
+
+    fn file_extensions(&self) -> &'static [FileExtension] {
+        const EXTENSIONS: &[FileExtension] = &[FileExtension::new("rs")];
+        EXTENSIONS
+    }
+
+    fn grammar(&self) -> Language {
+        tree_sitter_rust::LANGUAGE.into()
+    }
+
+    fn goto_definition(&self, _query: &Query<'_>) -> Result<Outcome, Error> {
+        Ok(Outcome::Abstain {
+            reason: AbstainReason::Deadline,
+            strata: Strata::from_reference(Stratum::Unimplemented),
+            trace: Trace::new(),
+        })
+    }
+}
+
 #[test]
 fn a_replay_row_carries_section_7s_field_set_in_section_7s_order() {
     let corpus = fixture("field_set");

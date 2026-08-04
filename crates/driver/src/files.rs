@@ -174,7 +174,7 @@ impl FileListCache {
             // rescanning would spend I/O in the window that just proved short
             // of it. Identical to `AbstainReason::Deadline`, which is what
             // this became on the way out.
-            Dispatched::DeadlineExpired => return,
+            Dispatched::DeadlineExpired(_) => return,
             // A failure is evidence about the handler.
             Dispatched::Failed(_) => return,
         };
