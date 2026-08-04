@@ -2285,6 +2285,18 @@ fn the_records_and_the_table_are_the_same_run_counted_twice() {
                         settled_of(line) == stratum && agreement_of(line) == "mismatch"
                     }),
                 ),
+                // Not a tally of rows but a sum over them, because this counter
+                // is the one thing in the table that is not a count of queries:
+                // §"both sides are sets" reports containment beside the result
+                // count, and a result count the records file cannot reproduce
+                // is the number that says a containment was not gamed, taken on
+                // trust.
+                (
+                    "locations",
+                    returned(&text, |line| {
+                        settled_of(line) == stratum && !agreement_of(line).is_empty()
+                    }),
+                ),
             ] {
                 assert_eq!(
                     counted,
@@ -3423,6 +3435,19 @@ fn mean(part: u64, whole: u64) -> String {
         return "0.0".to_owned();
     }
     format!("{:.1}", part as f64 / whole as f64)
+}
+
+/// How many locations the picked rows returned, from §7's `returned` column —
+/// the record's own account of the size of each ranked list.
+fn returned(text: &str, wanted: impl Fn(&str) -> bool) -> u64 {
+    text.lines()
+        .filter(|line| wanted(line))
+        .map(|line| {
+            between(line, "\"returned\":", ",")
+                .parse::<u64>()
+                .expect("a record's returned count")
+        })
+        .sum()
 }
 
 fn tally(text: &str, wanted: impl Fn(&str) -> bool) -> u64 {
