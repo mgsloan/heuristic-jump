@@ -384,3 +384,101 @@ editor other than Emacs, any server-originated request beyond
 modelled), and a `didSave` without text off a real editor. None of those is
 worth a campaign on its own; they are lines to append when somebody is in
 here anyway.
+
+## Campaign 5cc94daa — four stale gaps, one real one, and two claimed extensions
+
+Assignment was five manifest/scan gaps. Four were already closed; the campaign
+is really `deps.md#14`'s cargo-deny item plus two extensions claimed after.
+Three commits: `2667d0f`, `a53fe15`, `b114f12`.
+
+### The staleness check now has a second axis: the merge
+
+`core-019`'s rule is "compare `last_audited` against `git log -1 -- <where>`".
+That is necessary and it was not sufficient here. The four stale gaps were
+closed by **`77c3c72`, a merge of `loop/core-2`**, and a merge moves every file
+it brings across at once — so `git log -1` on `seam.rs` and on `deps.md` both
+pointed at the same merge commit and said nothing about which claims it
+carried. What settled it in one turn was
+`git show <audited-commit>:crates/driver/tests/seam.rs | grep -c 'fn <name>'`
+for each candidate test name: two of four existed at the audited commit, two
+did not, and that told me exactly which gaps the merge closed. **Ask what the
+audited commit contained, not when the file last moved.**
+
+### `deny.toml` is writable by nobody, and cargo-deny is not installed
+
+Both measured, both in `core-021`. The check §14 asks for is over the
+*resolved graph*, and every licensing test in `seam.rs` reads workspace
+manifests — a third-party crate's manifest is in the registry cache and no
+scan over `crates/*` and `vendor/*` will ever see it. `cargo metadata
+--format-version 1 --offline` carries `license` for all ~180 packages, runs in
+0.1s, and needs no network. That is the mechanism, and it generalises: **the
+lockfile is a fixture this suite had never read.**
+
+Two clippy bans have to be `#[expect]`-ed to use it — `serde_json::Value`
+(disallowed_types) and `Command::output` (disallowed_methods). `pipeline.rs`
+had already established the house form for the second.
+
+### Approaches considered and not taken
+
+* **The same graph check for `deps.md` §13's declined list.** It looked like
+  the identical blind spot and it is not. `once_cell`, `lazy_static`, `memchr`
+  and `aho-corasick` are all in `Cargo.lock` transitively — `memchr` through
+  `ignore`, which §13 itself names as the crate we get file enumeration from.
+  §13 is a rule about what *we declare*, and the existing manifest scan is
+  correctly scoped. A graph-level version would fail on day one and the only
+  way to make it pass would be an exception list that says nothing.
+* **`[workspace.metadata.deny]` instead of `deny.toml`.** `Cargo.toml` is
+  owned, so it would have passed the scope gate. Not done: cargo-deny reads
+  `deny.toml` or `--config`, and I could not verify offline that it reads
+  workspace metadata at all. A config in a shape the tool ignores is worse
+  than none — it satisfies an auditor and checks nothing.
+* **`tracing-subscriber` as a `driver` dev-dependency**, to assert the inbox
+  depth log line. `seam.rs`'s
+  `our_log_lines_are_distinguishable_and_the_subscriber_is_installed_once`
+  asserts the set of manifests naming it, in both directions, with the table
+  values `[dependencies]`-shaped — so a dev-dependency fails it. Rather than
+  loosen somebody else's argued assertion, the test hand-rolls a
+  `tracing::Subscriber` (~45 lines) and carries the captured field out over a
+  `crossbeam_channel::Sender`, not a `Mutex`. `Subscriber::event` takes `&self`
+  and must be `Sync`, which is exactly the shape that asks for a lock.
+* **A depth log line per event.** §2 says "log and watch". A line every time
+  round the loop has to sit at `trace` to be tolerable, and nobody watches
+  `trace`. The high-water mark is silent for a shim that keeps up and writes
+  one `debug` line per new worst case.
+
+### The bug the test found, which reading did not
+
+`core.md#the-trait`'s gap is that the driver synthesises
+`Stratum::Unimplemented` for a hard-capped answer. I implemented exactly that —
+`Dispatched::DeadlineExpired(LateStrata)`, strata read off the outcome in
+`hard_cap` — and the test still reported `"unimplemented"`.
+
+The reason is that the answer never reached `hard_cap`. `dispatch` does
+`call(...).and_then(|outcome| encode(outcome, ...))`, and `encode` **reads the
+target file** to convert byte offsets to the wire encoding; `ProjectView`
+refuses a read whose deadline has expired, so a late answer whose definition is
+in another file fails in `encode` and is classified as an expiry with nothing
+known. That is the *common* case — a cross-file definition is what
+go-to-definition is usually for — and fixing only the cap would have left it
+untouched while the test for the cap passed.
+
+Generalise: **`hard_cap` is not the only place a late answer dies.** Anything
+between the handler returning and the answer being handed back can hit the
+same expired deadline, because the deadline is absolute. `classify_late` takes
+what the caller still knows, and the two callers differ on exactly that.
+
+The fixture that exposed it: `definition_in("src/target.rs")` versus
+`definition_in("src/lib.rs")`. Same-file targets take `target_text`'s free path
+(`uri == query.doc.uri`, clone the rope) and never read. A test that used only
+a same-file target would have passed against the half-fix.
+
+### What is left of core-017
+
+`core-024`, and it is smaller. The paths where *nothing* classified anything —
+a parse abandoned in `realise`, a handler propagating a refused read before it
+classified — still write `unimplemented`, because `LanguageHandler` has one
+method and there is no way to ask for a prior without asking for a resolution.
+core-017's answer says such a query "still has a prior, because the reference
+and the query are all its rule needs", which is true of the rule and
+unavailable to the driver. Both ways out are Class B (a seam method, or a
+nullable `stratum_prior`), so it is escalated rather than guessed.

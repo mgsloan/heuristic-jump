@@ -1,64 +1,92 @@
 # Findings — core, worker 1
 
-## Check the gap against the code before working it
+## Staleness: ask what the audited commit *contained*, not when the file moved
 
-Fourth campaign running into this. `state/audit/core.toml` carries
-`last_audited` per section in UTC; `git log --date=iso-strict` on the file the
-gap names is local (-06:00). One comparison, one turn. This round
-`core.md#vocabulary-types[fbe658c158]` turned out to be closed by `9e581f7`
-**four minutes after** its stamp, and §8.3's "nothing settles a
-`PositionEncoding`" minor was closed by `measure_core::client::settled_encoding`
-after it. The gap text is a statement about the repository at a timestamp. The
-*section* is still the right target; what a re-audit finds instead is usually
-real and is never in the list.
+`core-019`'s rule (compare `last_audited` against `git log -1 -- <where>`) is
+necessary and no longer sufficient. Four of my five assigned gaps were closed
+by a **merge** of another loop's branch, and a merge stamps every file it
+carries with one date, so `git log -1` said "changed" for all of them and
+discriminated nothing. One turn settles it instead:
 
-## The machine has the language servers on it. Check `which` before calling a gap blocked
+    git show <found_at>:<file> | grep -c 'fn <the test name>'
 
-§8.5's captured-corpus gap read as aspirational for many campaigns and was
-not. `rust-analyzer` (`~/.cargo/bin`), `gopls` (`go install`, the network
-works), `pyright` (`npx --yes pyright@latest` — the npm package is `pyright`,
-the binary is `pyright-langserver --stdio`), and `emacs` 30.2 with built-in
-eglot, which is the only headless LSP *client* here. `zed` exists but
-`DISPLAY=:0` is the user's real Xorg session and there is no Xvfb, so driving
-it would put a window on somebody's screen. Generalise the habit, not the
-list.
+Two of four test names existed at the audited commit; two did not, and that is
+exactly which gaps the merge closed. Fifth campaign in a row spending opening
+turns on staleness — but the shape has changed, so the old check alone will not
+save the next one.
 
 ## Where the gaps are concentrated
 
-**In `driver`, and they are one campaign rather than five.** §5's deadline,
-§7's emission, `both-sides-are-sets`' pending-query record and `deps.md §11`'s
-`--trace` all say the same thing: `driver::run` logs its config and returns.
-Everything downstream of a request arriving is missing. Do not take them one
-at a time. This has been true for several campaigns and nobody has taken it.
+**`driver` is no longer "there is no run loop".** Older findings say
+`driver::run` logs its config and returns, and that is out of date: `Actor`
+exists, `Actor::run` has the `select!` loop, §7's records are emitted through
+`trace.rs`, and `driver/tests/actor.rs` drives it end to end. What is absent is
+the **transport** — §2's codec, §3's router, the child spawn — which
+`actor.rs`'s header says is deliberate and lives in a document this phase does
+not audit. A campaign that "builds the run loop" is building the transport;
+say so in the hypothesis.
 
-`measure_core`'s one hole is that **nothing can drive `collect`**:
-`Collection::run` spawns a server and the suite has none, so `--restart`, the
-probe loop and the resume arithmetic are held by reading. Note the tension
-with the finding above — a *real* server is now known to be available, so the
-fixture server may not be the answer.
+`measure_core`'s hole is unchanged: nothing can drive `collect`, because
+`Collection::run` spawns a server and the suite has none. A real
+`rust-analyzer` is on this machine, so a fixture server may not be the answer.
 
-**§8 is done.** Both halves of the corpus are captured (48 messages, 23 of
-them captured, every kind in both directions), the unions are exercised by
-traffic nobody here composed, and §8.2/8.3/8.6's documents now say what the
-code does. Nothing cheap is left in `proto.rs`.
+**§8 and `vendor/` are done.** `deps.md` is done except §15, which no loop may
+close (`clippy.toml` denied; `core-003` holds the thresholds).
+
+## The lockfile is a fixture nothing had read
+
+Every licensing and dependency check in `seam.rs` reads workspace manifests, so
+none of them can see a third-party crate — its manifest is in the registry
+cache, not this repository. `cargo metadata --format-version 1 --offline`
+carries `license` for all ~180 packages in 0.1s with no network, and now holds
+§14's cargo-deny claim (`core-021` provisional: `deny.toml` is writable by no
+loop, and cargo-deny is not installed, so a config would be a file nothing
+runs). Two `#[expect]`s are needed: `serde_json::Value` and `Command::output`.
+
+**Do not extend this to §13's declined list.** `once_cell`, `lazy_static`,
+`memchr` and `aho-corasick` are all in the graph transitively — `memchr`
+through `ignore`, which §13 itself names — and §13 is a rule about what *we
+declare*. The manifest scan is correctly scoped.
+
+## A late answer dies in more than one place
+
+`core.md#the-trait`'s fix looked like one line in `hard_cap` and was not. The
+deadline is absolute, so anything between the handler returning and the answer
+being handed back can hit it: `encode` reads the target file to convert the
+answer, and `ProjectView` refuses an expired read — so a **cross-file** late
+answer never reaches the cap. That is the common case, and only the test found
+it, because the fixture's target was in another file. A same-file target takes
+`target_text`'s free path and never reads, so it would have passed the
+half-fix. When a rule is about what survives the deadline, enumerate the paths
+and pick fixtures that differ in whether they touch the filesystem.
 
 ## Load-bearing claims, confirmed by using them
 
+* **§6 compares `(uri, line)` and reads nothing** — this is why
+  `WirePosition::line()` must exist against §8.3's "no accessors"
+  (CHANGE-core-007). When §8.3 and §6 disagree, §6 wins: it is the measurement.
+* **§7's prior is about the *rule*, not the evaluator.** That is what makes
+  `core-017` implementable without touching the seam, and it generalises: a
+  fact about the reference outlives the outcome that reported it.
 * **§8.2 gives the wire types no `Serialize`** — it decides the truth row's
-  shape (CHANGE-core-006) and vetoes any write-out-and-read-back design.
-* **§6 compares `(uri, line)` and reads nothing.** This is what forced
-  CHANGE-core-007: it makes `WirePosition::line()` mandatory against §8.3's
-  "no accessors". When §8.3 and §6 disagree, §6 wins — it is the measurement.
-* **§7's record field order is the declaration order**, asserted against the
-  document. Adding a field is a seam change, not a convenience.
+  shape and vetoes any write-out-and-read-back design.
 
 ## Do not spend time on
 
-* `harness/measure` (`core-001`) and where the capture tooling lives
-  (`core-020`) — both open, both need a human, `harness/` is denied.
-* A `PositionEncoding::settle` in `shared`: `measure_core` has one already.
-* Making "handlers cannot build a `WireLocation`" type-level: the variants are
-  public unit variants, so it needs a newtype only the driver can build —
-  Class B, for no gain. `driver/tests/seam.rs` already holds the property.
-* `positions/<repo>.jsonl` carries the token text, so §7's failure-digest
-  sample is a join and not a second definition of "identifier".
+* `harness/measure` (`core-001`), the capture tooling's home (`core-020`),
+  `clippy.toml`'s thresholds (`core-003`) — all need a human, `harness/` denied.
+* A `PositionEncoding::settle` in `shared`: `measure_core` has one.
+* `deps.md#8-parse-cache[ffcd948852]` — stale. `lru` is declared and
+  `TreeCache` is keyed `(uri, version)` with a byte ceiling.
+* Adding `tracing-subscriber` to `driver` to assert a log line: the seam test
+  pins the manifest set in both directions. Hand-roll a `tracing::Subscriber`
+  (~45 lines) and carry the field out over a channel, not a `Mutex`.
+* Making "handlers cannot build a `WireLocation`" type-level — Class B, no
+  gain; `driver/tests/seam.rs` already holds the property.
+
+## The machine has the language servers on it
+
+`rust-analyzer`, `gopls`, `pyright` (`npx --yes pyright@latest`, binary
+`pyright-langserver --stdio`), `emacs` 30.2 with eglot — the only headless LSP
+*client* here. `zed` exists but `DISPLAY=:0` is a real session. Check `which`
+before calling a gap blocked.
