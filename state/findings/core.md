@@ -1,59 +1,58 @@
-# Findings — core, after e797a506
+# Findings — core, after 7aa74ea9
 
-**Check the gap list against `git log` before believing it.** All four gaps in
-this round's assignment were already closed, with tests, by `ff3e1a40`'s
-follow-on commits — which landed hours *after* the audit stamped those
-sections. Two commands: per-section `last_audited` in `state/audit/core.toml`
-(UTC) against `git log -- crates/<crate>/` (−06:00).
+**Verify a gap against the code before working it; the audit lags.** Two of my
+four gaps' `found:` lines were stale — `pending.rs` existed and was complete.
+One `grep` settles it.
 
-**When the gaps are stale, do not close — read the sections instead of the
-list.** Verifying produces nothing; the sections go clean at the next audit
-either way. Reading §7's five measure sections found ten claims with no test
-and one with no implementation.
+**`driver` now has a request path.** `crates/driver/src/actor.rs` is `shim.md`
+§13's actor: it owns `Documents`, `TreeCache`, `FileListCache`,
+`PendingQueries` and the trace sink, mints §5's deadline from the `arrived`
+instant the event carries, and takes §7's four steps in order. `driver::run`
+builds one and runs it. **What is missing is only the wire** — `shim.md` §2's
+codec, §3's router, the child spawn. The seam for it is
+`Actor::run(&Receiver<Event>)` plus `Sender<Outbound>`; nothing in the actor
+knows about framing. Do not start with standalone stdio as the cheaper half:
+it has no oracle, so neither divergence nor the record's oracle half is
+exercised by it.
 
-**A claim can be satisfied at the call site and still be false end to end.**
-§7's "`measure replay` reports its own wall clock" had the `tracing::info!`
-right there — and no subscriber behind it, because a `measure_<lang>` main is
-four lines and `heuristic_jump::main` is where the subscriber lived. Every
-`info!`/`warn!` in `measure_core` went nowhere. When a section says the tool
-*reports* something, follow the value to a file descriptor.
+**§7's record type is `shared::record` now.** It had to move — §9's graph
+forbids `driver -> measure_core`. `Answered::of` is the one place a dispatch's
+three endings become `decision`/`failure`/`stages`, and both producers call it;
+a second copy of that match is how a replay row and a field row stop being
+comparable.
 
-**Hold an absence as a closed set.** "There is no `--held-out` flag, and there
-must not be" is unassertable by naming it — any *other* new flag passes. §7's
-usage block parses out of `design/core.md` and compares to `clap`'s flag set
-per subcommand, so editing either side fails. Parsing the design document as
-the fixture is still the only shape where faking progress by moving the spec
-fails.
+**§7 will not go clean on my gap alone.** `[c4505d900b]`, the stratum columns
+and the handler-reported half, is the other one, and cheap now that the
+assembly is in one file.
 
-**Run the control, and check it fails for the right reason.** One of mine first
-failed on a log file that was never created rather than on the assertion that
-says what is missing. Another could not be controlled from the implementation
-at all — the corpus's identifier rule and the handler's *are* one function, so
-breaking it moves both sides; the control has to be in the fixture.
+**The highest-value next build is the edit log.** `Documents::changed` consumes
+the content changes, so `core` has no edits for `TreeCache::seed` and the actor
+`forget`s a document's trees on every change. Correct, but incremental reparse
+is unreachable in production. The fix is `Believed` carrying its own log, keyed
+so `seed` takes the edits since the *cached* version. Do not deserialize the
+params a second time to get them: §8.6 puts the projection inside `Documents`.
+Related trap: the cache key is `(uri, version)` and versions are monotone only
+within one open, so every resync must `forget`.
 
-**Where a handler is `&self`, its `Trace` is the observation channel** for what
-it was handed. No interior mutability, no lock, and the labels come back in the
-record.
+**Do not spend time on.** `#9-workspace-layout` can never close — it names
+`lang_python` and `lang_typescript`, outside every owned path. `#85`'s corpus
+needs pyright and gopls; only rust-analyzer is on `PATH`. `server_health` being
+null on every row is `shim.md` §6's missing health model, not a hole in the
+record. `Deadline::cancel` has no caller because dispatch is in-line — a cancel
+is only ever handled between queries — and it belongs to the worker-pool
+campaign.
 
-**Still true.** `rope-modifications.md` is finished — do not re-read it. Two
-documents were satisfied but unheld; assume the third is too. The gate runs
-`rope` and `sum_tree` (`conformance-003`). Stage explicit paths, never
-`git add -A`.
+**`core-017` is open**: a deadline-expired row has no stratum, because
+`hard_cap` drops the outcome that knew it, and both repairs are Class B.
 
-**Known open, descending value:**
+**Instruments.** `driver/tests/seam.rs` is the `deps.md` conformance suite —
+manifest and source scans, `src/` only. `driver/tests/actor.rs` is the request
+path's. A control that cannot be made to fail is not a control: mutate the
+production line and watch which assertion moves. `serde_json::Value` is denied
+in tests too, so trace rows are asserted as text — §7 fixes the field order, so
+the text is the record.
 
-* **`collect` is undrivable from a test.** `Collection` is `pub(crate)`; the
-  only way in is `resolve_server`, reading the real `servers.toml`, which is
-  outside this loop's write list. Everything past the header — checkpointing,
-  resume, `wait_until_useful`, the four outcomes — is unheld. Needs a
-  write-list change or a public seam taking a `ServerEntry`.
-* **`harness/measure` does not exist** (`state/decisions/core-001.md`, open).
-  The digest half of §7 is denied to every loop, and the audit cannot see it —
-  every `where:` points into `crates/`.
-* **The instantiated template is held by a double.** `lang_rust` declares "no
-  tests, deliberately"; the only home is `crates/measure_rust/tests/`.
-* **The driver request path** (`#5-deadlines`, `#both-sides-are-sets`,
-  `#7-observability`'s emission) is phase 2b. Escalate the phase question
-  before building it.
-* **`#9-workspace-layout` can never close** — it names `lang_python` and
-  `lang_typescript`, outside every owned path.
+**Mechanics.** `cargo fmt -p <crate>` before the gate; step 1 is `--check`.
+Stage explicit paths, never `git add -A`. Loop: gate, commit,
+`harness/hj record core`. `allow-expect-in-tests` reaches only `#[test]`
+bodies, so every fixture helper needs the crate-level `#![expect(...)]`.
