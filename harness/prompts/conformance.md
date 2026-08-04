@@ -294,3 +294,23 @@ thin or wrong, fixing it is part of your own close.
 ## Sections named by the current gaps
 
 {{spliced_sections}}
+
+## Your journal, last entries
+
+`design/loops.md` §4 opens an iteration by reading this and the commit
+messages below, so they are spliced rather than fetched: finding them costs
+turns, and a campaign that skips them rediscovers a dead end that is already
+written down. Only the last entries are here — the whole file is
+`{{journal}}`, and the durable conclusions are supposed to be in your summary
+above rather than at the bottom of a log.
+
+{{journal_tail}}
+
+## The last commits
+
+Every loop's, not only yours, because a file you are about to open may have
+been rewritten by someone else this morning. The `harness:` commits the
+harness writes for itself are omitted; they carry no `loop:` trailer, which
+is how anything that counts tells them apart.
+
+{{recent_commits}}

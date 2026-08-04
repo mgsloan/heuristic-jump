@@ -703,6 +703,71 @@ def commit_paths(rev: str) -> list[str]:
     return sorted({p for p in raw.split("\0") if p})
 
 
+# What §4 puts in front of an iteration before it picks a target, and §15's
+# token lever puts last: "constitution, then prompt, then audit state, then the
+# journal tail and recent commits". Bounded, because both grow without limit
+# and the whole point is that a campaign does not spend turns retrieving them.
+JOURNAL_TAIL_ENTRIES = 2
+JOURNAL_TAIL_CHARS = 9000
+RECENT_COMMITS = 10
+
+JOURNAL_ENTRY = re.compile(r"^## ", re.MULTILINE)
+
+
+def journal_tail(text: str, entries: int = JOURNAL_TAIL_ENTRIES, chars: int = JOURNAL_TAIL_CHARS) -> str:
+    """The last few entries of a journal, oldest of them first.
+
+    Entries are `## ` headings — the shape every entry in `state/journal/` has
+    — and the character cap is the backstop for a file that has none, where
+    "the last two entries" would be the whole thing. Truncation takes the end
+    rather than the start: this is the tail on purpose.
+    """
+    starts = [match.start() for match in JOURNAL_ENTRY.finditer(text)]
+    tail = text[starts[-entries] :] if len(starts) >= entries else text
+    tail = tail.strip()
+    if len(tail) > chars:
+        tail = "...\n" + tail[-chars:]
+    return tail
+
+
+COMMIT_FIELD = "\x1f"
+COMMIT_RECORD = "\x1e"
+COMMIT_FORMAT = COMMIT_FIELD.join(
+    [
+        "%h",
+        "%s",
+        "%(trailers:key=loop,valueonly=true,separator=%x2c)",
+        "%(trailers:key=audit,valueonly=true,separator=%x2c)",
+        "%(trailers:key=tests,valueonly=true,separator=%x2c)",
+    ]
+) + COMMIT_RECORD
+
+
+def format_commit_lines(raw: str, limit: int = RECENT_COMMITS) -> list[str]:
+    """The last N commit messages, as §4 asks for them, minus the ones that
+    are not messages: `hj` writes a row and commits it after every experiment,
+    and those carry no `loop:` trailer precisely so that nothing which counts
+    can see them."""
+    lines: list[str] = []
+    for record in raw.split(COMMIT_RECORD):
+        record = record.strip("\n")
+        if not record:
+            continue
+        fields = record.split(COMMIT_FIELD)
+        if len(fields) < 5:
+            continue
+        sha, subject, owner, audit, tests = (field.strip() for field in fields[:5])
+        if not owner:
+            continue
+        lines.append(f"- `{sha}` [{owner}] {subject}")
+        detail = "; ".join(part for part in (audit, f"tests {tests}" if tests else "") if part)
+        if detail:
+            lines.append(f"      {detail}")
+        if sum(1 for line in lines if line.startswith("- ")) >= limit:
+            break
+    return lines
+
+
 def commits_for_campaign(campaign_id: str) -> list[str]:
     raw = git("log", "--format=%H", f"--grep=campaign: {campaign_id}", "HEAD")
     return [line for line in raw.splitlines() if line]
@@ -2160,6 +2225,15 @@ def prompt_values(
         if path.stem != config.owner:
             findings.append(f"### {path.stem}\n\n{path.read_text().strip()}")
 
+    # A worker writes its own journal and reads the loop's when it has none of
+    # its own yet: three workers each starting from an empty file would each
+    # rediscover what the loop already learned, which is the cost the journal
+    # exists to avoid.
+    worker_name = os.environ.get("HJ_WORKER") or config.owner
+    journal_path = STATE / "journal" / f"{worker_name}.md"
+    if not journal_path.exists():
+        journal_path = STATE / "journal" / f"{config.owner}.md"
+
     stalled = trailing_without_progress(config.owner)
     if stalled >= config.stall_n:
         stall_notice = (
@@ -2183,7 +2257,7 @@ def prompt_values(
         # Per worker, because append-only prose conflicts on every merge; the
         # findings digest below is deliberately shared and contended instead
         # (`design/loops.md` §13, "What is per worker and what is shared").
-        "journal": f"state/journal/{os.environ.get('HJ_WORKER') or config.owner}.md",
+        "journal": f"state/journal/{worker_name}.md",
         "owned_paths": "\n".join(f"- `{p}`" for p in config.write),
         "denied_paths": "\n".join(f"- `{p}`" for p in denied_paths(phase, config.owner)),
         # A loop that may write `harness/` must not be able to run its own
@@ -2238,6 +2312,17 @@ def prompt_values(
             else ""
         ),
         "other_findings": "\n\n".join(findings) or "(no other loop has published a digest)",
+        # The two most volatile things in the prompt, and they go last for that
+        # reason (§15's token lever orders it stable-to-volatile). §4 opens an
+        # iteration with "read `state/journal/<owner>.md` and the last N commit
+        # messages": a campaign that has to fetch them spends turns on
+        # retrieval, and the one that skips them rediscovers a dead end the
+        # journal already records.
+        "journal_tail": journal_tail(journal_path.read_text()) if journal_path.exists() else "(nothing yet — this is the first entry)",
+        "recent_commits": "\n".join(
+            format_commit_lines(git("log", f"-n{RECENT_COMMITS * 6}", f"--format={COMMIT_FORMAT}", check=False))
+        )
+        or "- (no loop commits yet)",
         "self_summary": (
             (STATE / "findings" / f"{config.owner}.md").read_text().strip()
             if (STATE / "findings" / f"{config.owner}.md").exists()
@@ -4006,6 +4091,32 @@ def selftest_cases() -> list[tuple[str, object]]:
         phase = Phase(phase="1a", loops={"core": _selftest_loop("core", None)})
         denied = denied_paths(phase, "core")
         assert matches_any("harness/hj", denied) and matches_any("harness/gate", denied)
+
+    def the_journal_tail_is_the_last_entries():
+        text = "# Journal\n\n## one\n\nfirst\n\n## two\n\nsecond\n\n## three\n\nthird\n"
+        assert journal_tail(text, entries=2) == "## two\n\nsecond\n\n## three\n\nthird"
+        assert journal_tail(text, entries=9).startswith("# Journal"), "fewer entries than asked is all of it"
+
+    def the_journal_tail_is_capped_at_the_end_not_the_start():
+        text = "## one\n" + "x" * 500
+        capped = journal_tail(text, entries=1, chars=100)
+        assert len(capped) <= 104 and capped.endswith("x"), "truncating the tail off defeats the point"
+
+    def only_commits_with_a_loop_trailer_are_listed():
+        raw = (
+            f"abc1234{COMMIT_FIELD}[shim-3] route the swallow{COMMIT_FIELD}conformance"
+            f"{COMMIT_FIELD}shim.md#3 gaps -> clean{COMMIT_FIELD}+1 double_response{COMMIT_RECORD}"
+            f"def5678{COMMIT_FIELD}harness: metrics row for abc1234{COMMIT_FIELD}"
+            f"{COMMIT_FIELD}{COMMIT_FIELD}{COMMIT_RECORD}"
+        )
+        lines = format_commit_lines(raw)
+        assert len(lines) == 2, lines
+        assert lines[0] == "- `abc1234` [conformance] [shim-3] route the swallow"
+        assert "shim.md#3 gaps -> clean" in lines[1] and "tests +1 double_response" in lines[1]
+
+    def the_commit_list_stops_at_the_limit():
+        record = f"abc1234{COMMIT_FIELD}subject{COMMIT_FIELD}core{COMMIT_FIELD}{COMMIT_FIELD}{COMMIT_RECORD}"
+        assert len(format_commit_lines(record * 30, limit=4)) == 4, "one line each, four of them"
 
     def reconciling_a_tag_is_progress():
         diff = "-    // DECISION-harness-002: provisional\n-    let sandbox = None;\n+    let sandbox = configured();\n"
