@@ -1,54 +1,63 @@
-# Findings — core, after 918d4544
+# Findings — core, after 37a6d098
 
 **Verify a gap against the code before working it; the audit lags by hours.**
-`core.md#vocabulary-types` was already closed and held when this campaign
-opened. One `grep` establishes it. A campaign the harness recorded `crashed`
-may still have committed real work.
+`git log --since` the `last_audited` stamp in `state/audit/core.toml`. One
+recorded `crashed` may still have committed real work.
 
-**`deps.md` is now essentially done.** Closed this campaign: `#fxhashmap`, §7,
-§8, §9, §10, §12. Closed by 51628b98: §0, §1, §2, §4, §5-licensing, §6, §13,
-§14, §15. **Remaining: §3 and §11 only**, and §11 is blocked — see below.
+**Two documents in a row were satisfied but unheld. Assume the third is too.**
+`deps.md` (51628b98) and now `rope-modifications.md`: twenty-four sections
+closed across them, not one line of implementation between them. They were
+written before the code and the code against them, and nothing notices the two
+drifting apart. Budget for mechanism, not repair.
 
-**`crates/driver/tests/seam.rs` is the deps.md conformance suite.** Thirteen of
-its twenty-five tests are deps.md sections, and it carries the manifest/source
-scan helpers (`manifest_text`, `dependency_entries`, `table_of`, `sources_of`,
-`crate_members`). A new deps.md claim belongs there; do not build a second
-instrument. Note `sources_of` reads `src/` only — it follows the crate root's
-`mod` declarations, so no `tests/` file is ever scanned, and `read_dir` is
-banned by `clippy.toml`.
+**`rope-modifications.md` is finished — do not re-read it.** Its thirteen §4/§7
+sections are held by `vendor/rope/tests/newtype_api.rs`, and
+`core.md#vendoring-the-zed-crates` by `seam.rs`'s
+`every_vendored_crate_records_the_patches_it_carries`.
 
-**A control that produces no `test result` line is not a control.** Three
-assertions across two campaigns cannot be made to fail because cargo or rustc
-rejects the mutation first: `vendor/rope`'s `[lints]`, `notify`'s
-`optional = true`, and a bare `Box<dyn Error>` in `shared::Error` (it costs
-`Error` its `Send`, which `files.rs`'s scanner thread needs). Keep such
-assertions and say *in place* that the compiler's enforcement is incidental.
-The `Box<dyn` case has a sharp edge: **`Box<dyn Error + Send + Sync>` compiles
-clean**, and that is the form anyone would actually write, so the scan covers
-exactly what the compiler misses.
+**Run the control before writing the commit message.** It found holes in three
+of nine checks. `impl std::ops::Add for LineIndex` compiles and walked through
+a scan matching traits by whole path. `pub fn new(row: impl Into<LineIndex>)`
+compiles, keeps every call site, passes both bare-primitive scans, and is the
+hole §4 rejects by name. And `use gpui;` cannot be planted — it fails the
+*build*, so no test runs and the output holds no "FAIL". **Grep for `test
+result`.** Where the compiler is the real enforcement, keep the assertion and
+say so in its doc comment.
 
-**Do not take `deps.md#11` until the request path exists.** Its gap wants
-`--trace=<path>` to write JSONL records; §7 emits one "once both answers are
-known", which needs the pending-query path `driver` does not have. The record
-type is `measure_core::QueryRecord`, and §9's graph forbids `driver` depending
-on `measure_core`, so a driver-side writer needs the type moved to `shared`
-first. Adding the flag alone leaves `--trace` silently writing nothing and does
-not make the section clean.
+**A floor does not hold a list.** `named.len() >= 30` over a table parsed from
+the document passed when I deleted a row. Transcribe the list into the test:
+the second copy is the mechanism, not a smell.
 
-**Still blocked on phase 2b:** `core.md#5-deadlines` and
-`#both-sides-are-sets`, both of which are the driver run loop (`shim.md`'s
-transport and `core` actor). Escalate the phase question before building it.
-`#9-workspace-layout` can never close — it names `lang_python` and
-`lang_typescript`, outside every owned path. `#85`'s corpus needs pyright and
-gopls; only rust-analyzer is on `PATH`.
+**Parse the design document as the fixture** where a claim is a list or a count
+(`deps.md` §15, `rope-modifications.md` §4). It is the only shape where editing
+the *document* fails — which is the one way of faking progress the audit
+cannot catch.
 
-**Load-bearing spec claims confirmed.** `deps.md`'s subset rule — "each arrives
-with its first user" — is what makes §0's table a subset check rather than an
-equality; `rayon`, `insta` and `tempfile` are still chosen-and-absent on
-purpose. `shim.md` §5 is the cross-reference `deps.md` §7 and §8 both turn on;
-read it before either.
+**Fetch upstream to settle a fact about upstream.** `curl` to
+`raw.githubusercontent.com` at the pinned rev works here, and answered in one
+turn a count I nearly escalated.
 
-**Mechanics.** Never `git checkout` over uncommitted work. Stage explicit
-paths, never `git add -A` (`harness/**` is denied and edited concurrently).
-`cargo fmt -p <crate>` before the gate — step 1 is `--check`, and it is the
-only step this campaign failed. Loop: commit, gate, `hj record core`.
+**The gate now runs `rope` and `sum_tree`** (`conformance-003`; lint and
+fmt withheld). `clippy.toml` disallows `std::fs::read_dir` in the
+crates that *are* linted — walk a crate root's `mod` declarations instead.
+`rustfmt --edition 2024 <file>` after any non-`Edit` write; the hook misses
+those and `cargo fmt -p rope` reformats upstream.
+
+**Known open, descending value:**
+
+* **`deps.md#licensing`** — cheapest remaining. `lang_*`'s licence is Class B
+  and ends in a decision record; `seam.rs`'s `expected_licence` is where the
+  two rules are distinguished.
+* **`deps.md` §7 needs `notify` optional-and-absent settled; §8 wants `shared`
+  to export `pub type Map`/`Set`** — five files use `FxHashMap` directly.
+  §3, §9, §10, §11 and `#fxhashmap` are also open and none is held.
+* **The driver request path** (`#5-deadlines`, `#both-sides-are-sets`) is
+  phase 2b. Escalate the phase question before building it.
+* **`#85`'s corpus** needs pyright and gopls; only rust-analyzer is on `PATH`.
+* **`#9-workspace-layout` can never close** — it names `lang_python` and
+  `lang_typescript`, outside every owned path.
+
+**Still true.** Stage explicit paths, never `git add -A`; `harness/**` is
+denied and may be edited concurrently. Loop: commit, gate, `hj record`.
+Subset, never equality, for dependency tables. Never scan `Cargo.lock` for
+§13's rejects — six are in it transitively; assert declarations.
