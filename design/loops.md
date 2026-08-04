@@ -423,13 +423,27 @@ three, with no mechanism that questions it.
 the entity deciding is the entity that wrote the code, in the same
 context, having already convinced itself.
 
-So the decision is taken away from it. At every campaign close, a
+So the decision is taken away from it. At every **round** close, a
 **separate session with no memory of writing the code** is given the
 spec and the implementation and asked one question: *is this
 implemented, and where is it not?* It cannot edit anything. It answers
 in two numbered lists — **gaps** and **minor items** — and that shape is
 what turns the audit from a safety net into the measurement the
 conformance loop otherwise lacks.
+
+A round is one campaign for a loop that runs one at a time, and N for a
+loop running N workers ([section 13](#workers-one-loop-several-campaigns-at-once)) —
+which is where the distinction comes from, and it is not a softening.
+Three workers auditing their own branches would each judge a tree nobody
+ships and would write three verdicts for one section with no rule for
+which wins, so the audit runs once, against the merged result. The cost
+is that a campaign can close against a verdict older than itself, and
+the progress it made is then attributed to whichever campaign closes
+after the audit that measures it. That is `harness-003`, answered in
+favour of the round: attribution is by named gap rather than by count
+delta, which pays most of it off, and §7's stall rule already excludes a
+campaign that closed with no audit since it opened, so the cadence
+cannot stop the loop by itself.
 
 ### Sections clean is the metric
 
@@ -1491,9 +1505,29 @@ the hook blocks is reachable through `sh -c`.
 **3. OS sandbox.** `/sandbox` uses bubblewrap on Linux and takes an
 `allowWrite` list. This *is* a real boundary — it covers subprocesses —
 and it is the layer that answers "prevent them from writing outside
-their dir" literally. `allowWrite` is the owned crate directory,
-`state/shared-proposals/`, `target/`, and the git directory; everything
-else in the checkout is read-only to the session.
+their dir" literally.
+
+**The list is per checkout, not per crate** (`harness-002`). It is every
+worktree, the integration checkout's git directory and `state/`, the
+transcript and log roots, and `~/.cargo`; everything outside those —
+`$HOME`, `~/.ssh`, and `.claude/` itself, so a loop cannot reach the file
+that configures its own sandbox — is read-only to the session. An earlier
+revision of this paragraph named the owned crate directory, which is
+narrower than the ownership table beside it and does not survive contact
+with the deployment: `harness/workers` runs in the integration checkout
+and writes into *each* worker's worktree when it fast-forwards them after
+an audit, so a list holding only the session's own project root breaks the
+round runner rather than a campaign. `~/.cargo` is on it because `cargo`
+writes its registry cache and `.package-cache` lock there and the gate's
+build step fails without it.
+
+What that concedes is that a campaign can write another loop's files
+*inside its own checkout*, `design/` included. Layer 4 catches that at
+commit time, which is the division of labour throughout: this layer stops
+a session escaping its tree, and the gate decides what may be in it.
+`failIfUnavailable` is set, so a machine without bubblewrap stops rather
+than running every campaign unsandboxed behind a warning — the same
+posture as abstaining rather than guessing, applied to the harness.
 
 **4. Gate diff scope.** The commit touches only owned paths, checked
 after the fact by the gate. Authoritative, because it inspects the
@@ -2270,8 +2304,11 @@ is mechanical work under an exact oracle
 ([`phases.md`](phases.md)), which is the
 best candidate for a cheaper tier, whereas phase 2a resolution logic is
 the hardest reasoning in the project. The auditor is a fixed cost of one
-session per conformance campaign, and it is not a knob: it is the only
-number that loop has ([section 5](#sections-clean-is-the-metric)).
+session per conformance **round** ([section 5](#5-the-auditor-and-the-conformance-loops-number)),
+and it is **not a knob a loop may turn**: `audit_every` lives in
+`state/phase.toml`, which is denied to every loop, because it is the only
+number that loop has ([section 5](#sections-clean-is-the-metric)) and a
+loop that could make its own measurement cheaper would.
 
 **Model wall-clock.** Parallelism across languages, and replay speed —
 which is measured rather than targeted

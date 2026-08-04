@@ -257,3 +257,67 @@ could have been made to lose. §8 now states the overlap and names the three
 files that cross it instead of being widened to fit them.
 
 **Campaign:** 3e637dcd-7552-460c-8eb4-fb41941ef14b
+
+## CHANGE-harness-007 — loops.md#5-the-auditor-and-the-conformance-loops-number, #levers-by-which-resource-they-move, #mechanics-isolation-in-four-layers — reconciling two answered decisions
+
+Not a contradiction found this campaign. These are the edits two *answered*
+Class B records left for this loop, and they are recorded here because the
+change is to the spec either way and a reader of this file should not have to
+join it to `state/decisions/` to see what moved.
+
+### `harness-003` — the audit cadence
+
+**Contradiction, as the record framed it:** §5 said "At every campaign close,
+a **separate session with no memory of writing the code**..." and §15 said
+"The auditor is a fixed cost of one session per conformance campaign, and it
+is not a knob". §13's "The audit does not parallelise" says the opposite:
+"**at most one audit runs at a time, and it runs against `main` rather than
+any worker's branch.** A worker whose close makes the audit due runs it; the
+others skip and continue." `state/phase.toml` carries `audit_every`, and a
+knob set to 1 is still a knob.
+
+**Resolution — answered `accepted: Option B`, 2026-08-04:** §5 now says "at
+every **round** close" and defines a round as one campaign for a loop that
+runs one at a time and N for a loop running N workers, with §13's argument
+for why (three workers each judge a tree nobody ships) and the cost stated
+rather than elided (a campaign can close against a verdict older than
+itself). §15 now says "one session per conformance **round**" and "not a knob
+**a loop may turn**", naming `state/phase.toml` as where `audit_every` lives
+and why that is the whole of the protection.
+
+The trade is the record's, not this campaign's: Option A — audit every
+campaign, delete the knob — was costed at roughly 40% on top of `core`'s
+campaign bill and rejected at this phase.
+
+### `harness-002` — layer 3 of §13's isolation
+
+**Contradiction:** §13's layer 3 said "`allowWrite` is the owned crate
+directory, `state/shared-proposals/`, `target/`, and the git directory",
+which is narrower than the ownership table four paragraphs below it in the
+same section, and the layer was unconfigured besides.
+
+**Resolution — answered `accepted: Option C`, the coarse list containing the
+worktree:** the paragraph now describes what is in `.claude/settings.json` —
+every worktree, the integration checkout's git directory and `state/`, the
+transcript and log roots, `~/.cargo` — and states the limit that choice
+accepts: a campaign can write another loop's files inside its own checkout,
+and layer 4 catches it at commit time. `failIfUnavailable` is recorded,
+because a sandbox that silently degrades is not the layer this section claims.
+
+The per-crate list did not merely under-describe the deployment; it does not
+survive it. `harness/workers` runs in the integration checkout and
+fast-forwards each worker's worktree after an audit, so a list holding only
+the session's own project root breaks the round runner. That is in the
+record's ruling as something it did not predict, and it is the sentence worth
+carrying into the spec.
+
+### On the shape of this entry
+
+Both edits move the spec toward a deployment that already exists, which is
+the shape §19 warns about. What makes them not that: a human ruled on each
+before it was written, the ruling is in `state/interventions.jsonl` rather
+than in a record this loop could have edited, and each record names the
+option that was *rejected* and what it would have cost. The changelog entry
+is the place a reviewer can check that claim against the records.
+
+**Campaign:** 3e637dcd-7552-460c-8eb4-fb41941ef14b

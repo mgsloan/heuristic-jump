@@ -106,6 +106,12 @@ its comment explaining why.
 `design/loops.md` §5 and §15 are the harness loop's to edit. `audit_every`
 stays where it is, and so does the `judged_campaigns` exclusion.
 
+**Reconciled** by campaign `3e637dcd`, `CHANGE-harness-007`. §5 says "at every
+round close" and defines a round; §15 says "one session per conformance round"
+and "not a knob a loop may turn". `audit_every` and the `judged_campaigns`
+exclusion are untouched, as ruled. No site carried a tag, so there was none to
+remove.
+
 ## Provisional choice in force
 
 **B, by inertia**: the code is unchanged and `audit_every` stays at 1, which
