@@ -207,6 +207,47 @@ fn the_captured_half_covers_every_server_the_section_names() {
     }
 }
 
+/// A `CAPTURED` label is a string, and a string can be typed onto a line
+/// nobody captured. That is the standing weakness of a provenance field and
+/// nothing in a test can close it — a determined hand-author writes a
+/// consistent line. What a test can do is require the label to agree with the
+/// message under it, which catches the failure that actually happens: a
+/// capture attributed to the wrong server, or a hand-authored line relabelled
+/// without its contents being changed to match.
+///
+/// So a captured `InitializeResult` whose `serverInfo` names a server must
+/// name the one `source` claims. Only `initializeResult` carries a name at
+/// all; a definition answer and a `$/progress` do not say who sent them, and
+/// pretending otherwise would mean adding a field to the corpus that the wire
+/// does not have.
+///
+/// Absent `serverInfo` is not a failure, and pyright 1.1.411 is why: it sends
+/// none. The hand-authored line labelled "pyright" in this corpus invents one,
+/// which is the population §8.6 warns about caught in the act — somebody wrote
+/// the field they expected rather than the field that arrives.
+#[test]
+fn a_captured_message_agrees_with_the_server_its_label_names() {
+    for entry in corpus() {
+        let Some(claimed) = captured_server(&entry.source) else {
+            continue;
+        };
+        if entry.kind != Kind::InitializeResult {
+            continue;
+        }
+        let result: InitializeResult = read(entry.message.get(), "shared::proto::InitializeResult");
+        let Some(info) = result.server_info else {
+            continue;
+        };
+        assert!(
+            info.name.eq_ignore_ascii_case(claimed),
+            "a line labelled `CAPTURED from {claimed}` carries a serverInfo naming {}: one of \
+             the two is wrong, and a provenance field that disagrees with its own message is \
+             worse than none",
+            info.name
+        );
+    }
+}
+
 /// The server a `CAPTURED` line came from, or `None` for a hand-authored one.
 ///
 /// Panics on a `CAPTURED` line that does not name one, rather than treating it
