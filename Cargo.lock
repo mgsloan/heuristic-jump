@@ -772,6 +772,7 @@ dependencies = [
  "shared",
  "toml",
  "tracing",
+ "tracing-subscriber",
  "tree-sitter",
  "tree-sitter-rust",
 ]

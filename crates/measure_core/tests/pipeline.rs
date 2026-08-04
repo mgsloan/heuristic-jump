@@ -502,6 +502,82 @@ fn the_printed_table_is_byte_identical_across_runs() {
     }
 }
 
+/// §7 on how fast a replay is: "**How fast a replay actually is, is a
+/// measurement rather than a target.** No number is set here, and none should
+/// be inferred… So `measure replay` reports its own wall clock alongside the
+/// per-query work counters, `loops.md` §9 records both from the first run, and
+/// what to do about the number is decided when there is one."
+///
+/// Two halves, and the second was not merely untested — it did not happen. The
+/// event was emitted into a facade with no subscriber behind it: `heuristic_jump`
+/// installs one in its `main` and a `measure_<lang>` main is four lines that do
+/// not, so every `tracing::info!` and every `tracing::warn!` in this crate —
+/// the wall clock, the collection checkpoints, the unreadable-file warnings —
+/// went nowhere at all. It is deliberately not in the table: §7's command line
+/// makes that byte-identical across runs, which is the whole difference between
+/// a number read as a trend and an artifact that has to compare exactly.
+///
+/// The subscriber the run installs writes to stderr, which a test cannot read
+/// back; a scoped one takes precedence for this thread and can. That the run
+/// installs *a* subscriber is the other assertion, and it needs no writer at
+/// all — nothing else in the workspace sets a global dispatcher, so if this
+/// crate stops doing it there is none.
+#[test]
+fn a_replay_reports_its_own_wall_clock() {
+    let corpus = fixture("wall_clock");
+    enumerate(&corpus);
+    write_truth(&corpus);
+
+    assert!(
+        tracing::dispatcher::has_been_set(),
+        "a measure run installed no log subscriber, so §7's wall clock — and \
+         every warning this crate emits about a server that errored or a file \
+         it could not read — is written into a facade with nothing behind it"
+    );
+
+    let truth = fs::read_to_string(truth_path(&corpus, "oracle")).expect("the truth file");
+    let queries = truth.lines().count() - 1;
+
+    let log = corpus.scratch.join("replay.log");
+    // Created empty rather than left to the first event, so a replay that
+    // reports nothing fails on what is missing from the log instead of on the
+    // log not existing.
+    fs::write(&log, "").expect("an empty log to append to");
+    let subscriber = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::new("info"))
+        .with_ansi(false)
+        .with_writer(LogFile(log.clone()))
+        .finish();
+    tracing::subscriber::with_default(subscriber, || replay(&corpus, None));
+
+    let text = fs::read_to_string(&log).expect("the scoped subscriber wrote the log");
+    for expected in ["replayed", "wall_clock_us=", &format!("queries={queries}")] {
+        assert!(
+            text.contains(expected),
+            "the replay did not report {expected}. loops.md §9 records the wall \
+             clock and the per-query counters from the first run, and a number \
+             nobody set a target for is one that has to be observed before it \
+             can be argued about\n{text}"
+        );
+    }
+}
+
+/// A `MakeWriter` over a file, because the alternative is a shared in-memory
+/// buffer and the design has no locks in it.
+struct LogFile(PathBuf);
+
+impl tracing_subscriber::fmt::MakeWriter<'_> for LogFile {
+    type Writer = fs::File;
+
+    fn make_writer(&self) -> fs::File {
+        fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.0)
+            .expect("the log file")
+    }
+}
+
 /// §7: "**Only the heuristic side is re-measured, and its timing is an
 /// observation, not a control input.** … `lsp_latency_us` comes from `collect`
 /// and is a property of the frozen truth — which is exactly what
