@@ -7,3 +7,9 @@ __pycache__/
 # which is the atomicity; committing them would put a lock in the history and
 # make every worker's tree dirty.
 state/claims/
+
+# Reserved decision and changelog numbers. A marker exists from the moment
+# `hj allocate-id` hands a number out until the record using it is committed,
+# which is what stops two workers writing the same id. Ephemeral and shared,
+# like state/claims/.
+state/reserved/
