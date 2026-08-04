@@ -6,6 +6,42 @@ Class B and belongs in `state/decisions/`, not here.
 
 **An entry is provisional until a human reads it.**
 
+## CHANGE-harness-002 — loops.md#sessions-assign-the-id-own-the-transcript — the teed transcript lives outside the worktree, not under `state/`
+
+**Contradiction:** section 16 gives the transcript two homes, four
+paragraphs apart. `#sessions-assign-the-id-own-the-transcript` says "write
+the stream to `state/sessions/<owner>/<campaign-id>.jsonl` as it goes".
+`#reading-a-transcript` says "Transcripts are not committed; they live
+beside the corpus, outside the worktree, and old ones for closed campaigns
+whose hypothesis was confirmed can be dropped."
+
+`state/` is committed in its entirety, so the first location makes the
+second impossible: nothing under it can be uncommitted, and dropping a file
+that is in git does not reclaim the disk the paragraph is about.
+
+**Resolution:** the section now names the transcript root by reference to
+`#reading-a-transcript` rather than as a path under `state/`, and says
+explicitly that the index row stays in `state/sessions.jsonl` while the
+stream never enters git.
+
+This is the reading that trades nothing off, because the other direction is
+refuted by the same section: "Two MB per campaign, hundreds of campaigns
+across seven languages, is gigabyte scale", and a retention rule that
+deletes old transcripts cannot operate on committed paths without rewriting
+history. There is no version of "under `state/`" that survives its own
+paragraph. The claim being dropped is a path; the claims being kept are
+uncommitted, outside the worktree, and droppable — three, against one.
+
+**Declared, per the loop prompt:** the code already writes transcripts
+outside the worktree (`harness/adapter transcript-path`, rooted at
+`HJ_TRANSCRIPTS` or `../heuristic-jump-transcripts`), so this edit moves the
+document toward the implementation, which is the shape that cannot be caught
+by the audit. Said plainly here: I did not check which came first, and the
+argument above does not depend on it — a reader who disagrees should look at
+the two quoted sentences and not at the code.
+
+**Campaign:** bb1e501a-8f20-4466-9bb5-391bae86785a
+
 ## CHANGE-harness-001 — loops.md#4-the-iteration-contract — the tests step names `hj selftest` as well as `cargo nextest`
 
 **Contradiction:** section 4 says the gate's steps are "all mandatory" and

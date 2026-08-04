@@ -2389,7 +2389,10 @@ without clobbering the original record.
 
 **Tee the stream; do not scrape the store.** Run with
 `--output-format stream-json` and write the stream to
-`state/sessions/<owner>/<campaign-id>.jsonl` as it goes. That artifact
+`<transcripts>/<owner>/<campaign-id>.jsonl` as it goes, where
+`<transcripts>` is the root [below](#reading-a-transcript) puts beside the
+corpus rather than in the worktree — the index row stays in
+`state/sessions.jsonl`, the stream itself never enters git. That artifact
 is the harness's, in a shape it chose. The reason not to depend on
 Claude Code's own file is that the format is plainly internal: alongside
 the messages it carries `bridge-session`, `ai-title`, `queue-operation`,
