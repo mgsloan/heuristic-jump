@@ -1672,7 +1672,21 @@ ASSIGNMENT_FENCE = re.compile(r"```toml\s*\n(.*?)\n```", re.DOTALL)
 
 
 def assignments_path(owner: str) -> Path:
-    return STATE / "assignments" / f"{owner}.toml"
+    """In the integration checkout, like every other thing the fleet shares.
+
+    The planner runs once per round and writes to `main`; workers read this at
+    campaign open, from a worktree that branched before the plan existed. Two
+    of three workers therefore got no assignment at all on the first round,
+    fell back to the whole gap list, and one of them did another's work — the
+    exact collision the planner exists to prevent.
+
+    That is the fourth thing to need moving here, after `phase.toml`,
+    `sessions.jsonl` and the interventions log, and they are one rule: **state
+    the fleet coordinates through cannot live on a branch.** A campaign's own
+    output belongs on its branch and merges; anything another worker has to
+    read *now* does not.
+    """
+    return CONTROL / "state" / "assignments" / f"{owner}.toml"
 
 
 # Two campaign ids that differ in every character, so the divergence a probe
@@ -3292,7 +3306,7 @@ def spec_changes() -> list[dict]:
     """
     reviewed = {
         row.get("target")
-        for row in read_jsonl(STATE / "interventions.jsonl")
+        for row in read_jsonl(CONTROL / "state" / "interventions.jsonl")
         if row.get("kind") == "spec-change-reviewed"
     }
     entries = []
@@ -3591,7 +3605,7 @@ def cmd_intervene(args: argparse.Namespace) -> int:
     if not args.rationale.strip():
         die("rationale is required; a decision with no recorded reason gets re-litigated")
     append_jsonl(
-        STATE / "interventions.jsonl",
+        CONTROL / "state" / "interventions.jsonl",
         {
             "ts": now(),
             "kind": args.kind,
@@ -3601,7 +3615,7 @@ def cmd_intervene(args: argparse.Namespace) -> int:
             "commit": head_sha(),
         },
     )
-    commit_harness_state([STATE / "interventions.jsonl"], f"{args.kind} on {args.target}")
+    commit_harness_state([CONTROL / "state" / "interventions.jsonl"], f"{args.kind} on {args.target}")
     print(f"logged: {args.kind} on {args.target}")
     return 0
 
