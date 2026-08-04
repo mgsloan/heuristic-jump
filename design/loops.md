@@ -107,7 +107,7 @@ solving it. The only shared code during tuning is the seam and a frozen
 | Progress | a section going clean ([section 5](#5-the-auditor-and-the-conformance-loops-number)) | movement on the frontier ([section 10](#10-objectives-phases-and-the-frontier)) |
 | Done | every section clean, and a human has ruled on the minor list | frontier stops advancing, or budget exhausted |
 | Failure mode | spec drift; the loop edits the spec to match the code | overfitting to the tuning corpus |
-| Concurrency | one writer | parallel, **one per language**, in phase 2a ([section 13](#parallel-loops-and-what-they-share)) |
+| Concurrency | **N workers**, a campaign each, one gap list, conflict handled rather than excluded ([section 13](#workers-one-loop-several-campaigns-at-once)) | parallel, **one per language**, in phase 2a ([section 13](#parallel-loops-and-what-they-share)) |
 
 Conflating these is the first mistake available. A conformance loop
 with no number to chase will invent one; a metric loop with a spec

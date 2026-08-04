@@ -122,3 +122,50 @@ are checkable against `state/phase.toml`, `Cargo.toml` and `crates/` — none
 of which this loop may write except `design/loops.md` itself.
 
 **Campaign:** 3e637dcd-7552-460c-8eb4-fb41941ef14b
+
+## CHANGE-harness-004 — loops.md#2-two-loops-two-oracles — the conformance loop's concurrency is N workers, not one writer
+
+**Contradiction:** §2's table said the conformance loop's concurrency is
+
+> one writer
+
+while §13's Workers subsection says
+
+> A loop may also be parallelised *within* itself: **N workers, each running
+> one campaign at a time, in its own worktree on its own branch, all against
+> the same document set and the same gap list.**
+
+and goes on to specify the planner, `hj claim`, the per-worker journal and
+findings files, and the rule that "at most one audit runs at a time". It also
+states the consequence the one-word cell was hiding: "Section 13's
+'conflict-free by construction' is a claim about *loops* and does not hold
+between workers; between workers, conflict is a rare event with a handler
+rather than an impossibility."
+
+`state/phase.toml` — human-owned and denied to every loop — sets
+`workers = 3` for `loop.core`, so the desired state agrees with §13 and not
+with §2.
+
+**Resolution:** the cell now reads "N workers, a campaign each, one gap list,
+conflict handled rather than excluded", linking to
+`#workers-one-loop-several-campaigns-at-once` rather than to
+`#parallel-loops-and-what-they-share`, which is the *across*-loops case and
+was never what this cell meant.
+
+This trades nothing off. §13 is the later and vastly more detailed passage —
+it argues for N, names its costs (spend linear in N, throughput sublinear,
+disk linear), and says how to pick it; §2's cell is a one-word index entry
+into a section that had moved. Every other cell in that row and column is an
+index into a section that carries the argument, so making this one match the
+section it points at is what the table is for. The clause "conflict handled
+rather than excluded" is carried across deliberately, because it is the part
+of the old cell that was load-bearing: a reader who took "one writer" away
+from §2 had learned something true about *why*, and dropping N in without it
+would lose that.
+
+Not corrected here, because no loop may write it: the comment above
+`[loop.core]` in `state/phase.toml` still opens "Phase 1a is one writer" and
+then sets `workers = 3` twelve lines later. That is the same stale sentence
+in a file this loop is denied.
+
+**Campaign:** 3e637dcd-7552-460c-8eb4-fb41941ef14b
