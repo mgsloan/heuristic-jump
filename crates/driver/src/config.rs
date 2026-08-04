@@ -12,6 +12,9 @@ use std::ffi::OsString;
 use std::time::Duration;
 
 use shared::ServerProfile;
+use shared::record::Mode as RecordMode;
+
+use crate::trace::Tracing;
 
 /// The hard cap, in the unit `--deadline-ms` and both of `shim.md` §14.6's
 /// numbers are written in. A newtype because it is one of three durations in
@@ -182,6 +185,33 @@ impl Mode {
             Self::Standalone => "standalone",
         }
     }
+
+    /// The same fact as [`Mode::name`], in the type §7's record carries. Two
+    /// enums rather than one because they answer different questions: this one
+    /// says whether a second answer exists to compare against, and the argv is
+    /// none of the record's business.
+    pub fn recorded(&self) -> RecordMode {
+        match self {
+            Self::Proxy {
+                server: _,
+                heuristics: _,
+            } => RecordMode::Proxy,
+            Self::Standalone => RecordMode::Standalone,
+        }
+    }
+
+    /// Whether the shim answers anything itself. `Standalone` has no
+    /// `--proxy-only` to disable it: `requires = "server"` makes that
+    /// combination unreachable rather than silently ignored.
+    pub fn heuristics(&self) -> Heuristics {
+        match self {
+            Self::Proxy {
+                server: _,
+                heuristics,
+            } => *heuristics,
+            Self::Standalone => Heuristics::Enabled,
+        }
+    }
 }
 
 /// `deps.md` §9's default: "the default filter is `warn` so we are quiet unless
@@ -256,6 +286,7 @@ pub struct Config {
     mode: Mode,
     deadline: DeadlineMs,
     server: ServerProfile,
+    tracing: Tracing,
 }
 
 impl Config {
@@ -267,7 +298,7 @@ impl Config {
     /// says "at startup" and this is it: the child's argv cannot change while
     /// the process runs, so a resolution anywhere further in would be the same
     /// answer recomputed under a deadline.
-    pub fn new(mode: Mode, deadline: DeadlineOverride) -> Self {
+    pub fn new(mode: Mode, deadline: DeadlineOverride, tracing: Tracing) -> Self {
         let deadline = match deadline {
             DeadlineOverride::ModeDefault => mode.default_deadline(),
             DeadlineOverride::Explicit(milliseconds) => milliseconds,
@@ -277,7 +308,14 @@ impl Config {
             mode,
             deadline,
             server,
+            tracing,
         }
+    }
+
+    /// `--trace=<path>` (`deps.md` §11), resolved but not opened: the file is
+    /// the actor's, because the actor is what owns a sink nobody shares.
+    pub fn tracing(&self) -> &Tracing {
+        &self.tracing
     }
 
     pub fn mode(&self) -> &Mode {

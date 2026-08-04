@@ -21,7 +21,7 @@ doctest = false
 # `measure_core`, which is the whole reason `measure_rust` is a crate rather
 # than a `[[bin]]` here. The runtime is not an extra: `grammar()` returns a
 # `tree_sitter::Language`, a name the grammar crate does not supply, and the
-# template listed only the grammar until CHANGE-core-008.
+# template listed only the grammar until CHANGE-core-012.
 #
 # `similarity` is declared and not yet used. It is what a real handler's
 # ranking is written against (`resolution.md` §5) and it is in the template's

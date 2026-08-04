@@ -78,6 +78,28 @@ const RECORD_FIELDS: &[&str] = &[
 const SOURCE: &str =
     "pub fn alpha() -> u32 {\n    7\n}\n\npub fn beta() -> u32 {\n    alpha()\n}\n";
 
+/// A second file whose identifiers sit at the *same* byte offsets as
+/// [`SOURCE`]'s and spell something else — `alpha`/`gamma` both begin at byte
+/// 7. That is what makes a join on `(file, offset)` distinguishable from one on
+/// `offset` alone, which a single-file repository cannot show.
+const OTHER_SOURCE: &str =
+    "pub fn gamma() -> u64 {\n    3\n}\n\npub fn delta() -> u64 {\n    gamma()\n}\n";
+
+/// The nine strata as the record and the report spell them, which is
+/// `StratumName`'s spelling and not `Stratum`'s. Transcribed rather than
+/// derived, so a renamed variant has to be renamed here too.
+const STRATUM_NAMES: [&str; 9] = [
+    "local_binding",
+    "same_file_module",
+    "explicitly_imported",
+    "wildcard_imported",
+    "ambiguous_name",
+    "external_dependency",
+    "macro_generated",
+    "type_inference_required",
+    "unimplemented",
+];
+
 /// The grammar the workspace pins, read from the manifest rather than from the
 /// lockfile the implementation embeds: asserting a value against the file it
 /// was computed from asserts nothing.
@@ -332,6 +354,34 @@ impl LanguageHandler for FailingHandler {
     }
 }
 
+/// A handler that declares no `languageId`, which is the one thing a
+/// `measure_<lang>` binary cannot recover from: §7 makes the language the
+/// handler's and gives the command line no flag that could supply it.
+struct LanguagelessHandler;
+
+impl LanguageHandler for LanguagelessHandler {
+    fn language_ids(&self) -> &'static [LanguageId] {
+        &[]
+    }
+
+    fn file_extensions(&self) -> &'static [FileExtension] {
+        const EXTENSIONS: &[FileExtension] = &[FileExtension::new("rs")];
+        EXTENSIONS
+    }
+
+    fn grammar(&self) -> Language {
+        tree_sitter_rust::LANGUAGE.into()
+    }
+
+    fn goto_definition(&self, _query: &Query<'_>) -> Result<Outcome, Error> {
+        Ok(Outcome::Abstain {
+            reason: AbstainReason::UnsupportedRole,
+            strata: Strata::from_reference(Stratum::Unimplemented),
+            trace: Trace::new(),
+        })
+    }
+}
+
 /// `core.md`: the placeholder "reports `Stratum::Unimplemented`, which no real
 /// handler may return, and its presence in a metrics table means the template
 /// has not been replaced — **a gate check** rather than something anybody has
@@ -463,6 +513,69 @@ fn replay_is_deterministic_byte_for_byte() {
          than a report — a hash-set iteration order or a wall-clock deadline \
          is what usually takes it away"
     );
+}
+
+/// The other half of the test above, and the one that decays silently: a
+/// determinism assertion over masked text is worth exactly what the mask
+/// leaves behind, and the repair for a flake is always to mask one more field.
+///
+/// §7 names two fields a replay does not reproduce and the mask is those two,
+/// so what is held here is the count and the shape — every field still present,
+/// every other value still its own. A third entry in `NOT_REPRODUCED` fails
+/// this, which is the point at which somebody has to say why the record
+/// acquired a third clock reading.
+#[test]
+fn the_mask_is_not_the_whole_record() {
+    let corpus = fixture("mask_scope");
+    enumerate(&corpus);
+    write_truth(&corpus);
+
+    let records = corpus.scratch.join("records.jsonl");
+    // The reporting handler, because the template reports no `stage_us` at all
+    // and a mask over an empty map holds nothing.
+    replay_with(&ReportingHandler, &corpus, Some(&records));
+
+    let text = fs::read_to_string(&records).expect("replay wrote the records file");
+    let masked = without_the_clock(&text);
+    let first = masked.lines().next().expect("a replayed query");
+
+    assert_eq!(
+        field_order(first),
+        RECORD_FIELDS,
+        "masking dropped a field rather than a value, so the comparison it \
+         serves no longer knows what shape a record is.\n{first}"
+    );
+    assert_eq!(
+        first.matches(MASK).count(),
+        NOT_REPRODUCED.len(),
+        "{} of the record's values are masked and §7 names {}. Every mask is a \
+         value two runs are allowed to disagree on, and the cheap repair for a \
+         flaky determinism test is another one\n{first}",
+        first.matches(MASK).count(),
+        NOT_REPRODUCED.len()
+    );
+    for timing in ["\"heuristic_latency_us\":~,", "\"stage_us\":{~}"] {
+        assert!(
+            first.contains(timing),
+            "the mask did not reach {timing}, so the two runs it compares are \
+             being compared on a clock reading\n{first}"
+        );
+    }
+    for surviving in [
+        "\"decision\":\"committed\"",
+        "\"stratum_prior\":\"explicitly_imported\"",
+        "\"stages\":[\"ref:Type\",\"scope:miss\"]",
+        "\"bytes_scanned\":1234",
+        "\"queued_us\":0",
+    ] {
+        assert!(
+            first.contains(surviving),
+            "the mask took {surviving} with it. What a replay reproduces \
+             exactly is everything but the two timings, and a mask that reaches \
+             a work counter or an outcome hides the disagreements this test \
+             exists to find\n{first}"
+        );
+    }
 }
 
 /// The sibling of the test above, and the one §7's command line actually
@@ -1139,21 +1252,90 @@ fn a_replay_refuses_a_truth_file_it_cannot_trust() {
 }
 
 /// The replay-side half of "a truth file is never silently merged with
-/// another's" (§7). `truth/<server>/` is a path and not a check: a file copied
-/// into it replays under a server name it was never collected against, and
-/// every metric is then attributed to the wrong oracle.
+/// another's" (§7). The corpus layout puts a truth file at
+/// `truth/<server>/<repository>.jsonl`, and every component of that path is a
+/// path rather than a check: a file copied or hand-moved into it replays under
+/// a server, a language and a repository it was never collected against, and
+/// every metric is then attributed to the wrong one.
+///
+/// All three, because only one of them was compared and the argument covers
+/// them equally. The repository is the one the commit check appears to cover
+/// and does not: two checkouts of the same upstream at the same commit pass it
+/// while the recorded offsets describe neither.
 #[test]
-fn a_replay_refuses_a_truth_file_collected_against_another_server() {
-    let corpus = fixture("provenance_mismatch");
-    enumerate(&corpus);
-    write_truth_as(&corpus, "oracle", "other");
+fn a_replay_refuses_a_truth_file_whose_header_names_another_run() {
+    // One field of the header moved per case, with the other two left as this
+    // run's, so what each case holds is that *this* field is compared.
+    for (field, repository, language, server) in [
+        ("server", "one", "rust", "other"),
+        ("language", "one", "python", "oracle"),
+        ("repository", "two", "rust", "oracle"),
+    ] {
+        let corpus = fixture(&format!("provenance_mismatch_{field}"));
+        enumerate(&corpus);
+        write_truth_headed(
+            &corpus,
+            "oracle",
+            &header_of(repository, language, server, &corpus.commit, true),
+        );
 
-    let refused = replay_result(&corpus, measure_core::Format::Json)
-        .expect_err("a truth file whose header names another server was replayed");
-    let Error::Config(shared::ConfigError::ProvenanceDrift { field, .. }) = &refused else {
-        panic!("the wrong oracle's truth file was refused as {refused}");
+        let Err(refused) = replay_result(&corpus, measure_core::Format::Json) else {
+            panic!("a truth file whose header names another {field} was replayed");
+        };
+        let Error::Config(shared::ConfigError::ProvenanceDrift { field: named, .. }) = &refused
+        else {
+            panic!("a truth file naming another {field} was refused as {refused}");
+        };
+        assert_eq!(
+            *named, field,
+            "a truth file whose {field} is not this run's was refused for \
+             {named}. Which field disagrees is what says whether the file is \
+             the wrong file or the checkout is the wrong checkout, and the two \
+             have opposite repairs"
+        );
+    }
+}
+
+/// The fourth way a truth file can be untrustworthy, and the one that arrives
+/// a row at a time rather than in the header: it names a file this checkout
+/// does not hold.
+///
+/// §7's rule for the header is to refuse "rather than silently reporting
+/// metrics for positions that have since moved", and a row whose file cannot
+/// be read is that condition — a truth file from another enumeration, since
+/// `enumerate` skips a file it cannot read and so leaves no position for one.
+/// Skipping it instead takes those positions out of the denominator, and a
+/// table over a smaller corpus does not look like a broken corpus. It looks
+/// like coverage that improved.
+#[test]
+fn a_replay_refuses_a_position_whose_file_it_cannot_read() {
+    let corpus = fixture("unreadable_file");
+    enumerate(&corpus);
+    write_truth(&corpus);
+
+    let path = truth_path(&corpus, "oracle");
+    let mut text = fs::read_to_string(&path).expect("the truth file");
+    let rows = text.lines().count();
+    text.push_str(
+        "{\"file\":\"src/gone.rs\",\"offset\":0,\"outcome\":\"none\",\
+         \"answer\":null,\"latency_us\":1}\n",
+    );
+    fs::write(&path, text).expect("a truth row for a file the checkout lost");
+
+    let Err(refused) = replay_result(&corpus, measure_core::Format::Json) else {
+        panic!(
+            "a truth file naming a file the checkout does not hold was \
+             replayed, and {rows} of its {} rows were measured",
+            rows + 1
+        );
     };
-    assert_eq!(*field, "server");
+    assert!(
+        matches!(refused, Error::Project(shared::ProjectError::Read { .. })),
+        "the unreadable file was refused as {refused}, which does not name the \
+         file. Which one it is, is the whole of what an operator needs: the \
+         repair is re-enumerating the corpus, and nothing else in the refusal \
+         says which enumeration the truth came from"
+    );
 }
 
 /// §7's "the table is not enough": `replay --records <path>` writes the
@@ -1352,6 +1534,627 @@ fn the_digests_precision_key_separates_every_way_an_answer_can_be_wrong() {
     }
 }
 
+/// §7: "The binary is per-language, so the language is never an argument" —
+/// which language a run is about comes from the handler, "and there is no flag
+/// that could disagree with it".
+///
+/// The case that leaves is a handler that names none, and it was answered
+/// twice: `run` refused with `HandlerError::DeadlineExpired`, which is not what
+/// happened, while `positions::enumerate` recovered the language for itself and
+/// fell back to `LanguageId::new("unknown")` — a corpus directory, a
+/// `languageId` on every `didOpen`, and a provenance header, all under a
+/// language nothing declares. The second was unreachable only because the first
+/// happened to run earlier.
+#[test]
+fn a_handler_that_declares_no_language_is_refused_before_a_corpus_is_read() {
+    let corpus = fixture("no_language");
+
+    let cli = measure_core::Cli::parse_from([
+        "measure-test",
+        "enumerate",
+        "--corpus",
+        &corpus.split.to_string_lossy(),
+    ]);
+    let Err(refused) = measure_core::run(&LanguagelessHandler, cli) else {
+        panic!("a binary built with a handler that declares no language enumerated a corpus");
+    };
+    assert!(
+        matches!(
+            refused,
+            Error::Config(shared::ConfigError::HandlerDeclaresNoLanguage)
+        ),
+        "a handler with no language was refused as {refused}, which says \
+         something else happened. It is four lines of `main` wired wrong, and \
+         the error is what somebody reads at the top of a hundred-machine-hour \
+         run"
+    );
+    assert!(
+        !corpus.split.join("unknown").exists()
+            && !corpus.split.join("rust").join("positions").exists(),
+        "the run wrote positions before refusing, so the language it could not \
+         determine still named a directory"
+    );
+}
+
+/// Two claims about a corpus of more than one repository, which every other
+/// fixture here has exactly one of.
+///
+/// **The order is the repository name's**, not the directory walk's. §7 makes
+/// the printed table and the records file byte-identical across runs, and a
+/// corpus of ten repositories is where that stops being free: `read_dir` order
+/// is the filesystem's, it is not the same on two machines, and it is stable
+/// enough on one that a determinism assertion would not notice. So what is
+/// held is the order itself rather than two runs agreeing.
+///
+/// **`--repo` restricts the run**, which nothing exercised: the flag-set test
+/// pins that it exists and §7's usage line is where it comes from, but a flag
+/// that parsed and did nothing would pass both. It is also how a tuning loop
+/// runs one repository without re-reading the other nine.
+#[test]
+fn repositories_are_replayed_in_name_order_and_only_the_ones_named() {
+    let corpus = fixture("two_repositories");
+    // Sorts before `one`, and is created second — so a run that took the walk
+    // order would be likely to put it last.
+    let alpha = add_repository(&corpus, "alpha");
+    enumerate(&corpus);
+    write_truth(&corpus);
+    write_truth_headed_for(
+        &corpus,
+        "oracle",
+        "alpha",
+        &header_of("alpha", "rust", "oracle", &alpha, true),
+    );
+
+    let both = corpus.scratch.join("both.jsonl");
+    replay(&corpus, Some(&both));
+    let text = fs::read_to_string(&both).expect("replay wrote the records file");
+
+    let first_one = text
+        .lines()
+        .position(|line| line.contains("/repos/one/"))
+        .expect("the corpus's first repository was replayed");
+    let last_alpha = text
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| line.contains("/repos/alpha/"))
+        .map(|(at, _)| at)
+        .last()
+        .expect("the corpus's second repository was replayed");
+    assert!(
+        last_alpha < first_one,
+        "the records file interleaves the repositories or orders them by the \
+         walk. §7 makes replay byte-identical across runs, and `alpha` before \
+         `one` is the only order a name sort can produce — a directory order \
+         is the filesystem's and differs between two checkouts of one corpus"
+    );
+
+    let only = corpus.scratch.join("only.jsonl");
+    replay_repositories(&TestHandler, &corpus, &["one"], Some(&only));
+    let restricted = fs::read_to_string(&only).expect("replay wrote the records file");
+
+    assert!(
+        !restricted.contains("/repos/alpha/"),
+        "`--repo one` measured `alpha` as well. The flag is what runs one \
+         repository of ten, and one that parsed and selected nothing would pass \
+         every other test here"
+    );
+    assert_eq!(
+        restricted.lines().count(),
+        text.lines().count() - restricted.lines().count(),
+        "`--repo one` did not replay the whole of `one`: the two repositories \
+         hold the same source, so half of the unrestricted run is the whole of \
+         the restricted one"
+    );
+}
+
+/// The last thing §7's failure digest is made of, after the two keys: "Each
+/// group carries its count, its share of that stratum, and only then a **small
+/// seeded sample** of concrete cases — repository, file, line, the identifier,
+/// what we returned, what the server said."
+///
+/// Three of those six are not fields of the record and must not become ones:
+/// §7 gives the record a byte offset rather than a line/column pair "in the one
+/// place the two halves of the metric have to line up exactly", and the digest
+/// is the harness's job precisely so `measure_core` stays ignorant of it. So
+/// what this crate owes is not a digest but a *join* — that everything the
+/// sample names is recoverable from what a replay wrote plus the corpus it was
+/// given, with nothing derived twice.
+///
+/// This test is that join, built the way a harness would build it and asserted
+/// against a fixture whose answers are known. Two of the six come from outside
+/// the record: `line` from the file at the offset, and the identifier from
+/// `positions/<repo>.jsonl` on `(file, offset)` — which is why enumeration
+/// stores the token text it already had rather than leaving a reader to
+/// re-derive "what is an identifier" from a byte offset, in a project where
+/// that rule is deliberately one function.
+///
+/// The seeding and the sample size are the harness's and are not here. What
+/// would make them unimplementable is a missing join, and that is what this
+/// holds.
+#[test]
+fn the_digests_concrete_sample_is_recoverable_from_what_a_replay_wrote() {
+    let corpus = fixture("digest_sample");
+    enumerate(&corpus);
+    write_truth_answered(&corpus);
+
+    let records = corpus.scratch.join("records.jsonl");
+    replay_with(&MismatchingHandler, &corpus, Some(&records));
+
+    let text = fs::read_to_string(&records).expect("replay wrote the records file");
+    let positions = positions_of(&corpus);
+
+    let mut sampled = 0;
+    for row in text
+        .lines()
+        .filter(|row| row.contains("\"agreement\":\"mismatch\""))
+    {
+        let offset = between(row, "\"position\":", ",");
+        let at: usize = offset.parse().expect("the record's position is a number");
+
+        // Repository and file. The corpus layout is `data-collection.md` §0's,
+        // and a harness has the split path because it is what it passed as
+        // `--corpus`.
+        let (_, under) = between(row, "\"uri\":\"", "\"")
+            .split_once("/repos/")
+            .expect("a replayed query names a file under the corpus's repos/");
+        let (repository, file) = under
+            .split_once('/')
+            .expect("a repository-relative path inside the repository");
+        assert_eq!(
+            (repository, file),
+            ("one", "src/lib.rs"),
+            "the record's uri does not decompose into the repository and the \
+             file the corpus holds, so a digest could name neither"
+        );
+
+        // The line, from the file the offset is into. Not carried in the
+        // record, and not needed there: the corpus is a checkout at a commit
+        // the replay verified, so the text at the offset is the text the
+        // measurement was taken against.
+        let source = fs::read_to_string(corpus.split.join("rust").join("repos").join(under))
+            .expect("the file the record names");
+        let line = source[..at].matches('\n').count();
+
+        // The identifier, from the position file on `(file, offset)`. The
+        // corpus wrote the token text at enumeration, where the tree was
+        // already in hand.
+        let enumerated = positions
+            .lines()
+            .find(|position| {
+                between(position, "\"file\":\"", "\"") == file
+                    && between(position, "\"offset\":", ",") == offset
+            })
+            .expect("every replayed position was enumerated");
+        let identifier = between(enumerated, "\"text\":\"", "\"");
+
+        assert_eq!(
+            source.get(at..at + identifier.len()),
+            Some(identifier),
+            "the position file's text for {file}:{offset} is not what is at \
+             that offset in the checkout, so the two artifacts a sample is \
+             joined from describe different files"
+        );
+        assert!(
+            !identifier.is_empty()
+                && source
+                    .lines()
+                    .nth(line)
+                    .is_some_and(|text| text.contains(identifier)),
+            "the sample would name `{identifier}` on line {line} of {file}, and \
+             that line does not hold it. The three are recovered three ways — \
+             the record's offset, the checkout, and the position file — and a \
+             digest that got any of them from somewhere else would be naming a \
+             case that does not exist"
+        );
+
+        for (side, labels) in [
+            (
+                "what we returned",
+                between(row, "\"heuristic_locations\":[", "]"),
+            ),
+            (
+                "what the server said",
+                between(row, "\"lsp_locations\":[", "]"),
+            ),
+        ] {
+            assert!(
+                labels.contains("file://"),
+                "the sample's `{side}` is `{labels}`. A mismatch is a row where \
+                 both sides answered and they disagree, so a group whose sample \
+                 shows one side is a finding nobody can act on"
+            );
+        }
+        sampled += 1;
+    }
+
+    assert!(
+        sampled > 1,
+        "the fixture produced {sampled} mismatched row(s), so the join above \
+         holds for a single case or for none"
+    );
+}
+
+/// §7's "the table is not enough": each group carries "its count, its **share
+/// of that stratum**". The count is the digest's, computed from the records
+/// file; the denominator is the stratum's, and the stratum's numbers are the
+/// table's. So a share means something only if the two artifacts a replay
+/// writes are two accounts of the *same* run.
+///
+/// Nothing joined them, and every way they can drift is silent: a `--records`
+/// that dropped a decision, a `Table::observe` that counted a row into the
+/// wrong half, a `stratum_prior`/`stratum_final` swap applied to one side only.
+/// Each leaves a table that reads fine sitting beside a digest whose every
+/// share is wrong, and the digest is the artifact a tuning campaign acts on.
+///
+/// Three handlers, because no one run reaches all seven counters: the template
+/// only abstains, [`MismatchingHandler`] commits into all three agreement
+/// counters, and a handler that returns `Err` is the only source of `failed`.
+#[test]
+fn the_records_and_the_table_are_the_same_run_counted_twice() {
+    let corpus = fixture("records_reconcile");
+    enumerate(&corpus);
+    write_truth_answered(&corpus);
+
+    // A reconciliation of zero against zero holds trivially, so every counter
+    // has to be reached by at least one of the three runs.
+    let mut exercised: BTreeMap<&str, u64> = BTreeMap::new();
+
+    for handler in [
+        &TestHandler as &dyn LanguageHandler,
+        &MismatchingHandler,
+        &FailingHandler,
+    ] {
+        let records = corpus.scratch.join("records.jsonl");
+        replay_with(handler, &corpus, Some(&records));
+        let report = replay_report(handler, &corpus, measure_core::Format::Json);
+        let text = fs::read_to_string(&records).expect("replay wrote the records file");
+
+        // The rule that makes the reconciliation above possible at all, and the
+        // one a replay got wrong: §6 classifies *the shim's answer* against the
+        // child's, so a query the shim never answered "has no answer of ours to
+        // compare, which is a different fact from the two sides disagreeing".
+        // Classifying one anyway reads as `mismatch` on every abstention the
+        // oracle answered — a precision loss where §7 counts a coverage loss,
+        // and a divergence report to a user who was sent nowhere at all.
+        assert_eq!(
+            tally(&text, |line| decision_of(line) != "committed"
+                && !(agreement_of(line).is_empty()
+                    && between(line, "\"severity\":\"", "\"").is_empty())),
+            0,
+            "a record the handler did not answer carries an oracle verdict. \
+             core.md §6 makes agreement and severity properties of an answer, \
+             and a table that judges only commits beside a records file that \
+             judges everything is two accounts of one run that cannot both be \
+             right\n{text}"
+        );
+
+        for stratum in STRATUM_NAMES {
+            for (field, counted) in [
+                ("queries", tally(&text, |line| prior_of(line) == stratum)),
+                (
+                    "committed",
+                    tally(&text, |line| {
+                        prior_of(line) == stratum && decision_of(line) == "committed"
+                    }),
+                ),
+                (
+                    "abstained",
+                    tally(&text, |line| {
+                        prior_of(line) == stratum && decision_of(line) == "abstained"
+                    }),
+                ),
+                (
+                    "failed",
+                    tally(&text, |line| {
+                        prior_of(line) == stratum && decision_of(line) == "failed"
+                    }),
+                ),
+                (
+                    "match_top1",
+                    tally(&text, |line| {
+                        settled_of(line) == stratum && agreement_of(line) == "match_top1"
+                    }),
+                ),
+                (
+                    "match_contained",
+                    tally(&text, |line| {
+                        settled_of(line) == stratum && agreement_of(line) == "match_contained"
+                    }),
+                ),
+                (
+                    "mismatch",
+                    tally(&text, |line| {
+                        settled_of(line) == stratum && agreement_of(line) == "mismatch"
+                    }),
+                ),
+            ] {
+                assert_eq!(
+                    counted,
+                    reported(&report, stratum, field),
+                    "the records file counts {counted} for {stratum}/{field} and \
+                     the table reports {}. core.md §7's digest gives every group \
+                     its count and its share of that stratum: the count comes \
+                     from the records and the denominator from the table, so two \
+                     artifacts of one replay that disagree make every share in \
+                     the digest wrong with nothing downstream able to see it",
+                    reported(&report, stratum, field)
+                );
+                *exercised.entry(field).or_default() += counted;
+            }
+        }
+    }
+
+    for (field, total) in &exercised {
+        assert!(
+            *total > 0,
+            "no run reached {field}, so the equality asserted for it above was \
+             zero against zero and holds against a records file and a table that \
+             share nothing at all.\ncounters: {exercised:?}"
+        );
+    }
+}
+
+/// The reconciliation above is against `--format json`, which is what the
+/// harness consumes. A person reads the other one, and nothing said they hold
+/// the same numbers — so a digest's shares could have been computed from a
+/// denominator nobody could see.
+///
+/// The two renderings do not carry the same columns, which is why this is not
+/// a string comparison: the text table prints `coverage` and `precision` as
+/// percentages where the JSON carries the three agreement counters they are
+/// computed from. Recomputing them here is the assertion that matters, because
+/// it is the one place §7's two-field stratum is visible in a *rendering*:
+/// coverage is reported on `stratum_prior` and precision on `stratum_final`, so
+/// a handler that refines puts the two halves of one query in two rows.
+///
+/// [`ReportingHandler`] against a truth file the oracle answered `null`
+/// everywhere is exactly that case, and it is what makes the check bite. Its
+/// prior is `explicitly_imported` and its settled stratum `ambiguous_name`, and
+/// an empty commit against a `null` answer is the mutual "no definition here"
+/// §6 calls a match. So one row is all coverage and no judgement and the other
+/// is all judgement and no coverage — and `Row::precision`'s denominator, which
+/// its doc comment argues at length must be the three agreement counters and
+/// not `committed`, is the difference between 100% and 0% in the second row.
+#[test]
+fn the_printed_table_and_the_json_report_are_one_table() {
+    let corpus = fixture("one_table");
+    enumerate(&corpus);
+    write_truth(&corpus);
+
+    let printed = replay_report(&ReportingHandler, &corpus, measure_core::Format::Table);
+    let report = replay_report(&ReportingHandler, &corpus, measure_core::Format::Json);
+
+    let replayed = reported(&report, "explicitly_imported", "queries");
+    assert!(replayed > 1, "the fixture replayed {replayed} queries");
+    assert_eq!(
+        reported(&report, "ambiguous_name", "match_top1"),
+        replayed,
+        "the refined half of every query should be judged under the stratum the \
+         search settled on, and the fixture is built so that all of them match"
+    );
+    assert_eq!(
+        reported(&report, "ambiguous_name", "queries"),
+        0,
+        "the refined stratum should carry no coverage denominator at all, which \
+         is what makes the precision denominator below distinguishable from \
+         `committed`"
+    );
+
+    let mut rows = 0;
+    for line in printed.lines() {
+        let columns: Vec<&str> = line.split_whitespace().collect();
+        let [
+            stratum,
+            queries,
+            committed,
+            abstained,
+            failed,
+            coverage,
+            precision,
+            contained,
+        ] = columns[..]
+        else {
+            continue;
+        };
+        if !STRATUM_NAMES.contains(&stratum) {
+            continue;
+        }
+        rows += 1;
+
+        let counted = |field: &str| reported(&report, stratum, field);
+        for (column, printed, field) in [
+            ("queries", queries, "queries"),
+            ("commit", committed, "committed"),
+            ("abstain", abstained, "abstained"),
+            ("fail", failed, "failed"),
+            ("contained", contained, "match_contained"),
+        ] {
+            assert_eq!(
+                printed.parse::<u64>().expect("a printed count"),
+                counted(field),
+                "the {stratum} row prints {printed} for {column} and the report \
+                 carries {} for {field}. §7's command line offers both formats \
+                 of one table; two renderings that disagree mean a gate reading \
+                 the JSON and a person reading the text are looking at different \
+                 runs",
+                counted(field)
+            );
+        }
+
+        assert_eq!(
+            coverage.trim_end_matches('%'),
+            percent(counted("committed"), counted("queries")),
+            "the {stratum} row prints {coverage} coverage over {} committed of \
+             {} queries. §7 reports coverage on stratum_prior so the denominator \
+             is fixed by the reference and does not move when the implementation \
+             changes",
+            counted("committed"),
+            counted("queries")
+        );
+        assert_eq!(
+            precision.trim_end_matches('%'),
+            percent(
+                counted("match_top1"),
+                counted("match_top1") + counted("match_contained") + counted("mismatch"),
+            ),
+            "the {stratum} row prints {precision} precision. §7 reports precision \
+             on stratum_final, so on a refined query the coverage and the \
+             judgement live in different rows and `committed` is the wrong row's \
+             number — which is why the denominator is the three agreement \
+             counters"
+        );
+    }
+
+    assert_eq!(
+        rows,
+        STRATUM_NAMES.len(),
+        "the printed table has {rows} of the nine strata, so the reconciliation \
+         above skipped rows the JSON carries\n{printed}"
+    );
+}
+
+/// §7's "the table is not enough" on what a group shows after its count and its
+/// share: "a **small seeded sample** of concrete cases — repository, file, line,
+/// the identifier, what we returned, what the server said".
+///
+/// Not one of those six is a column of the record, and the line deliberately
+/// cannot be: §7 makes `position` a byte offset so that the two halves of the
+/// metric join exactly, and says a line/column pair "would need a conversion in
+/// the one place the two halves of the metric have to line up exactly". So what
+/// the measurement owes the digest here is not a column but a *reachability* —
+/// all six assemblable from the records file, the corpus artifacts beside it,
+/// and the checkout a replay already refuses to run against unless it is clean.
+///
+/// The repository holds two files whose identifiers sit at the same byte
+/// offsets and spell different things, so the join that produces the identifier
+/// has to be on `(file, offset)`. Every other fixture here is one file, and a
+/// one-file repository cannot tell that join from one on the offset alone —
+/// which would name a real identifier from the wrong file, and read as a
+/// finding rather than as a bug.
+#[test]
+fn a_digest_group_names_a_case_a_person_can_open() {
+    let corpus = fixture_of(
+        "digest_sample",
+        &[("src/lib.rs", SOURCE), ("src/other.rs", OTHER_SOURCE)],
+    );
+    enumerate(&corpus);
+    write_truth_answered(&corpus);
+
+    let records = corpus.scratch.join("records.jsonl");
+    replay_with(&MismatchingHandler, &corpus, Some(&records));
+
+    let text = fs::read_to_string(&records).expect("replay wrote the records file");
+    let positions = positions_of(&corpus);
+    let repositories = corpus.split.join("rust").join("repos");
+
+    let mut groups: BTreeMap<(&str, &str), usize> = BTreeMap::new();
+    let mut sampled: BTreeMap<String, usize> = BTreeMap::new();
+
+    for line in text.lines() {
+        // Repository and file. The record names an absolute uri; the corpus
+        // layout is `<split>/<language>/repos/<name>/<file>`, which is what a
+        // digest already has and what the record therefore does not repeat.
+        let uri =
+            shared::DocumentUri::parse(between(line, "\"uri\":\"", "\"")).expect("a record's uri");
+        let path = uri.to_file_path().expect("a record naming a file");
+        let inside = path
+            .strip_prefix(&repositories)
+            .expect("a record naming a file outside the corpus it was replayed from");
+        let repository = inside
+            .components()
+            .next()
+            .expect("a repository directory")
+            .as_os_str()
+            .to_string_lossy()
+            .into_owned();
+        let file = inside
+            .strip_prefix(&repository)
+            .expect("a file inside its repository")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(
+            repository, "one",
+            "the record named a repository the corpus does not hold"
+        );
+
+        // What we returned and what the server said, both already spelled
+        // `uri:line` by `shared::record` so the two sides of a sample case
+        // cannot describe different things.
+        for (field, answer) in [
+            ("heuristic_locations", "what we returned"),
+            ("lsp_locations", "what the server said"),
+        ] {
+            assert!(
+                !between(line, &format!("\"{field}\":["), "]").is_empty(),
+                "a sample case has no {answer}. §7's digest shows both sides of \
+                 every case it names, and a group whose examples show one side \
+                 is a count with an anecdote attached\nrecord: {line}"
+            );
+        }
+
+        // The identifier, joined to the corpus on (file, offset): the position
+        // file recorded the text at enumeration and the record carries the
+        // offset it was queried at.
+        let offset: usize = between(line, "\"position\":", ",")
+            .parse()
+            .expect("a byte offset");
+        let joined = positions
+            .lines()
+            .find(|position| {
+                between(position, "\"file\":\"", "\"") == file
+                    && between(position, "\"offset\":", ",") == offset.to_string()
+            })
+            .unwrap_or_else(|| panic!("no corpus position for {file} at {offset}"));
+
+        // A non-identifier probe's `text` is one escaped scalar and the field
+        // §7 names is "the identifier", so the join is asserted where the
+        // corpus says there is one to name.
+        if between(joined, "\"class\":\"", "\"") != "identifier" {
+            continue;
+        }
+        let identifier = between(joined, "\"text\":\"", "\"");
+
+        // The line, counted in the checkout — which is sound because a replay
+        // refuses a dirty one, so the bytes the offsets describe are the bytes
+        // on disk.
+        let source = fs::read_to_string(&path).expect("the file the record names");
+        let number = source[..offset].matches('\n').count();
+        let opened = source
+            .lines()
+            .nth(number)
+            .expect("the line the offset falls on");
+        assert!(
+            opened.contains(identifier),
+            "a sample case names {file}:{number} and `{identifier}`, and that \
+             line reads `{opened}`. §7's sample exists to make a group concrete, \
+             and a case whose file, line and identifier do not describe one place \
+             is worse than no case at all — the offset is the record's and the \
+             identifier is the corpus's, so a join on the offset alone finds a \
+             real identifier from the wrong file"
+        );
+
+        *groups
+            .entry((settled_of(line), agreement_of(line)))
+            .or_default() += 1;
+        *sampled.entry(file).or_default() += 1;
+    }
+
+    assert_eq!(
+        sampled.len(),
+        2,
+        "the cases came from {} of the repository's two files, so the join that \
+         produced them is not distinguishable from one on the offset alone — \
+         which is what this fixture's second file exists to distinguish.\n\
+         files: {sampled:?}",
+        sampled.len()
+    );
+    assert!(
+        groups.len() > 1,
+        "every case fell in one group, so `each group carries … a sample` is \
+         asserted over a single group.\ngroups: {groups:?}"
+    );
+}
+
 /// The other half of that flag: "with no `--records` it **writes nothing**, so
 /// the default stays a pure function of its inputs and `measure_core` still
 /// needs no knowledge of `state/`".
@@ -1547,6 +2350,15 @@ struct Fixture {
 /// A corpus root with the layout `data-collection.md` §0 describes, holding
 /// one repository at a known commit with a clean tree.
 fn fixture(name: &str) -> Fixture {
+    fixture_of(name, &[("src/lib.rs", SOURCE)])
+}
+
+/// The same, with the repository's files spelled out.
+///
+/// A parameter for one test: a digest's sample joins a record back to the
+/// corpus on `(file, offset)`, and a single-file repository cannot tell that
+/// join from one on `offset` alone.
+fn fixture_of(name: &str, sources: &[(&str, &str)]) -> Fixture {
     let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
     if root.exists() {
         fs::remove_dir_all(&root).expect("clearing a previous run");
@@ -1554,16 +2366,33 @@ fn fixture(name: &str) -> Fixture {
 
     let split = root.join("training");
     let repository = split.join("rust").join("repos").join("one");
-    fs::create_dir_all(repository.join("src")).expect("the fixture repository");
-    fs::write(repository.join("src").join("lib.rs"), SOURCE).expect("the fixture source");
+    for (relative, text) in sources {
+        let path = repository.join(relative);
+        fs::create_dir_all(path.parent().expect("a source directory"))
+            .expect("the fixture repository");
+        fs::write(&path, text).expect("the fixture source");
+    }
 
     let scratch = root.join("scratch");
     fs::create_dir_all(&scratch).expect("the scratch directory");
 
-    git(&repository, &["init", "--quiet"]);
-    git(&repository, &["add", "."]);
+    let commit = commit_fixture(&repository);
+
+    Fixture {
+        root,
+        split,
+        scratch,
+        commit,
+    }
+}
+
+/// One checkout, committed and clean, which is what `verify_checkout` requires
+/// of every repository in a split.
+fn commit_fixture(repository: &Path) -> String {
+    git(repository, &["init", "--quiet"]);
+    git(repository, &["add", "."]);
     git(
-        &repository,
+        repository,
         &[
             "-c",
             "user.name=fixture",
@@ -1575,14 +2404,19 @@ fn fixture(name: &str) -> Fixture {
             "fixture",
         ],
     );
-    let commit = git(&repository, &["rev-parse", "HEAD"]).trim().to_owned();
+    git(repository, &["rev-parse", "HEAD"]).trim().to_owned()
+}
 
-    Fixture {
-        root,
-        split,
-        scratch,
-        commit,
-    }
+/// A second repository in the same split, at a commit of its own.
+///
+/// Returned rather than stored, because what a truth file's header has to
+/// carry is *this* repository's commit — the corpus is several checkouts and
+/// the header describes one of them.
+fn add_repository(corpus: &Fixture, name: &str) -> String {
+    let repository = corpus.split.join("rust").join("repos").join(name);
+    fs::create_dir_all(repository.join("src")).expect("a second fixture repository");
+    fs::write(repository.join("src").join("lib.rs"), SOURCE).expect("the fixture source");
+    commit_fixture(&repository)
 }
 
 /// A limit well above what the fixture holds, so the sample is every position
@@ -1606,12 +2440,16 @@ fn enumerate_with(corpus: &Fixture, limit: &str, seed: &str) {
 }
 
 fn positions_of(corpus: &Fixture) -> String {
+    positions_of_repository(corpus, "one")
+}
+
+fn positions_of_repository(corpus: &Fixture, repository: &str) -> String {
     fs::read_to_string(
         corpus
             .split
             .join("rust")
             .join("positions")
-            .join("one.jsonl"),
+            .join(format!("{repository}.jsonl")),
     )
     .expect("enumerate wrote positions")
 }
@@ -1625,6 +2463,17 @@ fn replay(corpus: &Fixture, records: Option<&Path>) {
 /// `&dyn LanguageHandler` and depends on no language, so what a replay does
 /// with what a handler reports has to be assertable against any handler.
 fn replay_with(handler: &dyn LanguageHandler, corpus: &Fixture, records: Option<&Path>) {
+    replay_repositories(handler, corpus, &[], records);
+}
+
+/// `[--repo <name>]...`, which is the flag that decides which of a split's
+/// repositories a run reads at all. Empty is every one of them.
+fn replay_repositories(
+    handler: &dyn LanguageHandler,
+    corpus: &Fixture,
+    repositories: &[&str],
+    records: Option<&Path>,
+) {
     let mut arguments = vec![
         "replay".to_owned(),
         "--corpus".to_owned(),
@@ -1634,6 +2483,10 @@ fn replay_with(handler: &dyn LanguageHandler, corpus: &Fixture, records: Option<
         "--format".to_owned(),
         "json".to_owned(),
     ];
+    for repository in repositories {
+        arguments.push("--repo".to_owned());
+        arguments.push((*repository).to_owned());
+    }
     if let Some(path) = records {
         arguments.push("--records".to_owned());
         arguments.push(path.to_string_lossy().into_owned());
@@ -1659,6 +2512,22 @@ fn replay_result(corpus: &Fixture, format: measure_core::Format) -> Result<Strin
         &shared::SystemClock,
         &replay_arguments(corpus, format),
     )
+}
+
+/// The rendered table for a handler other than the template's, which is what a
+/// reconciliation against the records file needs: the table and the records
+/// have to be two accounts of the *same* run.
+fn replay_report(
+    handler: &dyn LanguageHandler,
+    corpus: &Fixture,
+    format: measure_core::Format,
+) -> String {
+    measure_core::replay_table(
+        handler,
+        &shared::SystemClock,
+        &replay_arguments(corpus, format),
+    )
+    .expect("replay")
 }
 
 fn replay_arguments(corpus: &Fixture, format: measure_core::Format) -> measure_core::Replay {
@@ -1691,12 +2560,16 @@ fn write_truth(corpus: &Fixture) {
 }
 
 fn truth_path(corpus: &Fixture, directory: &str) -> PathBuf {
+    truth_path_of(corpus, directory, "one")
+}
+
+fn truth_path_of(corpus: &Fixture, directory: &str, repository: &str) -> PathBuf {
     corpus
         .split
         .join("rust")
         .join("truth")
         .join(directory)
-        .join("one.jsonl")
+        .join(format!("{repository}.jsonl"))
 }
 
 /// The header `write_truth_as` writes, as a value: what a resume of that
@@ -1826,25 +2699,40 @@ fn write_truth_as(corpus: &Fixture, directory: &str, recorded: &str) {
     write_truth_headed(corpus, directory, &header(recorded, &corpus.commit, true));
 }
 
-/// The provenance header as a line, so a test can move the two fields a replay
+/// The provenance header as a line, so a test can move the fields a replay
 /// checks for itself — the commit, and whether the collection ever finished.
 fn header(server: &str, commit: &str, complete: bool) -> String {
+    header_of("one", "rust", server, commit, complete)
+}
+
+/// The same, with the three fields that say *which run wrote this file* free
+/// to move. Written as text rather than through `Provenance` because a replay
+/// reads a file: a header built from the type could not carry a language this
+/// binary has no handler for, which is one of the cases.
+fn header_of(
+    repository: &str,
+    language: &str,
+    server: &str,
+    commit: &str,
+    complete: bool,
+) -> String {
     format!(
-        "{{\"repository\":\"one\",\"commit\":\"{commit}\",\"language\":\"rust\",\
-         \"server\":\"{server}\",\"server_version\":\"0\",\"grammar\":\"fixture\",\
+        "{{\"repository\":\"{repository}\",\"commit\":\"{commit}\",\
+         \"language\":\"{language}\",\"server\":\"{server}\",\
+         \"server_version\":\"0\",\"grammar\":\"fixture\",\
          \"measure_version\":\"0\",\"complete\":{complete}}}"
     )
 }
 
 fn write_truth_headed(corpus: &Fixture, directory: &str, header: &str) {
-    let positions = fs::read_to_string(
-        corpus
-            .split
-            .join("rust")
-            .join("positions")
-            .join("one.jsonl"),
-    )
-    .expect("enumerate ran first");
+    write_truth_headed_for(corpus, directory, "one", header);
+}
+
+/// The same for a named repository, which is what a corpus of several is: one
+/// positions file and one truth file each, and a header that describes that
+/// checkout rather than the split.
+fn write_truth_headed_for(corpus: &Fixture, directory: &str, repository: &str, header: &str) {
+    let positions = positions_of_repository(corpus, repository);
 
     let mut text = format!("{header}\n");
     for line in positions.lines() {
@@ -1856,7 +2744,7 @@ fn write_truth_headed(corpus: &Fixture, directory: &str, header: &str) {
         ));
     }
 
-    let path = truth_path(corpus, directory);
+    let path = truth_path_of(corpus, directory, repository);
     fs::create_dir_all(path.parent().expect("a truth directory")).expect("the truth directory");
     fs::write(path, text).expect("the truth file");
 }
@@ -1887,6 +2775,66 @@ fn field_order(line: &str) -> Vec<&str> {
         rest = &tail[1..];
     }
     found
+}
+
+/// The four columns a records file is aggregated on, spelled once so that the
+/// reconciliation and the sample read them the same way.
+fn prior_of(line: &str) -> &str {
+    between(line, "\"stratum_prior\":\"", "\"")
+}
+
+fn settled_of(line: &str) -> &str {
+    between(line, "\"stratum_final\":\"", "\"")
+}
+
+fn decision_of(line: &str) -> &str {
+    between(line, "\"decision\":\"", "\"")
+}
+
+/// `""` for a row with no oracle verdict, since there is no `"agreement":"` in
+/// `"agreement":null`. That is the right answer rather than a coincidence: an
+/// unjudged row belongs in none of the three agreement counters.
+fn agreement_of(line: &str) -> &str {
+    between(line, "\"agreement\":\"", "\"")
+}
+
+/// A ratio as the text table prints it, computed here rather than read from
+/// `Row`: an assertion against the code that produced the number asserts
+/// nothing.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "two counts bounded by the fixture, formatted for comparison against a printed column"
+)]
+fn percent(part: u64, whole: u64) -> String {
+    if whole == 0 {
+        return "0.0".to_owned();
+    }
+    format!("{:.1}", part as f64 / whole as f64 * 100.0)
+}
+
+fn tally(text: &str, wanted: impl Fn(&str) -> bool) -> u64 {
+    u64::try_from(text.lines().filter(|line| wanted(line)).count()).expect("a count of rows")
+}
+
+/// One counter out of `--format json`, which is the format the harness
+/// consumes. Read forward from the named row, which is sound because `Row`
+/// writes `stratum` first and all seven counters after it.
+fn reported(report: &str, stratum: &str, field: &str) -> u64 {
+    let row = report
+        .find(&format!("\"stratum\": \"{stratum}\""))
+        .map(|at| &report[at..])
+        .unwrap_or_else(|| panic!("the report names no {stratum} row:\n{report}"));
+    let marker = format!("\"{field}\": ");
+    let at = row
+        .find(&marker)
+        .unwrap_or_else(|| panic!("the {stratum} row has no {field}:\n{row}"))
+        + marker.len();
+    row[at..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .unwrap_or_else(|error| panic!("{stratum}/{field} is not a count: {error}\n{row}"))
 }
 
 fn between<'a>(line: &'a str, open: &str, close: &str) -> &'a str {
@@ -1939,25 +2887,54 @@ fn git(repository: &Path, arguments: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
-/// `heuristic_latency_us` is the one field §7 says a replay does *not*
-/// reproduce exactly — it is the same handler on the same snapshot, so it is
-/// recorded, but nothing in the run branches on it and it needs a quiet
-/// machine to mean anything. Masking it is what leaves the determinism claim
-/// testable instead of flaky; masking anything else would be hiding a bug.
+/// The two fields §7 says a replay does *not* reproduce exactly. Both are the
+/// same handler on the same snapshot, so both are recorded; nothing in the run
+/// branches on either, and both need a quiet machine to mean anything
+/// (`state/spec-changelog/core.md`, CHANGE-core-009).
+///
+/// `stage_us` is a map rather than a number, so its whole interior goes: the
+/// keys are the handler's stage names and only the values are clock readings,
+/// but a stage entered on one run and skipped on the next is a determinism
+/// failure the `stages` comparison already catches, and matching one value at
+/// a time here would mean parsing JSON in a file that deliberately does not.
+/// The braces stay, so a masked record is still shaped like a record.
+const NOT_REPRODUCED: [(&str, char); 2] =
+    [("\"heuristic_latency_us\":", ','), ("\"stage_us\":{", '}')];
+
+/// What a masked value is replaced by. A character no other value in a record
+/// can hold, so counting them counts masks — and if one ever appears in a URI
+/// or a stage label, the count is what says so.
+const MASK: char = '~';
+
+/// Masking these is what leaves the determinism claim testable instead of
+/// flaky; masking anything else would be hiding a bug, which is why
+/// [`the_mask_is_not_the_whole_record`] holds the size of what is left.
 fn without_the_clock(text: &str) -> String {
-    text.lines()
-        .map(|line| {
-            let mut masked = String::with_capacity(line.len());
-            let mut rest = line;
-            while let Some(at) = rest.find("\"heuristic_latency_us\":") {
-                let (before, after) = rest.split_at(at + "\"heuristic_latency_us\":".len());
-                masked.push_str(before);
-                masked.push('_');
-                rest = after.trim_start_matches(|scalar: char| scalar.is_ascii_digit());
-            }
-            masked.push_str(rest);
-            masked
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut masked = text.to_owned();
+    for (field, ends) in NOT_REPRODUCED {
+        masked = masked
+            .lines()
+            .map(|line| mask_after(line, field, ends))
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+    masked
+}
+
+/// Replaces every `field`'s value with `_`, up to but not including the first
+/// `ends` after it.
+fn mask_after(line: &str, field: &str, ends: char) -> String {
+    let mut masked = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(at) = rest.find(field) {
+        let (before, after) = rest.split_at(at + field.len());
+        masked.push_str(before);
+        masked.push(MASK);
+        rest = match after.find(ends) {
+            Some(end) => &after[end..],
+            None => "",
+        };
+    }
+    masked.push_str(rest);
+    masked
 }

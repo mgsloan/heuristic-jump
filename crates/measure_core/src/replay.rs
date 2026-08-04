@@ -17,17 +17,15 @@
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 
 use shared::proto::DefinitionResult;
+use shared::record::{Answered, ChildAnswer, Decision, Mode, QueryContext, QueryRecord};
 use shared::{
     Agreement, Clock, CommitPolicy, DefinitionSite, DocumentUri, DocumentVersion, Error, FileList,
-    LanguageHandler, Location, Offset, Outcome, ProjectView, Query, Rope, ServerProfile,
-    SnapshotSeed, Strata, Stratum, Trace,
+    LanguageHandler, Offset, ProjectView, Query, Rope, ServerProfile, SnapshotSeed,
 };
 
 use crate::corpus::{Corpus, Repository, verify_checkout};
-use crate::record::{self, Decision, Mode, QueryRecord, StratumName};
 use crate::table::Table;
 use crate::truth::{self, Truth};
 
@@ -49,20 +47,35 @@ impl Replay<'_> {
     ) -> Result<(), Error> {
         let path = self.corpus.truth(self.server, &repository.name);
         let truth = Truth::read(&path)?;
-        verify_checkout(repository, Some(&truth.provenance.commit))?;
         // §7: the header "names exactly one server and version", which is what
         // makes a truth file comparable to itself over time and never silently
-        // merged with another's. The commit check above is about the *corpus*
-        // having moved; this one is about the file being the wrong file, and
-        // the `truth/<server>/` path is not a check — a file copied or hand-
-        // moved into it would be replayed under a name it was not collected
-        // under, and every metric would be attributed to the wrong oracle.
+        // merged with another's. Neither `truth/<server>/` nor
+        // `<repository>.jsonl` is a check — a file copied or hand-moved into
+        // either is replayed under a name it was not collected under, and
+        // every metric is then attributed to the wrong oracle or the wrong
+        // checkout.
+        //
+        // All three identity fields, not the two a reader would think of. The
+        // commit check below refuses a misfiled *repository* only when the two
+        // happen to sit at different commits, which is a coincidence and not a
+        // check; two checkouts of the same upstream at one commit are exactly
+        // where a corpus wants this to fire.
+        //
+        // Before the checkout is verified, and in that order deliberately:
+        // asking whether the corpus has moved under a file that was never
+        // about this repository reports a commit mismatch, which sends an
+        // operator to `git checkout` for a file that needs re-collecting.
         for (field, recorded, found) in [
             ("server", &truth.provenance.server, self.server),
             (
                 "language",
                 &truth.provenance.language,
                 self.corpus.language().as_str(),
+            ),
+            (
+                "repository",
+                &truth.provenance.repository,
+                &*repository.name,
             ),
         ] {
             if &**recorded != found {
@@ -75,6 +88,7 @@ impl Replay<'_> {
                 .into());
             }
         }
+        verify_checkout(repository, Some(&truth.provenance.commit))?;
 
         // One `FileList` per repository, and a `ProjectView` per query over
         // it: the walk is the expensive part and the scope rules are what the
@@ -95,33 +109,48 @@ impl Replay<'_> {
                 continue;
             }
 
-            if current.as_ref().map(|(file, _)| &**file) != Some(&*row.file) {
-                current = self
-                    .snapshot(repository, &row.file)?
-                    .map(|document| (row.file.clone(), document));
-            }
-            let Some((_, document)) = &current else {
-                continue;
+            // Taken and put back rather than borrowed across the read, which is
+            // what lets the miss build a document without the match holding a
+            // borrow of what it replaces.
+            let open = match current.take() {
+                Some((file, document)) if *file == *row.file => (file, document),
+                _ => (row.file.clone(), self.snapshot(repository, &row.file)?),
             };
-
-            records.push(self.one(&files, document, row, table)?);
+            records.push(self.one(&files, &open.1, row, table)?);
+            current = Some(open);
         }
 
         Ok(())
     }
 
+    /// The document a recorded position is into.
+    ///
+    /// A failure here is refused rather than skipped, and that is the same rule
+    /// §7 states about the commit: a replay refuses a truth file whose checkout
+    /// does not match "rather than silently reporting metrics for positions
+    /// that have since moved". A file the truth names and this checkout cannot
+    /// read is that condition, arriving one row at a time — and skipping it
+    /// takes those positions out of the denominator, so the table reads as a
+    /// smaller corpus rather than as a broken one, which is the shape of a
+    /// coverage regression that never happened.
+    ///
+    /// It cannot be reached by a corpus that was enumerated and collected
+    /// against the checkout the header names: `enumerate` skips a file it
+    /// cannot read, so no position exists for one. What reaches it is a truth
+    /// file from another enumeration, which is exactly what the header checks
+    /// above are about.
     fn snapshot(
         &self,
         repository: &Repository,
         file: &str,
-    ) -> Result<Option<shared::DocumentSnapshot>, Error> {
+    ) -> Result<shared::DocumentSnapshot, Error> {
         let absolute = repository.path.join(file);
-        let Ok(text) = fs::read_to_string(&absolute) else {
-            tracing::warn!(path = %absolute.display(), "a recorded file is unreadable");
-            return Ok(None);
-        };
+        let text = fs::read_to_string(&absolute).map_err(|source| shared::ProjectError::Read {
+            path: absolute.clone(),
+            source,
+        })?;
         let Some(uri) = DocumentUri::from_file_path(&absolute) else {
-            return Ok(None);
+            return Err(shared::ConfigError::RepositoryMissing { path: absolute }.into());
         };
         let language = self.corpus.language();
         // The same `Deadline::none()` the query below runs under, and for the
@@ -129,16 +158,14 @@ impl Replay<'_> {
         // entirely, so *coverage* — not just latency — would vary with load
         // (`core.md` §7, "replay enforces no deadline at all").
         let deadline = shared::Deadline::none();
-        Ok(Some(
-            SnapshotSeed::fresh(
-                uri,
-                Rope::from(text.as_str()),
-                DocumentVersion(0),
-                language,
-                self.handler.grammar(),
-            )
-            .realise(&deadline)?,
-        ))
+        SnapshotSeed::fresh(
+            uri,
+            Rope::from(text.as_str()),
+            DocumentVersion(0),
+            language,
+            self.handler.grammar(),
+        )
+        .realise(&deadline)
     }
 
     fn one(
@@ -181,144 +208,63 @@ impl Replay<'_> {
         let child = serde_json::from_str::<DefinitionResult>(row.answer.get())
             .unwrap_or(DefinitionResult::Null);
 
-        // `answered` is consumed here rather than borrowed: a `Trace` is
-        // write-only until it is taken apart, and taking it apart is what
-        // `into_parts` does — so the record can only be assembled from an
-        // outcome nobody is going to read again.
-        let (decision, failure, strata, locations, confidence, parts, extra) = match answered {
-            Ok(Outcome::Committed {
-                locations,
-                confidence,
-                strata,
-                trace,
-            }) => (
-                Decision::Committed,
-                None,
-                strata,
-                locations,
-                Some(confidence.get()),
-                trace.into_parts(),
-                None,
-            ),
-            Ok(Outcome::Abstain {
-                reason,
-                strata,
-                trace,
-            }) => (
-                Decision::Abstained,
-                None,
-                strata,
-                Vec::new(),
-                None,
-                trace.into_parts(),
-                // The reason goes into `stages` rather than into a column of
-                // its own, because `stages` is the field §7 makes the
-                // handler's account of what it did and a second reason column
-                // would be two vocabularies for one question.
-                Some(record::abstain_label(&reason)),
-            ),
-            // A failure is served as an abstention on the wire and recorded as
-            // a failure here, or the per-stratum table cannot tell a hard
-            // stratum from a broken handler. There is no outcome and therefore
-            // no trace: a handler that returned `Err` reported nothing, and an
-            // empty account is the honest record of that.
-            Err(error) => (
-                Decision::Failed,
-                Some(failure_class(&error)),
-                Strata::from_reference(Stratum::Unimplemented),
-                Vec::new(),
-                None,
-                Trace::new().into_parts(),
-                None,
-            ),
-        };
-        let mut stages = record::stage_labels(parts.stages);
-        stages.extend(extra);
+        // `answered` is consumed rather than borrowed, and the classification
+        // is `shared`'s rather than this crate's: the shim emits the same
+        // record from the same three endings, and a second copy of this match
+        // is exactly where "a replay row is byte comparable with a field row"
+        // would quietly stop being true (`core.md` §7).
+        let answered = Answered::of(answered);
+        let (decision, strata) = (answered.decision, answered.strata);
 
-        let ours: Vec<DefinitionSite<'_>> = locations.iter().map(DefinitionSite::of).collect();
-        let agreement = Agreement::classify(&ours, &child);
-        let (agreement_label, severity) = record::agreement_labels(agreement);
+        let ours: Vec<DefinitionSite<'_>> =
+            answered.locations.iter().map(DefinitionSite::of).collect();
+        // Minted only for a commit, and only here, so the table and the record
+        // cannot end up holding different verdicts for the same row. §6 makes
+        // `agreement` the classification of *the shim's answer* against the
+        // child's, and an abstention is not an answer — "a query the shim never
+        // answered has no answer of ours to compare, which is a different fact
+        // from the two sides disagreeing" (`shared::record::ChildAnswer`).
+        //
+        // Classifying one anyway reads as `mismatch` wherever the oracle
+        // answered, which §7 counts as a precision loss where an abstention is
+        // a coverage loss — so the precision denominator would move with
+        // coverage. The other producer already refuses it, one step earlier and
+        // in the shape that makes it unrepresentable rather than merely unmade:
+        // `driver::pending`'s `answered_by_shim` stores `None` for an
+        // abstention, so `resolve` has nothing to classify. This is the same
+        // rule, at the site where a replay mints the verdict.
+        let agreement =
+            (decision == Decision::Committed).then(|| Agreement::classify(&ours, &child));
 
         // `elapsed` is not offered to the table: §7's command line makes the
         // table byte-identical across runs, and it goes into the record below
         // instead, which is the one field §7 says a replay does not reproduce.
         table.observe(strata, decision, agreement);
 
-        Ok(QueryRecord {
-            uri: document.uri.to_string().into(),
-            position: record::position_of(Offset(row.offset)),
-            language: self.corpus.language().as_str().into(),
-            mode: Mode::Proxy,
-            server_health: None,
-            decision,
-            failure,
-            stratum_prior: StratumName(strata.prior()),
-            stratum_final: StratumName(strata.settled()),
-            confidence,
-            margin: parts.margin.map(shared::Margin::get),
-            considered: parts.considered.map(|considered| considered.0),
-            stages,
-            bytes_scanned: parts.bytes_scanned.0,
-            files_parsed: record::file_count(parts.files_parsed),
-            queued_us: 0,
-            stage_us: record::stage_timings(parts.stage_us),
-            heuristic_latency_us: micros(elapsed),
-            heuristic_locations: locations.iter().map(label).collect(),
-            returned: locations.len(),
-            truncated_list: false,
-            lsp_latency_us: Some(row.latency_us),
-            lsp_locations: Some(child_labels(&child)),
-            agreement: Some(agreement_label),
-            severity,
-        })
+        let mut record = QueryRecord::new(
+            &QueryContext {
+                uri: &document.uri,
+                position: Offset(row.offset),
+                language: self.corpus.language(),
+                mode: Mode::Proxy,
+                server_health: None,
+                // Replay has no queue. The field is §5's, and §5's deadline is
+                // the one thing a replay does not enforce.
+                queued: shared::Micros(0),
+                elapsed: shared::record::micros(elapsed),
+            },
+            answered,
+        );
+        // Frozen rather than raced, which is what makes replay's oracle half
+        // present at all: the truth file already holds the latency and the
+        // answer, so there is no second round trip to wait for.
+        record.answered_by(ChildAnswer {
+            latency: shared::Micros(row.latency_us),
+            locations: shared::record::definition_labels(&child),
+            agreement,
+        });
+        Ok(record)
     }
-}
-
-/// The `Error` sub-enum that was converted. Written as an exhaustive match
-/// rather than a `Display` string, so a new sub-enum has to be given a name
-/// here instead of appearing in the metrics as whatever `thiserror` produced.
-fn failure_class(error: &Error) -> Box<str> {
-    match error {
-        Error::Config(_) => "Config".into(),
-        Error::Codec(_) => "Codec".into(),
-        Error::Child(_) => "Child".into(),
-        Error::Protocol(_) => "Protocol".into(),
-        Error::Document(_) => "Document".into(),
-        Error::Parse(_) => "Parse".into(),
-        Error::Project(_) => "Project".into(),
-        Error::Handler(_) => "Handler".into(),
-        Error::Encoding(_) => "Encoding".into(),
-    }
-}
-
-fn label(location: &Location) -> Box<str> {
-    record::location_label(location.uri(), location.line())
-}
-
-fn child_labels(child: &DefinitionResult) -> Vec<Box<str>> {
-    match child {
-        DefinitionResult::Null => Vec::new(),
-        DefinitionResult::One(location) => {
-            vec![record::location_label(
-                location.uri(),
-                location.range().start.line(),
-            )]
-        }
-        DefinitionResult::Many(locations) => locations
-            .iter()
-            .map(|location| record::location_label(location.uri(), location.range().start.line()))
-            .collect(),
-        DefinitionResult::Links(links) => links
-            .iter()
-            .map(|link| {
-                record::location_label(&link.target_uri, link.target_selection_range.start.line())
-            })
-            .collect(),
-    }
-}
-
-fn micros(elapsed: Duration) -> u64 {
-    u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX)
 }
 
 /// `--records <path>`: the per-query JSONL of §7's record, unchanged and

@@ -882,7 +882,7 @@ deliberately rather than by imitation:
   invisible to static analysis, in the crate that carries the dependency.
   `rope` already needs `tracing` listed this way upstream, and our patched
   copy still will — the redirect reaches `tracing` only through
-  `#[instrument]`, which no static scan follows (CHANGE-core-006).
+  `#[instrument]`, which no static scan follows (CHANGE-core-010).
 * **License texts live once at the workspace root and are symlinked into each
   crate.** Zed does this without exception — 245 symlinks and not one regular
   copy — and it is the right call: a crate directory that declares

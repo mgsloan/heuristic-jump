@@ -395,7 +395,7 @@ impl<'a> ChunkSlice<'a> {
     /// `total_chars` is a `CharCount` and says so, which is what
     /// `rope-modifications.md` §4 asks of the four functions that are not byte
     /// offsets. It was the one entry in `allowed-primitives.txt` and is no
-    /// longer (CHANGE-core-005): an out parameter is where a unit is *least*
+    /// longer (CHANGE-core-015): an out parameter is where a unit is *least*
     /// visible at the call site, so it is the last place to leave bare.
     #[inline(always)]
     pub fn longest_row(&self, total_chars: &mut CharCount) -> (LineIndex, CharCount) {

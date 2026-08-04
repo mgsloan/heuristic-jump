@@ -160,13 +160,16 @@ wrong. Two classes:
 **Class A — fix it, record it, continue.** An internal contradiction, a
 section reference that does not resolve, a type name that changed, a false
 claim about a dependency's API, an example that does not compile. The test
-is: *is there a defensible answer that does not trade anything off?* Fix the
-document, and append to `state/spec-changelog/{{loop}}.md` in exactly this shape,
+is: *is there a defensible answer that does not trade anything off?* document. **Ask for the id rather than picking one** —
+`harness/hj allocate-id {{loop}} --kind change` prints the next free one and
+reserves it, because two workers choosing a number by reading the file both
+choose the same one. Then append to `state/spec-changelog/{{loop}}.md` in
+exactly this shape,
 because a human is scheduled to read it and the dashboard finds entries by
 their id:
 
 ```markdown
-## CHANGE-{{loop}}-NNN — <section anchor> — <one line on what changed>
+## <id> — <section anchor> — <one line on what changed>
 
 **Contradiction:** the two claims, quoted, with where each one is.
 
@@ -198,9 +201,12 @@ getting them wrong is expensive in a way nothing downstream will report: a
 language loop cannot observe that the seam made its job harder, only that it
 is slow. Owning the file is not permission to decide its shape.
 
-To escalate: write a decision record in the shape below, pick the most
-reversible option, tag every affected site
-`// DECISION-{{loop}}-NNN: provisional`, and continue. **Never idle waiting
+To escalate: get an id with `harness/hj allocate-id {{loop}} --kind decision`,
+write a decision record in the shape below, pick the most reversible option,
+tag every affected site `// DECISION-<id>: provisional`, and continue. **Do not
+choose the number yourself** — two workers reading the directory both see the
+same next one free, and two campaigns filed different questions under
+`core-001` within an hour of the fleet starting. **Never idle waiting
 for an answer.** Escalations are reviewed in batches; nobody is watching for
 yours to arrive.
 

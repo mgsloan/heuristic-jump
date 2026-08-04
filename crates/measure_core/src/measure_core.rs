@@ -27,7 +27,6 @@ mod client;
 mod collect;
 mod corpus;
 mod positions;
-mod record;
 mod replay;
 mod table;
 mod truth;
@@ -40,7 +39,11 @@ use shared::{Error, FileList, LanguageHandler, ProjectPath, SystemClock};
 pub use cli::{Cli, Command, Format, Replay};
 pub use client::{MAX_FRAME_BYTES, MAX_HEADER_BYTES, read_frame};
 pub use corpus::{ServerEntry, grammar_pin, locked_grammar, resolve_server};
-pub use record::{Decision, Mode, QueryRecord, StratumName};
+// §7's record type is `shared`'s, because `deps.md` §9's graph gives
+// `driver` no edge to this crate and the shim has to emit the same shape.
+// Re-exported rather than reached through `shared::record` at every call site,
+// so a `measure_<lang>` binary keeps naming one crate.
+pub use shared::record::{Decision, Mode, QueryRecord, StratumName};
 pub use truth::{Provenance, check_resumable};
 
 /// The whole of a `measure_<lang>` binary, after `Cli::parse()`.
@@ -64,7 +67,7 @@ pub fn run(handler: &dyn LanguageHandler, cli: Cli) -> Result<(), Error> {
             for repository in &repositories {
                 corpus::verify_checkout(repository, None)?;
                 let files = source_files(handler, repository)?;
-                let found = positions::enumerate(handler, &files, quota)?;
+                let found = positions::enumerate(handler, language, &files, quota)?;
                 let sampled = positions::sample(found, arguments.limit, arguments.seed);
                 positions::write(&corpus.positions(&repository.name), &sampled)?;
                 tracing::info!(
@@ -202,12 +205,18 @@ fn stderr_for_logging() -> std::io::Stderr {
 
 /// The binary is per-language, so the language is the handler's rather than an
 /// argument, and there is no flag that could disagree with it (`core.md` §7).
+///
+/// The one place it is recovered. Every stage below is handed the result — a
+/// second lookup elsewhere is a second answer to *which language is this run
+/// about*, and the interesting case is the one where they differ: this
+/// refuses, and the fallback it replaced invented `LanguageId::new("unknown")`
+/// and enumerated a corpus under it.
 fn first_language_id(handler: &dyn LanguageHandler) -> Result<shared::LanguageId, Error> {
     handler
         .language_ids()
         .first()
         .copied()
-        .ok_or_else(|| shared::HandlerError::DeadlineExpired.into())
+        .ok_or_else(|| shared::ConfigError::HandlerDeclaresNoLanguage.into())
 }
 
 /// The repository's files, filtered to the handler's own extensions and

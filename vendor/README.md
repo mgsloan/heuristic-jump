@@ -137,7 +137,7 @@ property (`deps.md` §14).
      on one that is not in `allowed-primitives.txt` — the case §6 says the
      diff cannot catch, because a new upstream public function with a bare
      primitive is a hunk that looks entirely normal. **That file has no
-     entries** (CHANGE-core-005): `ChunkSlice::longest_row`'s
+     entries** (CHANGE-core-015): `ChunkSlice::longest_row`'s
      `total_chars` was the last one and now takes a `&mut CharCount`, so the
      scan forgives nothing and the file is there for what a re-sync brings.
      The same file carries §7's four-unit round-trip property test. Both are

@@ -8,7 +8,7 @@
 # which unit the primitive is, because "it is a `usize`" is the problem rather
 # than the explanation. Keep this short: an entry is a hole in the change.
 #
-# **There are no entries, and that is the point** (CHANGE-core-005). §4 audits
+# **There are no entries, and that is the point** (CHANGE-core-015). §4 audits
 # the four functions that are not byte offsets and gives each the newtype for
 # its unit; the last of them, `ChunkSlice::longest_row`'s `total_chars`, took a
 # `&mut usize` until it took a `&mut CharCount`. With the file empty, the

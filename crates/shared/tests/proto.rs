@@ -116,12 +116,17 @@ const CONSTRUCT: &[&str] = &[
     "StandaloneServerInfo",
 ];
 
-/// The value types that genuinely travel in both directions: a position and a
-/// range arrive in a request and leave in a response, a location arrives from
-/// the oracle and leaves as our answer, and the negotiated encoding is read
-/// from a child and written by standalone. This list is short on purpose —
-/// every entry is a type §8.2's read-only rule does not cover, so a fifth one
-/// appearing is a claim someone should have to make deliberately.
+/// §8.2's third table: the value types that travel in both directions. A
+/// position and a range arrive in a request and leave in a response, a
+/// location arrives from the oracle and leaves as our answer, and the
+/// negotiated encoding is read from a child and written by standalone.
+///
+/// The list is short because §8.2 bounds it, not because nothing has been
+/// added yet: "nothing is ever round-tripped" is a claim about messages, and a
+/// value type in both directions does not round-trip anything — an inbound
+/// position is resolved to an offset and dropped, an outbound one is built by
+/// `encode`. A sixth entry is therefore a claim someone has to make
+/// deliberately, here and in §8.2 (CHANGE-core-008).
 const BOTH: &[&str] = &[
     "PositionEncoding",
     "TextDocumentSyncKind",
@@ -262,6 +267,48 @@ fn untagged_appears_only_where_section_85_permits_it() {
             item.name
         );
     }
+}
+
+/// §8.3, which is a claim about *absence* and so is checked the way §8.2's
+/// derive discipline is: against the text of `proto.rs`.
+///
+/// The section allows one door per unit. `character` is in the negotiated
+/// encoding and has none — it is reachable only through `resolve`, which takes
+/// the encoding and the document. `line` is in no encoding, so it has an
+/// accessor, and §6's predicate needs it: the child's row arrives only inside a
+/// `WirePosition`, and recovering it any other way means reading the target
+/// document, which §6 forbids in the same paragraph that requires the
+/// comparison (CHANGE-core-007).
+///
+/// So the surface is exactly three functions, and a fourth is a decision
+/// somebody has to make here rather than a line added to an `impl`. A
+/// `character()` accessor in particular would restore the failure §3 exists to
+/// prevent, and nothing that merely *used* `WirePosition` would notice.
+#[test]
+fn the_wire_position_has_exactly_one_door_per_unit() {
+    let source = source();
+    let block = source
+        .split_once("impl WirePosition {")
+        .and_then(|(_, rest)| rest.split_once("\n}\n"))
+        .map(|(block, _)| block.to_owned())
+        .expect("proto.rs declares one `impl WirePosition` block");
+
+    let mut doors: Vec<&str> = block
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("pub fn "))
+        .filter_map(|rest| rest.split(['(', '<']).next())
+        .collect();
+    doors.sort_unstable();
+
+    assert_eq!(
+        doors,
+        ["encode", "line", "resolve"],
+        "§8.3 gives a wire position one door per unit: `resolve` and `encode` \
+         for the column, which take the encoding and the text, and `line` for \
+         the row, which is in no encoding. Anything else here hands out a \
+         number whose unit the caller has to remember, which is the failure \
+         §3 exists to prevent"
+    );
 }
 
 #[test]
@@ -509,6 +556,66 @@ fn absent_and_false_stay_distinguishable_in_server_capabilities() {
         options.capabilities.definition_provider,
         Some(DefinitionProvider::Options(_))
     ));
+}
+
+/// §8.6's fail-closed rule at the one field where "lenient" and "closed" point
+/// in opposite directions on the same JSON string.
+///
+/// A *client* offering an encoding we do not model has it dropped: that field
+/// is a menu, and refusing `initialize` over an entry we would never have
+/// chosen would be a modelling error failing open in the other direction. A
+/// *server* naming one is different — it is the negotiated value, every
+/// position on the wire is in it, and there is no reading of a position we
+/// cannot convert. So it takes the whole `InitializeResult` down with it, and
+/// that is deliberate: the fields beside it say what the server can do, and
+/// acting on them while unable to read a single position is worse than having
+/// no answer.
+#[test]
+fn a_negotiated_encoding_we_cannot_honour_fails_the_whole_initialize_result() {
+    let offered: InitializeParams = serde_json::from_value(json!({
+        "rootUri": "file:///work/repo",
+        "capabilities": {"general": {"positionEncodings": ["utf-64", "utf-16"]}}
+    }))
+    .unwrap();
+    assert_eq!(
+        offered.capabilities.general.unwrap().position_encodings,
+        vec![PositionEncoding::Utf16],
+        "a client's list is a menu, and an entry we would not have chosen is dropped"
+    );
+
+    let refused = serde_json::from_value::<InitializeResult>(json!({
+        "capabilities": {"positionEncoding": "utf-64", "definitionProvider": true}
+    }));
+    assert!(
+        refused.is_err(),
+        "a server named an encoding we cannot convert and the result was still read. Every \
+         position after this point is in that encoding, so `definitionProvider: true` beside \
+         it is an invitation to answer about the wrong place"
+    );
+}
+
+/// The three `PositionEncodingKind` strings, written twice: once by `serde`'s
+/// renames and once by `Display`. They have to agree, because one is what
+/// standalone advertises and the other is what a mismatch is reported in — and
+/// a report naming an encoding nobody negotiated sends the reader after the
+/// wrong thing.
+#[test]
+fn an_encoding_is_spelled_the_same_by_serde_and_by_display() {
+    for encoding in [
+        PositionEncoding::Utf8,
+        PositionEncoding::Utf16,
+        PositionEncoding::Utf32,
+    ] {
+        assert_eq!(
+            serde_json::to_value(encoding).unwrap(),
+            json!(encoding.to_string()),
+            "the wire spelling and the reported spelling of {encoding} have drifted"
+        );
+        assert_eq!(
+            serde_json::from_value::<PositionEncoding>(json!(encoding.to_string())).unwrap(),
+            encoding
+        );
+    }
 }
 
 #[test]

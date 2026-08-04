@@ -401,7 +401,7 @@ fn the_public_surface_speaks_in_the_units_it_measures_in() {
     // get the correct newtype rather than being left bare. Being left bare is
     // what the signature scan would have permitted, since `allowed-primitives`
     // is where a `u32` goes to be forgiven -- and `longest_row`'s out
-    // parameter was its only entry until CHANGE-core-005.
+    // parameter was its only entry until CHANGE-core-015.
     let chunk = Chunk::new("aé\nbb");
     let slice: ChunkSlice<'_> = chunk.as_slice();
     let slice_length: ByteLen = slice.len();

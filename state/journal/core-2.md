@@ -269,7 +269,7 @@ forever.
 ## c601eeec — §14, §5's licensing, `#adding-a-language`, §9's layout
 
 Five commits, all in `crates/driver/tests/seam.rs` plus the documents they
-read. Four new tests, five Class A changes (`CHANGE-core-006` … `010`).
+read. Four new tests, five Class A changes (`CHANGE-core-010` … `010`).
 
 ### The assignment named three gap ids that do not exist here
 
@@ -310,7 +310,7 @@ markdown section body. The §9 test compares the printed tree against
 `[workspace] members` in **both** directions and is the strongest thing here:
 a crate added without the document naming it fails, and vice versa.
 
-That test forced `CHANGE-core-010`. §9's tree lists eleven `crates/` entries
+That test forced `CHANGE-core-014`. §9's tree lists eleven `crates/` entries
 and four cannot exist — `loops.md`'s decided question 10 puts a new
 `crates/lang_*` outside every loop's owned paths, and `state/phase.toml` names
 `crates/lang_rust/` rather than globbing for exactly that reason. Marking them
@@ -333,5 +333,5 @@ its own history is one the next reader re-derives the mistake from.
   seen from one missing transport, still a separate campaign — it shares no
   file with anything here.
 - **`core.md#9`'s four phase-2 crates.** Cannot be built by any loop. If a
-  future audit re-opens `ce5dfefab5`, the answer is `CHANGE-core-010` and not
+  future audit re-opens `ce5dfefab5`, the answer is `CHANGE-core-014` and not
   a campaign.

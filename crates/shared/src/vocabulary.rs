@@ -36,11 +36,21 @@ pub struct DocumentVersion(pub i32);
 
 /// Interned LSP `languageId`.
 ///
-/// A handler declares its ids as consts, which is the only place one is built;
-/// an incoming `languageId` is resolved against the registry and produces an
-/// `Option<LanguageId>`, so an unknown language fails at the boundary instead
-/// of travelling inward as a string that matches nothing. Comparison is then a
-/// pointer comparison rather than a `str` one.
+/// §1 says "an unknown language cannot be constructed at all", and what holds
+/// that up is the `&'static str` — not `new`'s visibility, which is public.
+/// A `languageId` off a wire is a `Box<str>` and cannot become a `&'static
+/// str`, so the only text that can reach this type is text written into some
+/// crate's source, and a `lang_*` crate writing one is that handler declaring
+/// it. `Registry::language_id` is the lookup that turns an incoming string
+/// into an `Option<LanguageId>`, so an unknown language fails at the boundary
+/// instead of travelling inward as a string that matches nothing.
+///
+/// Comparison is `str` equality on the interned text and deliberately not
+/// pointer identity: two crates may each write `"rust"` into their own
+/// `&'static str`, and an id that compared unequal to itself across a crate
+/// boundary would fail to resolve a handler that had declared it. The cheap
+/// comparison this type buys is over a short string with no allocation, not
+/// over an address.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct LanguageId(&'static str);
 

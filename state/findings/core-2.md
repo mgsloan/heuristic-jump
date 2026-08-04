@@ -51,7 +51,7 @@ hypothesis rather than discovering it.
   three allows.
 - **§9's four phase-2 crates cannot be built by any loop** (`loops.md` decided
   question 10; `phase.toml` names `lang_rust` rather than globbing). If
-  `ce5dfefab5` re-opens, the answer is `CHANGE-core-010`, not a campaign.
+  `ce5dfefab5` re-opens, the answer is `CHANGE-core-014`, not a campaign.
 
 ## Load-bearing spec claims
 

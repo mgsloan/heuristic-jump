@@ -34,10 +34,12 @@
     reason = "`clippy.toml`'s allow-expect-in-tests and allow-panic-in-tests reach only `#[test]` bodies, and every comparison below is a free function. Failing loudly is the point: a corpus line one side cannot read is the finding, and swallowing it would leave the differential asserting agreement over the messages that happened to parse."
 )]
 
+use std::collections::BTreeMap;
 use std::sync::LazyLock;
 
 use lsp_types::{OneOf, TextDocumentSyncCapability};
 use serde::Deserialize;
+use serde::de::IgnoredAny;
 use serde_json::value::RawValue;
 use shared::proto::{
     ContentChange, DefinitionProvider, DefinitionResult, DidChangeTextDocumentParams,
@@ -62,6 +64,14 @@ struct Entry {
     /// test.
     source: Box<str>,
     message: Box<RawValue>,
+}
+
+/// How many capabilities a server advertised, without materializing the tree:
+/// the keys are counted and every value is discarded, which is the one thing
+/// this needs and the reason it is not a `serde_json::Value`.
+#[derive(Deserialize)]
+struct Advertised {
+    capabilities: BTreeMap<Box<str>, IgnoredAny>,
 }
 
 #[derive(Deserialize, Copy, Clone, PartialEq, Eq, Debug)]
@@ -138,9 +148,18 @@ fn the_corpus_exercises_every_kind_the_differential_can_compare() {
 /// hand-written would satisfy the differential and not the section, and nothing
 /// would say so — which is what this asserts instead.
 ///
-/// The three kinds named are the server-to-client ones. The client half is
-/// composed by an editor nobody here runs, and a message this project wrote to
-/// look like VS Code's is hand-authored however it is labelled.
+/// Both halves are captured now. The server half comes off a stdio client, and
+/// the client half needs an editor, because composing an `initialize` and a
+/// `contentChanges` is what an editor *is*: the header of the corpus says how,
+/// and the answer is a recording proxy between a real editor and a real server.
+///
+/// **Provenance itself cannot be asserted from inside the process** — the
+/// `CAPTURED` prefix selects the captured half and a relabelled line would be
+/// selected too. So the prefix only *selects*, and everything asserted below is
+/// read out of the messages: which union shapes the captured half covers, and
+/// whether a captured `InitializeResult` advertises the capabilities a real
+/// server advertises. Faking that is no longer relabelling a line, it is
+/// composing traffic — which is the cost this is meant to impose.
 #[test]
 fn the_corpus_holds_traffic_nobody_here_composed() {
     let corpus = corpus();
@@ -155,18 +174,244 @@ fn the_corpus_holds_traffic_nobody_here_composed() {
          messages are the population it says is not the long tail"
     );
 
-    for kind in [
-        Kind::InitializeResult,
-        Kind::DefinitionResult,
-        Kind::Progress,
-    ] {
+    for kind in KINDS {
         assert!(
-            captured.iter().any(|entry| entry.kind == kind),
+            captured.iter().any(|entry| entry.kind == *kind),
             "no captured {kind:?}: the header of golden-traffic.jsonl says how to record one, \
-             and a server saying something we did not predict is the only way this corpus \
-             finds a field nobody modelled"
+             and a message nobody here predicted is the only way this corpus finds a field \
+             nobody modelled"
         );
     }
+
+    let results: Vec<InitializeResult> = captured
+        .iter()
+        .filter(|entry| entry.kind == Kind::InitializeResult)
+        .map(|entry| read(entry.message.get(), "shared::proto::InitializeResult"))
+        .collect();
+    let syncs: Vec<Sync> = results
+        .iter()
+        .map(|result| our_sync(result.capabilities.text_document_sync.as_ref()))
+        .collect();
+    assert!(
+        syncs.iter().any(|sync| matches!(sync, Sync::Kind(_)))
+            && syncs
+                .iter()
+                .any(|sync| matches!(sync, Sync::Options { .. })),
+        "§8.5's second union has one captured shape and not the other. Both are real — pyright \
+         answers the integer, gopls and rust-analyzer answer the options object — so a corpus \
+         holding one of them tests the union by declaration order and calls it agreement: {syncs:?}"
+    );
+    let providers: Vec<Definition> = results
+        .iter()
+        .map(|result| our_definition(result.capabilities.definition_provider.as_ref()))
+        .collect();
+    assert!(
+        providers
+            .iter()
+            .any(|provider| matches!(provider, Definition::Plain(_)))
+            && providers
+                .iter()
+                .any(|provider| matches!(provider, Definition::Options { .. })),
+        "§8.5's third union has one captured shape and not the other: {providers:?}"
+    );
+
+    // §8.6's sentence, as an assertion: "a field that appears in no captured
+    // message is untested by construction, and that is exactly the long tail".
+    // A real server advertises far more than the three capability fields we
+    // project, so a captured `InitializeResult` whose `capabilities` is as
+    // small as ours is not one.
+    for entry in captured
+        .iter()
+        .filter(|entry| entry.kind == Kind::InitializeResult)
+    {
+        let advertised: Advertised = read(entry.message.get(), "an InitializeResult's key set");
+        let advertised = advertised.capabilities.len();
+        assert!(
+            advertised > 8,
+            "a captured InitializeResult advertising {advertised} capabilities: every server \
+             this corpus has met advertises more than a dozen, and the fields beyond the three \
+             we model are the long tail the capture is for.\n{}",
+            entry.source
+        );
+    }
+
+    let sites: Vec<Sites> = captured
+        .iter()
+        .filter(|entry| entry.kind == Kind::DefinitionResult)
+        .map(|entry| {
+            our_sites(&read(
+                entry.message.get(),
+                "shared::proto::DefinitionResult",
+            ))
+        })
+        .collect();
+    assert!(
+        sites.contains(&Sites::Null),
+        "no captured null definition result. A server declining to answer is not the empty \
+         array, and the difference is one §6 classifies differently"
+    );
+    assert!(
+        sites
+            .iter()
+            .any(|site| matches!(site, Sites::At(found) if found.len() > 1)),
+        "no captured definition result with more than one site, so §6's set-against-set rule is \
+         exercised only by messages this project composed"
+    );
+
+    // §6 reads a link at its `targetSelectionRange` and not its `targetRange`,
+    // on the grounds that the second is the whole item and would put the row on
+    // the doc comment above it. That is asserted in `tests/agreement.rs`
+    // against a composed message, which leaves the *premise* unevidenced: if
+    // every real link had its two ranges on one row, the choice would not
+    // matter and the test would be pinning an invented distinction.
+    let links_disagree = captured
+        .iter()
+        .filter(|entry| entry.kind == Kind::DefinitionResult)
+        .filter_map(|entry| {
+            match read::<DefinitionResult>(entry.message.get(), "shared::proto::DefinitionResult") {
+                DefinitionResult::Links(links) => Some(links),
+                DefinitionResult::Null | DefinitionResult::One(_) | DefinitionResult::Many(_) => {
+                    None
+                }
+            }
+        })
+        .flatten()
+        .any(|link| link.target_range.start.line() != link.target_selection_range.start.line());
+    assert!(
+        links_disagree,
+        "no captured LocationLink whose targetRange and targetSelectionRange start on different \
+         rows, so nothing here shows that §6's choice between them is a choice at all"
+    );
+
+    // §8.5's fifth union, which is the one it spends its longest section on and
+    // the one whose failure destroys the document. What a composed corpus keeps
+    // getting wrong about it is not the common case but the edges: a deletion
+    // reaches the wire as an incremental change whose `text` is empty, and an
+    // editor's ranges cross rows whenever an edit does.
+    let changes: Vec<Change> = captured
+        .iter()
+        .filter(|entry| entry.kind == Kind::DidChange)
+        .flat_map(|entry| {
+            let params: DidChangeTextDocumentParams = read(
+                entry.message.get(),
+                "shared::proto::DidChangeTextDocumentParams",
+            );
+            params
+                .content_changes
+                .iter()
+                .map(our_change)
+                .collect::<Vec<Change>>()
+        })
+        .collect();
+    assert!(
+        changes
+            .iter()
+            .any(|change| matches!(change, Change::Incremental { text, .. } if text.is_empty())),
+        "no captured deletion. `{{range, text: \"\"}}` is what an editor sends when text goes \
+         away, and it is the incremental change most easily read as a whole-document one \
+         carrying no document"
+    );
+    assert!(
+        changes
+            .iter()
+            .any(|change| matches!(change, Change::Incremental { span, .. }
+                if span.start.0 != span.end.0)),
+        "no captured change whose range crosses a row, so nothing here would catch a reading \
+         that treats a content change as a span within one line"
+    );
+}
+
+/// §8.5 does not name servers loosely. It asks for traffic against
+/// "rust-analyzer, pyright, and gopls", and the three are not
+/// interchangeable: the captured `initialize` answers disagree about which
+/// shape *every* union arrives in. rust-analyzer sends `textDocumentSync` as
+/// an options object and pyright as the bare integer; rust-analyzer sends
+/// `definitionProvider` as `true` and pyright as an options object; gopls'
+/// `$/progress` token is a string of digits where rust-analyzer's is a name.
+/// A corpus holding one server's traffic three times over would satisfy the
+/// test above and would have found none of that.
+///
+/// So the server is read out of `source` rather than trusted to a comment.
+/// The format is `CAPTURED from <server> <version>...`, which is what the
+/// corpus header tells a future capture to write, and this is what makes that
+/// instruction load-bearing instead of advisory.
+#[test]
+fn the_captured_half_covers_every_server_the_section_names() {
+    let corpus = corpus();
+    let servers: Vec<&str> = corpus
+        .iter()
+        .filter_map(|entry| captured_server(&entry.source))
+        .collect();
+
+    for named in ["rust-analyzer", "pyright", "gopls"] {
+        assert!(
+            servers.contains(&named),
+            "no captured traffic from {named}, which core.md §8.5 names by hand: the three \
+             servers answer the same initialize in different shapes, so one of them missing \
+             is a union with no real message behind it — {servers:?}"
+        );
+    }
+}
+
+/// A `CAPTURED` label is a string, and a string can be typed onto a line
+/// nobody captured. That is the standing weakness of a provenance field and
+/// nothing in a test can close it — a determined hand-author writes a
+/// consistent line. What a test can do is require the label to agree with the
+/// message under it, which catches the failure that actually happens: a
+/// capture attributed to the wrong server, or a hand-authored line relabelled
+/// without its contents being changed to match.
+///
+/// So a captured `InitializeResult` whose `serverInfo` names a server must
+/// name the one `source` claims. Only `initializeResult` carries a name at
+/// all; a definition answer and a `$/progress` do not say who sent them, and
+/// pretending otherwise would mean adding a field to the corpus that the wire
+/// does not have.
+///
+/// Absent `serverInfo` is not a failure, and pyright 1.1.411 is why: it sends
+/// none. The hand-authored line labelled "pyright" in this corpus invents one,
+/// which is the population §8.6 warns about caught in the act — somebody wrote
+/// the field they expected rather than the field that arrives.
+#[test]
+fn a_captured_message_agrees_with_the_server_its_label_names() {
+    for entry in corpus() {
+        let Some(claimed) = captured_server(&entry.source) else {
+            continue;
+        };
+        if entry.kind != Kind::InitializeResult {
+            continue;
+        }
+        let result: InitializeResult = read(entry.message.get(), "shared::proto::InitializeResult");
+        let Some(info) = result.server_info else {
+            continue;
+        };
+        assert!(
+            info.name.eq_ignore_ascii_case(claimed),
+            "a line labelled `CAPTURED from {claimed}` carries a serverInfo naming {}: one of \
+             the two is wrong, and a provenance field that disagrees with its own message is \
+             worse than none",
+            info.name
+        );
+    }
+}
+
+/// The server a `CAPTURED` line came from, or `None` for a hand-authored one.
+///
+/// Panics on a `CAPTURED` line that does not name one, rather than treating it
+/// as hand-authored: a line claiming provenance it did not record is worse
+/// than a line claiming none, since the test above would then pass over it.
+fn captured_server(source: &str) -> Option<&str> {
+    if !source.starts_with("CAPTURED") {
+        return None;
+    }
+    let server = source
+        .strip_prefix("CAPTURED from ")
+        .and_then(|named| named.split([' ', ':', ',']).next())
+        .filter(|server| !server.is_empty());
+    Some(server.unwrap_or_else(|| {
+        panic!(
+            "a CAPTURED line names no server: the format is `CAPTURED from <server> <version>`\n{source}"
+        )
+    }))
 }
 
 fn corpus() -> Vec<Entry> {
@@ -621,7 +866,14 @@ fn our_position(position: WirePosition) -> (u32, u32) {
 }
 
 const COLUMNS: usize = 96;
-const ROWS: usize = 96;
+
+/// Deep enough for a captured position, which is the constraint a hand-authored
+/// corpus never had: pyright answers `print` with two overloads in typeshed's
+/// `builtins.pyi`, on lines 2075 and 2083. A corpus line that names a deeper
+/// row than this fails loudly rather than quietly, since `resolve` refuses a
+/// position outside the document instead of clipping — so raising this is the
+/// repair, and reading a captured position as "out of range" is not.
+const ROWS: usize = 4096;
 
 /// An ASCII document of known geometry: [`ROWS`] lines of exactly [`COLUMNS`]
 /// characters. Large enough to hold every position in the corpus, which is the

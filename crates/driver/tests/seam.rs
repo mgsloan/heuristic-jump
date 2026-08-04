@@ -216,7 +216,7 @@ fn the_language_list_is_enumerated_in_heuristic_jump() {
 /// `loops.md`'s decided question 10 puts a new `crates/lang_*` outside every
 /// loop's owned paths, so a phase 1a campaign that tried to satisfy the tree
 /// by creating `crates/lang_python/` would have its commit rejected by the
-/// gate rather than merged (CHANGE-core-010). Without the marking this test
+/// gate rather than merged (CHANGE-core-014). Without the marking this test
 /// would be demanding exactly that.
 ///
 /// The two names §9 calls "chosen rather than mechanical" are asserted with
@@ -361,7 +361,7 @@ fn adding_a_language_costs_the_template_and_one_line() {
     /// Everything a `lang_*` may name, besides its own grammar. `tree-sitter`
     /// is the runtime rather than a grammar and is forced by
     /// `LanguageHandler::grammar` returning a `tree_sitter::Language`
-    /// (CHANGE-core-008).
+    /// (CHANGE-core-012).
     const LANGUAGE: &[&str] = &["shared", "similarity", "tree-sitter"];
 
     /// Everything a `measure_*` may name, besides its own language. `clap` and
@@ -424,7 +424,7 @@ fn adding_a_language_costs_the_template_and_one_line() {
             path_dependencies.contains(language),
             "{language} is a workspace member and has no [workspace.dependencies] entry: \
              core.md §9 makes that one of the four manifest lines a language costs \
-             (CHANGE-core-009), and without it the two crates that name it would each write a \
+             (CHANGE-core-013), and without it the two crates that name it would each write a \
              version — which deps.md §14 is what stops"
         );
 
@@ -631,7 +631,7 @@ fn every_member_declares_the_licence_section_5_assigns_it() {
 /// licence section, §5's own table, and `expected_licence` above, which is
 /// what the manifests are held to — and until this test they were compared by
 /// nobody. `high-level.md` still carried the superseded position verbatim,
-/// two campaigns after §5 recorded it as superseded (CHANGE-core-007). That is
+/// two campaigns after §5 recorded it as superseded (CHANGE-core-011). That is
 /// the failure this catches, and the direction that matters is the *next* one:
 /// a third GPL input arriving is a licence surface that grew by a dependency
 /// rather than by a decision, and the crate that carries it would be correct
@@ -1797,7 +1797,7 @@ fn every_package_section_14_names_gets_its_opt_level() {
 /// > but invisible to static analysis. `rope` already needs `tracing` listed
 /// > this way upstream, and our patched copy still will.
 ///
-/// That bullet named the wrong table and CHANGE-core-006 moved it to
+/// That bullet named the wrong table and CHANGE-core-010 moved it to
 /// `[package.metadata.cargo-machete]`, which is where upstream's `rope` puts
 /// it and the precedent the bullet's own second sentence cites. The check is
 /// derived rather than listed: a crate whose only mention of `tracing` is the
@@ -2270,9 +2270,24 @@ fn every_foreign_error_is_wrapped_beside_context_of_ours() {
 /// > with a fixed schema that `measure_core` also writes, and routing them
 /// > through a log subscriber would make the schema a formatting concern.
 ///
-/// The mechanism for that one is the subscriber being installed in exactly one
-/// place: a metrics writer routed through a log subscriber needs to reach
-/// `tracing_subscriber`, and only the binary can.
+/// The mechanism for that one is the subscriber being installed by the crate
+/// that owns a program's command line, and by nothing else: a metrics writer
+/// routed through a log subscriber would have to reach `tracing_subscriber`,
+/// and `driver` — which writes those records — cannot.
+///
+/// **Two such crates, not one.** `heuristic_jump` owns the shim's command line
+/// and `measure_core` owns `measure-<lang>`'s: `core.md` §7 puts `clap`, the
+/// flag set and `run` there precisely so a language binary is four lines, and
+/// a subscriber installed per language is one chance per language for one of
+/// them to be quiet where the others are not. What the rule is actually about
+/// is a *library* having an opinion about where logs go — `shared`, `driver`,
+/// `similarity` and every `lang_*` are linked into somebody else's program and
+/// must not.
+/// The crates that own a program's command line, and so the only ones that may
+/// reach `tracing_subscriber`. A list rather than a predicate because that is
+/// what makes adding one a decision somebody wrote down.
+const INSTALLS_THE_SUBSCRIBER: [&str; 2] = ["heuristic_jump", "measure_core"];
+
 #[test]
 fn our_log_lines_are_distinguishable_and_the_subscriber_is_installed_once() {
     assert_eq!(
@@ -2315,11 +2330,6 @@ fn our_log_lines_are_distinguishable_and_the_subscriber_is_installed_once() {
         "no crates/* workspace member, so this test would pass vacuously"
     );
 
-    /// The crates that own a process, in sorted order so the comparison below
-    /// does not depend on how the workspace lists its members
-    /// (`DECISION-core-002: provisional`).
-    const INSTALLS_A_SUBSCRIBER: [&str; 2] = ["heuristic_jump", "measure_core"];
-
     let mut installs = Vec::new();
     for member in &members {
         let manifest = manifest_text(member);
@@ -2338,33 +2348,32 @@ fn our_log_lines_are_distinguishable_and_the_subscriber_is_installed_once() {
                 !source.is_empty(),
                 "{file} is missing or empty, so the scan below would pass vacuously"
             );
-            // DECISION-core-002: provisional. The permitted set is the crates
-            // that own a process, not the one crate that is a `[[bin]]`:
-            // `core.md` §7 makes a `measure_<lang>` main four lines and puts
-            // the rest — `clap`, and with it the log setup — in `measure_core`.
-            // What the assertion still holds is the half of §9's reason that
-            // survives either answer: `driver` and `shared`, the crates the
-            // shim links, have no opinion about where logs go.
+            // `measure_core` is the second exception, and it is one rather than
+            // a hole because of who links it: only the four-line
+            // `measure_<lang>` binaries do, so it is a binary body under a
+            // library's name and fights nobody. The rule it is excused from is
+            // about libraries a *handler* links, and no handler links this.
             assert!(
-                INSTALLS_A_SUBSCRIBER.contains(&member.as_str())
+                INSTALLS_THE_SUBSCRIBER.contains(&&**member)
                     || !source.contains("tracing_subscriber"),
-                "{file} names tracing_subscriber: deps.md §9 leaves the subscriber to the \
-                 crate that owns the process — a library the shim links with an opinion \
-                 about where logs go is one that fights whoever links it, and §7's JSONL \
-                 records stay out of the log subscriber by not being able to reach one"
+                "{file} names tracing_subscriber: deps.md §9 installs the subscriber in the \
+                 crate that owns the program's command line and nowhere else — a library with \
+                 an opinion about where logs go is one that fights whoever links it, and §7's \
+                 JSONL records stay out of the log subscriber by not being able to reach one"
             );
         }
     }
     installs.sort();
+    let mut wanted: Vec<String> = INSTALLS_THE_SUBSCRIBER
+        .iter()
+        .map(|member| format!("{member} in [dependencies]"))
+        .collect();
+    wanted.sort();
     assert_eq!(
-        installs,
-        INSTALLS_A_SUBSCRIBER
-            .iter()
-            .map(|member| format!("{member} in [dependencies]"))
-            .collect::<Vec<String>>(),
-        "deps.md §9 gives tracing-subscriber to the crates that own a process: driver and \
-         shared emit through the tracing facade and have no opinion about where it goes \
-         (DECISION-core-002: provisional)"
+        installs, wanted,
+        "deps.md §9 gives tracing-subscriber to the crates that own a command line: driver, \
+         shared and every language emit through the tracing facade and have no opinion about \
+         where it goes"
     );
 
     let declared = table_of(&workspace_file("Cargo.toml"), "workspace.dependencies")

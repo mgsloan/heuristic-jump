@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Capture the client half of `core.md` §8.5's golden corpus.
+#
+# A loop can capture what a *server* sends, by running one. It cannot capture
+# what an *editor* sends, because that needs an editor with a person typing in
+# it — and `contentChanges` from real typing is the one message the corpus most
+# needs, since `TextDocumentContentChangeEvent` is the untagged union in the
+# protocol: full-replace and incremental differ by a field being absent.
+# `state/decisions/core-018.md` settles that the server half is enough for §8.5
+# to go clean, and that this stays outstanding.
+#
+# This exists so the remaining step is two minutes rather than a project.
+#
+#   1. harness/capture-editor-traffic --install
+#      prints the Zed setting to paste, pointing at this script.
+#
+#   2. Open a Rust file in this repository. Type in it. Save. Go to definition
+#      a few times, including once into a dependency. Ten to sixty seconds is
+#      plenty; the point is variety, not volume.
+#
+#   3. harness/capture-editor-traffic --finish
+#      normalises the capture into the corpus and prints what it added.
+#
+# The tee is unconditional and both directions are kept: a request whose reply
+# is missing is worth as much as one whose reply is there, because the shapes
+# are what is being collected rather than the exchange.
+
+set -uo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo="${HJ_REPO:-$(dirname "$here")}"
+raw="${HJ_EDITOR_CAPTURE:-$repo/../heuristic-jump-transcripts/editor-capture}"
+corpus="$repo/crates/shared/tests/golden-traffic.jsonl"
+
+case "${1:-}" in
+--install)
+	mkdir -p "$raw"
+	cat <<-EOF
+		Add to Zed's settings.json, then restart the language server
+		(command palette: "editor: restart language server"):
+
+		  "lsp": {
+		    "rust-analyzer": {
+		      "binary": { "path": "$here/capture-editor-traffic", "arguments": [] }
+		    }
+		  }
+
+		Then type in a Rust file for a minute, and run:
+
+		  harness/capture-editor-traffic --finish
+
+		Remove the setting afterwards. Leaving it costs a little latency and
+		an ever-growing file in $raw.
+	EOF
+	;;
+
+--finish)
+	if [ ! -d "$raw" ] || [ -z "$(ls -A "$raw" 2>/dev/null)" ]; then
+		echo "capture: nothing in $raw — was the Zed setting applied and the server restarted?" >&2
+		exit 1
+	fi
+	python3 "$here/capture_editor_traffic.py" "$raw" "$corpus"
+	;;
+
+"")
+	# No argument means Zed is running us as the server. Proxy, and tee.
+	mkdir -p "$raw"
+	stamp="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+	exec tee "$raw/client-$stamp.jsonl" |
+		"${HJ_RUST_ANALYZER:-rust-analyzer}" |
+		tee "$raw/server-$stamp.jsonl"
+	;;
+
+*)
+	echo "usage: harness/capture-editor-traffic [--install | --finish]" >&2
+	exit 2
+	;;
+esac
