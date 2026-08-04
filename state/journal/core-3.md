@@ -135,3 +135,108 @@ the document's file from disk before dispatching. That is the only way to tell
 "did not read" from "read and got the same bytes", since the snapshot and the
 file hold identical text by construction. Disabling the short circuit fails it
 and nothing else.
+
+## Campaign ede3701b — the digest's inputs, and one wrong verdict
+
+Assignment: `core.md#the-table-is-not-enough-a-replay-has-to-show-its-failures`
+(unjudged) and `core.md#what-the-templates-handler-does[9adb0be268]`.
+
+### The templates gap was stale, again
+
+`Table::template()` and
+`the_unimplemented_stratum_identifies_the_template_and_not_a_broken_handler`
+landed in `933a4aa` at 21:22 UTC; the section's `last_audited` is 20:56 UTC,
+26 minutes earlier. Nothing to do. This is the third campaign on this worker to
+open with a verification exercise instead of a target, so I stopped writing it
+into the findings and filed it as `core-019` (`harness-request`) with the
+measurement: seven of the nine `core.md` gaps have a `where:` file that moved
+after the audit that opened them, and three of those are verifiably closed.
+
+### What the section actually needed, and what I did not try
+
+The section splits across two owners. `harness/measure` is the other one and is
+`core-001`, open, and `harness/**` is denied — so the temptation is to write
+the digest somewhere I *can* write. I did not, and the next campaign should not
+either: the section says in as many words that digesting "is the harness's job,
+not `measure_core`'s — the same split that keeps `measure_core` ignorant of
+`state/`". A digest in `measure_core` would satisfy an auditor and break the
+thing the sentence is protecting.
+
+What was left on the measurement's side was not a feature but two properties of
+what a replay already writes:
+
+* the digest's **share of a stratum** takes its numerator from the records file
+  and its denominator from the table, and nothing checked the two artifacts
+  were two accounts of one run;
+* the **sample** — "repository, file, line, the identifier, what we returned,
+  what the server said" — is six fields of which none is a column, so the claim
+  is a reachability rather than a schema.
+
+### The reconciliation found a real one
+
+Reconciling every counter failed immediately: 14 `mismatch` in the records
+against 0 in the table, under a handler that only abstains. `replay::one` called
+`Agreement::classify` for every row and passed `Some(agreement)` to
+`answered_by`, while `Table::observe` judged only commits. §6 makes agreement
+the classification of *the shim's answer* against the child's, and `ChildAnswer`
+in `shared::record` already said so in a doc comment nobody had made
+executable: "a query the shim never answered has no answer of ours to compare,
+which is a different fact from the two sides disagreeing".
+
+Where I put the fix, and why not elsewhere. The obvious repair is to filter in
+`Table::observe` by `decision`, which leaves the record still carrying a verdict
+— the table and the record would then hold different answers for the same row,
+which is the exact failure the reconciliation exists to catch. The next obvious
+one is `QueryRecord::answered_by`, which knows `self.decision` and could null
+the columns in `shared` for both producers; I did not, because the table does
+not go through it, so the rule would live in two places and only one of them
+would be the enforcing one. The `Agreement` is now minted at one site, only for
+a commit, and both consumers get the same `Option`. `Table::observe` takes
+`Option<Agreement>` rather than filtering, so there is nothing to hand over
+rather than something to ignore.
+
+The driver was already right — `pending::answered_by_shim` stores `None` on
+abstain, so `resolve` has nothing to classify. My first commit message implied
+otherwise; the code comment now names where the other producer enforces it.
+
+### The two-file fixture, and why the assertion needed one
+
+Every fixture in `pipeline.rs` is one file, and the sample's identifier is
+joined from the positions file. With one file a join on `(file, offset)` and a
+join on `offset` alone are indistinguishable, and the wrong one finds a *real*
+identifier from another file — which reads as a finding rather than as a bug.
+`OTHER_SOURCE` therefore puts `gamma` at byte 7 where `SOURCE` has `alpha`.
+Verified by planting the offset-only join: it fails with
+"names `src/other.rs:0` and `alpha`, and that line reads `pub fn gamma()`".
+
+### The rendering check, and the case that made it bite
+
+The reconciliation is against `--format json`; a person reads the text table.
+Comparing them is not a string comparison — the text prints coverage and
+precision as percentages — and recomputing those is what exposes
+`Row::precision`'s denominator, which its doc argues at length must be the
+three agreement counters and not `committed`. Under a non-refining handler the
+two coincide and the assertion is decoration. `ReportingHandler` against a
+`null` oracle is the case that separates them: prior `explicitly_imported`,
+settled `ambiguous_name`, an empty commit against a `null` answer is §6's
+mutual match — so one row is all coverage and no judgement and the other all
+judgement and no coverage, and the wrong denominator reads 0% where the right
+one reads 100%. Verified by planting `committed` as the denominator.
+
+### Dead ends and things not taken
+
+* Both genuinely-fresh gaps outside the assignment — `#83[f9ad1766b7]` and
+  `#adding-a-language[68be1693b1]` — were REFUSED by `hj claim`; other workers
+  hold them. Two turns, and the right two: the alternative is a merge somebody
+  resolves. Everything else on the list is stale, so there was nothing outside
+  the lane to take.
+* I considered a Class A edit to §7 for the `#7-observability` minor — replay
+  writes `mode: "proxy"` with `server_health: null`, a third case the section
+  describes neither as proxy nor as standalone. Defensible, and I left it: it
+  is a minor rather than a gap so it moves no number, and editing §7 in the
+  same campaign that edited `replay.rs` is the one shape the spec-drift rule
+  watches for. If a later campaign takes it, the honest resolution is that
+  `mode` says whether a second answer exists — replay's does, frozen — and
+  `server_health` is null because there is no child to be healthy, which is a
+  fact about the producer and not about the mode. `Mode::Proxy`'s doc comment
+  in `shared::record` already argues exactly this.

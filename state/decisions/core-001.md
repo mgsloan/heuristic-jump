@@ -25,6 +25,20 @@ string group-by: `(stratum_prior, reason, stages)` for coverage loss and
 `(stratum_final, agreement, severity, stages)` for precision loss
 (`crates/measure_core/tests/pipeline.rs`).
 
+Campaign `ede3701b` added the two claims that were still missing from that
+half, and both are about what the digest reads rather than about what it does.
+The records file and the table are now reconciled counter by counter — the
+digest's *share of a stratum* has its numerator in one artifact and its
+denominator in the other, and nothing had ever checked that they were two
+accounts of one run. They were not: a replay classified `agreement` for rows
+the handler never answered, so every abstention the oracle answered was a
+`mismatch` in the records and nothing in the table. And all six fields of the
+section's sample line — repository, file, line, the identifier, what we
+returned, what the server said — are asserted assemblable from a records file,
+the positions file beside it and the frozen checkout, joined on
+`(file, offset)`. So a digest written later has both its numbers and its
+examples pinned, not only its two keys.
+
 The harness's half does not exist. There is no `harness/measure`, and nothing
 under `harness/` reads a records file. This is not something a loop can fix:
 `harness/**` is denied to every loop, and correctly so — "a loop must not be
