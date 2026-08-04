@@ -2,12 +2,13 @@
 //! invalidate it.
 //!
 //! §4 makes three claims and they are one mechanism. The list is built lazily
-//! on first need and refreshed in the background; an exhaustive search that
-//! found nothing schedules that refresh; and in proxy mode the editor's
+//! on first need and refreshed in the background; a query schedules that
+//! refresh, either by searching exhaustively and finding nothing or by failing
+//! to read a candidate that is no longer there; and in proxy mode the editor's
 //! watcher notifications, teed here by `shim.md` §3, schedule the same one.
 //! "The same one" is the load-bearing word — the two triggers share a single
-//! debounce rather than one each — so both are transitions on one [`Refresh`]
-//! field and there is nowhere for a second timer to live.
+//! debounce rather than one each — so all of it lands on one [`Refresh`] field
+//! and there is nowhere for a second timer to live.
 //!
 //! Everything on the query path is O(1) and infallible after the first build:
 //! [`FileListCache::list`] hands back the `Arc` it holds whatever the refresh

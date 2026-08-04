@@ -712,9 +712,19 @@ contents beyond the parse LRU.**
   `client/registerCapability` stays pure passthrough
   ([`shim.md` §3](shim.md#server-originated-requests-are-load-bearing)).
 
-  It also catches the one thing the on-demand trigger structurally cannot:
-  **deletions**. A rescan discovers files that appeared; a stale entry for a
-  file that was removed only ever surfaces as a failed read.
+  It also catches **deletions before a query pays for one**, which is the whole
+  of what it buys over the on-demand path: a rescan discovers files that
+  appeared, and a stale entry for a file that was removed surfaces as a failed
+  read first.
+
+  An earlier revision said the on-demand trigger *structurally cannot* catch a
+  deletion, which cannot stand beside the next paragraph: if it were true then
+  something would depend on the watcher, and standalone — which has none, since
+  the bullet after this defers `notify` — would have no backstop at all, and a
+  removed candidate would fail every later query over the same candidate set
+  for as long as the process lived. What is true is narrower and is the
+  *timing*: the on-demand path learns about a deletion the expensive way, one
+  failed query later. See the second signal in the trigger below.
 
   It is **opportunistic, and nothing depends on it.** A child that does not
   register file watching produces no events, and the on-demand path below is
@@ -742,6 +752,28 @@ contents beyond the parse LRU.**
   found nothing, which is evidence about the file list; `Deadline` means the
   search was cut off, which is evidence about nothing, and rescanning on it
   would spend I/O in the window that just proved to be short of it.
+
+  **A failed read is the second signal, and it is the one that covers a
+  deletion.** A search reads every candidate and `resolution.md` §4 forbids
+  reporting a partial scan, so a candidate that vanished between the walk and
+  the read fails the query outright rather than abstaining — there is no
+  `NoCandidates` to observe. What that failure names is a file the list holds
+  and the filesystem does not, which is evidence about the list in exactly the
+  way an exhaustive miss is, so it schedules the same debounced rescan and the
+  query after it searches a list the removed file is no longer in. That is what
+  makes "a failed read" the whole cost of a deletion rather than the first of
+  an unbounded number of them.
+
+  Narrowly: the read has to have failed *because the file is gone*. A
+  permissions error, or a candidate that is not text, is a fact about the file
+  and not about the walk — the walker returns the same entry on the next pass,
+  so rescanning on one would be a rescan per query for as long as it lasts.
+
+  Both halves of the classification live on the types being classified —
+  `AbstainReason::file_list_evidence` and `Error::file_list_evidence`, in
+  `shared` — because the sub-enums are `#[non_exhaustive]` and the same match
+  written at the consumer would need a wildcard arm, which is the arm that
+  silently classifies the next variant instead of failing to compile.
 
   A user who did not get an answer generally asks again, so the rescan
   usually lands about when it is needed. Rescans are debounced, so a burst of
