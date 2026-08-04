@@ -1408,7 +1408,7 @@ def trailing_without_progress(owner: str) -> int:
     return trailing
 
 
-def assignment_block(owner: str, worker: str) -> str:
+def assignment_block(owner: str, worker: str, campaign: str = "<your id>") -> str:
     """What a planner gave this worker, for the top of its prompt.
 
     Empty for a loop that runs one campaign at a time, which is every loop
@@ -1448,17 +1448,17 @@ def assignment_block(owner: str, worker: str) -> str:
         ]
     lines += [
         "",
-        "**Step 4 does not apply to you this round.** It tells a single campaign",
-        "to take another target when one is cheap, which is right when nothing",
-        "else is running and wrong now: the targets it would reach for are the",
-        "ones another worker is holding, and you cannot see which. Extending",
-        "*within* this assignment is free and encouraged. Extending outside it is",
-        "how two workers end up editing one file, and the cost lands on whoever",
-        "rebases second, not on you.",
+        "**Step 4 needs a claim this round.** Extending *within* this assignment",
+        "is free — it is already yours. Reaching outside it is not, because the",
+        "cheap targets are the ones another worker is holding and you cannot see",
+        "which. Ask first:",
         "",
-        "If you finish early and the assignment is genuinely done, close. An idle",
-        "worker costs one session; a collision costs two campaigns and a blocked",
-        "merge.",
+        f"    harness/hj claim {owner} --campaign {campaign} '<anchor[id]>'",
+        "",
+        "It grants or refuses. A refusal is not a setback and costs you one turn:",
+        "take a different target, or close. What it prevents is two campaigns",
+        "producing one result and a merge conflict somebody then has to resolve,",
+        "which costs both of them.",
     ]
     return "\n".join(lines)
 
@@ -1672,7 +1672,9 @@ def prompt_values(
             f"{counts['audit_minors']} minor items"
         ),
         "open_gaps": "\n".join(gap_lines),
-        "assignment": assignment_block(config.owner, os.environ.get("HJ_WORKER") or ""),
+        "assignment": assignment_block(
+            config.owner, os.environ.get("HJ_WORKER") or "", campaign_id
+        ),
         # Not a template value: `campaign-open` reads it back to record
         # what this campaign was handed.
         "_claimed": [gap_id(key, gap.claim) for key, gap in detailed],
@@ -2028,11 +2030,101 @@ def claimed_gaps(owner: str, exclude: str = "") -> set[str]:
     return claimed
 
 
+def claims_dir(owner: str) -> Path:
+    return CONTROL / "state" / "claims" / owner
+
+
+def claim_targets(owner: str, campaign_id: str, targets: list[str]) -> tuple[list[str], list[str]]:
+    """Take targets for a campaign, refusing any another live campaign holds.
+
+    One file per target, created `O_EXCL`, which is the atomicity: two workers
+    asking at the same instant cannot both win, without a lock or a daemon. A
+    claim held by a campaign that is no longer alive is stale and taken —
+    otherwise a crashed worker would sterilise its targets until a human
+    noticed.
+
+    Untracked and outside every worktree, because a claim is true for minutes
+    and is nobody's history. It is the same rule as `phase.toml` and
+    `sessions.jsonl`: state the fleet coordinates through cannot live on a
+    branch.
+    """
+    directory = claims_dir(owner)
+    directory.mkdir(parents=True, exist_ok=True)
+    granted, refused = [], []
+    for target in targets:
+        path = directory / f"{hashlib.sha256(target.encode()).hexdigest()[:16]}.json"
+        record = json.dumps({"campaign": campaign_id, "target": target, "at": now()})
+        try:
+            handle = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            with os.fdopen(handle, "w") as file:
+                file.write(record)
+            granted.append(target)
+            continue
+        except FileExistsError:
+            pass
+        try:
+            held = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            held = {}
+        holder = held.get("campaign", "")
+        # A claim younger than the grace period is held whatever the process
+        # table says. It is the same window the reaper needs: a campaign claims
+        # its assignment before its runner appears, and a sibling asking in
+        # that gap would otherwise steal a target that is about to be worked.
+        try:
+            age = (datetime.now(timezone.utc) - datetime.fromisoformat(held["at"])).total_seconds()
+        except (KeyError, ValueError):
+            age = REAP_GRACE_SECONDS + 1
+        if holder == campaign_id:
+            granted.append(target)
+        elif holder and (age < REAP_GRACE_SECONDS or campaign_is_alive(holder)):
+            refused.append(target)
+        else:
+            path.write_text(record)
+            granted.append(target)
+    return granted, refused
+
+
+def release_claims(owner: str, campaign_id: str) -> int:
+    directory = claims_dir(owner)
+    if not directory.is_dir():
+        return 0
+    dropped = 0
+    for path in directory.glob("*.json"):
+        try:
+            if json.loads(path.read_text()).get("campaign") == campaign_id:
+                path.unlink()
+                dropped += 1
+        except (OSError, json.JSONDecodeError):
+            continue
+    return dropped
+
+
+def cmd_claim(args: argparse.Namespace) -> int:
+    _, config = loop_config(args.loop)
+    granted, refused = claim_targets(config.owner, args.campaign, args.target)
+    for target in granted:
+        print(f"claim: granted {target}")
+    for target in refused:
+        print(f"claim: REFUSED {target} — another worker is on it", file=sys.stderr)
+    if refused:
+        print(
+            "claim: pick something else, or close. Two workers on one target is two "
+            "campaigns for one result and a merge somebody has to resolve.",
+            file=sys.stderr,
+        )
+    return 1 if refused else 0
+
+
 def cmd_campaign_open(args: argparse.Namespace) -> int:
     phase, config = loop_config(args.loop)
     campaign_id = args.id or str(uuid.uuid4())
     template = (HARNESS / "prompts" / config.prompt).read_text()
     values = prompt_values(phase, config, campaign_id, claimed_gaps(config.owner, campaign_id))
+    # The assignment is claimed on the campaign's behalf, so a worker never
+    # has to ask for what it was already given.
+    assigned = (assignment_for(config.owner, args.worker or config.owner).get("targets") or [])
+    claimed_now, _ = claim_targets(config.owner, campaign_id, list(assigned))
     rendered = render(template, values)
     prompt_sha = hashlib.sha256(rendered.encode()).hexdigest()
 
@@ -2059,7 +2151,7 @@ def cmd_campaign_open(args: argparse.Namespace) -> int:
             "language": config.language,
             # What this campaign was handed, so a worker starting a
             # second later is offered something else.
-            "claimed": sorted(values.get("_claimed", [])),
+            "claimed": sorted(claimed_now),
             "prompt": config.prompt,
             "prompt_sha": prompt_sha,
             # The rendered sha changes every campaign, because the tail does —
@@ -2602,6 +2694,7 @@ def cmd_campaign_close(args: argparse.Namespace) -> int:
             **after,
         },
     )
+    release_claims(config.owner, args.id)
     commit_harness_state([sessions_path()], f"close campaign {args.id[:8]} ({args.outcome})")
     print(f"campaign {args.id[:8]} closed: {args.outcome}, {len(commits)} commit(s), progress={progress}")
     if drift:
@@ -3755,6 +3848,12 @@ def main() -> int:
     p.add_argument("loop")
     p.add_argument("--lintable", action="store_true", help="exclude vendored crates, which are tested but not linted")
     p.set_defaults(run=cmd_crates)
+
+    p = sub.add_parser("claim", help="take targets, refusing any another worker holds")
+    p.add_argument("loop")
+    p.add_argument("--campaign", required=True)
+    p.add_argument("target", nargs="+")
+    p.set_defaults(run=cmd_claim)
 
     p = sub.add_parser("campaign-open", help="allocate a campaign, write its record, render its prompt")
     p.add_argument("loop")
