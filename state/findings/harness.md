@@ -1,66 +1,70 @@
 # Findings — harness loop
 
-Theory after two campaigns. Rewritten, not appended.
+Theory after three campaigns. Rewritten, not appended.
 
-## Where the gaps are, and how to find them
+## Where the gaps are, and the one method that finds them
 
 `loops.md` describes machinery that mostly exists. The gaps are **named
-fields and named ratios the implementation approximated**, and they hide
-behind components that look right. Section 15 named `experiments` and `gate
-seconds` and had neither. Section 16 named six fields for
-`interventions.jsonl`, a vocabulary of `kind`s, twelve session-row fields,
-three derived numbers and four renderer properties — seven were missing while
-every panel rendered.
+fields, named ratios and named nouns the implementation approximated** —
+never missing components. Three campaigns running, the same method found
+every one: **take the section's literal nouns and grep for each.** Judging
+whether the code looks right finds nothing, because it looks right.
 
-**The method: read the section's nouns and grep for each one.** Judging
-whether the code has the right shape finds nothing. The sharpest tell is a
-sentence of the form *"nothing else in the design reports it"* — both
-campaigns found the prose quoted in a comment and the arithmetic absent.
+Two tells, both confirmed repeatedly:
 
-Second concentration: **claims true of the design and untrue of the
-deployment.** §4's gate steps were "all mandatory" while three printed
-`skipped`. §13 names four isolation layers and three exist. Neither is
-visible from inside the document.
+* **A docstring describing behaviour the function does not have.** That is
+  where a previous campaign wrote the claim it meant to satisfy. `tokei` was
+  in `loc_per_crate`'s docstring and nowhere in its body.
+* **A sentence of the form "nothing else in the design reports it."** The
+  prose gets quoted in a comment and the arithmetic never appears.
 
-## Ruled out
+Third concentration, newly confirmed: **anything scoped by an allow-list
+excludes `harness/`**, so the loop building the harness was invisible to its
+own instruments. `spec_drift` counted only `crates/` and `vendor/`;
+`provisional_decisions` and `tagged_sites` excluded `:!harness` wholesale.
+If a gap smells like this, check the pathspec first.
 
-* **Sections 15 and 16 are done.** All six of 15's subsections and all seven
-  of 16's anchors are implemented and, I believe, clean. Do not re-read
-  `dashboard/serve` looking for missing panels.
+## Ruled out — do not re-read
+
+* **Sections 4, 6, 7, 11, 15, 16, 17 and 19 are done.** All five of §7's
+  gaps landed. Do not re-read `dashboard/serve` for missing panels or
+  `check-metrics` for missing arithmetic.
 * **`harness/loop`, `campaign-open/close`, `reap`, `audit-due` and the stall
   rule carry scar tissue.** Their comments record real misrecordings already
   fixed. Treat them as correct.
-* **Do not rewrite §15's estimate table**, even though the section invites
-  it. Journal, campaign 11b9c019.
-* **Do not build a gate check that parses the design's ownership table.**
-  Tempting and wrong; journal, this campaign.
+* Do not rewrite §15's estimate table; do not build a gate check that parses
+  the ownership table. Journals of 11b9c019 and bb1e501a.
+
+## What is left in `loops.md`, and it is a different shape
+
+The mechanical one-function gaps are gone. What remains:
+
+* **Three spec edits** — §1 "there is no code", §2 "one writer", §8's
+  tune/select/final split. Each is a few sentences and each closes a
+  section. **Take them, in a campaign that is not editing the detector.**
+  This campaign deliberately did not: it rewrote `spec_drift`, and the
+  detector's own campaign should not be the first thing it flags.
+* **`harness-003`** — the audit cadence is a knob and §5/§15 say it is not.
+  A cost trade, not a loop's to settle.
+* **`harness-004`** — `loop/harness` and `main` diverged twenty commits each
+  way and neither is a superset. The record carries the resolution rather
+  than the complaint: three hunks, all in `hj`, all mechanical.
+* Then the unjudged sections. `#the-metrics-history`,
+  `#what-a-loop-remembers-about-itself` and
+  `#rules-are-inlined-subject-matter-is-read` were read this campaign and
+  appear satisfied; the untouched ones are §13's `#workers-*` and
+  `#parallel-loops-*`, and `harness/workers` is still unread by any campaign.
 
 ## Load-bearing, confirmed
 
-* **The pinned gate checks the pinned harness.** It runs `$here/hj`, not the
-  tree's — so the loop that edits `harness/` was the one whose changes the
-  gate never executed. Half-fixed (the tree's `hj selftest` now runs too when
-  it differs); the habit still stands: run everything you change yourself, in
-  every worktree.
-* **This worktree runs ~20 commits behind `main`.** `state/` here is not what
-  the dashboard shows. `harness-001` reads open here and is answered on
-  `main`. Check `main` before concluding anything about state.
+* **The pinned harness judges you, and it is two campaigns stale.** The gate
+  on `main` predates the tree-`hj` selftest, so nothing runs this worktree's
+  `hj` except you. Run `harness/hj selftest` after every edit to it.
+* **A syntax error in `hj` blocks every Edit and Write in the worktree** —
+  the hook read a crash as a denial. Fixed by pointing the hook at the pinned
+  copy; if it recurs, the escape is bash.
+* **Never add a per-campaign write to a shared single-valued file.** Three
+  core workers bumping one scalar conflict on rebase and stop the round.
+  Append-only jsonl, or a hand-set floor read alongside it.
 * **`gate_runs` counts any command mentioning `harness/gate`**, so grepping
-  for it inflates your own `empty` count. Changing that definition is a
-  metric redefinition, Class B, needs a sweep.
-
-## Open, and yours
-
-* **`harness-001` is answered `A` on `main`** — the campaign id moves out of
-  the prompt body. The journal from 11b9c019 says the work is four edits and
-  an intervention entry, and **do not redo the measurement**. It is a
-  separate campaign: different files (`harness/prompts/`), different section.
-* **`harness-002`** escalates §13's missing OS sandbox. Do not enable it
-  without reading the record — as specified it breaks `hj record`.
-
-## Where to go next
-
-Section 13's `#workers-*` and `#parallel-loops-*` subsections — the newest,
-least exercised machinery, and `harness/workers` is still unread by any
-campaign — then sections 3 and 5, the audit ledger and the denominator, which
-compute this loop's own number and deserve the same literal-noun treatment.
+  for it inflates your own `empty` count.

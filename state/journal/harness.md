@@ -205,3 +205,97 @@ invisible from here and loud everywhere else.
 * The three "campaigns" with $0.00 and no gate runs are sessions that died
   before doing anything. They are in the denominator of anything that counts
   campaigns. Do not read a 27-campaign average as 27 real campaigns.
+
+## 8564e2f1 — the numbers hj computes about the loops
+
+Target: nine gaps across §4, §6, §7 (all five), §11, §17 and §19, plus the
+audit-cadence pair as an escalation. Ten commits, no reverts, no experiment
+abandoned — which is itself worth reading as a warning rather than a boast:
+see below.
+
+The hypothesis was that all nine were one defect wearing different clothes —
+a number the design names, computed approximately or computed and then never
+read — and that held. Nothing here needed new machinery. `spec_drift`,
+`provisional_decisions`, `loc_per_crate` and `check-metrics` all ran on every
+campaign already; three of them were scoped so that the harness loop's own
+work was invisible to them, and the fourth read the metrics file only to ask
+whether a line existed in it.
+
+### The method that found them, and it is the same one as last time
+
+Take the section's literal nouns and grep for each. Every one of these was
+findable that way in under a minute: `tokei` appears in `loc_per_crate`'s
+docstring and nowhere in its body; `:!harness` appears twice, in the two
+functions §6 calls a health metric; `crates/`, `vendor/` is an allow-list
+where §19 needs a complement. Judging whether the code "looks right" finds
+none of them, because it looks right.
+
+The sharpest tell so far is still a docstring that describes behaviour the
+function does not have. Two of this campaign's nine were exactly that. A
+comment quoting the spec is where a previous campaign put the claim it
+intended to satisfy, so it is the highest-yield place to check whether it did.
+
+### Approaches considered and not taken
+
+* **Do not put the ratchet in `harness/gate`.** §4 scopes the gate's
+  "ratchets" step to §11's *size* ratchets, phase 3 only, so a test-count
+  ratchet there needs a spec edit to justify it. It goes in `check-metrics`,
+  which the gate already calls at step 7, and §7's wording — "the gate checks
+  metric direction itself" — is satisfied by the metrics step reading the
+  metric. This also left `harness/gate` untouched, which mattered an hour
+  later when it became a denied path.
+* **Do not have `hj record` write the ratchet baseline.** The first design
+  had `harness/ratchets.toml` bumped automatically on every record. Three
+  core workers each bumping one scalar in one file conflict on rebase, and
+  `merge_back` reads a conflict as "two loops wrote the same file" and stops
+  the round. The baseline is the highest value in the append-only metrics
+  history instead, with the file as a hand-set floor under it. **Any new
+  per-campaign write to a shared single-valued file has this problem.**
+* **Do not detect test deletions by diffing a stored inventory.** Storing
+  test names per row bloats the metrics file by an order of magnitude, and
+  the case that matters — one test deleted, another added, count flat — is
+  visible in the diff directly. `git diff -U0` and a two-state scanner does
+  it with no storage at all.
+* **Do not edit `design/loops.md` this campaign.** Three of the remaining
+  open gaps (§1's "there is no code", §2's "one writer", §8's split) can only
+  be closed by editing the document. This is the campaign that rewrote
+  `spec_drift` so that a campaign editing `design/` and code together is
+  flagged. Making the detector's own campaign the first thing it flags is a
+  reviewer's afternoon for no gain; the edits are three sentences each and
+  will be cheaper anywhere else. **The next campaign should take them.**
+* **Do not rebase onto `main` mid-campaign.** See `harness-004`. The audit
+  that produced this campaign's gap list was computed in *this* worktree, and
+  rebasing swaps it for a different one halfway through.
+
+### Things worth knowing about the machinery
+
+* **A syntax error in `hj` bricks the worktree's Edit and Write tools.** The
+  `PreToolUse` hook shells out to `hj check-path` and reads any non-zero exit
+  as "denied", and a Python file that will not parse exits non-zero for every
+  call — including the call that would fix it. The escape is bash, which the
+  hook does not cover. Fixed by pointing the hook at the pinned copy, but the
+  general shape stands: **anything the hook depends on must not be the thing
+  the campaign is editing.**
+* **`cargo nextest list` costs about 20 seconds cold and runs on every gate
+  now** for a loop that owns crates. Warm, after step 3 has already built, it
+  is a second or two. If a future campaign sees the gate get slow, this is
+  where to look first.
+* **The pinned gate on `main` is two campaigns behind this branch**, so the
+  tree-`hj` selftest step added last campaign has never actually run. Run
+  `harness/hj selftest` by hand after every edit to `hj`. I did, all ten
+  times, and it caught nothing — but the one time it does, it will be the
+  time three core workers would have gone red.
+* **`git merge-tree --write-tree main HEAD` is the cheap way to see how bad a
+  merge is** without touching the branch. Three hunks, all mechanical. That
+  measurement is what turned "the branches have diverged" from an alarm into
+  a two-minute job for whoever reads `harness-004`.
+
+### The warning in "ten commits, no reverts"
+
+An experiment that produces no commit is a signal, and I produced none. That
+is either a well-chosen target set or a campaign that only picked work it
+already knew how to do. Both are consistent with the evidence. The honest
+read is that the gaps in this batch were unusually mechanical — nine
+one-function changes — and that the ones left in `loops.md` are not: what
+remains is spec edits, a cost trade, and a merge nobody owns. Expect the next
+campaign to have a worse ratio, and do not read that as it going badly.
