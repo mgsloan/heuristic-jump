@@ -71,6 +71,94 @@ fn candidates_are_ordered_by_section_4s_tiers() {
     );
 }
 
+/// `resolution.md` §4's tier 4 — other workspace roots — and the tie-break
+/// underneath it, neither of which the single-root test above can reach.
+///
+/// Every candidate in the second root ties on `(tier, proximity)`: tier 4
+/// because the root differs, proximity 0 because components across roots are
+/// not comparable. So their order is decided entirely by the two `then_with`
+/// arms `order` ends with, and those exist for a reason the file list itself
+/// cannot supply — the list is a hash set, and `resolution.md` §1.3 needs a
+/// replay to be byte-comparable against the run it replays. Sorting by tier
+/// alone leaves four files in whatever order the set iterated, which is stable
+/// enough to pass a test written against one enumeration and not stable enough
+/// to compare two runs.
+///
+/// Two enumerations are compared here for exactly that reason: one is the
+/// assertion a non-total order can satisfy by luck.
+#[test]
+fn candidates_from_another_root_come_last_and_in_a_fixed_order() {
+    let near = fixture("multi_near");
+    let far = fixture("multi_far");
+    let roots = [near.clone(), far];
+    let view = ProjectView::new(
+        Arc::new(FileList::enumerate(&roots).expect("enumerating two roots")),
+        Deadline::none(),
+        grammar(),
+    );
+    let origin = SearchOrigin::from_document(path(&view, &near, "src/lib.rs"));
+
+    let ordered: Vec<String> = view
+        .candidates(&[RUST], &origin)
+        .paths()
+        .map(|path| {
+            let root = if path.root().path() == near.as_path() {
+                "near"
+            } else {
+                "far"
+            };
+            format!("{root}|{}", rel_of(path))
+        })
+        .collect();
+
+    assert_eq!(
+        ordered,
+        [
+            "near|src/lib.rs",
+            "near|src/util.rs",
+            "near|src/deep/inner.rs",
+            "near|other/far.rs",
+            // Tier 4, and every one of them tied on proximity, so this
+            // sequence is the final tie-break and nothing else.
+            "far|other/far.rs",
+            "far|src/deep/inner.rs",
+            "far|src/lib.rs",
+            "far|src/util.rs",
+        ],
+        "resolution.md §4's tier 4 is the other workspace roots, searched after \
+         everything in the requesting document's own. open-questions.md \
+         question 8 may yet change which root is preferred; what may not change \
+         without noticing is that the order is a total one"
+    );
+
+    let again = ProjectView::new(
+        Arc::new(FileList::enumerate(&roots).expect("enumerating two roots again")),
+        Deadline::none(),
+        grammar(),
+    );
+    let repeated: Vec<String> = again
+        .candidates(
+            &[RUST],
+            &SearchOrigin::from_document(path(&again, &near, "src/lib.rs")),
+        )
+        .paths()
+        .map(|path| {
+            let root = if path.root().path() == near.as_path() {
+                "near"
+            } else {
+                "far"
+            };
+            format!("{root}|{}", rel_of(path))
+        })
+        .collect();
+    assert_eq!(
+        ordered, repeated,
+        "two enumerations of the same two roots produced different candidate \
+         orders, so a replay is comparing its own hash-set iteration against \
+         the recorded run's"
+    );
+}
+
 #[test]
 fn a_resolved_import_is_searched_first() {
     let root = fixture("resolved");
