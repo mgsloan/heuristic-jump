@@ -30,6 +30,8 @@
 //! does before its limits are applied — and is strictly less blocking than the
 //! in-line dispatch it replaces, where a slow query stopped `core` from
 //! forwarding anything at all.
+//!
+//! DECISION-core-026: provisional
 
 use std::sync::Arc;
 use std::thread::{Builder, JoinHandle, available_parallelism};
