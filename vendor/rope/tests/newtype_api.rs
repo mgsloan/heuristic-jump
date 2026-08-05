@@ -624,6 +624,112 @@ fn a_summary_accumulates_scalar_values_across_the_whole_usize_range() {
     }
 }
 
+/// §4 prints `TextSummary` as a struct, and that printed block is the only one
+/// in the section nothing reads out of the document. The operator table has
+/// [`the_operator_table_is_exactly_what_the_document_prints`] and the two
+/// signature tables have
+/// [`every_function_section_4_names_is_still_a_public_function`]; the nine
+/// fields have only a hand-written transcription in
+/// [`the_public_surface_speaks_in_the_units_it_measures_in`], which asserts
+/// what *this* test's author believed the block said.
+///
+/// That is the gap this section's own history ran through. The block's second
+/// row carries the comment `// usize before and after`, the code carried a
+/// `u32` for two days against it, and three campaigns took the section without
+/// seeing it — because reading the block is not the same as checking it, and
+/// nothing was checking it.
+///
+/// The comparison is by name and declared type rather than in order. Field
+/// order here is upstream's, and §3 allows an edit to change representation
+/// and nothing else, so a reordering would be a hunk that means nothing and
+/// conflicts on re-sync for no gain — the document and the crate already order
+/// `last_line_len_utf16` differently and neither is wrong. What the block
+/// claims is *which unit each field is*, and that is what is held.
+#[test]
+fn every_field_section_4_prints_is_the_field_textsummary_has() {
+    let printed = printed_summary_fields();
+    assert_eq!(
+        printed.len(),
+        9,
+        "§4's `TextSummary` block parsed as {printed:?}. The section calls this \
+         type's conversion \"the largest scope increase that follows from \
+         allowing body edits\" and prints nine fields; a block that parses to \
+         some other number means the fence moved and this test is reading prose"
+    );
+
+    let summary = fs::read_to_string(source("rope.rs")).expect("reading rope.rs");
+    let declared = summary
+        .split("pub struct TextSummary {")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}").next())
+        .expect("rope.rs declares TextSummary");
+    let mut actual: Vec<String> = public_fields(declared);
+    actual.sort();
+
+    assert_eq!(
+        actual, printed,
+        "`design/rope-modifications.md` §4's printed `TextSummary` and the one \
+         in `rope.rs` no longer name the same units. A field the document does \
+         not have is one the sweep never claimed to convert; a field the crate \
+         does not have is a row describing a type that does not exist; and a \
+         differing type is the case the section was written for — \
+         `chars: CharCount, // usize before and after` is the row the code \
+         contradicted with a `u32`, which no test could see because the block \
+         was transcribed rather than read"
+    );
+}
+
+/// The control for the block parser. It is the half whose silent failure is
+/// matching nothing — a fence that moved, or a `pub` line the parser drops —
+/// and the count assertion above is only half an answer to that, since a
+/// parser that found nine of the wrong things would satisfy it.
+#[test]
+fn the_struct_block_parser_reads_the_shape_the_document_writes() {
+    let planted = "
+```rust
+pub struct TextSummary {
+    pub len: ByteLen,
+    pub chars: CharCount,          // `usize` before and after
+    pub lines: Point,                    // typed already, via Point
+}
+```
+";
+
+    assert_eq!(
+        fields_in_struct_block(planted),
+        vec![
+            "chars: CharCount".to_owned(),
+            "len: ByteLen".to_owned(),
+            "lines: Point".to_owned()
+        ],
+        "the parser must drop the trailing comment that carries §4's `usize` \
+         claim, collapse the alignment padding in front of it, and sort — the \
+         comment is prose about the field and not part of its type"
+    );
+}
+
+/// §4's printed `TextSummary`, as sorted `name: Type`.
+fn printed_summary_fields() -> Vec<String> {
+    let text = design("rope-modifications.md");
+    let section = text
+        .split("### `TextSummary` is converted too")
+        .nth(1)
+        .and_then(|rest| rest.split("\n### ").next())
+        .expect("§4's `TextSummary` section");
+    fields_in_struct_block(section)
+}
+
+/// The named fields of the first fenced code block in `section`, sorted.
+fn fields_in_struct_block(section: &str) -> Vec<String> {
+    let block = section
+        .split("```")
+        .nth(1)
+        .expect("a fenced code block in the section");
+    let mut fields = public_fields(block);
+    fields.sort();
+    fields
+}
+
 /// §7: round-trip property tests over `Offset` ↔ `Point` ↔ `PointUtf16` ↔
 /// `OffsetUtf16` on random text with astral-plane characters. `core.md` §10
 /// already requires them for the encoding layer; running them against the
@@ -1623,6 +1729,13 @@ fn public_signatures(text: &str) -> Vec<(&str, String)> {
 /// Every named `pub` field declaration in `text`, as `name: type`. A tuple
 /// field — `pub struct Offset(pub usize)` — has no name and no colon, and is
 /// deliberately not one of these.
+///
+/// A trailing `//` comment is dropped, and the whitespace before it with it.
+/// The type is what the field is declared to be; the comment beside it is
+/// prose *about* that — and in the one place where both sides of this
+/// comparison are read the same way, §4's block, the comment on `chars` is a
+/// claim about the type's width that the type itself has to carry
+/// ([`every_field_section_4_prints_is_the_field_textsummary_has`]).
 fn public_fields(text: &str) -> Vec<String> {
     let mut fields = Vec::new();
     for line in text.lines() {
@@ -1636,7 +1749,13 @@ fn public_fields(text: &str) -> Vec<String> {
         if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
             continue;
         }
-        fields.push(format!("{name}:{}", kind.trim_end_matches(',')));
+        let declared = kind
+            .split("//")
+            .next()
+            .unwrap_or(kind)
+            .trim()
+            .trim_end_matches(',');
+        fields.push(format!("{name}: {declared}"));
     }
     fields
 }

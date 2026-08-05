@@ -312,6 +312,193 @@ fn the_two_triggers_share_one_debounce_rather_than_one_each() {
     );
 }
 
+/// The debounce window is not restarted by a trigger inside it, and
+/// `mark_stale` says what that costs when it is: "a burst would otherwise push
+/// the rescan out indefinitely, which is the failure mode of debouncing a
+/// signal that repeats."
+///
+/// [`the_two_triggers_share_one_debounce_rather_than_one_each`] does not hold
+/// this, and the arithmetic is why: it fires three triggers 50ms apart and
+/// then advances a whole window, so the last trigger is 500ms behind the tick
+/// whether the window restarted or not. Measured rather than reasoned —
+/// rewriting the `Pending` arm to `Refresh::Pending { since: now }` leaves all
+/// fourteen tests in this file passing.
+///
+/// The signal §4 debounces is exactly the repeating kind. One
+/// `workspace/didChangeWatchedFiles` frame "can carry thousands of events
+/// after a branch switch", and a build or a rebase produces them for as long
+/// as it runs. A restarting window means the rescan is scheduled and
+/// re-scheduled and never sent, so the list stays stale for the whole burst —
+/// and the burst is precisely when it went stale.
+#[test]
+fn a_trigger_inside_the_window_does_not_push_the_rescan_out() {
+    let root = fixture("steady_burst");
+    let clock = Arc::new(TestClock::new());
+    let mut cache = cache(&root, &clock);
+    drop(cache.list().expect("the first walk"));
+
+    // A signal that repeats faster than the window closes, ticked the way the
+    // actor's `select!` timer would tick it.
+    let interval = DEBOUNCE.window() / 5;
+    cache.watched_files_changed();
+    for _ in 0..10 {
+        clock.advance(interval);
+        cache.watched_files_changed();
+        cache.refresh_if_due();
+    }
+
+    cache.rescans().recv_timeout(patience()).expect(
+        "ten triggers spanning twice the debounce window produced no rescan at \
+         all, so each one restarted the window and the list stays stale for as \
+         long as the frames keep arriving — the indefinite postponement \
+         `mark_stale` names",
+    );
+}
+
+/// The state no test reached: a trigger that arrives *while a walk is out*.
+///
+/// `Refresh::InFlight` carries a `pending` slot and says why — "the walk
+/// started before the change, so it cannot have seen it" — and `install`
+/// returns to `Pending` rather than `Settled` when that slot is full. Nothing
+/// exercised either. Every other test in this file triggers, ticks, receives
+/// and installs in that order, so the walk is always out over a quiet window
+/// and the slot is always empty.
+///
+/// What it costs when it is wrong is a change that is invisible until
+/// something else happens to invalidate the list. Collapsing the slot — a
+/// two-state `Refresh`, or an `install` that always settles — passes every
+/// other assertion here, because the loss needs a write that lands inside the
+/// walk's own window to show up at all. In standalone there is no watcher to
+/// come along later and cover for it, and §4's on-demand trigger only fires
+/// on a query that *searched* for the missing thing, so a file created in
+/// that window stays unfindable for as long as the process lives.
+///
+/// The interleaving is deterministic rather than raced: `refresh` moves only
+/// in `install`, which this test calls, so the window is open from the tick
+/// that sends the walk until the line that installs it — however fast the
+/// scanner thread actually is.
+#[test]
+fn a_change_arriving_while_a_walk_is_out_is_not_lost_with_the_walk() {
+    let root = fixture("in_flight");
+    let clock = Arc::new(TestClock::new());
+    let mut cache = cache(&root, &clock);
+    drop(cache.list().expect("the first walk"));
+
+    cache.watched_files_changed();
+    clock.advance(DEBOUNCE.window());
+    cache.refresh_if_due();
+
+    // Inside the window. The walk that is out either has not reached this file
+    // or has already passed it, and neither is knowable from here — which is
+    // the whole reason the trigger is remembered rather than dropped.
+    fs::write(root.join("src/during.rs"), "fn delta() {}\n")
+        .expect("a file created while the walk is out");
+    cache.watched_files_changed();
+
+    let first = cache.rescans().recv_timeout(patience()).expect("the walk");
+    cache.install(first);
+
+    // The claim: installing a walk that was already stale when it landed
+    // leaves the list marked stale, so the next tick sends another.
+    clock.advance(DEBOUNCE.window());
+    cache.refresh_if_due();
+    let second = cache.rescans().recv_timeout(patience()).expect(
+        "a trigger that arrived while the walk was out was dropped with it, so \
+             nothing will rescan until something else invalidates the list",
+    );
+    cache.install(second);
+
+    assert!(
+        relative_paths(&cache.list().expect("the refreshed list"))
+            .contains(&"src/during.rs".to_owned()),
+        "the second rescan did not see a file created while the first was out, \
+         which is the case `Refresh::InFlight`'s pending slot exists for"
+    );
+
+    // And it settles: the remembered trigger is one rescan, not a standing
+    // order. Without this the pair above would pass against a cache that
+    // rescans forever.
+    clock.advance(DEBOUNCE.window());
+    cache.refresh_if_due();
+    assert!(
+        cache.rescans().recv_timeout(QUIET).is_err(),
+        "a third rescan went out with nothing left to invalidate the list, so \
+         the remembered trigger never clears and every walk schedules another"
+    );
+}
+
+/// §4 on what the watcher buys over the on-demand path: "It also catches
+/// **deletions before a query pays for one**, which is the whole of what it
+/// buys over the on-demand path: a rescan discovers files that appeared, and a
+/// stale entry for a file that was removed surfaces as a failed read first."
+///
+/// [`a_candidate_removed_after_the_walk_costs_one_failed_read_and_not_every_later_one`]
+/// is the other side — the on-demand path, learning about a deletion "the
+/// expensive way, one failed query later". This is the cheap way, and the two
+/// are the same paragraph's two halves: no query runs here at all, so nothing
+/// pays the failed read that the on-demand path is defined by.
+///
+/// Worth its own test rather than folded into the watcher test above because
+/// that one adds a file. An addition and a deletion are the same code path
+/// only if the rescan replaces the list wholesale, which is what
+/// `FileList::superseding` does and is exactly the assumption a future
+/// apply-the-delta optimisation would break — and §4 forbids that optimisation
+/// by name, on the grounds that `core` does O(1) work per event and one frame
+/// can carry thousands.
+#[test]
+fn the_watcher_catches_a_deletion_before_any_query_pays_for_one() {
+    let root = fixture("watched_deletion");
+    let clock = Arc::new(TestClock::new());
+    let mut cache = cache(&root, &clock);
+
+    let before = cache.list().expect("the first walk");
+    assert!(
+        relative_paths(&before).contains(&"src/util.rs".to_owned()),
+        "the fixture's candidate is not in the first walk, so its absence \
+         below would mean nothing"
+    );
+
+    fs::remove_file(root.join("src/util.rs")).expect("removing a candidate");
+    cache.watched_files_changed();
+
+    clock.advance(DEBOUNCE.window());
+    cache.refresh_if_due();
+    let rescan = cache.rescans().recv_timeout(patience()).expect("a rescan");
+    cache.install(rescan);
+
+    assert!(
+        !relative_paths(&cache.list().expect("the refreshed list"))
+            .contains(&"src/util.rs".to_owned()),
+        "the rescan kept an entry for a file the watcher had already reported \
+         gone, so the deletion still costs a failed read and the watcher buys \
+         nothing over the on-demand path"
+    );
+
+    // The half that makes it "before a query pays": the view built from the
+    // refreshed list never offers the removed file as a candidate, so the
+    // scan that would have failed on it succeeds instead.
+    let view = cache
+        .view(Deadline::none(), grammar())
+        .expect("the view a later query is dispatched against");
+    let outcome = scan_for_alpha(&view, &root).expect(
+        "a scan over the refreshed candidate set failed, which is the failed \
+         read the watcher was supposed to have made unnecessary",
+    );
+    assert_eq!(
+        outcome
+            .hits
+            .iter()
+            .map(|file| file
+                .path
+                .rel()
+                .as_path()
+                .to_string_lossy()
+                .replace('\\', "/"))
+            .collect::<Vec<String>>(),
+        vec!["src/lib.rs".to_owned()]
+    );
+}
+
 /// §4's proxy-mode invalidation is a routing row keyed by a method name, and
 /// the name is a `const` here with no caller: `shim.md` §3's router does not
 /// exist yet, and its own doc calls the string "the entire coupling between
@@ -484,6 +671,47 @@ fn a_read_that_failed_for_any_reason_but_a_missing_file_leaves_the_list_alone() 
     );
 }
 
+/// A failure *of* a walk must never schedule a walk. `ProjectError`'s
+/// classifier puts `Enumerate` and `Scanner` in one arm and says why —
+/// "rescanning on either is an immediate retry of the thing that just failed"
+/// — and `install` refuses the same spin from the other end, dropping a failed
+/// walk rather than retrying it on the spot.
+///
+/// Nothing reached that arm. The two `Stale` cases and the two unreadable-file
+/// cases each have a test above; these two are the ones that would turn a
+/// misconfigured root into a walk per tick, which on a large tree is the
+/// process spending its life re-walking a directory it cannot read. Classing
+/// them `Stale` is a one-word change and every other assertion in this file
+/// survives it.
+///
+/// `Scanner` is constructed and `Enumerate` is not, because `Enumerate`
+/// carries an `ignore::Error` and `driver` does not depend on `ignore` — the
+/// walker is `shared`'s, which is the layering `core.md` §9 wants and not an
+/// omission. They are `|`-joined into a single arm, so this reaches the
+/// decision for both; a campaign that splits them owes the second a test.
+#[test]
+fn a_walk_that_failed_does_not_schedule_another_walk() {
+    let root = fixture("failed_walk");
+    let clock = Arc::new(TestClock::new());
+    let mut cache = cache(&root, &clock);
+    drop(cache.list().expect("the first walk"));
+
+    cache.observe(&Dispatched::Failed(Error::Project(ProjectError::Scanner {
+        roots: vec![root].into_boxed_slice(),
+        source: io::Error::from(io::ErrorKind::OutOfMemory),
+    })));
+
+    clock.advance(DEBOUNCE.window());
+    cache.refresh_if_due();
+    assert!(
+        cache.rescans().recv_timeout(QUIET).is_err(),
+        "a walk that failed scheduled another walk, which is the spin both \
+         `ProjectError::file_list_evidence` and `install` refuse: the thing \
+         that just failed is the thing being retried, and nothing about the \
+         failure says the list is wrong"
+    );
+}
+
 /// The other failure that is a fact about the walk, from the other direction:
 /// `ProjectError::Unresolvable` is raised when §8.4's conversion is handed a
 /// `Location` whose file the view cannot find, and a handler only ever holds a
@@ -506,6 +734,283 @@ fn a_location_the_view_cannot_resolve_is_the_other_failure_that_marks_the_list_s
         .rescans()
         .recv_timeout(patience())
         .expect("an unresolvable target schedules the rescan");
+}
+
+/// §4's second bullet: the walk is "**built in-process rather than by shelling
+/// out to ripgrep**: subprocess spawn plus pipe overhead is a meaningful
+/// fraction of a 50ms p50 target, and in-process gives direct control over
+/// cancellation at the deadline".
+///
+/// The second half is held by `shared/tests/project.rs`'s
+/// `a_scan_past_its_deadline_reports_nothing_rather_than_less`. The first half
+/// is held by nothing, and it is the half that fails *silently*: `rg --files`
+/// piped into a candidate list returns the same paths, and `rg -w <name>`
+/// returns the same hits, so every assertion in this file and in
+/// `shared/tests/project.rs` would go on passing. What changes is a latency
+/// nothing measures in phase 1a and a cancellation story that stops being
+/// ours — which is exactly the shape of a change that works and passes review.
+///
+/// **Scoped to the query path rather than to `driver`.** The whole of `shared`
+/// is in it, since that is where `FileList::enumerate` and `ProjectView::scan`
+/// live and there is no other reason for the seam crate to start a process;
+/// `driver`'s share is this file's subject, the enumeration cache and its
+/// walker thread. The rest of `driver` is deliberately exempt: `shim.md` has
+/// it spawning the proxied child, which is why `ServerCommand` already exists
+/// in `config.rs`, and a scan that forbade that would have to be weakened by
+/// the campaign that writes it — a test whose first real encounter with the
+/// design is being relaxed was not holding a claim.
+#[test]
+fn the_walk_and_the_scan_are_in_process_and_never_shell_out() {
+    let offenders: Vec<String> = query_path_sources()
+        .iter()
+        .flat_map(|(file, text)| {
+            spawns_a_subprocess(text)
+                .into_iter()
+                .map(move |used| format!("{file}: {used}"))
+        })
+        .collect();
+
+    assert!(
+        offenders.is_empty(),
+        "the file list walk or the literal scan reaches for a subprocess. §4 \
+         builds both in-process because \"subprocess spawn plus pipe overhead \
+         is a meaningful fraction of a 50ms p50 target\", and because \
+         cancelling a child at the deadline is a different and worse problem \
+         than returning early from a loop:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The control. The scan above passes today and would pass just as well if it
+/// were looking for the wrong string, so the marker list has to be shown
+/// finding a spawn — and has to be shown *not* finding the two things that
+/// look like one: the prose recording that the design refuses it, and
+/// `ServerCommand`, which is `driver`'s name for the child `shim.md` requires
+/// and appears in `config.rs` as an ordinary type.
+#[test]
+fn the_subprocess_scan_finds_what_it_is_looking_for() {
+    let planted = "
+        // Built in-process rather than by shelling out to std::process::Command.
+        use std::process::Command;
+        pub struct ServerCommand { program: OsString }
+        let files = Command::new(\"rg\").arg(\"--files\").output()?;
+        let walked = FileList::enumerate(roots)?;
+    ";
+
+    assert_eq!(
+        spawns_a_subprocess(planted),
+        vec!["std::process", "Command::new"],
+        "the scan must see both the import and the call, must not read the \
+         comment that records the decision, and must not mistake \
+         `ServerCommand` for one"
+    );
+
+    // The persistence scan shares the marker walker, so its own list is
+    // controlled here rather than in a second near-identical test. The
+    // `read_to_string` is the discriminating line: §4 rules out *writing* an
+    // index, and the walk reads the tree on every pass by design.
+    let written = "
+        // No persisted map from name to definition sites (§4).
+        let cached = fs::read_to_string(path)?;
+        fs::write(index_path, serialised)?;
+        let handle = File::create(index_path)?;
+    ";
+    assert_eq!(
+        persists_something(written),
+        vec!["fs::write", "File::create"],
+        "the persistence scan must see a write however it is spelled, must not \
+         read the comment recording the refusal, and must not flag a read — \
+         reading the tree is what the walk does"
+    );
+}
+
+/// §4's opening boundary, which is the one it calls "the one place where 'no
+/// index' needs a stated boundary": "There is no *symbol* index — **no
+/// persisted map from name to definition sites**, which is the thing
+/// `high-level.md` rules out and the thing that would cost startup CPU and
+/// invalidation complexity", and "**The driver caches a file list. It does not
+/// cache anything about file contents beyond the parse LRU.**"
+///
+/// The in-memory half is structural and needs no test: `FileList` holds roots,
+/// paths and a generation, and `FileListCache` holds one of those — there is
+/// nowhere for a file's contents to be, and a field that gave them one would
+/// be read by somebody. The *persisted* half has no such backstop. Writing the
+/// walk to disk so the cold walk is paid once per machine rather than once per
+/// process is a plausible, well-meant optimisation that would pass review and
+/// make every assertion in this file pass faster, and it is the exact thing
+/// §4's paragraph exists to refuse.
+///
+/// It is refused on grounds nothing here can measure — startup CPU, and
+/// invalidation complexity that arrives later than the change does — so the
+/// scan is the record of the decision rather than a check of its consequences.
+/// Same scope as the subprocess scan above and for the same reason:
+/// `measure_core` writes truth files and record streams by design, and the
+/// rest of `driver` is where a log file would go if one is ever wanted.
+#[test]
+fn nothing_on_the_query_path_persists_an_index() {
+    let offenders: Vec<String> = query_path_sources()
+        .iter()
+        .flat_map(|(file, text)| {
+            persists_something(text)
+                .into_iter()
+                .map(move |used| format!("{file}: {used}"))
+        })
+        .collect();
+
+    assert!(
+        offenders.is_empty(),
+        "the file list or the search writes to disk. §4 allows exactly one \
+         cache — the file list, in memory, rebuilt by a walk — and rules out a \
+         persisted map because it \"would cost startup CPU and invalidation \
+         complexity\". A file list written out is that map in its cheapest \
+         disguise: it needs a validity check against the tree it describes, \
+         which is the invalidation problem the whole no-index posture \
+         avoids:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Every way a source file writes to disk, in `text`, skipping comments.
+fn persists_something(text: &str) -> Vec<&'static str> {
+    const MARKERS: [&str; 5] = [
+        "fs::write",
+        "File::create",
+        "OpenOptions",
+        "fs::create_dir",
+        "fs::rename",
+    ];
+
+    found_markers(text, &MARKERS)
+}
+
+/// The source files §4's two mechanism claims are about: the whole of
+/// `shared`, where `FileList::enumerate` and `ProjectView::scan` live and
+/// where the seam crate has no other business, plus this file's own subject.
+///
+/// The rest of `driver` is deliberately outside it. `shim.md` has `driver`
+/// spawning the proxied child — which is why `ServerCommand` already exists in
+/// `config.rs` — and a log file, if one is ever wanted, goes there too. A scan
+/// that forbade either would have to be weakened by the campaign that writes
+/// it, and a test whose first encounter with the design is being relaxed was
+/// not holding a claim.
+fn query_path_sources() -> Vec<(String, String)> {
+    let sources: Vec<(String, String)> = crate_sources()
+        .into_iter()
+        .filter(|(file, _)| file.starts_with("shared/") || file == "driver/src/files.rs")
+        .collect();
+
+    assert!(
+        sources.len() > 5,
+        "only {} query-path source file(s) walked, so a scan over these would \
+         pass against almost anything",
+        sources.len()
+    );
+    assert!(
+        sources
+            .iter()
+            .any(|(file, _)| file == "driver/src/files.rs"),
+        "the enumeration cache itself is not in the scanned set, which is the \
+         one file §4's bullets are literally about"
+    );
+    sources
+}
+
+/// Every marker in `text`, in the order the list gives them, skipping
+/// comments — a comment naming one is the record of its refusal, which §4
+/// asks for rather than forbids.
+fn found_markers(text: &str, markers: &[&'static str]) -> Vec<&'static str> {
+    let mut found = Vec::new();
+    for line in text.lines() {
+        let code = line.trim_start();
+        if code.starts_with("//") {
+            continue;
+        }
+        for marker in markers {
+            if code.contains(marker) && !found.contains(marker) {
+                found.push(*marker);
+            }
+        }
+    }
+    found
+}
+
+/// Every way a source file starts a process, in `text`, skipping comments.
+///
+/// Two markers and not three: `process::Command` looks like a third but is
+/// subsumed, because reaching it needs an import that names `std::process` on
+/// its own line. The control below is what established that — it was written
+/// expecting three and got the redundant one back.
+fn spawns_a_subprocess(text: &str) -> Vec<&'static str> {
+    const MARKERS: [&str; 2] = ["std::process", "Command::new"];
+
+    found_markers(text, &MARKERS)
+}
+
+/// §4's last paragraph: "**Search scope is the workspace folders only.**
+/// External dependency sources (`~/.cargo/registry` and equivalents) are
+/// excluded per `high-level.md`; this is also what keeps the walk small enough
+/// for the no-index approach to be viable at all."
+///
+/// `shared/src/project.rs` says what rests on it: "A Rust handler resolving
+/// `serde::Deserialize` knows perfectly well where `~/.cargo/registry` is, and
+/// the one-line change to peek at it would work and pass review. Not being
+/// able to name the file is what makes `ExternalDependency` a measured
+/// abstention rather than an accident."
+///
+/// `lookup_refuses_a_path_the_walker_did_not_return` holds the half where the
+/// path is *inside* a root and gitignored. The escape is the other half and
+/// nothing held it: every `RelPath::new` call site in this workspace —
+/// fourteen of them, in five test files — `expect`s success, so the rejection
+/// that makes the scope rule true had no test at all. It is asserted here
+/// rather than in `shared` because `FileListCache::view` is `driver`'s only
+/// route to a `ProjectView`, which is what a query is actually dispatched
+/// against.
+#[test]
+fn no_project_path_names_a_file_outside_the_workspace_roots() {
+    let root = fixture("outside_the_roots");
+    let clock = Arc::new(TestClock::new());
+    let mut cache = cache(&root, &clock);
+    let view = cache
+        .view(Deadline::none(), grammar())
+        .expect("the first walk");
+
+    // A real file, really outside, really readable, and really the sort of
+    // thing a Rust handler would want: a sibling of the workspace root.
+    let outside = root
+        .parent()
+        .expect("the fixture root has a parent")
+        .join("registry_stand_in.rs");
+    fs::write(&outside, "fn alpha() {}\n").expect("a readable file outside the roots");
+
+    for escape in ["../registry_stand_in.rs", "src/../../registry_stand_in.rs"] {
+        assert!(
+            RelPath::new(Path::new(escape)).is_none(),
+            "`RelPath::new` accepted {escape:?}, so a handler can name a file \
+             outside the workspace by spelling the way out. §4 excludes \
+             external dependency sources, and `ProjectPath` being unforgeable \
+             is the whole mechanism — a `..` that survives makes it a \
+             convention again"
+        );
+    }
+
+    // The absolute path is not a second route: `lookup` takes a `RelPath`, so
+    // the escape above is the only spelling there is, and the walker never
+    // returned this file for the relative one to be found under.
+    let relative = RelPath::new(Path::new("registry_stand_in.rs")).expect("a relative path");
+    assert!(
+        view.lookup(&ProjectRoot::new(&root), &relative).is_none(),
+        "lookup minted a ProjectPath for a file that is not under the root it \
+         was asked about, which would make the scope rule depend on the caller \
+         passing the right root"
+    );
+
+    assert!(
+        !relative_paths(&cache.list().expect("the list in hand"))
+            .iter()
+            .any(|path| path.contains("registry_stand_in")),
+        "the walk reached outside its root, which is what §4 says keeps the \
+         no-index approach viable at all"
+    );
 }
 
 /// Every `.rs` candidate, scanned for the one identifier the fixture defines.

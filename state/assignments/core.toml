@@ -1,18 +1,18 @@
 # One round's assignments, written by `hj plan-merge` from the planner's
 # answer. Regenerated every round; not history.
-planned = "2026-08-04T23:44:27+00:00"
+planned = "2026-08-05T00:45:13+00:00"
 
 [worker.1]
-targets = ["core.md#84-location-is-byte-based-and-this-fixes-a-real-inconsistency[9807aee0b3]", "core.md#snapshots-are-o1-to-take-and-are-parsed-before-a-handler-sees-one[02c4cde612]", "core.md#text-and-tree-can-never-disagree[a0661e4b63]", "deps.md#10-errors-one-enumerated-type-no-anyhow[d50e2285d0]"]
-reading = "crates/driver/src/actor.rs, crates/driver/src/dispatch.rs, crates/driver/tests/, crates/driver/tests/seam.rs"
-why = "three gaps are one claim -- core parses/encodes on its own thread because there is no worker pool -- and all four land in actor.rs+dispatch.rs, so deps.md#10 must ride along rather than collide; this worker alone holds seam.rs"
+targets = ["core.md#84-location-is-byte-based-and-this-fixes-a-real-inconsistency[9807aee0b3]", "core.md#snapshots-are-o1-to-take-and-are-parsed-before-a-handler-sees-one[02c4cde612]", "core.md#text-and-tree-can-never-disagree[a0661e4b63]"]
+reading = "crates/driver/src/actor.rs, crates/driver/src/dispatch.rs, crates/driver/tests/actor.rs, crates/driver/tests/snapshots.rs, design/core.md \u00a78.4"
+why = "all three are the same finding \u2014 dispatch/realise run on the actor thread because there is no worker pool \u2014 so they share actor.rs and dispatch.rs and cannot be split; this worker owns those two files and must not append to seam.rs"
 
 [worker.2]
-targets = ["core.md#both-sides-are-sets[c22993d037]", "core.md#two-modes-collect-and-replay[a6251d1926]"]
-reading = "crates/measure_core/src/table.rs, crates/measure_core/src/cli.rs, crates/measure_core/"
-why = "the only two measure_core gaps, one crate, no driver or shared files in reach"
+targets = ["core.md#the-dependency-graph[a7eaf1dfa1]", "core.md#the-trait[218a36571e]"]
+reading = "crates/shared/src/project.rs, crates/shared/src/handler.rs, crates/shared/Cargo.toml, crates/driver/tests/seam.rs:1731-3540, design/core.md \u00a77 and \u00a79"
+why = "sole holder of crates/driver/tests/seam.rs this round; both gaps are core.md-vs-crates/shared reconciliation (\u00a79's rayon list, \u00a77's Outcome/CommitPolicy block) and the fix is expected to be doc/changelog plus the seam manifest, not a rename of Strata across the driver"
 
 [worker.3]
-targets = ["core.md#the-trait[218a36571e]", "rope-modifications.md#textsummary-is-converted-too[22926927ef]"]
-reading = "crates/shared/src/handler.rs, design/core.md \u00a77, vendor/rope/src/point.rs, vendor/rope/src/rope.rs, vendor/rope/tests/newtype_api.rs, vendor/README.md"
-why = "both are stale-printed-block fixes in files nobody else opens, and the rope gap is the last one in rope-modifications so that section can go clean; core.md#4-project-file-enumeration is left for next round because files.rs closes through Dispatched classification, which worker 1 is rewriting"
+targets = ["core.md#4-project-file-enumeration[d41389f7fe]", "rope-modifications.md#textsummary-is-converted-too[22926927ef]"]
+reading = "crates/driver/src/files.rs, crates/driver/tests/file_list.rs, vendor/rope/src/point.rs, vendor/rope/tests/newtype_api.rs, vendor/README.md"
+why = "two small independent targets that touch nothing worker 1 or 2 owns; files.rs already gained Error::file_list_evidence since the audit (43089c3) so the remaining work is the deletion fixture in file_list.rs \u2014 verify before rewriting, and do not edit dispatch.rs or shared/src/project.rs"
