@@ -671,6 +671,47 @@ fn a_read_that_failed_for_any_reason_but_a_missing_file_leaves_the_list_alone() 
     );
 }
 
+/// A failure *of* a walk must never schedule a walk. `ProjectError`'s
+/// classifier puts `Enumerate` and `Scanner` in one arm and says why —
+/// "rescanning on either is an immediate retry of the thing that just failed"
+/// — and `install` refuses the same spin from the other end, dropping a failed
+/// walk rather than retrying it on the spot.
+///
+/// Nothing reached that arm. The two `Stale` cases and the two unreadable-file
+/// cases each have a test above; these two are the ones that would turn a
+/// misconfigured root into a walk per tick, which on a large tree is the
+/// process spending its life re-walking a directory it cannot read. Classing
+/// them `Stale` is a one-word change and every other assertion in this file
+/// survives it.
+///
+/// `Scanner` is constructed and `Enumerate` is not, because `Enumerate`
+/// carries an `ignore::Error` and `driver` does not depend on `ignore` — the
+/// walker is `shared`'s, which is the layering `core.md` §9 wants and not an
+/// omission. They are `|`-joined into a single arm, so this reaches the
+/// decision for both; a campaign that splits them owes the second a test.
+#[test]
+fn a_walk_that_failed_does_not_schedule_another_walk() {
+    let root = fixture("failed_walk");
+    let clock = Arc::new(TestClock::new());
+    let mut cache = cache(&root, &clock);
+    drop(cache.list().expect("the first walk"));
+
+    cache.observe(&Dispatched::Failed(Error::Project(ProjectError::Scanner {
+        roots: vec![root].into_boxed_slice(),
+        source: io::Error::from(io::ErrorKind::OutOfMemory),
+    })));
+
+    clock.advance(DEBOUNCE.window());
+    cache.refresh_if_due();
+    assert!(
+        cache.rescans().recv_timeout(QUIET).is_err(),
+        "a walk that failed scheduled another walk, which is the spin both \
+         `ProjectError::file_list_evidence` and `install` refuse: the thing \
+         that just failed is the thing being retried, and nothing about the \
+         failure says the list is wrong"
+    );
+}
+
 /// The other failure that is a fact about the walk, from the other direction:
 /// `ProjectError::Unresolvable` is raised when §8.4's conversion is handed a
 /// `Location` whose file the view cannot find, and a handler only ever holds a
