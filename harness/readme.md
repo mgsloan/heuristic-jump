@@ -244,6 +244,8 @@ a campaign is usually mid-flight in one of those trees.
 ```sh
 harness/hj check-heldout      # the separation, before a campaign is launched
 harness/hj heldout [<lang>]   # the verdict, and never the numbers
+harness/hj frontier [<loop>]  # the non-dominated commits of a phase
+harness/hj gate-select <loop> # which of those proceeds past the gate
 ```
 
 **Nothing here evaluates anything.** That is the third bullet rather than an
@@ -272,9 +274,53 @@ has been wrong for a while, where a widened one means the last several
 iterations were probably net negative. `[heldout] gap_threshold` in
 `state/phase.toml` sets the weaker of the two and is absent by default.
 
-Two things §18 defers and this does not pretend to have: the frontier over a
-phase's commits, and the evaluation itself. The row carries a `commit` so that
-selecting among candidate points is expressible when the frontier tool exists.
+**The gate's selection is `hj gate-select <loop>`**, and it is the reason the
+row carries a `commit`. §10's three steps are: compute the frontier over the
+phase's commits, evaluate *those points only* on held-out, pick one. It does
+steps 1 and 3 and refuses step 2 — a frontier point with no row in
+`state/heldout/<language>.jsonl` stops the whole selection rather than being
+dropped from it. That refusal is the point of the command: "selecting on the
+tuning corpus alone would be model selection on the training set, and the
+frontier makes that worse rather than better, because it explicitly searches
+the whole history for the best-looking point", so ranking whatever happened to
+be evaluated would do exactly that on a smaller set and read as though it had
+not. A held-out tie breaks on the earlier commit and never on a tuning number.
+
+**What is still missing is only the evaluation in the middle.** It is a corpus
+run — `measure_<lang> replay` against the held-out split — so it belongs to
+`measure_core` and to a phase that has a corpus, not to this harness.
+
+## A replay's half of the metrics row is an argument, not a measurement
+
+`design/loops.md` §10 puts work counters, replay wall clock, per-stratum
+latency percentiles with the per-stage breakdown, and the deadline-abstention
+rate in the row. None of it is measured here:
+
+```sh
+measure_rust replay --format json --records /tmp/q.jsonl > /tmp/report.json
+harness/hj record <loop> --replay-report /tmp/report.json \
+                         --replay-records /tmp/q.jsonl --replay-seconds 41.5
+```
+
+`measure replay --records` writes `shared::record::QueryRecord` unchanged, and
+the doc comment on its writer says whose job the rest is: "Digesting these
+into something readable is the harness's job, not `measure_core`'s." So the
+shape being read is a real type in this repository, which is what made it
+buildable before there is a corpus to run against.
+
+**The wall clock is an argument because `measure_core` holds no clock.** Its
+table is byte-identical across two runs of the same corpus at the same commit,
+which is what makes it usable as a gate rather than a report — so the duration
+is only ever known to whoever ran the replay. §9 wants it recorded as an
+ordinary metric and read as a trend, never gated on, which is what a field
+with no threshold beside it is.
+
+Three things worth knowing before changing the digest. Latency is grouped on
+`stratum_prior`, so a percentile does not change bucket when the search gets
+better at refining. An axis is weighted by its own denominator — coverage by
+`n` and top-1 by `judged` — because a refined query is counted in two
+different rows. And percentiles are nearest-rank, so they only ever return an
+observation; a corpus stratum can hold eleven queries.
 
 ## Binary size is two numbers, and only one of them is cheap
 
@@ -396,16 +442,24 @@ a stop lands between campaigns where the tree is committed.
 
 ## What is not built
 
-The supervisor, the frontier tool, the evaluation half of held-out selection,
-the per-language link delta, and the tuning and optimisation prompts.
+The supervisor, the evaluation half of held-out selection, the per-language
+link delta, and the tuning and optimisation prompts.
 `design/loops.md` section 18 is the argument: they exist to serve tuning
 loops, and there are none until phase 2a. With one loop, one bash loop is not
 a fleet.
 
+**The frontier came off this list**, with the arithmetic half of the gate's
+selection: `hj frontier` and `hj gate-select`, and the metrics panel draws it.
+Nothing consumes a frontier before 2a and every function computing one answers
+"no row carries both axes" today, so the argument above is untouched. What
+building it early bought is that the axes are fixed before there are numbers
+to pick them by, which is the whole of section 10's discipline.
+
 The two half-built entries are half-built on purpose and say so where it
 matters. `hj heldout` renders the verdict and stops the loop on a widening
-gap; what is missing is the thing that *produces* the rows, which is a corpus
-run over candidate commits and therefore needs the frontier. `hj link-delta`
+gap, and `hj gate-select` refuses to select without one per candidate; what
+is missing is the thing that *produces* the rows, which is a corpus run and
+therefore `measure_<lang>`'s rather than the harness's. `hj link-delta`
 computes the per-language number and exits non-zero naming the cargo feature
 `heuristic_jump` would need for it to be measurable at all.
 
