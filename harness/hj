@@ -949,6 +949,39 @@ def commits_for_campaign(campaign_id: str) -> list[str]:
     return [line for line in raw.splitlines() if line]
 
 
+def ordered_plan(
+    revisit: list[tuple[tuple[str, str], str]],
+    pool: list[tuple[tuple[str, str], str]],
+    rotation: int,
+) -> list[str]:
+    """Sections to audit: the stale findings first, then the rotation.
+
+    Capped at half the budget, because §5's rotation is what catches a section
+    *wrongly called clean* — the failure the auditor's own prompt calls the
+    worst available to it — and a loop carrying many open gaps would otherwise
+    spend every audit re-reading them and never revisit a clean one. The cap is
+    the whole of what keeps both properties, and what is over it falls back
+    into the ordinary staleness order rather than being dropped.
+    """
+    revisit = sorted(revisit)
+    pool = sorted(pool)
+    room = max(1, rotation // 2)
+    priority = [key for _, key in revisit[:room]]
+    rest = [key for _, key in sorted(revisit[room:] + pool)[: rotation - len(priority)]]
+    return priority + rest
+
+
+def head_commit_time() -> str:
+    """When the tree last changed, in the same shape as an audit timestamp.
+
+    Used to ask whether a finding predates the code it is about. `HEAD` rather
+    than the newest commit touching any particular path: a gap's `found` names
+    a file, but the claim it fails is a design sentence, and either side moving
+    can settle it.
+    """
+    return commit_time("HEAD")
+
+
 def commit_time(sha: str) -> str:
     """Committer date, normalised to UTC so it sorts against `now()`'s output.
 
@@ -2439,7 +2472,19 @@ def cmd_audit_plan(args: argparse.Namespace) -> int:
     # plus targets. The staleness order is therefore global — the least
     # recently audited sections anywhere, which is what the setting says and
     # what stays true when a third document is added.
+    # A gap found before the tree last changed may already be closed, and
+    # re-judging it is the cheapest verdict available: the claim is written
+    # down, the finding says where to look, and the fix is in the diff since.
+    # Staleness alone cannot find those — a section audited at 01:40 and fixed
+    # at 01:49 has a *recent* `last_audited`, so it sorts last and waits a full
+    # rotation. That is how six sections whose work was done sat open through
+    # an audit that closed three: `last_audited` was standing in for "nothing
+    # to see here", and for a section carrying an open gap it means the
+    # opposite.
+    head = head_commit_time()
+
     touched: list[str] = []
+    revisit: list[tuple[tuple[str, str], str]] = []
     pool: list[tuple[tuple[str, str], str]] = []
     for doc in config.docs:
         verdicts = read_audit(doc)
@@ -2449,9 +2494,10 @@ def cmd_audit_plan(args: argparse.Namespace) -> int:
                 continue
             verdict = verdicts.get(section.key)
             last_audited = verdict.last_audited or "" if verdict else ""
-            pool.append(((last_audited, section.anchor), section.key))
-    pool.sort()
-    planned = touched + [key for _, key in pool[: config.rotation]]
+            entry = ((last_audited, section.anchor), section.key)
+            stale_finding = bool(verdict and verdict.gaps) and last_audited < head
+            (revisit if stale_finding else pool).append(entry)
+    planned = touched + ordered_plan(revisit, pool, config.rotation)
     for key in planned:
         print(key)
     return 0
@@ -9775,6 +9821,42 @@ def selftest_cases() -> list[tuple[str, object]]:
             "a hyphen in a loop's own name is not a worker number"
         )
         assert loop_of_worker("lang-rust-3") == "lang-rust"
+
+    def a_finding_older_than_the_tree_is_re_audited_before_the_rotation():
+        # The shape that cost six sections a full rotation: a section audited
+        # at 01:40 and fixed at 01:49 has a *recent* `last_audited`, so pure
+        # staleness order sorts it last — exactly backwards for a section whose
+        # open gap may already be closed.
+        revisit = [(("2026-08-05T01:40:00+00:00", "the-trait"), "core.md#the-trait")]
+        pool = [
+            (("2026-08-01T00:00:00+00:00", "old-a"), "core.md#old-a"),
+            (("2026-08-01T00:00:01+00:00", "old-b"), "core.md#old-b"),
+        ]
+        assert ordered_plan(revisit, pool, 3)[0] == "core.md#the-trait", (
+            "a section carrying a finding older than the tree goes first, however "
+            "recently it was audited"
+        )
+
+    def the_rotation_keeps_half_the_budget():
+        # §5's rotation is what catches a section wrongly called clean, so a
+        # loop with many open gaps must not spend every audit on them.
+        revisit = [((f"2026-08-0{n}T00:00:00+00:00", f"g{n}"), f"core.md#gap-{n}") for n in range(1, 9)]
+        pool = [(("2026-07-01T00:00:00+00:00", "clean"), "core.md#clean")]
+        planned = ordered_plan(revisit, pool, 4)
+        assert len(planned) == 4, planned
+        assert "core.md#clean" in planned, (
+            "eight stale findings crowded out the rotation entirely; the cap is what "
+            "stops a wrongly-clean section never being revisited"
+        )
+        assert planned[:2] == ["core.md#gap-1", "core.md#gap-2"], planned
+
+    def what_is_over_the_cap_falls_back_rather_than_being_dropped():
+        revisit = [((f"2026-08-0{n}T00:00:00+00:00", f"g{n}"), f"core.md#gap-{n}") for n in range(1, 4)]
+        planned = ordered_plan(revisit, [], 3)
+        assert sorted(planned) == ["core.md#gap-1", "core.md#gap-2", "core.md#gap-3"], (
+            "a stale finding over the cap must re-enter the ordinary staleness order, "
+            "not vanish from the plan"
+        )
 
     def an_audit_that_predates_the_work_has_not_judged_it():
         opened = "2026-08-04T20:59:33+00:00"
