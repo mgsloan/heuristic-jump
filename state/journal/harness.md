@@ -823,3 +823,91 @@ before spending anything on them.
 * **Floating-point in a slope assertion.** `0.60 - 0.50` is not `0.10`, so an
   exchange-rate fixture asserting `== 2_000_000.0` fails by 5e-7. Compare with
   a tolerance.
+
+## 2953c426 — the prompt and the document disagree, and which one is stale
+
+Target: `loops.md#campaigns-compare-notes-asymmetrically[d3f91e494b]`,
+`#rules-are-inlined-subject-matter-is-read[add0e922a7]`,
+`#campaigns-are-the-unit-of-fresh-context[f534383cad]`. Extended to
+`#sections-clean-is-the-metric[053e063f3d]`,
+`#the-largest-dependency-in-this-project-is-not-a-crate[d602a410a4]` and
+`#reading-a-transcript[1fb86537f7]`. Eight commits, one revert, selftest
+154 → 165.
+
+### The one thing to read here if you read nothing else
+
+**A new `hj` subcommand and the shell line that calls it cannot land in one
+commit.** The reviewed selftest scans the *candidate tree's* scripts for
+`"$hj" <name>` and looks each name up in the parser list of the `hj` it is
+itself running — which is the reviewed copy, which by construction predates
+the new parser. So `harness/gate` fails at step 3 on precisely the change its
+own error message tells you to make ("if the call is new, the subcommand
+belongs in the same commit"). Half an experiment was lost to this and then
+reverted.
+
+`sibling_hj_source` fixes it: the parser list now comes from the `hj` beside
+the scripts being scanned, because `harness/loop` runs `$here/hj` and that is
+the pair that has to agree. **It only takes effect once this campaign's work
+is on `main`** — until then, the same trap is live. `KNOWN_KINDS` has the
+identical latent defect one seam over: a new intervention kind logged from a
+*shell script* in the same commit that adds the kind would fail the same way.
+It has not bitten because kinds are usually added from `hj` itself, and I left
+it alone rather than regex a constant out of another file's source.
+
+### Approaches considered and rejected
+
+* **Putting §5's terminal condition in `harness/loop`, where the audit points.**
+  Blocked by the above, so it went into `campaign-open` instead — which is
+  arguably the better place anyway: it is the one function that decides whether
+  a campaign starts, and a campaign opened against an empty queue is handed a
+  prompt with no target in it and closes `no-movement` by construction. The
+  runner's own stop, with an exit code and a logged intervention, is still
+  worth adding when it can land; the mechanism (`hj queue`, `queue_state`)
+  already exists for it.
+* **Making the terminal condition fire on counts alone.** A tuning loop
+  declares no documents, so every audit count is zero for it and the naive
+  reading refuses its campaigns forever. `queue_is_empty` is false for a loop
+  with no `docs`, and there is a test that says why.
+* **Running the pinned gate between the rebase and the fast-forward**
+  (`#branches-exist-for-one-campaign-at-a-time[02927bbcaa]`, which the auditor
+  says "would make this exact"). Not attempted, and the reason is worth having
+  written down: the gate's last step demands a metrics row for
+  `last_loop_commit`, and a rebase that actually replays commits rewrites their
+  shas, so every row recorded during the campaign points at a commit that is no
+  longer in the history. The gate would fail for a reason that has nothing to
+  do with the rebase, on exactly the merges where another worker landed first.
+  Repairing it needs either a gate mode that skips step 7 — and `harness/gate`
+  is denied to this loop — or re-keying the row after the rebase, which is a
+  metric redefinition. Both are escalations, not an afternoon.
+* **Taking either of the two remaining `harness/loop` gaps at all.** Beyond the
+  above: the close path cannot be exercised without doing a real merge into
+  `main` mid-campaign. Whoever takes them should build a scratch-repository
+  fixture first. An untested change there fails silently in another loop's
+  session hours later, which is the one failure mode the harness fragment
+  singles out.
+* **Reverting the prompt's several-targets rule to match §4.** The prompt won,
+  and not by preference: `7a68d47` is a human's commit, argues the change, and
+  is in `state/interventions.jsonl` as `prompt-revised`. Check the intervention
+  log before deciding which side of a prompt/document disagreement is stale —
+  it is the cheapest evidence available and it is decisive.
+
+### Things worth knowing about the machinery
+
+* **The previous campaign's close commit had no metrics row**, so this
+  campaign's first gate run failed at step 7 before a line was written.
+  `harness/hj record harness` fixes it — the row keys on the *commit's*
+  campaign trailer, so recording someone else's commit attributes it to them
+  correctly. This will keep happening until a campaign runs `record` after its
+  own close commit. Mine does.
+* **`design/external-dependencies.md` §7 already pinned the CLI at 2.1.220 and
+  already named the kind (`cli-upgraded`).** The spec was ahead of the code, so
+  the vocabulary spelling came out of the document rather than being invented.
+  Worth checking the *other* design documents before naming anything: this
+  loop's docs are `loops.md` only, but the documents it may read are not.
+* **The dashboard's transcript page loads its window backwards from the end**,
+  so anything that belongs at position zero has to go above the window rather
+  than into the event list, or it sits behind however many "load earlier"
+  clicks the campaign was long.
+* **The rendered prompt is now kept at `<transcripts>/<owner>/<id>.prompt.md`.**
+  Campaigns before this one have only their `prompt_sha`, and the page says so
+  rather than rendering a blank.

@@ -15,6 +15,7 @@ mod document;
 mod error;
 mod handler;
 mod identifier;
+mod logging;
 mod project;
 mod vocabulary;
 
@@ -42,6 +43,7 @@ pub use handler::{
     TraceParts,
 };
 pub use identifier::{Identifiers, identifier_at, identifiers};
+pub use logging::{LOG_PREFIX, PrefixedWriter};
 pub use project::{
     CandidateFiles, FileChunks, FileCount, FileHits, FileList, FileText, Generation, Hit,
     ProjectPath, ProjectRoot, ProjectView, RelPath, ScanOutcome, ScanRequest, SearchOrigin,

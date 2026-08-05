@@ -679,3 +679,83 @@ the paragraph. The section's open gap — the evaluation worktree,
 `[8e7ec3af37]` — is untouched by either.
 
 **Campaign:** fb78b589-0b53-462a-b22d-f65de1c9a78f
+
+## CHANGE-harness-016 — loops.md#rules-are-inlined-subject-matter-is-read — "the gate's internals" is the gate's checks, and the objective is on the told side
+
+**Contradiction:** §14 states, without qualification:
+
+> they do not describe the gate's internals, since a loop that knows how it is
+> scored is a loop that can optimise the scoring
+
+§5 requires the opposite of the same loop, of the same number:
+
+> **Sections clean is to the conformance loop what coverage is to a tuning
+> loop** — something that moves campaign by campaign, that a campaign can be
+> aimed at
+
+and §7 has a stalled loop write down "what it believes is blocking" it, which
+is not answerable by a loop that has not been told what progress is. Read
+broadly, §14 forbids the prompt to carry the number §5 says a campaign is
+aimed at; read narrowly, it forbids naming the checks — and the prompts named
+four of them, so no reading was satisfied.
+
+**Resolution:** the narrow one, stated: the prompts do not describe the gate's
+*checks* — which run, what each inspects, what makes one fail — and the
+objective and the stall state are told deliberately, because a rule the loop
+must obey is inlined (§14's own first paragraph) while the enforcement is not.
+This trades nothing off in either direction. It takes nothing from the
+anti-gaming argument, whose whole subject is the checker: a loop optimising
+against sections clean is a loop doing the work, and a loop optimising against
+a named check is not. And it takes nothing from §5, which needs the number
+stated and never needed the check named.
+
+The clause it does *not* settle is §7's five forms of progress, which the live
+prompt also states. Those are the stall detector's inputs rather than the
+gate's, so the narrowed claim does not reach them, and the trade there is real
+in both directions — which is `state/decisions/harness-013.md`, open, and named
+in the section rather than resolved by it.
+
+Code changed under this anchor in the same campaign, and this is the shape the
+prompt says to declare: three prompt sites stopped naming gate steps, and
+`gate_steps`/`prompt_gate_leaks` make the narrowed claim mechanical by parsing
+the step names out of `harness/gate`. The order was code first, document
+second — the claim as narrowed is now enforced rather than merely reworded,
+which is the only version of this edit worth having.
+
+**Campaign:** 2953c426-61d6-4c26-ab02-4de263107557
+
+## CHANGE-harness-017 — loops.md#campaigns-are-the-unit-of-fresh-context — a campaign is one hypothesis, and several targets when they share their reading
+
+**Contradiction:** the section says
+
+> A session spans a **campaign**: one target, one hypothesis […]
+
+and the table under it says a conformance campaign is "one open gap, or one
+unjudged section". The prompt every conformance campaign is generated from has
+said the opposite since `7a68d47`:
+
+> **The test for taking several is shared context, not interdependence.** They
+> do not have to be one claim seen from two sides, and neither has to block the
+> other.
+
+**Resolution:** the prompt's, into the document. The evidence that decides
+which side is stale is outside both and is not a preference: `7a68d47` is
+authored by a human, argues the change in its commit message — "what a campaign
+spends is reading, so what makes a second target cheap is that it needs no new
+reading" — and is logged in `state/interventions.jsonl` as `prompt-revised`,
+which §16 calls the one intervention that cannot be replayed. The decision was
+taken deliberately, at the level that takes decisions, and the document was
+simply never updated to match it.
+
+So this trades nothing off: the hypothesis remains the unit, one target remains
+the usual shape of it, and the thing the old wording was protecting — a
+campaign that is a list of unrelated items worked through in sequence — is
+refused more sharply than before, by a check anyone can apply ("name the files
+or sections these targets share") rather than by a bar that also refused two
+gaps in one function.
+
+No code changed under this anchor. The prompt already said this; the document
+is what moved, and it moved toward a human's ruling rather than toward a loop's
+code.
+
+**Campaign:** 2953c426-61d6-4c26-ab02-4de263107557
