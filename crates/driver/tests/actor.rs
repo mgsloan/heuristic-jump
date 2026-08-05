@@ -916,7 +916,11 @@ fn a_cancel_reaches_the_worker_that_is_still_running_the_query() {
     let fixture = Fixture::new("actor_cancel_in_flight", Proxying::No);
     let (go, wait) = crossbeam_channel::unbounded();
     let (report, expired) = crossbeam_channel::unbounded();
+    // Held rather than dropped: a handler whose start signal has nowhere to go
+    // logs about it, and the log is not what this test is reading.
+    let (started, _starting) = crossbeam_channel::unbounded();
     let mut actor = fixture.actor(Arc::new(Waiting {
+        started,
         go: wait,
         expired: report,
     }));
@@ -952,6 +956,76 @@ fn a_cancel_reaches_the_worker_that_is_still_running_the_query() {
     assert!(
         fixture.outbound().is_empty(),
         "the shim answered a cancelled request, which `shim.md` §7 forbids outright"
+    );
+}
+
+/// The other end of the loop: `run` returns when the wire closes, and not
+/// before the pool has handed back what `core` gave it.
+///
+/// The wire closing is not the query being over. A query dispatched a
+/// microsecond earlier is still on a worker, and §7's row for it is written
+/// when the worker comes home — so a loop that returned on the disconnect
+/// would lose exactly the slow queries, which are the rows §7 is read for. In
+/// a corpus run that is the tail of every repository.
+///
+/// The ordering is forced rather than hoped for. Every event is queued before
+/// the loop starts and the sender is dropped, so the events channel is empty
+/// and disconnected the instant the request has been dispatched; and the
+/// handler does not return until this test lets it, so the pool cannot answer
+/// before then. There is no schedule in which `run` reaches its exit with the
+/// query already accounted for.
+#[test]
+fn the_loop_records_a_query_the_pool_still_had_when_the_wire_closed() {
+    let fixture = Fixture::new("actor_drain", Proxying::No);
+    // A rendezvous: the receive below returns only once the handler is inside
+    // the send, which is inside the worker.
+    let (started, starting) = crossbeam_channel::bounded(0);
+    let (go, wait) = crossbeam_channel::unbounded();
+    // Held for the reason the start channel is held in the cancellation test:
+    // the handler reports its deadline whatever the test is reading, and a
+    // dropped receiver would put a warning in a log nobody here is looking at.
+    let (report, _expired) = crossbeam_channel::unbounded();
+    let actor = fixture.actor(Arc::new(Waiting {
+        started,
+        go: wait,
+        expired: report,
+    }));
+
+    let (events, incoming) = crossbeam_channel::unbounded();
+    for event in fixture.session(1) {
+        events.send(event).expect("a queued event");
+    }
+    // The transport goes away before the loop even starts. The queued events
+    // are still delivered — that is what `the_loop_drains_its_channel_and_ends_
+    // when_the_wire_closes` rests on too — so the request is handled and the
+    // disconnect is what the loop sees next.
+    drop(events);
+    let looping = std::thread::Builder::new()
+        .name("actor".to_owned())
+        .spawn(move || actor.run(&incoming))
+        .expect("the actor thread");
+
+    starting
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the handler to be reached");
+    go.send(()).expect("letting the handler go");
+    looping
+        .join()
+        .expect("the actor thread")
+        .expect("the actor loop");
+
+    let rows = fixture.rows();
+    let [row] = rows.as_slice() else {
+        panic!(
+            "{} rows for a query the pool was still holding when the wire closed, where §7 \
+             asks for one",
+            rows.len()
+        );
+    };
+    assert_eq!(
+        field(row, "decision"),
+        "\"abstained\"",
+        "the row was written by something other than the handler's own answer: {row}"
     );
 }
 
@@ -1510,6 +1584,11 @@ impl LanguageHandler for Reporting {
 /// its deadline says. It is the only way to observe a `$/cancelRequest` from
 /// inside a query rather than beside one.
 struct Waiting {
+    /// Sent before the wait, so a test can know the query is *inside* a worker
+    /// rather than still on the channel. A rendezvous rather than a buffered
+    /// send: what it establishes is an ordering, and a buffered one would
+    /// establish only that the handler had been reached eventually.
+    started: crossbeam_channel::Sender<()>,
     go: Receiver<()>,
     expired: crossbeam_channel::Sender<bool>,
 }
@@ -1528,6 +1607,9 @@ impl LanguageHandler for Waiting {
     }
 
     fn goto_definition(&self, query: &Query<'_>) -> Result<Outcome, Error> {
+        if self.started.send(()).is_err() {
+            tracing::warn!("the test stopped waiting for the handler to start");
+        }
         // Logged rather than expected: `panic_in_result_fn` is denied, and a
         // handler that panicked here would take the pool thread with it and
         // leave the test blocked on an answer instead of failing.
