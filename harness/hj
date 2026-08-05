@@ -20,6 +20,8 @@ from __future__ import annotations
 import argparse
 import contextlib
 import hashlib
+import importlib.machinery
+import importlib.util
 import inspect
 import io
 import json
@@ -8485,6 +8487,40 @@ def selftest_cases() -> list[tuple[str, object]]:
         assert frontier_axes_of(both) == {"top1": 0.75, "coverage": 0.8}, both
         assert sorted(both["servers"]) == ["pylsp", "pyright"]
 
+    def the_per_stratum_table_renders_one_surface_per_server():
+        # §16 asks the metrics panel for "the per-stratum table — one per
+        # server where a language has several". The trap is the other half of
+        # §10: a single server's numbers *are* the shared surface, promoted by
+        # `replay_row_fields`, so the naive loop prints the same table twice
+        # under two headings and reads as two measurements.
+        serve = _selftest_dashboard()
+        one = {"strata": {"Common": {"n": 10, "coverage": 0.8, "top1": 0.75}}}
+        single = serve.stratum_table([replay_row_fields({}, {"gopls": one})])
+        assert single.count("<table") == 1, "the promoted surface is one table, not two"
+        assert "only server" in single, single
+        other = {"strata": {"Common": {"n": 10, "coverage": 0.6, "top1": 0.55}}}
+        several = serve.stratum_table([replay_row_fields(one, {"pyright": one, "pylsp": other})])
+        assert several.count("<table") == 3, "the agreement surface and one per server"
+        assert "where the servers differ" in several, several
+        assert serve.stratum_table([]).startswith("<p class=\"empty\""), (
+            "no row is an empty panel that says what would fill it, not a blank"
+        )
+
+    def the_held_out_panel_shows_a_verdict_and_never_a_number():
+        # §12: "the loop is shown a verdict, not the numbers … enough to know
+        # something went wrong and where; not enough to hill-climb." The
+        # dashboard is a file in the repository, so a loop can read it.
+        serve = _selftest_dashboard()
+        rendered = serve.heldout_block(_selftest_loop("lang-rust", "rust"), Phase(phase="2a"))
+        assert "no held-out evaluation has run yet" in rendered, rendered
+        assert not re.search(r"\d+\.\d+", rendered), (
+            "a per-stratum gap printed here is the leak section 12 exists to "
+            "prevent, arriving through the operator's view"
+        )
+        assert "declares no language" in serve.heldout_block(
+            _selftest_loop("harness", None), Phase(phase="1a")
+        )
+
     def two_loops_may_not_declare_one_language():
         # §10 rejects the per-server split — "a loop with almost no legal move"
         # — and concludes "a language is one loop". Two loops for one language
@@ -9171,6 +9207,36 @@ def _selftest_loop(owner: str, language: str | None) -> LoopConfig:
         stall_n=3, rotation=6, splice_sections=3, detail_gaps=8, turn_target="about 150",
         budget_usd=None, model=None, language=language, writes_harness=False,
     )
+
+
+def _selftest_dashboard():
+    """The reviewed `dashboard/serve`, loaded as a module so its renderers can
+    be called directly.
+
+    `PINNED_HARNESS` rather than `HARNESS`, per `harness-011`: this asserts how
+    two harness files agree with each other, and reading the candidate tree
+    would fail a branch for carrying an older copy of a file it may not be the
+    one to change.
+
+    `serve` loads its own `hj` at import time and registers it as
+    `sys.modules["hj"]`, so the entry is saved and put back — leaving a second
+    copy of this module installed under the name the running one has is the
+    kind of thing that goes wrong three checks later and looks unrelated.
+    """
+    previous = sys.modules.get("hj")
+    source = PINNED_HARNESS / "dashboard" / "serve"
+    spec = importlib.util.spec_from_loader(
+        "_hj_dashboard", importlib.machinery.SourceFileLoader("_hj_dashboard", str(source))
+    )
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        if previous is None:
+            sys.modules.pop("hj", None)
+        else:
+            sys.modules["hj"] = previous
+    return module
 
 
 def _selftest_adapter_cost(events: list[dict]) -> dict:
