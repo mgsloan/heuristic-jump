@@ -1205,6 +1205,13 @@ KINDS_IN_USE = (
     # file and nothing else, which is the failure mode §13 describes: the
     # branch keeps accumulating while nobody is told.
     "merge-blocked",
+    # `design/loops.md` §17: a CLI upgrade "changes the generator of campaigns
+    # exactly as a prompt revision does, arrives without anyone deciding
+    # anything, and is otherwise completely invisible". The version was already
+    # on every session row and compared against nothing, so two upgrades went
+    # by unremarked. `design/external-dependencies.md` §7 both pins the version
+    # and names this kind, so the spelling is the document's rather than ours.
+    "cli-upgraded",
 )
 
 KNOWN_KINDS = INTERVENTION_KINDS + KINDS_IN_USE
@@ -1267,6 +1274,27 @@ def shell_intervention_kinds() -> dict[str, list[str]]:
 
 # `"$hj" <subcommand>`, which is how every shell script here invokes this file.
 SHELL_HJ_CALL = re.compile(r'"\$hj"\s+([a-z][a-z-]*)')
+
+
+def sibling_hj_source() -> str:
+    """The `hj` that the scripts `harness_scripts` reads actually run.
+
+    `harness/loop` invokes `$here/hj`, the copy beside it, so the pair that has
+    to agree is one tree's script against that tree's `hj` — not this file
+    against another tree's scripts. Reading this file made a subcommand and its
+    caller impossible to land in one commit: the reviewed copy predates the new
+    parser by construction, so the gate failed on precisely the change its own
+    message tells the campaign to make. That is a false positive rather than a
+    weakened check — the failure it exists for, a script naming a subcommand
+    the `hj` beside it does not have, is exactly what this still catches.
+
+    Falls back to this file when the tree has no `hj`, which is the case for a
+    branch that predates it rather than one that broke it.
+    """
+    try:
+        return (HARNESS / "hj").read_text()
+    except OSError:
+        return Path(__file__).read_text()
 
 
 def hj_subcommands(source: str) -> set[str]:
@@ -2195,6 +2223,24 @@ def check_test_ratchet(config: LoopConfig) -> int:
     return 1
 
 
+def resume_command(campaign_id: str) -> str:
+    """How to resume this campaign, asked of the adapter.
+
+    `design/loops.md` §17: every vendor-specific invocation lives in one file,
+    and the rest of the harness talks to that file. The campaign record's
+    session line was the one place that had copied a flag out of it, so it
+    printed `claude --resume …` whatever `$HJ_RUNNER` was set to — in the field
+    a human uses to go and look at the campaign.
+    """
+    result = subprocess.run(
+        [str(HARNESS / "adapter"), "resume-command", campaign_id],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip() or f"(harness/adapter resume-command {campaign_id})"
+
+
 def cli_version() -> str:
     """Recorded per campaign beside the prompt sha, and for the same reason
     (`design/loops.md` section 17). A prompt revision changes the *generator*
@@ -2698,6 +2744,7 @@ def cmd_check_metrics(args: argparse.Namespace) -> int:
     # run instead of two.
     failed = check_test_ratchet(config)
     failed = check_prompt_prefix(config, phase) or failed
+    failed = check_prompt_leaks(config, phase) or failed
     failed = check_denial_table(config) or failed
     # Not scoped to `writes_harness`, unlike the two above it. Those read a
     # document only one loop is judged on; this reads `state/phase.toml`, which
@@ -3313,16 +3360,77 @@ def worker_findings(owner: str, worker: str) -> str:
     return "\n\n".join(parts)
 
 
+def digest_sources(other: str, owners: set[str], files: dict[str, str]) -> list[tuple[str, str]]:
+    """Which files are the `other` loop's published digest, `(name, body)`.
+
+    A loop with workers has no loop-level digest and cannot get one: §13's
+    "What is per worker and what is shared" moved the file per worker because
+    three branches rewriting one capped file conflict on every merge. So
+    `state/findings/core.md` stopped being written the day `core` went to
+    three workers, and reading it published a fossil — a day stale against
+    three current files — to every other loop in the fleet.
+
+    The loop's digest is therefore its workers' digests when it has any, and
+    its own file only when it has none. Not both: the owner file survives on
+    disk after the split and is exactly the thing that should not be read.
+
+    Pure, and takes the directory listing rather than reading it, so the
+    resolution is fixtured on cases the live tree does not currently hold —
+    a loop that has workers but no digest yet, a fossil beside a current
+    file — instead of on whatever `state/findings/` happens to contain.
+    """
+    # A glob for `{other}-*` would also match a *loop* whose name starts with
+    # another loop's; the phase's own owner list is what tells the two apart.
+    workers = sorted(
+        (name, body.strip())
+        for name, body in files.items()
+        if name.startswith(f"{other}-") and name not in owners and body.strip()
+    )
+    if workers:
+        return workers
+    body = files.get(other, "").strip()
+    return [(other, body)] if body else []
+
+
+def unjudged_sections(docs: list[str]) -> list[str]:
+    """The sections a campaign may take that are not gaps.
+
+    Two kinds, and the second is the one that is easy to lose: a section the
+    audit reached and could not settle, and a section the audit has never
+    reached at all. `design/loops.md` §5 makes the difference from clean
+    visible on purpose, and a never-audited section is further from clean than
+    an unjudged one rather than nearer.
+
+    One definition, because it is now read twice — the prompt offers these as
+    targets and `hj queue` decides on their absence whether the loop has
+    anything left to do, and a queue that is empty for one reader and not for
+    the other is two queues.
+    """
+    keys: set[str] = set()
+    for doc in docs:
+        verdicts = read_audit(doc)
+        for section in sections_of(doc):
+            verdict = verdicts.get(section.key)
+            if verdict is None or verdict.state == "unjudged":
+                keys.add(section.key)
+    return sorted(keys)
+
+
 def other_loop_findings(owners: list[str], owner: str) -> list[str]:
     """Every other *loop's* digest, for this loop's volatile tail.
 
     `design/loops.md` §13, "Campaigns compare notes, asymmetrically". Driven by
-    the owners in `state/phase.toml` rather than by a glob over
-    `state/findings/`, because a glob also matches `core-1.md`, `core-2.md`
-    and `core-3.md` — sibling *workers*, which are `worker_findings`' job and
-    are three views of an implementation a different loop shares none of.
-    §13's sizing is per loop for the same reason: "a dozen loops, 512 words
-    each" fits a tail, and a dozen loops times three workers does not.
+    the owners in `state/phase.toml` rather than by a bare glob over
+    `state/findings/`, because a glob cannot tell a worker of one loop from a
+    loop of its own — and the two are read differently: a sibling worker's
+    digest is `worker_findings`' job, and a *different* loop's arrives here
+    under the asymmetry heading, as a candidate rather than a result.
+
+    §13's sizing — "a dozen loops, 512 words each" — is per loop, and a loop
+    with N workers now spends N caps rather than one. That is the price of the
+    alternative being nothing at all, and it is the same arithmetic §13 says
+    stops working at phase 6, where thirty loops need a selection rule this
+    phase deliberately does not guess at.
 
     The asymmetry §13 is named for — falsified broadcast plainly, confirmed
     published as a candidate — is not enforceable here, because it is a
@@ -3330,14 +3438,30 @@ def other_loop_findings(owners: list[str], owner: str) -> list[str]:
     instruction that tells a digest's *writer* to mark which is which, and the
     heading above this splice that tells its *reader* how the two differ.
     """
+    directory = STATE / "findings"
+    files = {path.stem: path.read_text() for path in sorted(directory.glob("*.md"))}
     digests = []
     for other in owners:
         if other == owner:
             continue
-        path = STATE / "findings" / f"{other}.md"
-        body = path.read_text().strip() if path.exists() else ""
-        if body:
-            digests.append(f"### What the `{other}` loop concluded\n\n{body}")
+        sources = digest_sources(other, set(owners), files)
+        if not sources:
+            continue
+        heading = f"### What the `{other}` loop concluded"
+        if [name for name, _ in sources] == [other]:
+            digests.append(f"{heading}\n\n{sources[0][1]}")
+            continue
+        # Named per worker rather than merged: three workers do have three
+        # views (§13, "Workers"), and a reader deciding whether to test a
+        # candidate wants to know that two of them agreed.
+        bodies = "\n\n".join(f"#### {name}\n\n{body}" for name, body in sources)
+        digests.append(
+            f"{heading}\n\n`{other}` runs {len(sources)} workers, so its digest is "
+            f"{len(sources)} digests and not one: the file is per worker because three "
+            "branches rewriting one capped file conflict on every merge "
+            '(`design/loops.md` §13, "What is per worker and what is shared"). They are '
+            f"one loop's conclusions, and the asymmetry above applies to all of them.\n\n{bodies}"
+        )
     return digests
 
 
@@ -3454,14 +3578,7 @@ def prompt_values(
     ]
 
     index = section_index(config.docs)
-    unjudged = [
-        key
-        for doc in config.docs
-        for key, verdict in sorted(read_audit(doc).items())
-        if verdict.state == "unjudged" and key in index
-    ]
-    never_audited = [s.key for doc in config.docs for s in sections_of(doc) if s.key not in read_audit(doc)]
-    unjudged = sorted(set(unjudged) | set(never_audited))
+    unjudged = unjudged_sections(config.docs)
 
     spliced_keys: list[str] = []
     for key, _ in gaps:
@@ -3557,8 +3674,9 @@ def prompt_values(
         "language": config.language or "n/a",
         "campaign_id": campaign_id,
         "campaign_record": f"state/campaigns/{config.owner}/{campaign_id}.md",
-        # Per worker, because append-only prose conflicts on every merge; the
-        # findings digest below is deliberately shared and contended instead
+        # Per worker, because append-only prose conflicts on every merge, and
+        # the findings digest below is per worker for the same reason — an
+        # earlier revision shared it and git stopped and asked on every round
         # (`design/loops.md` §13, "What is per worker and what is shared").
         "journal": f"state/journal/{worker_name}.md",
         # Per worker for the same reason as the journal, and found the same
@@ -3863,6 +3981,101 @@ def check_denial_table(config: LoopConfig) -> int:
     return 1
 
 
+# The gate runs `hj` as `"$hj" <subcommand>`, and those subcommands are its
+# steps. Parsed rather than listed, so a step added to the gate tomorrow is
+# covered the day it is added: a list of step names kept in two files is a
+# list that eventually disagrees with itself, and the half that would go
+# stale here is the half that enforces.
+GATE_INVOCATION = re.compile(r'"\$hj"\s+([a-z][a-z0-9-]*)')
+
+
+def gate_steps() -> set[str]:
+    return set(GATE_INVOCATION.findall((HARNESS / "gate").read_text()))
+
+
+def prompt_gate_leaks(name: str, text: str, steps: set[str]) -> list[str]:
+    """Gate steps this prompt text names. `design/loops.md` §14:
+
+        they do not describe the gate's checks — which ones run, what each
+        inspects, and what makes one fail — since a loop that knows the
+        checker in detail is a loop that can optimise against the checker
+        rather than against the work
+
+    A rule the loop must obey is inlined; the check that enforces it is not.
+    The two are easy to run together — "do not put a per-campaign value in the
+    body, `check-metrics` fails on it" — and the second clause is the leak: it
+    tells a campaign which check to satisfy, where the first told it what to
+    do.
+
+    Template coordinates, deliberately, like `prompt_body_problems`. A
+    campaign's journal entry and its findings digest are spliced into the
+    rendered prompt and routinely name a check by name — that is a loop
+    writing down what it learned, which is the thing the digest is for, and
+    failing a gate over it would punish exactly the honesty §13 asks for.
+
+    A hyphenated name is a leak wherever it appears, since nothing else spells
+    `check-metrics`. A one-word name is only a leak written as `hj <name>`:
+    `crates` and `selftest` are also ordinary English in a document about
+    crates and tests, and a check that failed on those would fail every prompt
+    in the tree for no reason anyone could act on.
+    """
+    problems = []
+    for step in sorted(steps):
+        pattern = (
+            rf"(?<![\w-]){re.escape(step)}(?![\w-])"
+            if "-" in step
+            else rf"\bhj\s+{re.escape(step)}(?![\w-])"
+        )
+        if re.search(pattern, text):
+            problems.append(
+                f"{name} names the gate step `{step}`. §14: the prompts state the rules "
+                "and not the checks, because a loop told which check to satisfy optimises "
+                "against the check. Say what the rule is and leave the enforcement "
+                "unnamed — the gate says which step failed when one does"
+            )
+    return problems
+
+
+def check_prompt_leaks(config: LoopConfig, phase: Phase) -> int:
+    """§14's "they do not describe the gate's checks", as an exact check.
+
+    Every file that is spliced into a live prompt and is prose rather than
+    state: the live templates whole — the leak this was written for was in a
+    template's tail, below `BODY_END`, so the body alone is the wrong scope —
+    plus the fragments and the two shared blocks. All of `fragments/` is live
+    today; a fragment added for a prompt that no loop runs would want the same
+    narrowing `live_prompt_templates` already applies to templates.
+
+    Scoped to `writes_harness` for `check_prompt_prefix`'s reason: the pinned
+    harness runs it against each loop's worktree, and only the loop that owns
+    `harness/prompts/` can act on a failure.
+    """
+    if not config.writes_harness:
+        return 0
+    steps = gate_steps()
+    if not steps:
+        print(
+            "prompt: harness/gate runs no `\"$hj\" <step>` at all, so this check has "
+            "nothing to look for. Either the gate stopped calling hj or the parse is "
+            "wrong; a check that can only pass is not a check",
+            file=sys.stderr,
+        )
+        return 1
+    spliced = [REPO / name for name in sorted(live_prompt_templates(phase))]
+    spliced += sorted((HARNESS / "prompts" / "fragments").glob("*.md"))
+    spliced += [HARNESS / "trailer-format.md", HARNESS / "decision-template.md"]
+    problems = []
+    for path in spliced:
+        if path.exists():
+            problems += prompt_gate_leaks(str(path.relative_to(REPO)), path.read_text(), steps)
+    for problem in problems:
+        print(f"prompt: {problem}", file=sys.stderr)
+    if problems:
+        return 1
+    print(f"prompt: no live prompt names any of the {len(steps)} gate steps")
+    return 0
+
+
 def check_prompt_prefix(config: LoopConfig, phase: Phase) -> int:
     """The gate's route to `prompt_body_problems`, for the one loop that can
     break it.
@@ -4135,7 +4348,7 @@ CAMPAIGN_STUB = """# Campaign {campaign_id}
 - phase: {phase}
 - opened: {opened}
 - commit at open: {commit}
-- session: `claude --resume {campaign_id}`
+- session: `{resume}`
 
 ## Target
 
@@ -4332,6 +4545,31 @@ def cmd_claim(args: argparse.Namespace) -> int:
 
 def cmd_campaign_open(args: argparse.Namespace) -> int:
     phase, config = loop_config(args.loop)
+    # §5's terminal condition, at the one place that decides whether a campaign
+    # starts. A campaign opened against an empty queue is handed a prompt with
+    # no gap and no unjudged section in it, which is a campaign that closes
+    # `no-movement` by construction and counts against the stall for doing
+    # exactly what it was told.
+    #
+    # Here rather than in `harness/loop` for a mechanical reason worth knowing:
+    # the reviewed selftest scans the candidate tree's scripts for `"$hj" <sub>`
+    # and looks the name up in the parser list, so a new subcommand and the
+    # shell line that calls it cannot land in one commit — the reviewed copy
+    # predates the parser. `sibling_hj_source` fixes that from the next merge
+    # onwards, and the runner's own stop, with its exit code and its logged
+    # intervention, belongs in `harness/loop` once it can land there.
+    if queue_is_empty(config):
+        print(
+            f"campaign: {config.owner} has no open gap and no unjudged section left. "
+            "design/loops.md §5 makes this terminal rather than an asymptote: the gap "
+            "count goes to zero and the minor count deliberately does not, and a loop "
+            "chasing minor items is spending campaigns where its judgement is least "
+            "reliable. A human reads the minor list and decides which are real. Run "
+            f"`harness/hj queue {config.owner}` for the counts.",
+            file=sys.stderr,
+        )
+        log_queue_exhausted(config)
+        return 3
     campaign_id = args.id or str(uuid.uuid4())
     template = (prompts_dir(config) / config.prompt).read_text()
     values = prompt_values(phase, config, campaign_id, claimed_gaps(config.owner, campaign_id))
@@ -4352,6 +4590,21 @@ def cmd_campaign_open(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
 
+    version = cli_version()
+    previous_version = next(
+        (str(row["cli_version"]) for row in reversed(campaigns_of(config.owner)) if row.get("cli_version")),
+        "",
+    )
+    upgrade = cli_upgrade_reason(version, previous_version, pinned_cli_version())
+    if upgrade and cli_upgrade_unlogged(version, read_jsonl(INTERVENTIONS)):
+        print(
+            f"campaign: the CLI is {version} and {upgrade}. Logged as an intervention; "
+            "metrics either side of an upgrade are not strictly comparable "
+            "(design/loops.md §17).",
+            file=sys.stderr,
+        )
+        log_cli_upgrade(campaign_id, phase, config.owner, version, upgrade)
+
     record = STATE / "campaigns" / config.owner / f"{campaign_id}.md"
     record.parent.mkdir(parents=True, exist_ok=True)
     if not record.exists():
@@ -4362,6 +4615,11 @@ def cmd_campaign_open(args: argparse.Namespace) -> int:
                 phase=phase.phase,
                 opened=now(),
                 commit=head_sha(),
+                # From the adapter, which is the only file that knows how the
+                # runner is invoked (`design/loops.md` §17). Hardcoded here, it
+                # printed `claude --resume …` under any `$HJ_RUNNER`, in the one
+                # field a human uses to go and look at the campaign.
+                resume=resume_command(campaign_id),
             )
         )
 
@@ -4391,7 +4649,7 @@ def cmd_campaign_open(args: argparse.Namespace) -> int:
             # a campaign's behaviour is a function of both, and the join is
             # only possible if both are on the row.
             "constitution_sha": constitution,
-            "cli_version": cli_version(),
+            "cli_version": version,
             "started": now(),
             "start_commit": head_sha(),
             "record": str(record.relative_to(REPO)),
@@ -4402,6 +4660,18 @@ def cmd_campaign_open(args: argparse.Namespace) -> int:
 
     commit_harness_state([record, sessions_path()], f"open campaign {campaign_id[:8]} ({config.owner})")
 
+    # Kept beside the transcript, because the stream does not echo it and
+    # `harness/loop` deletes the file it was handed as soon as the run ends.
+    # §16 reads a turn as prompt, thinking, tool calls, results, text, and the
+    # first of those was recoverable from nothing: `prompt_sha` says *which*
+    # prompt and never what it said, and a spliced value — a gap's `found:`
+    # line, a stale digest — is exactly what a transcript is read to explain.
+    # Written here rather than by the runner so that every caller of
+    # campaign-open retains it, including a human opening one by hand.
+    kept = prompt_file_of(config.owner, campaign_id)
+    if kept:
+        Path(kept).parent.mkdir(parents=True, exist_ok=True)
+        Path(kept).write_text(rendered)
     if args.prompt_out:
         Path(args.prompt_out).write_text(rendered)
     print(campaign_id)
@@ -4565,6 +4835,103 @@ def constitution_change_unlogged(previous: str, current: str, rows: list[dict]) 
         and row.get("target") == "CLAUDE.md"
         and current[:12] in str(row.get("answer") or "")
         for row in rows
+    )
+
+
+CLI_PIN_SECTION = "## 7. The Claude Code CLI"
+CLI_PIN = re.compile(r"\*\*(\d[\d.]*)\*\*")
+
+
+def pinned_cli_version() -> str:
+    """The version `design/external-dependencies.md` §7 pins, or "".
+
+    Read from the document rather than copied into a constant here, because
+    §17 asks for the pin to live "in `external-dependencies.md` with the
+    language servers" and a second copy is a second answer. The document is
+    also the only place that can be *changed* when a human accepts an upgrade:
+    `design/` outside `loops.md` is denied to this loop, which is the right way
+    round — the loop reports the drift and a human decides it.
+    """
+    path = REPO / "design" / "external-dependencies.md"
+    if not path.exists():
+        return ""
+    _, _, after = path.read_text().partition(CLI_PIN_SECTION)
+    match = CLI_PIN.search(after)
+    return match.group(1) if match else ""
+
+
+def cli_upgrade_reason(current: str, previous: str, pinned: str) -> str:
+    """Why this campaign's CLI version is worth a row, or "".
+
+    The pin comes first because it outlives the comparison against the last
+    campaign: once an upgrade has been logged, every campaign after it runs
+    the new version and the campaign-to-campaign check goes quiet, while the
+    tree is still running something no document says it should. The previous
+    campaign is the fallback for a change the pin cannot see — an upgrade
+    while the document is being edited, or a document that has lost the pin.
+
+    `cli_version` returns the whole banner ("2.1.222 (Claude Code)"), so the
+    pin is matched inside it rather than against it.
+    """
+    if not current or current == "unknown":
+        return ""
+    if pinned:
+        return "" if pinned in current else f"design/external-dependencies.md §7 pins {pinned}"
+    if previous and previous != current:
+        return f"this loop's previous campaign ran {previous}"
+    return ""
+
+
+def cli_upgrade_unlogged(current: str, rows: list[dict]) -> bool:
+    """Whether this version still needs a row.
+
+    Keyed on the version rather than on the transition, so it fires once and
+    then stays quiet: three workers open against one `main` and the first to
+    notice is the one that logs, and a mismatch that persists — the tree ahead
+    of the pin until a human moves one of them — must not re-log every campaign
+    of every loop.
+    """
+    return not any(
+        canonical_kind(str(row.get("kind"))) == "cli-upgraded"
+        and current in str(row.get("answer") or "")
+        for row in rows
+    )
+
+
+def log_cli_upgrade(campaign_id: str, phase: Phase, owner: str, current: str, reason: str) -> None:
+    """`design/loops.md` §17's "treat an upgrade as the intervention it is".
+
+    The version was on every session row from the beginning and compared
+    against nothing, which is the shape of a measurement that is not an
+    instrument: two upgrades (2.1.220 → 2.1.221 → 2.1.222) went by against a
+    pin of 2.1.220 with nothing in the log and nothing on the dashboard.
+
+    Written by the harness, like `log_prompt_revision` and
+    `log_constitution_change`, and for the same reason: nobody is present at a
+    campaign open to give a rationale, and a flag with no row leaves §16's
+    mechanism with no entry at all.
+    """
+    append_jsonl(
+        INTERVENTIONS,
+        {
+            "ts": now(),
+            "kind": "cli-upgraded",
+            "phase": phase.phase,
+            "target": "claude-code",
+            "answer": f"campaigns are now running {current}",
+            "commit": head_sha(),
+            "automatic": True,
+            "rationale": (
+                f"Noticed at the open of campaign {campaign_id[:8]} ({owner}): {reason}. "
+                "design/loops.md §17 puts the CLI in the same category as a prompt "
+                "revision — it changes the generator of campaigns, arrives without "
+                "anyone deciding anything, and is otherwise invisible — so metrics "
+                "either side of it are not strictly comparable. Logged by the harness "
+                "because nobody is present at a campaign open. A human either accepts "
+                "the version by moving the pin in design/external-dependencies.md §7, "
+                "or moves the tree back to it."
+            ),
+        },
     )
 
 
@@ -5722,6 +6089,15 @@ def transcript_of(owner: str, campaign_id: str) -> str:
     ).stdout.strip()
 
 
+def prompt_file_of(owner: str, campaign_id: str) -> str:
+    """Where the rendered prompt is kept, asked of the adapter for
+    `transcript_of`'s reason."""
+    return subprocess.run(
+        [str(Path(__file__).resolve().parent / "adapter"), "prompt-path", owner, campaign_id],
+        capture_output=True, text=True, check=False,
+    ).stdout.strip()
+
+
 def measure_transcript(transcript: str) -> dict:
     if not transcript or not Path(transcript).exists():
         return {}
@@ -6214,6 +6590,116 @@ def budget_scopes(phase: Phase, owner: str | None = None) -> list[dict]:
         }
     )
     return scopes
+
+
+def queue_state(gaps: int, unjudged: int, minors: int) -> str:
+    """`work`, `minors` or `empty`. `design/loops.md` §5's two lists, which
+    "terminate differently": the gap count should go to zero and the minor
+    count should not, so only the first two decide whether a campaign has
+    something to take."""
+    if gaps or unjudged:
+        return "work"
+    return "minors" if minors else "empty"
+
+
+def queue_is_empty(config: LoopConfig) -> bool:
+    """Whether this loop has anything a campaign may take.
+
+    False for a loop whose work does not come from the audit at all: a tuning
+    loop declares no documents, so every count here is zero for it and a naive
+    reading would refuse to open any of its campaigns forever. The terminal
+    condition belongs to the loops §5 is about, and `docs` is what says which
+    those are.
+    """
+    if not config.docs:
+        return False
+    counts = audit_counts(config.docs)
+    state = queue_state(counts["open_gaps"], len(unjudged_sections(config.docs)), counts["audit_minors"])
+    return state != "work"
+
+
+def log_queue_exhausted(config: LoopConfig) -> None:
+    """The stop, in the log a human reads, not only on a terminal nobody is at.
+
+    §5 calls this a terminal condition, and §16 makes the intervention log the
+    mechanism rather than a record of it: a loop that stopped and asked, with
+    nothing in the log, is a loop that looks idle.
+    """
+    counts = audit_counts(config.docs)
+    append_jsonl(
+        INTERVENTIONS,
+        {
+            "ts": now(),
+            "kind": "loop-killed",
+            "phase": load_phase().phase,
+            "target": config.owner,
+            "answer": "the queue is empty; only minor items remain",
+            "rationale": (
+                f"design/loops.md §5: {config.owner} has no open gap and no unjudged "
+                f"section left, and {counts['audit_minors']} minor item(s) remain. The gap "
+                "count is driven to zero and the minor count deliberately is not — chasing "
+                "minors is where a model's judgement is least reliable and where a fix "
+                "costs most relative to its value, so a human reads the list and decides "
+                "which are real. Recorded by the harness; no rationale was given at the "
+                "time because nobody was present."
+            ),
+            "automatic": True,
+            "commit": head_sha(),
+        },
+    )
+
+
+def cmd_queue(args: argparse.Namespace) -> int:
+    """§5's terminal condition, checked between campaigns.
+
+        **When only minor items remain, the loop stops and asks.** Chasing
+        them is where a model's judgement is least reliable and where the cost
+        of a fix is highest relative to its value […] That is a terminal
+        condition rather than an asymptote, which matters because an asymptote
+        is something a loop will happily grind against forever.
+
+    Exit 1 means there is nothing left for a campaign to take. What a campaign
+    may take is §3's queue — an open gap or an unjudged section — and minor
+    items are deliberately not on it, so the count that decides this is the
+    other two and the minors are only reported.
+
+    Never fires from an empty audit: a document nobody has audited is all
+    unjudged sections, which is the queue at its fullest rather than at its
+    emptiest. That is the failure mode worth being careful about here, because
+    it stops the loop at exactly the moment the loop has done nothing.
+    """
+    phase, config = loop_config(args.loop)
+    del phase
+    if not config.docs:
+        print(f"queue: {config.owner} declares no document; its work does not come from the audit")
+        return 0
+    counts = audit_counts(config.docs)
+    gaps, minors = counts["open_gaps"], counts["audit_minors"]
+    unjudged = unjudged_sections(config.docs)
+    state = queue_state(gaps, len(unjudged), minors)
+    print(
+        f"queue: {config.owner}  {gaps} open gap(s), {len(unjudged)} unjudged section(s), "
+        f"{minors} minor item(s) not on the queue"
+    )
+    if state == "work":
+        return 0
+    if state == "minors":
+        print(
+            f"queue: every section is settled and {minors} minor item(s) remain. "
+            "design/loops.md §5: the minor count is not driven to zero by a loop — "
+            "chasing it is where a model's judgement is least reliable and where a fix "
+            "costs most relative to its value. A human reads the list and decides which "
+            "are real",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            "queue: no gap, no unjudged section and no minor item. There is nothing "
+            "for a campaign to take, which is a phase-gate question rather than a "
+            "target (design/loops.md §8)",
+            file=sys.stderr,
+        )
+    return 1
 
 
 def cmd_budget(args: argparse.Namespace) -> int:
@@ -8294,14 +8780,18 @@ def selftest_cases() -> list[tuple[str, object]]:
         # Same seam as the intervention kinds and the same failure: the shell
         # names something this file does not have, and it fails inside a runner
         # whose output nobody reads until a campaign is already lost.
-        known = hj_subcommands(Path(__file__).read_text())
+        # The parsers come from the `hj` beside those scripts, because that is
+        # the one they run — `harness/loop` invokes `$here/hj`. Reading this
+        # file instead made "the subcommand belongs in the same commit" an
+        # instruction no commit could satisfy: the reviewed copy predates the
+        # parser by construction, so the gate failed on the correct change.
+        known = hj_subcommands(sibling_hj_source())
         assert "handoff" in known, "the parser scan found nothing; the regex has rotted"
         for name, called in shell_hj_calls().items():
             for subcommand in called:
                 assert subcommand in known, (
-                    f"harness/{name} calls `hj {subcommand}`, which this file has no parser "
-                    "for. If the call is new, the subcommand belongs in the same commit; if "
-                    "this copy of hj is the reviewed one and the tree's is newer, merge main."
+                    f"harness/{name} calls `hj {subcommand}`, which the `hj` beside it has "
+                    "no parser for. A script and the file it invokes belong in one commit"
                 )
 
     def a_stalled_campaign_is_not_told_to_write_the_file_the_loop_writes():
@@ -8780,6 +9270,25 @@ def selftest_cases() -> list[tuple[str, object]]:
         assert "where the servers differ" in several, several
         assert serve.stratum_table([]).startswith("<p class=\"empty\""), (
             "no row is an empty panel that says what would fill it, not a blank"
+        )
+
+    def a_transcript_starts_at_the_prompt_and_not_mid_conversation():
+        # §16 reads a turn as prompt, thinking, tool calls, results, text. The
+        # stream carries the last four; the vendor never echoes the first, and
+        # `harness/loop` deletes the rendered file when the run ends — so the
+        # one thing that says what a campaign was actually asked has to be
+        # kept at open or it does not exist.
+        assert "prompt_file_of" in inspect.getsource(cmd_campaign_open), (
+            "retaining it is campaign-open's job; every caller gets it, not only the runner"
+        )
+        serve = _selftest_dashboard()
+        assert "prompt-path" in inspect.getsource(serve.rendered_prompt), (
+            "the layout is the adapter's to know (§17), here as much as for the transcript"
+        )
+        missing = serve.rendered_prompt("nobody", "no-such-campaign")
+        assert "was not kept" in missing and "prompt_sha" in missing, (
+            "campaigns that predate this have only their sha, and the page should say so "
+            "rather than render an empty block"
         )
 
     def the_held_out_panel_shows_a_verdict_and_never_a_number():
@@ -9445,20 +9954,164 @@ def selftest_cases() -> list[tuple[str, object]]:
         assert classify_diff_path("design/loops.md") == "markdown"
         assert classify_diff_path("harness/hj") == "other"
 
-    def a_loop_reads_loops_and_not_their_workers():
-        # A glob over state/findings/ matches core-1.md, core-2.md, core-3.md
-        # too. Those are sibling workers — `worker_findings`' job — and putting
-        # three views of one implementation in front of a loop that shares none
-        # of it is both noise and three times §13's per-loop sizing.
-        assert "phase.loops" in inspect.getsource(prompt_values), (
-            "the owner list is the phase's loops; a glob over state/findings/ "
-            "also matches core-1.md, core-2.md and core-3.md"
+    def a_loop_publishes_across_the_boundary_even_when_it_has_workers():
+        # The bug: `core` went to three workers, `state/findings/core.md`
+        # stopped being written, and every other loop went on reading it. §13
+        # says every loop reads every other loop's digest; what it read was a
+        # fossil, a day stale against three current files.
+        owners = {"core", "harness"}
+        fossil = {"core": "old", "core-1": "one", "core-3": "three", "harness": "mine"}
+        assert digest_sources("core", owners, fossil) == [("core-1", "one"), ("core-3", "three")], (
+            "the workers' digests are the loop's, and the owner file beside them is the fossil"
         )
+        assert digest_sources("core", owners, {"core": "old"}) == [("core", "old")], (
+            "a loop with no worker digest yet still publishes its own"
+        )
+        assert digest_sources("core", owners, {"core-1": "  "}) == [], "empty is not a digest"
+        assert digest_sources("core", owners | {"core-2"}, {"core-2": "x"}) == [], (
+            "a loop whose name starts with another's is a loop, not its worker"
+        )
+
+    def the_owner_list_is_the_phase_and_never_a_bare_glob():
+        # Which file belongs to which loop cannot be read off the directory:
+        # `core-1.md` is a worker of `core` only because `core-1` is not
+        # itself a loop, and that is in `state/phase.toml`.
+        assert "phase.loops" in inspect.getsource(prompt_values)
         assert other_loop_findings(["harness"], "harness") == [], "never its own"
         assert all(
             d.startswith("### What the `core` loop concluded")
             for d in other_loop_findings(["core", "harness"], "harness")
+        ), "one heading per loop, whatever the file count under it"
+
+    def the_gate_steps_are_read_off_the_gate():
+        fixture = '"$hj" crates "$loop" --lintable\n\t"$hj" check-scope "$loop" || fail "x"\n'
+        assert set(GATE_INVOCATION.findall(fixture)) == {"crates", "check-scope"}, (
+            "the subcommand, never the argument after it"
         )
+        # PINNED_HARNESS for `no_live_prompt_names_a_gate_step`'s reason;
+        # `gate_steps` itself reads the tree, because what it feeds judges the
+        # tree's prompts and the two must be the same gate.
+        steps = set(GATE_INVOCATION.findall((PINNED_HARNESS / "gate").read_text()))
+        assert {"check-scope", "check-audit", "check-links", "check-metrics"} <= steps, steps
+        assert "selftest" in steps and "crates" in steps, "every `\"$hj\" <step>`, not only the checks"
+
+    def a_prompt_may_state_the_rule_and_not_the_check_that_holds_it():
+        steps = {"check-metrics", "selftest", "crates"}
+        assert prompt_gate_leaks("t", "the gate fails a row that regresses", steps) == []
+        assert len(prompt_gate_leaks("t", "`check-metrics` fails if you do", steps)) == 1
+        assert prompt_gate_leaks("t", "avoid creating many small crates", steps) == [], (
+            "an ordinary word that happens to be a subcommand is not a leak; a check "
+            "that fired on this would fire on every prompt in the tree"
+        )
+        assert len(prompt_gate_leaks("t", "run `harness/hj selftest` first", steps)) == 1, (
+            "written as an invocation, it is naming the step"
+        )
+        assert prompt_gate_leaks("t", "check-metricsish", steps) == [], "whole names only"
+
+    def no_live_prompt_names_a_gate_step():
+        # The leak this was written for was in the template's *tail*, below
+        # BODY_END, so a body-only scope would have missed it entirely.
+        #
+        # PINNED_HARNESS, not the candidate tree, and this is `harness-011`
+        # exactly: gate step 3 runs this selftest for *every* loop against
+        # that loop's worktree, and a worktree that has not merged since the
+        # prompt was fixed still holds the leak. Failing there turns another
+        # loop's gate red over a file it is denied. The tree's own copy is
+        # still checked — the gate runs it too when it differs, and then
+        # PINNED_HARNESS is the tree — and `check_prompt_leaks` is scoped to
+        # the one loop that can act on it.
+        steps = set(GATE_INVOCATION.findall((PINNED_HARNESS / "gate").read_text()))
+        phase = load_phase()
+        prompts = PINNED_HARNESS / "prompts"
+        files = [prompts / Path(name).name for name in sorted(live_prompt_templates(phase))]
+        files += sorted((prompts / "fragments").glob("*.md"))
+        files += [PINNED_HARNESS / "trailer-format.md", PINNED_HARNESS / "decision-template.md"]
+        found = [
+            problem
+            for path in files
+            if path.exists()
+            for problem in prompt_gate_leaks(path.name, path.read_text(), steps)
+        ]
+        assert found == [], found
+        assert "check_prompt_leaks" in inspect.getsource(cmd_check_metrics), (
+            "a check nothing runs is a comment"
+        )
+
+    def only_minor_items_left_is_terminal_and_not_an_asymptote():
+        assert queue_state(23, 3, 17) == "work"
+        assert queue_state(0, 1, 0) == "work", "an unjudged section is a target"
+        assert queue_state(1, 0, 0) == "work"
+        assert queue_state(0, 0, 17) == "minors", (
+            "§5 drives the gap count to zero and deliberately not the minor count; "
+            "when only minors remain the loop stops and a human decides"
+        )
+        assert queue_state(0, 0, 0) == "empty"
+        assert "queue_is_empty" in inspect.getsource(cmd_campaign_open), (
+            "a terminal condition nothing consults is a comment; campaign-open is the "
+            "one place that decides whether a campaign starts"
+        )
+
+    def a_loop_whose_work_is_not_the_audit_is_never_told_the_queue_is_empty():
+        # A tuning loop declares no document, so every audit count is zero for
+        # it. Read naively that is "nothing left to do" and campaign-open would
+        # refuse forever — the terminal condition belongs to the loops §5 is
+        # about, and `docs` is what says which those are.
+        _, config = loop_config("harness")
+        assert config.docs and queue_is_empty(config) is False
+        assert queue_is_empty(replace(config, docs=[])) is False, (
+            "no documents is not an empty queue; it is a different oracle"
+        )
+
+    def a_section_nobody_has_audited_is_on_the_queue():
+        # The easy half to lose: `read_audit` returns nothing for a document
+        # the audit has never opened, and counting only the sections it marked
+        # `unjudged` would report an untouched document as finished.
+        untouched = [
+            doc for doc in ("shim.md", "resolution.md", "data-collection.md")
+            if not (STATE / "audit" / f"{Path(doc).stem}.toml").exists()
+        ]
+        assert untouched, "pick a document the audit has not reached, or drop this case"
+        assert unjudged_sections(untouched[:1]) == sorted(
+            s.key for s in sections_of(untouched[0])
+        ), "every section of an unaudited document is work, not silence"
+        assert "unjudged_sections" in inspect.getsource(prompt_values), (
+            "the prompt's target list and the queue's emptiness must be one definition"
+        )
+
+    def a_cli_upgrade_is_measured_against_the_pin_and_then_against_the_last_campaign():
+        # The version was on every session row from the first campaign and
+        # compared against nothing, so 2.1.220 -> 2.1.221 -> 2.1.222 went by
+        # with nothing in the log: a measurement that is not an instrument.
+        assert cli_upgrade_reason("2.1.222 (Claude Code)", "2.1.220", "2.1.220"), "ahead of the pin"
+        assert cli_upgrade_reason("2.1.220 (Claude Code)", "2.1.219", "2.1.220") == "", (
+            "at the pin is the answer, whatever the previous campaign ran"
+        )
+        assert cli_upgrade_reason("2.1.222", "2.1.220", "") != "", "no pin falls back to the last campaign"
+        assert cli_upgrade_reason("2.1.222", "2.1.222", "") == ""
+        assert cli_upgrade_reason("unknown", "2.1.220", "2.1.220") == "", "an absent CLI is not an upgrade"
+
+    def the_record_asks_the_adapter_how_to_resume():
+        assert "{resume}" in CAMPAIGN_STUB and "--resume" not in CAMPAIGN_STUB, (
+            "§17 keeps every runner flag in the adapter; the stub had copied one out"
+        )
+        assert resume_command("abc").endswith("abc")
+
+    def the_cli_pin_is_read_from_the_document_that_holds_it():
+        pinned = pinned_cli_version()
+        assert re.fullmatch(r"\d+\.\d+\.\d+", pinned), (
+            f"design/external-dependencies.md §7 pins a version and this read {pinned!r}; "
+            "a second copy of the pin in harness/ would be a second answer"
+        )
+        assert "cli-upgraded" in KNOWN_KINDS, "the document names the kind; the vocabulary must have it"
+
+    def one_row_per_version_and_not_one_per_campaign():
+        # Three workers open against one main, and a mismatch persists until a
+        # human moves the pin or the tree — so this has to be keyed on the
+        # version, not on the transition.
+        logged = [{"kind": "cli-upgraded", "answer": "campaigns are now running 2.1.222 (x)"}]
+        assert cli_upgrade_unlogged("2.1.222 (x)", logged) is False
+        assert cli_upgrade_unlogged("2.1.223 (x)", logged) is True
+        assert cli_upgrade_unlogged("2.1.222 (x)", []) is True
 
     def the_digest_asymmetry_reaches_both_ends():
         template = (HARNESS / "prompts" / "conformance.md").read_text()
@@ -10036,6 +10689,12 @@ def main() -> int:
     p = sub.add_parser("budget", help="spend against each ceiling; exit 1 when one is reached")
     p.add_argument("loop", nargs="?")
     p.set_defaults(run=cmd_budget)
+
+    p = sub.add_parser(
+        "queue", help="what is left for a campaign to take; exit 1 when only minor items remain"
+    )
+    p.add_argument("loop")
+    p.set_defaults(run=cmd_queue)
 
     p = sub.add_parser(
         "escalations",

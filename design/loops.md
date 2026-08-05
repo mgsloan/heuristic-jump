@@ -284,16 +284,16 @@ campaign.
 
 ### Campaigns are the unit of fresh context
 
-A session spans a **campaign**: one target, one hypothesis, however many
-experiments it takes to confirm or kill it. Context persists across the
-experiments inside a campaign and is discarded at its boundary.
+A session spans a **campaign**: one hypothesis, however many experiments
+it takes to confirm or kill it. Context persists across the experiments
+inside a campaign and is discarded at its boundary.
 
 A campaign:
 
 1. **Opens** by picking a target and writing it down in
    `state/campaigns/<owner>/<id>.md` — for a tuning loop, the
    (stratum, language) with the largest share × gap, plus the
-   hypothesis about why it is losing coverage; for a conformance loop, a
+   hypothesis about why it is losing coverage; for a conformance loop, an
    open gap, or an unjudged section. The
    session id and its resume command are recorded here at open
    ([section 16](#16-the-operator-view)).
@@ -316,9 +316,29 @@ Which unit each loop uses:
 
 | Loop | Campaign is |
 |---|---|
-| conformance (1a, 2b) | one open gap, or one unjudged section |
+| conformance (1a, 2b) | one open gap or one unjudged section, and more of them when they share their reading |
 | tuning (2a) | one hypothesis about one stratum |
 | phase 3 | one refactor target |
+
+**One hypothesis is the unit; one target is the usual shape of it, not
+the rule.** A campaign may take several targets, and what makes them one
+campaign is **shared context rather than interdependence**: they do not
+have to be one claim seen from two sides, and neither has to block the
+other. It is enough that closing them means working in the same files,
+reading the same types, or having the same design sections open. What a
+campaign actually spends is reading — a fresh session inherits no context
+and re-derives it from nothing — so a second target that needs no new
+reading is nearly free, and the same target taken later is paid for in
+full.
+
+What that refuses is a grab-bag, and the refusal is a concrete check
+rather than a matter of taste: **name the files or sections the targets
+share.** If there is no honest answer they are not one campaign, and a
+cheap-to-reach target that shares nothing with what was done is still a
+grab-bag — worth leaving for a session that will do it without carrying
+this one's context. Batching unrelated targets also costs attribution: a
+partial close or a stall over a grab-bag says nothing about which part
+failed.
 
 The conformance loops sit close to pure Ralph, because gaps genuinely
 are independent and the spec is the memory. Tuning sits
@@ -2293,10 +2313,39 @@ nothing downstream can tell.
 Three things these deliberately do *not* do, because each is a lesson
 already in this document: they do not tell the loop how to resolve
 references, which is `resolution.md`'s job and would fossilise a guess
-into the prompt; they do not describe the gate's internals, since a loop
-that knows how it is scored is a loop that can optimise the scoring; and
-they do not restate a rule that `CLAUDE.md` already states, because the
-splice covers it.
+into the prompt; they do not describe **the gate's checks** — which ones
+run, what each inspects, and what makes one fail — since a loop told
+which check to satisfy optimises against the checker rather than against
+the work; and they do not restate a rule that `CLAUDE.md` already
+states, because the splice covers it.
+
+The middle one is about the *checker* and not about the objective, and
+the distinction is load-bearing in both directions. The loop is told its
+number and its stall state on purpose:
+[section 5](#sections-clean-is-the-metric) makes sections clean
+"something that moves campaign by campaign, that a campaign can be aimed
+at", and [section 7](#7-progress-stall-and-the-ways-it-is-faked) has a
+stalled loop write down "what it believes is blocking" — neither of
+which a loop that does not know what it is aimed at can do. What it is
+not told is which check enforces what, because that turns a rule into a
+target: "do not put a per-campaign value in the prompt's body" is a rule,
+and "the metrics step fails on one" is a check, and a campaign given the
+second optimises for silence from the check rather than for the property.
+
+Stated this narrowly it is mechanical rather than a judgement, which is
+what [section 5](#sections-clean-is-the-metric) means by moving an audit
+finding onto an exact check: the gate's steps are parsed out of the gate
+script, and a live template, a spliced fragment or a shared block that
+names one fails. Template coordinates, not rendered ones — a journal
+entry or a findings digest names a check routinely, and that is a loop
+recording what it learned rather than a leak in the rules.
+
+**Whether §7's five forms of progress belong on the told side is
+`state/decisions/harness-013.md`, open.** They are the stall detector's
+inputs rather than the gate's, so this section's narrower claim does not
+reach them; but "the test count rising is progress" is close enough to
+"write a test" that it deserves a human, not a loop's own ruling on the
+rule that scores it.
 
 ## 15. Cost and timing
 
