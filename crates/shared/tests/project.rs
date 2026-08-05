@@ -280,6 +280,17 @@ fn a_scan_reads_every_candidate_and_counts_what_it_read() {
     let origin = SearchOrigin::from_document(path(&view, &root, "src/lib.rs"));
     let candidates = view.candidates(&[RUST], &origin);
     let expected_files = candidates.count();
+    // Every candidate, not just the ones that will match: the counter's claim
+    // is about what the scan read, and the fixture's two hitless files are the
+    // only ones that discriminate.
+    let expected_bytes: u64 = candidates
+        .paths()
+        .map(|path| {
+            fs::metadata(path.to_absolute())
+                .expect("a candidate the walker returned")
+                .len()
+        })
+        .sum();
     let request = ScanRequest::new("alpha", &candidates).expect("an identifier literal");
 
     let outcome = view.scan(&request).expect("an unbounded scan");
@@ -290,10 +301,15 @@ fn a_scan_reads_every_candidate_and_counts_what_it_read() {
          what says so in the trace record — a scan that stopped early and \
          reported a full count is the one failure the record could not show"
     );
-    assert!(
-        outcome.bytes_scanned.0 > 0,
-        "bytes_scanned is bytes actually read (conformance-005), so a scan \
-         that read four files cannot report zero"
+    assert_eq!(
+        outcome.bytes_scanned,
+        ByteLen(usize::try_from(expected_bytes).expect("a fixture this side of 4GB")),
+        "bytes_scanned is bytes *actually read* (conformance-005), which is an \
+         equality and not a lower bound: it is the deterministic \
+         machine-independent proxy core.md §7 compares runs on, so a count that \
+         skipped the files with no hits — or one deduplicated across a re-read \
+         — under-predicts latency in the direction that makes a regression look \
+         like an improvement"
     );
     assert_eq!(
         outcome.hits.len(),
