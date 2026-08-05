@@ -6220,6 +6220,9 @@ def replay_digest(records: list[dict]) -> dict:
     than as a zero for the third, so that a row cannot claim a measurement
     nothing took.
     """
+    # DECISION-harness-012: provisional — whether the third counter arrives as
+    # a field on `QueryRecord` or the spec drops to the two that exist. The
+    # tuple below is the whole of what changes under either answer.
     strata: dict[str, dict] = {}
     counters = {"bytes_scanned": 0, "files_parsed": 0}
     deadline = 0

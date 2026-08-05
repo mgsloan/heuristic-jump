@@ -1130,10 +1130,10 @@ parsed, nodes visited — deterministic, machine-independent, local, and
 strongly correlated with the thing that cannot be measured. They go in
 every row. If a cost-phase iteration triples the bytes read per query,
 that shows up immediately rather than at the next gate, and the
-wall-clock run at the gate confirms it. They are also what the replay
-deadline is enforced against
-([section 9](#determinism-is-a-precondition-not-a-description)), so they
-are already being computed.
+wall-clock run at the gate confirms it. They cost nothing extra to
+collect: a handler produces them as it works, and the per-query record
+`measure replay --records` writes already carries them, so putting them
+in the row is a digest rather than a measurement.
 
 ### `measure_<lang>` size covers the size gap
 
