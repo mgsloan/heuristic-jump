@@ -21,6 +21,7 @@ import argparse
 import hashlib
 import inspect
 import json
+import math
 import os
 import re
 import shutil
@@ -2670,6 +2671,38 @@ def cmd_check_ratchets(args: argparse.Namespace) -> int:
     return check_size_ratchet(config, phase)
 
 
+def replay_fields(args: argparse.Namespace) -> dict:
+    """The half of §10's row that a corpus run produces, when one has run.
+
+    Absent rather than null when it has not, which is the same rule `binary`
+    already follows: a row from before this existed and a row from a commit
+    nobody replayed are the same shape, and neither is the same shape as a row
+    that measured and found nothing.
+
+    Both files come from one `measure replay` — `--format json` on stdout and
+    `--records <path>` beside it — so they are two arguments rather than one.
+    `--replay-seconds` is separate again because `measure_core` deliberately
+    keeps every clock out of the table it prints, so the duration is only ever
+    known to whoever ran it.
+    """
+    fields: dict = {}
+    strata: list[dict[str, dict]] = []
+    if getattr(args, "replay_report", None):
+        report = json.loads(Path(args.replay_report).read_text())
+        strata.append(report_strata(report))
+        if isinstance(report.get("uncollected"), int):
+            fields["uncollected"] = report["uncollected"]
+    if getattr(args, "replay_records", None):
+        digest = replay_digest(read_jsonl(Path(args.replay_records)))
+        strata.append(digest.pop("strata"))
+        fields["replay"] = digest
+    if getattr(args, "replay_seconds", None) is not None:
+        fields.setdefault("replay", {})["wall_clock_seconds"] = args.replay_seconds
+    if strata:
+        fields["strata"] = merge_strata(*strata)
+    return fields
+
+
 def cmd_record(args: argparse.Namespace) -> int:
     phase, config = loop_config(args.loop)
     target = last_loop_commit(config.owner) or head_sha()
@@ -2695,6 +2728,7 @@ def cmd_record(args: argparse.Namespace) -> int:
         "tests_removed": removed_tests_in(target, crate_paths(config))[:20],
         "provisional_decisions": provisional_decisions(),
     }
+    row.update(replay_fields(args))
     # §11's first of two numbers, and the only one a loop can compute in
     # isolation. Absent for a loop with no language rather than null, so that a
     # row from before this existed and a row that could not measure are not the
@@ -5860,6 +5894,184 @@ def cmd_budget(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------
+# The metrics history's other half. `design/loops.md` §10, "The metrics
+# history", and §9, "There is no replay-time target, and that is deliberate".
+#
+# §10's row spec names more than `record` was writing:
+#
+#   work counters (bytes read, files parsed, nodes visited),
+#   replay wall clock, per-stratum heuristic latency percentiles and the
+#   per-stage breakdown, deadline-abstention rate
+#
+# None of it is computed here from scratch. `measure replay --records <path>`
+# writes `shared::record::QueryRecord` as JSONL, and the doc comment on its
+# writer says whose job the rest is: "Digesting these into something readable
+# is the harness's job, not `measure_core`'s: the same split that keeps this
+# crate ignorant of `state/`." So this is that digest, and the shape it reads
+# is a real type in this repository rather than a guessed one.
+#
+# The wall clock is not in the digest and cannot be. `measure_core`'s table
+# holds no clock on purpose — "§7's command line makes the table byte-identical
+# across two runs of the same corpus at the same commit, which is what makes it
+# usable as a gate rather than a report" — so whoever runs the replay reports
+# how long it took, and `record --replay-seconds` puts it in the row. §9 wants
+# it "recorded as an ordinary metric alongside the work counters ... per
+# language, per commit, from the very first run", read "as a trend, never gated
+# on", and that is exactly what a field with no threshold beside it is.
+
+# §7 puts an abstention's reason in `stages` rather than in a column of its
+# own, "because `stages` is the field §7 makes the handler's account of what it
+# did and a second reason column would be two vocabularies for one question".
+# `shared::record::abstain_label` is where the spelling is decided.
+DEADLINE_ABSTENTION = "abstain:deadline"
+
+
+def percentile(values: list[float], fraction: float) -> float | None:
+    """Nearest-rank, on an already-small sample.
+
+    Not interpolated: a corpus stratum can hold a handful of queries, and an
+    interpolated p99 over eleven samples reports a number no query took. §10
+    reads these as a trend and says they are "not trustworthy to better than a
+    factor while the loops run in parallel", so the honest estimator is the
+    one that only ever returns an observation.
+    """
+    if not values:
+        return None
+    ordered = sorted(values)
+    rank = max(1, math.ceil(fraction * len(ordered)))
+    return ordered[min(rank, len(ordered)) - 1]
+
+
+def replay_digest(records: list[dict]) -> dict:
+    """§10's work counters, per-stratum latency percentiles, per-stage
+    breakdown and deadline-abstention rate, from §7's per-query records.
+
+    Grouped on `stratum_prior` rather than `stratum_final`, for the reason
+    `measure_core`'s table gives for putting coverage there: the prior "is
+    fixed by the reference and does not move when the implementation changes".
+    A latency series grouped on the settled stratum would shift rows between
+    buckets whenever the search got better at refining, and a percentile that
+    moves because its denominator moved is the kind of number that survives a
+    whole phase before anyone notices.
+
+    Two of §10's three work counters. The section names "bytes read, files
+    parsed, nodes visited" and `QueryRecord` carries `bytes_scanned` and
+    `files_parsed` and no node count — recorded as the two that exist rather
+    than as a zero for the third, so that a row cannot claim a measurement
+    nothing took.
+    """
+    strata: dict[str, dict] = {}
+    counters = {"bytes_scanned": 0, "files_parsed": 0}
+    deadline = 0
+    for record in records:
+        for name in counters:
+            value = record.get(name)
+            if isinstance(value, int) and not isinstance(value, bool):
+                counters[name] += value
+        stages = [stage for stage in (record.get("stages") or []) if isinstance(stage, str)]
+        if record.get("decision") == "abstained" and DEADLINE_ABSTENTION in stages:
+            deadline += 1
+        name = record.get("stratum_prior")
+        if not isinstance(name, str):
+            continue
+        bucket = strata.setdefault(name, {"n": 0, "latency_us": [], "stage_us": {}})
+        bucket["n"] += 1
+        latency = record.get("heuristic_latency_us")
+        if isinstance(latency, (int, float)) and not isinstance(latency, bool):
+            bucket["latency_us"].append(float(latency))
+        for stage, micros in (record.get("stage_us") or {}).items():
+            if isinstance(micros, (int, float)) and not isinstance(micros, bool):
+                bucket["stage_us"].setdefault(stage, []).append(float(micros))
+
+    digested = {}
+    for name, bucket in sorted(strata.items()):
+        entry = {"n": bucket["n"]}
+        for label, fraction in (("p50", 0.5), ("p90", 0.9), ("p99", 0.99)):
+            value = percentile(bucket["latency_us"], fraction)
+            if value is not None:
+                entry[f"latency_{label}_us"] = value
+        stage_p50 = {
+            stage: percentile(series, 0.5)
+            for stage, series in sorted(bucket["stage_us"].items())
+        }
+        if stage_p50:
+            entry["stage_p50_us"] = stage_p50
+        digested[name] = entry
+
+    return {
+        "queries": len(records),
+        "work": counters,
+        # The number §10 says is "the one worth watching most", "since it is
+        # the whole of the gap between what replay reports and what the shim
+        # would deliver". A rate rather than a count, so that it is comparable
+        # across corpus versions.
+        "deadline_abstention_rate": (deadline / len(records)) if records else None,
+        "strata": digested,
+    }
+
+
+# Coverage is committed over queries; top-1 agreement is `match_top1` over the
+# three agreement counters, which "partition the judged commits exactly". Both
+# formulas are `measure_core::table::Row`'s, whose own comment says a ratio is
+# "computed here rather than by every consumer, because a metric with two
+# definitions is two metrics" — and then serialises the counters and not the
+# ratios, so a consumer has no choice. Written once here for the same reason it
+# is written once there, and the raw counters go into the row beside them so
+# that a redefinition can be swept rather than lost.
+def report_strata(report: dict) -> dict[str, dict]:
+    """`measure replay --format json`, in the shape the metrics row wants.
+
+    `judged` is carried as its own denominator because it is not `n`: coverage
+    is counted on the reference stratum and agreement on the settled one, so a
+    query that refined its stratum contributes to two different rows. Weighting
+    a top-1 mean by `n` would weight it by the wrong row's population.
+    """
+    strata = {}
+    for row in report.get("strata") or []:
+        name = row.get("stratum")
+        if not isinstance(name, str):
+            continue
+        queries = row.get("queries") or 0
+        judged = sum(
+            row.get(key) or 0 for key in ("match_top1", "match_contained", "mismatch")
+        )
+        entry = {
+            "n": queries,
+            "judged": judged,
+            **{
+                key: row[key]
+                for key in (
+                    "queries", "committed", "abstained", "failed",
+                    "match_top1", "match_contained", "mismatch",
+                )
+                if key in row
+            },
+        }
+        if queries:
+            entry["coverage"] = (row.get("committed") or 0) / queries
+        if judged:
+            entry["top1"] = (row.get("match_top1") or 0) / judged
+            entry["contained"] = ((row.get("match_top1") or 0) + (row.get("match_contained") or 0)) / judged
+        strata[name] = entry
+    return strata
+
+
+def merge_strata(*sources: dict[str, dict]) -> dict[str, dict]:
+    """One `strata` map out of several, keyed by stratum name.
+
+    The quality half comes from the report and the cost half from the records,
+    and they are two files because `measure_core` writes them as two. Merged
+    here rather than kept apart so that a metrics row has one place a stratum
+    lives — `frontier_axes_of` and the latency percentiles read the same map.
+    """
+    merged: dict[str, dict] = {}
+    for source in sources:
+        for name, entry in source.items():
+            merged.setdefault(name, {}).update(entry)
+    return merged
+
+
+# --------------------------------------------------------------------------
 # The frontier. `design/loops.md` §10, "The frontier, and why it stays
 # two-dimensional".
 #
@@ -5912,8 +6124,17 @@ FRONTIER_BESIDE = ("contained", "result_count", "latency", "loc")
 # inside an escalation, to show what a proposed exception would cost."
 FRONTIER_PHASES = ("2a", "2b")
 
+# Each axis's denominator, because they are not the same one. Coverage is
+# counted on the reference stratum and agreement on the settled one
+# (`core.md` §7, and `measure_core::table::Table::observe`), so a query that
+# refined its stratum contributes to two different rows — and a top-1 mean
+# weighted by `n` would be weighted by the wrong row's population. Falls back
+# to `n` where the row does not carry the finer count, which is what a row
+# written before `report_strata` existed looks like.
+AXIS_DENOMINATOR = {"top1": "judged", "contained": "judged"}
 
-def stratum_mean(row: dict, key: str) -> float | None:
+
+def stratum_mean(row: dict, key: str, weight_key: str | None = None) -> float | None:
     """One number out of §10's per-stratum metrics row, n-weighted.
 
     The row spec is per stratum — "per-stratum {coverage, top1, contained,
@@ -5930,11 +6151,15 @@ def stratum_mean(row: dict, key: str) -> float | None:
     direct = row.get(key)
     if isinstance(direct, (int, float)) and not isinstance(direct, bool):
         return float(direct)
+    denominator = weight_key or AXIS_DENOMINATOR.get(key, "n")
     total = weight = 0.0
     for numbers in (row.get("strata") or {}).values():
         if not isinstance(numbers, dict):
             continue
-        value, count = numbers.get(key), numbers.get("n", 1)
+        value = numbers.get(key)
+        count = numbers.get(denominator)
+        if count is None:
+            count = numbers.get("n", 1)
         if not isinstance(value, (int, float)) or isinstance(value, bool):
             continue
         if isinstance(count, (int, float)) and not isinstance(count, bool) and count > 0:
@@ -7692,6 +7917,150 @@ def selftest_cases() -> list[tuple[str, object]]:
         rows = [{"commit": "aaa"}, {"commit": "bbb"}, {"commit": "ccc"}]
         assert rows_since(rows, None) == rows, "no re-baseline commit means the whole history"
 
+    def a_percentile_only_ever_returns_an_observation():
+        assert percentile([], 0.5) is None, "no sample is not a zero"
+        assert percentile([7.0], 0.99) == 7.0
+        assert percentile([1.0, 2.0, 3.0, 4.0], 0.5) == 2.0
+        assert percentile([1.0, 2.0, 3.0, 4.0], 0.99) == 4.0, (
+            "interpolating a p99 over four samples reports a number no query took"
+        )
+
+    def the_digest_groups_latency_on_the_reference_stratum():
+        # `stratum_final` moves when the search gets better at refining, so a
+        # series grouped on it changes bucket without changing behaviour.
+        records = [
+            {
+                "stratum_prior": "explicitly_imported", "stratum_final": "ambiguous_name",
+                "decision": "committed", "stages": ["scan"], "bytes_scanned": 100,
+                "files_parsed": 2, "heuristic_latency_us": 900,
+                "stage_us": {"scan": 800, "rank": 100},
+            },
+            {
+                "stratum_prior": "explicitly_imported", "stratum_final": "explicitly_imported",
+                "decision": "committed", "stages": ["scan"], "bytes_scanned": 50,
+                "files_parsed": 1, "heuristic_latency_us": 100,
+                "stage_us": {"scan": 90},
+            },
+        ]
+        digest = replay_digest(records)
+        assert set(digest["strata"]) == {"explicitly_imported"}, digest["strata"]
+        entry = digest["strata"]["explicitly_imported"]
+        assert entry["n"] == 2 and entry["latency_p50_us"] == 100.0, entry
+        assert entry["latency_p99_us"] == 900.0, entry
+        assert entry["stage_p50_us"] == {"rank": 100.0, "scan": 90.0}, entry
+        assert digest["work"] == {"bytes_scanned": 150, "files_parsed": 3}, digest["work"]
+        assert "nodes_visited" not in digest["work"], (
+            "§10 names three work counters and QueryRecord carries two; a zero "
+            "for the third would claim a measurement nothing took"
+        )
+
+    def only_a_deadline_abstention_counts_toward_the_deadline_rate():
+        records = [
+            {"decision": "abstained", "stages": ["abstain:deadline"], "stratum_prior": "a"},
+            {"decision": "abstained", "stages": ["abstain:no_candidates"], "stratum_prior": "a"},
+            {"decision": "committed", "stages": ["abstain:deadline"], "stratum_prior": "a"},
+            {"decision": "failed", "stages": [], "stratum_prior": "a"},
+        ]
+        assert replay_digest(records)["deadline_abstention_rate"] == 0.25
+        assert replay_digest([])["deadline_abstention_rate"] is None, (
+            "no queries is not a rate of zero"
+        )
+
+    def the_report_carries_both_denominators_because_they_differ():
+        # A query that refined its stratum is counted for coverage on the
+        # reference row and for agreement on the settled one, so `n` is the
+        # wrong weight for top-1 and `judged` is the right one.
+        strata = report_strata(
+            {
+                "strata": [
+                    {
+                        "stratum": "explicitly_imported", "queries": 100, "committed": 80,
+                        "abstained": 20, "failed": 0, "match_top1": 30,
+                        "match_contained": 10, "mismatch": 10,
+                    }
+                ]
+            }
+        )
+        entry = strata["explicitly_imported"]
+        assert entry["n"] == 100 and entry["judged"] == 50, entry
+        assert entry["coverage"] == 0.8 and entry["top1"] == 0.6, entry
+        assert entry["contained"] == 0.8, entry
+        assert entry["committed"] == 80, "the counters ride along, so a redefinition can be swept"
+
+    def an_axis_is_weighted_by_its_own_denominator():
+        row = {
+            "strata": {
+                "common": {"n": 1000, "judged": 10, "coverage": 0.9, "top1": 0.1},
+                "rare": {"n": 10, "judged": 1000, "coverage": 0.1, "top1": 0.9},
+            }
+        }
+        assert abs(stratum_mean(row, "coverage") - 901 / 1010) < 1e-12
+        assert abs(stratum_mean(row, "top1") - 901 / 1010) < 1e-12
+        assert abs(stratum_mean(row, "top1", "n") - 109 / 1010) < 1e-12, (
+            "the control: weighting top-1 by `n` moves it from 0.89 to 0.11, "
+            "because `n` is the wrong row's population for an agreement number"
+        )
+        assert AXIS_DENOMINATOR["top1"] == "judged"
+
+    def a_row_without_the_finer_count_falls_back_to_n():
+        row = {"strata": {"a": {"n": 4, "top1": 0.5}}}
+        assert stratum_mean(row, "top1") == 0.5, "a row written before `judged` existed still reads"
+
+    def the_two_halves_of_a_stratum_land_in_one_map():
+        quality = {"a": {"n": 10, "top1": 0.5}}
+        cost = {"a": {"n": 10, "latency_p50_us": 900.0}, "b": {"n": 1}}
+        merged = merge_strata(quality, cost)
+        assert merged["a"] == {"n": 10, "top1": 0.5, "latency_p50_us": 900.0}, merged
+        assert set(merged) == {"a", "b"}
+
+    def a_replay_becomes_a_row_the_frontier_can_read():
+        # The whole path in one check: what `measure replay` writes, through
+        # `record`, to a point on §10's plane. Each half is tested above; this
+        # is the one that fails if they stop fitting together, which is the
+        # failure neither of them can see.
+        report = {
+            "strata": [
+                {"stratum": "explicitly_imported", "queries": 10, "committed": 8,
+                 "abstained": 2, "failed": 0, "match_top1": 6,
+                 "match_contained": 1, "mismatch": 1},
+            ],
+            "uncollected": 3,
+        }
+        records = [
+            {"stratum_prior": "explicitly_imported", "decision": "committed",
+             "stages": [], "bytes_scanned": 10, "files_parsed": 1,
+             "heuristic_latency_us": 500, "stage_us": {"scan": 400}},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            report_path = Path(directory) / "report.json"
+            records_path = Path(directory) / "records.jsonl"
+            report_path.write_text(json.dumps(report))
+            records_path.write_text(json.dumps(records[0]) + "\n")
+            fields = replay_fields(
+                argparse.Namespace(
+                    replay_report=str(report_path),
+                    replay_records=str(records_path),
+                    replay_seconds=41.5,
+                )
+            )
+        assert fields["uncollected"] == 3
+        assert fields["replay"]["wall_clock_seconds"] == 41.5, (
+            "§9 records replay wall clock as an ordinary metric, per commit"
+        )
+        assert fields["replay"]["work"] == {"bytes_scanned": 10, "files_parsed": 1}
+        entry = fields["strata"]["explicitly_imported"]
+        assert entry["coverage"] == 0.8 and entry["top1"] == 0.75, entry
+        assert entry["latency_p50_us"] == 500.0, "the cost half landed in the same stratum"
+        position = frontier_axes_of(fields)
+        assert position == {"top1": 0.75, "coverage": 0.8}, position
+
+    def a_row_from_a_commit_nobody_replayed_carries_no_replay_key():
+        empty = argparse.Namespace(replay_report=None, replay_records=None, replay_seconds=None)
+        assert replay_fields(empty) == {}, (
+            "absent rather than null, so a row from before this existed and a "
+            "row nobody replayed are the same shape"
+        )
+
     def a_commit_beaten_on_every_axis_is_off_the_frontier():
         rows = [
             {"commit": "aaa", "top1": 0.80, "coverage": 0.60},
@@ -8460,6 +8829,14 @@ def main() -> int:
 
     p = sub.add_parser("record", help="append the metrics row for HEAD")
     p.add_argument("loop")
+    p.add_argument("--replay-report", metavar="PATH", help="`measure replay --format json`")
+    p.add_argument("--replay-records", metavar="PATH", help="`measure replay --records <path>`")
+    p.add_argument(
+        "--replay-seconds",
+        type=float,
+        metavar="N",
+        help="how long that replay took (loops.md §9 records it, never gates on it)",
+    )
     p.set_defaults(run=cmd_record)
 
     p = sub.add_parser("frontier", help="the non-dominated commits of a phase (loops.md §10)")
