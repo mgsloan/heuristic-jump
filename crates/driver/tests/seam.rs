@@ -3164,6 +3164,44 @@ fn our_log_lines_are_distinguishable_and_the_subscriber_is_installed_once() {
          a tool they did not ask to hear from"
     );
 
+    // §9 states the two defaults against each other — "`info` where the shim's
+    // is `warn`" — so the shim's alone is half of it. Read out of the source
+    // and not linked, because `core.md` §9's graph gives `driver` no edge to
+    // `measure_core` and this test is `driver`'s.
+    let measure_default = declared_string("measure_core", "DEFAULT_LOG_FILTER").unwrap_or_else(|| {
+        panic!(
+            "measure_core declares no `pub const DEFAULT_LOG_FILTER: &str`: deps.md §9 gives it \
+             a default of its own, and a default that is a literal inside a private function is \
+             one no test can compare against the shim's"
+        )
+    });
+    assert_eq!(
+        measure_default, "info",
+        "measure_core's default filter is `{measure_default}`. deps.md §9 makes it `info` so \
+         that core.md §7's report — the replay's own wall clock beside the per-query work \
+         counters — has somewhere to go; at `warn` the run emits it into nothing and the loss \
+         is silent"
+    );
+    assert_ne!(
+        measure_default,
+        driver::DEFAULT_LOG_FILTER,
+        "both processes default to `{measure_default}`. §9's two defaults differ on purpose and \
+         the difference carries the reason: the shim is quiet because its stderr is an editor \
+         panel, and a `measure` run's is not read that way"
+    );
+
+    for member in INSTALLS_THE_SUBSCRIBER {
+        let source = crate_source(member);
+        for literal in ["EnvFilter::new(\"", "EnvFilter::try_new(\""] {
+            assert!(
+                !source.contains(literal),
+                "{member} builds an EnvFilter from a string literal (`{literal}…`): §9's default \
+                 is a claim about a named value, and a literal beside the constant is the second \
+                 answer to how loud this binary is"
+            );
+        }
+    }
+
     let mut written = Vec::new();
     let mut writer = shared::PrefixedWriter::new(&mut written);
     let event = "a warning\nwith a second line\n";
@@ -3272,11 +3310,7 @@ fn our_log_lines_are_distinguishable_and_the_subscriber_is_installed_once() {
 #[test]
 fn every_subscriber_we_install_writes_through_the_prefix() {
     for member in INSTALLS_THE_SUBSCRIBER {
-        let source = sources_of(member)
-            .into_iter()
-            .map(|(_, text)| text)
-            .collect::<Vec<String>>()
-            .join("\n");
+        let source = crate_source(member);
         let arguments = with_writer_arguments(&source);
         assert!(
             !arguments.is_empty(),
@@ -3300,6 +3334,36 @@ fn every_subscriber_we_install_writes_through_the_prefix() {
             );
         }
     }
+}
+
+/// A crate's whole source, its files joined. Non-empty for a crate that
+/// exists, so a caller reading a claim out of it does not also have to assert
+/// the crate is there — every assertion over an empty string passes.
+fn crate_source(crate_name: &str) -> String {
+    let source = sources_of(crate_name)
+        .into_iter()
+        .map(|(_, text)| text)
+        .collect::<Vec<String>>()
+        .join("\n");
+    assert!(
+        !source.trim().is_empty(),
+        "crates/{crate_name} has no source, so every scan of it passes vacuously"
+    );
+    source
+}
+
+/// The text a crate declares `pub const <name>: &str = "…";` with.
+///
+/// Read rather than linked: the crates this asks about are ones `driver` may
+/// not depend on, which is the same reason every other scan here is a scan.
+fn declared_string(crate_name: &str, name: &str) -> Option<String> {
+    let marker = format!("pub const {name}: &str =");
+    crate_source(crate_name).lines().find_map(|line| {
+        let rest = line.trim().strip_prefix(&marker)?;
+        let opened = rest.find('"')? + 1;
+        let closed = rest.get(opened..)?.find('"')? + opened;
+        Some(rest.get(opened..closed)?.to_owned())
+    })
 }
 
 /// Every `.with_writer(X)` argument in a source, as the text of `X`.

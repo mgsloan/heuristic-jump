@@ -152,6 +152,17 @@ pub fn replay_table(
     table.render(arguments.format)
 }
 
+/// `deps.md` §9's default filter for this process, as
+/// `driver::DEFAULT_LOG_FILTER` is the shim's.
+///
+/// A named constant rather than a string inside `install_logging`, for the
+/// reason the shim's is one: §9 states the two values *against each other* —
+/// "`info` where the shim's is `warn`" — and a claim about two values is not
+/// checkable while one of them is a literal in a private function. Setting this
+/// to `warn` would silently delete `core.md` §7's report, which is the thing the
+/// default exists for, and nothing would have said so.
+pub const DEFAULT_LOG_FILTER: &str = "info";
+
 /// Here rather than in each `measure_<lang>` main, for the reason `core.md` §7
 /// gives for putting `clap` here: a `measure_<lang>` is four lines, and the
 /// seventh copy of a log setup is the seventh chance for one binary to be quiet
@@ -189,7 +200,7 @@ pub fn replay_table(
 // test's scoped subscriber winning.
 fn install_logging() {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(DEFAULT_LOG_FILTER));
 
     if let Err(error) = tracing_subscriber::fmt()
         .with_env_filter(filter)
