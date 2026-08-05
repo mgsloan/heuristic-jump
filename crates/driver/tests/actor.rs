@@ -58,6 +58,16 @@ const DEFINITION: &str = "fn target() {}";
 /// `DOCUMENT`, and still with a line 1 long enough for the query's position.
 const REOPENED: &str = "fn target() {}\n    // reopened\n";
 
+/// How long a negative assertion waits before believing that nothing was
+/// dispatched.
+///
+/// `try_recv` is what this replaces and it is not sound here: a query that
+/// *was* dispatched takes a worker a parse and a handler call to answer, so an
+/// empty channel one instruction after `handle` returns is the ordinary state
+/// of a working dispatch. It bounds a pool that answers this fixture's queries
+/// in microseconds.
+const QUIET: Duration = Duration::from_millis(250);
+
 /// Where in `DOCUMENT` the query is asked. Inside `target()` on line 1; no
 /// handler double here reads it, but a position outside the document would be
 /// refused before any of them ran.
@@ -1131,7 +1141,7 @@ fn a_did_save_is_checked_against_the_file_by_a_worker_and_a_mismatch_ends_the_tr
         .handle(fixture.definition(2))
         .expect("a definition request");
     assert!(
-        answers.try_recv().is_err(),
+        answers.recv_timeout(QUIET).is_err(),
         "a query was dispatched against a document whose file did not match the buffer, so \
          §8.6's \"queries against an untrusted document abstain, unconditionally\" is not what \
          the checksum produces"
@@ -1139,6 +1149,68 @@ fn a_did_save_is_checked_against_the_file_by_a_worker_and_a_mismatch_ends_the_tr
     assert!(
         fixture.outbound().is_empty(),
         "the shim answered from a document it had stopped believing"
+    );
+}
+
+/// The two kinds of job share one channel, so `core` has to tell them apart by
+/// what they are rather than by what it was expecting.
+///
+/// One channel is deliberate — `Actor::run`'s `select!` grows no arm and the
+/// drain after the wire closes has one thing to wait for — and the cost of it
+/// is exactly this: with a checksum read and a query both outstanding, the
+/// order they come home in is the pool's business and not `core`'s. An
+/// implementation that took the next message as the answer to the thing it
+/// most recently dispatched passes every other test in this file, because
+/// every other test has one job outstanding at a time.
+///
+/// Both endings are asserted, and they are different endings: the query is
+/// answered — it was dispatched against a document still trusted at the time,
+/// and a distrust that arrives later does not retract an answer — while the
+/// checksum ends the trust for everything after it.
+#[test]
+fn a_checksum_and_a_query_in_flight_together_are_told_apart_by_which_they_are() {
+    let fixture = Fixture::new("actor_both_kinds", Proxying::No);
+    let target = fixture.definition_in("src/target.rs");
+    let mut actor = fixture.actor(Arc::new(Committing {
+        locations: vec![target],
+    }));
+    let answers = actor.dispatches().clone();
+    fixture.open(&mut actor);
+
+    fs::write(fixture.root.join("src").join("lib.rs"), REOPENED)
+        .expect("rewriting the fixture document behind the buffer");
+    actor
+        .handle(Event::Notified {
+            notification: DocumentNotification::DidSave,
+            params: raw(&format!(
+                r#"{{"textDocument":{{"uri":"{}"}}}}"#,
+                fixture.uri("src/lib.rs")
+            )),
+        })
+        .expect("a didSave");
+    actor
+        .handle(fixture.definition(1))
+        .expect("a definition request");
+
+    // Whatever order they arrive in, which is the point.
+    for _ in 0..2 {
+        match answers.recv_timeout(Duration::from_secs(30)) {
+            Ok(finished) => actor.finished(finished),
+            Err(error) => panic!("the pool did not answer both jobs: {error}"),
+        }
+    }
+
+    assert_eq!(
+        fixture.outbound().len(),
+        1,
+        "the query was not answered, so a checksum arriving beside it was taken for its answer"
+    );
+    actor
+        .handle(fixture.definition(2))
+        .expect("a second definition request");
+    assert!(
+        answers.recv_timeout(QUIET).is_err(),
+        "the checksum was not applied, so a query answered beside it was taken for the read"
     );
 }
 
