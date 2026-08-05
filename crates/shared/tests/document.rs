@@ -296,7 +296,7 @@ fn a_parse_that_runs_past_its_deadline_is_abandoned_rather_than_failed() {
     clock.advance(budget + Duration::from_millis(1));
 
     match seed(&large()).realise(&deadline) {
-        Err(Error::Handler(HandlerError::DeadlineExpired)) => {}
+        Err(Error::Handler(HandlerError::DeadlineExpired { classified: None })) => {}
         Err(other) => panic!(
             "an abandoned parse was reported as {other:?}, where core.md §1 has exactly \
              one error class mapped back to an abstention"
@@ -319,7 +319,7 @@ fn a_cancelled_query_abandons_its_parse_too() {
     deadline.cancel();
 
     match seed(&large()).realise(&deadline) {
-        Err(Error::Handler(HandlerError::DeadlineExpired)) => {}
+        Err(Error::Handler(HandlerError::DeadlineExpired { classified: None })) => {}
         Err(other) => panic!("a cancelled parse was reported as {other:?}"),
         Ok(_) => panic!(
             "Deadline::none() is unbounded in *time* only: cancellation still has to \

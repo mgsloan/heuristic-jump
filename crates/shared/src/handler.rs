@@ -409,6 +409,59 @@ pub enum Stratum {
     Unimplemented,
 }
 
+/// Every stratum, once. The single list: [`Stratum::from_index`] reads it, and
+/// `shared/tests/handler.rs` walks it to hold the codec below against the enum.
+///
+/// The array's length is written out, so a variant added to `Stratum` without
+/// being added here fails to compile rather than dropping out of the round trip
+/// quietly.
+pub(crate) const EVERY_STRATUM: [Stratum; 9] = [
+    Stratum::LocalBinding,
+    Stratum::SameFileModule,
+    Stratum::ExplicitImport,
+    Stratum::WildcardImport,
+    Stratum::AmbiguousName,
+    Stratum::ExternalDependency,
+    Stratum::MacroGenerated,
+    Stratum::TypeInferenceRequired,
+    Stratum::Unimplemented,
+];
+
+impl Stratum {
+    /// A dense index, for the lock-free cell a handler publishes its prior
+    /// through (`core-025`, and [`crate::ProjectView::classified`]).
+    ///
+    /// `pub(crate)`: it is how one `shared` type reaches another across an
+    /// atomic, and not something a handler has any use for. An exhaustive match
+    /// rather than `#[repr(u8)]` and a cast, so a new stratum has to be given an
+    /// index here instead of silently taking whichever one the layout gave it —
+    /// and so the two directions are written in the same place, where a reader
+    /// can see they agree.
+    pub(crate) fn index(self) -> u8 {
+        match self {
+            Stratum::LocalBinding => 0,
+            Stratum::SameFileModule => 1,
+            Stratum::ExplicitImport => 2,
+            Stratum::WildcardImport => 3,
+            Stratum::AmbiguousName => 4,
+            Stratum::ExternalDependency => 5,
+            Stratum::MacroGenerated => 6,
+            Stratum::TypeInferenceRequired => 7,
+            Stratum::Unimplemented => 8,
+        }
+    }
+
+    /// The inverse, and `None` for the sentinel the cell holds until something
+    /// publishes — which is why this is fallible rather than saturating: "no
+    /// classification" is a value the cell really holds, and the whole of
+    /// `core-025` is about not inventing a stratum for it.
+    pub(crate) fn from_index(index: u8) -> Option<Self> {
+        EVERY_STRATUM
+            .into_iter()
+            .find(|stratum| stratum.index() == index)
+    }
+}
+
 /// Carries no resolution vocabulary: the variants are unit or carry
 /// primitives, so `resolution.md`'s internal types stay out of the seam. What
 /// a handler knows beyond this reaches the metrics through the trace record

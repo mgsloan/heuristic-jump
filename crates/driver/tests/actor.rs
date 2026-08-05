@@ -368,6 +368,51 @@ fn a_conversion_that_expires_keeps_the_stratum_too() {
     );
 }
 
+/// The third route into a lost stratum, and the one `core-025` says will
+/// dominate in the field: the handler classified the reference, started a read,
+/// and the read refused on the deadline — so the query ends as `Err` with the
+/// class on an `Outcome` that was never built.
+///
+/// The two tests above cover the routes that end *downstream* of a handler that
+/// returned. This one ends inside it, which is where `resolution.md` §8 puts the
+/// I/O: the prior is assigned from the reference before the search, and the
+/// search is where the expiries are. `core-025` is accepted on option C for
+/// exactly this shape, and without it the commonest expiry under load lands in
+/// §7's coverage denominator under a class nobody asked about.
+///
+/// Asserted end to end rather than at `ProjectView`, because the claim is about
+/// what §7's record says: `shared/tests/project.rs` holds the error carrying the
+/// prior, and this holds the driver still writing it into the column.
+#[test]
+fn a_read_that_expires_inside_the_handler_keeps_the_stratum_it_published() {
+    let fixture = Fixture::new("actor_classified_expiry", Proxying::No);
+    let mut actor = fixture.actor(Arc::new(Propagating {
+        clock: Arc::clone(&fixture.clock),
+        classify_as: Some(Stratum::ExplicitImport),
+    }));
+
+    fixture.open(&mut actor);
+    fixture.request(&mut actor, 1);
+
+    let rows = fixture.rows();
+    let [row] = rows.as_slice() else {
+        panic!("{} rows for one expired query", rows.len());
+    };
+    assert_eq!(
+        field(row, "decision"),
+        "\"abstained\"",
+        "an expiry propagated with `?` was recorded as something other than an abstention, so \
+         the assertion below is not about the stratum: {row}"
+    );
+    assert_eq!(
+        field(row, "stratum_prior"),
+        "\"explicitly_imported\"",
+        "the prior the handler published before its read was lost when the read refused on \
+         the deadline. That is core-017's defect one layer down and behind the seam, and it \
+         is what core-025's option C is accepted to fix: {row}"
+    );
+}
+
 /// `deps.md` §10: "Some `driver` code will convert an `Error` into an
 /// abstention; that conversion is explicit and logged."
 ///
@@ -1256,6 +1301,7 @@ fn propagated_from_a_read(name: &str) -> Vec<String> {
     let fixture = Fixture::new(name, Proxying::No);
     let mut actor = fixture.actor(Arc::new(Propagating {
         clock: Arc::clone(&fixture.clock),
+        classify_as: None,
     }));
 
     let (logged, lines) = crossbeam_channel::unbounded();
@@ -1909,6 +1955,11 @@ impl LanguageHandler for Slow {
 /// assigned a stratum", and it is the route with no fixture until now.
 struct Propagating {
     clock: Arc<TestClock>,
+    /// What it publishes through `ProjectView::classified` before the read, or
+    /// nothing. Both routes exist and are different findings: `core-025`'s
+    /// option C empties the first into `Classified::By`, and what stays in
+    /// `Classified::Nothing` is a handler that really had assigned no class.
+    classify_as: Option<Stratum>,
 }
 
 impl LanguageHandler for Propagating {
@@ -1935,6 +1986,12 @@ impl LanguageHandler for Propagating {
             .project
             .lookup(root, &rel)
             .expect("src/target.rs is in the fixture file list");
+        // `resolution.md` §8 assigns the prior from the reference before the
+        // search. A real handler has it here, which is what makes `core-025`'s
+        // option C reach the common case rather than a corner of it.
+        if let Some(prior) = self.classify_as {
+            query.project.classified(prior);
+        }
         // `ProjectView` checks the deadline before starting the I/O, so this is
         // the refusal and not a short read. Propagated rather than matched on:
         // a handler that inspected the class here would be doing the driver's

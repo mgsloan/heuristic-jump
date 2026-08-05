@@ -24,7 +24,7 @@ use std::path::PathBuf;
 use rope::{ByteLen, LineIndex, Offset};
 use thiserror::Error;
 
-use crate::handler::FileListEvidence;
+use crate::handler::{FileListEvidence, Stratum};
 use crate::proto::PositionEncoding;
 use crate::vocabulary::{DocumentUri, DocumentVersion, LanguageId};
 
@@ -587,6 +587,34 @@ pub enum HandlerError {
     /// deliberately: the arm decides what the record says, and an abandoned
     /// parse is a query that ran out of time, not a document that would not
     /// parse (`core.md` §7).
+    ///
+    /// `classified` is `core-025` (accepted, option C): the prior the handler
+    /// had assigned when the clock took its answer away, or `None` when nothing
+    /// had assigned one. Without it the common shape in the field — §8 assigns
+    /// the prior from the reference *before* the search, and the search is where
+    /// the I/O and therefore the expiries are — loses the stratum at the seam,
+    /// and the query lands in §7's coverage denominator under a class it was
+    /// never asked about.
+    ///
+    /// An `Option` and not a stratum with a "nothing" member, because the two
+    /// producers really do differ: a read refused inside a handler may know the
+    /// class, and `SnapshotSeed::realise` abandoning a parse cannot — no handler
+    /// has run. What is left of the second case is what `core-025` settles with
+    /// option B.
     #[error("deadline expired")]
-    DeadlineExpired,
+    DeadlineExpired { classified: Option<Stratum> },
+}
+
+impl HandlerError {
+    /// The expiry no handler could have classified: `SnapshotSeed::realise`
+    /// giving up on a parse, and every caller that is not a `ProjectView`
+    /// holding a published prior.
+    ///
+    /// A named constructor rather than `DeadlineExpired { classified: None }` at
+    /// each site, because `CLAUDE.md` asks that a call site not read
+    /// `foo(None)` — and because the `None` here is a claim ("nothing had
+    /// classified this") rather than an absence of interest.
+    pub fn expired_unclassified() -> Self {
+        Self::DeadlineExpired { classified: None }
+    }
 }

@@ -548,7 +548,7 @@ fn classify(error: Error) -> Dispatched {
     // that a new sub-enum has to be classified here instead of falling into
     // `Failed` by default.
     match &error {
-        Error::Handler(HandlerError::DeadlineExpired) => {
+        Error::Handler(HandlerError::DeadlineExpired { classified }) => {
             // `deps.md` §10: "Some `driver` code will convert an `Error` into
             // an abstention; that conversion is explicit and logged." This is
             // that code, and this is the log. It is the *only* site where an
@@ -569,7 +569,16 @@ fn classify(error: Error) -> Dispatched {
             // is what §5's budget is *for*, so it is normal operation and not a
             // fault. The rate is §7's to report; this is for reading one query.
             tracing::debug!(%error, "converting an expiry into an abstention");
-            Dispatched::DeadlineExpired(Classified::Nothing)
+            // `core-025`, option C: the expiry carries the prior the handler
+            // published before it started the I/O, so the commonest shape in the
+            // field — classified from the reference, then `?` out of an expired
+            // read — keeps the class §7's coverage denominator groups it by.
+            // What is left arriving here with nothing is the parse abandoned
+            // before any handler ran, which is the residue option B is for.
+            Dispatched::DeadlineExpired(match classified {
+                Some(prior) => Classified::By(Strata::from_reference(*prior)),
+                None => Classified::Nothing,
+            })
         }
         // `Encoding` is a *failure*, and it is the wrapper's own rather than a
         // handler's: encoding stops at the dispatch wrapper and never crosses

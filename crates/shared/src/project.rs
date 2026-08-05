@@ -28,6 +28,9 @@ use std::fmt;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
+// `Ordering` is already `std::cmp`'s here, and the two are unrelated: one is how
+// candidates sort, the other is how an atomic is read.
+use std::sync::atomic::{AtomicU8, Ordering as AtomicOrdering};
 
 use ignore::WalkBuilder;
 use rope::{ByteLen, ByteRange, LineIndex, Offset, Rope};
@@ -36,6 +39,7 @@ use tree_sitter::{Language, Parser, Point, Tree};
 use crate::Set;
 use crate::deadline::Deadline;
 use crate::error::{Error, HandlerError, ProjectError};
+use crate::handler::Stratum;
 use crate::identifier::{identifier_continue, is_identifier_text};
 use crate::vocabulary::{DocumentUri, FileExtension};
 
@@ -419,7 +423,23 @@ pub struct ProjectView {
     /// the worker pool; the view is per query and a query is dispatched to
     /// one handler, so there is exactly one language it could be.
     grammar: Language,
+    /// The prior the handler published, as [`Stratum::index`], or
+    /// [`UNCLASSIFIED`] until it publishes one. `core-025`, option C — see
+    /// [`ProjectView::classified`].
+    ///
+    /// An atomic rather than a cell for the reason [`Deadline`]'s cancellation
+    /// flag is one: `&Query` is `Sync` because handlers fan out across candidate
+    /// files, so every field they can reach must be. There is no lock here and
+    /// none is wanted (`deps.md` §13). It is also why this holds an index rather
+    /// than a `Stratum`: an atomic holds an integer, and this integer is the
+    /// enum's own by [`Stratum::index`] rather than a second list of the
+    /// variants kept in step by hand.
+    classified: AtomicU8,
 }
+
+/// No prior has been published. `u8::MAX` rather than a tenth index, so it
+/// cannot collide with a stratum however many are added.
+const UNCLASSIFIED: u8 = u8::MAX;
 
 impl ProjectView {
     // `conformance-012` (answered). The third parameter.
@@ -428,7 +448,57 @@ impl ProjectView {
             files,
             deadline,
             grammar,
+            classified: AtomicU8::new(UNCLASSIFIED),
         }
+    }
+
+    /// The prior this query's reference was assigned, published as soon as the
+    /// handler has it so that an expiry raised *inside* this view carries it
+    /// back out.
+    ///
+    /// `core-025` (accepted, option C). `resolution.md` §8 assigns the prior
+    /// from the reference before the search, and the search is where the I/O is
+    /// — so the shape that actually occurs under load is a handler that knew the
+    /// stratum and then returned `Err` from an expired read. The seam's
+    /// `Result<Outcome, Error>` gives that `Err` no outcome to carry a stratum
+    /// on, and `core.md` §7 reports coverage on the prior, so without this the
+    /// query is counted under a class nobody asked about.
+    ///
+    /// **Publishing is not required and is not checked.** A handler that never
+    /// calls this is not doing anything wrong — it may abstain before
+    /// classifying anything — and the residue is what `core-025` settles with
+    /// option B. What the record rules out instead is the alternative: requiring
+    /// a handler to return `Ok(Abstain { reason: Deadline, .. })` rather than
+    /// `?`, which undoes the `?`-propagation argument `core.md` §1 makes.
+    ///
+    /// The prior alone, not a [`crate::Strata`]. A query that expired committed
+    /// nothing, so there is no answer for a settled stratum to be judged
+    /// against, and publishing the pair would invite a handler to keep it up to
+    /// date across a refinement for no reader.
+    ///
+    /// Last write wins, which is the honest rule: a handler that reclassifies
+    /// has changed its mind, and the most recent prior is the one it held when
+    /// the clock ran out.
+    pub fn classified(&self, prior: Stratum) {
+        // Relaxed on both sides: this carries no other data into view, and a
+        // read that misses a write still in flight reports the absence rather
+        // than a wrong stratum — which costs a row its class and never
+        // mislabels one.
+        self.classified
+            .store(prior.index(), AtomicOrdering::Relaxed);
+    }
+
+    /// What [`ProjectView::classified`] last published, for an expiry to carry.
+    fn published(&self) -> Option<Stratum> {
+        Stratum::from_index(self.classified.load(AtomicOrdering::Relaxed))
+    }
+
+    /// The expiry this view raises, carrying whatever the handler published.
+    fn expired(&self) -> Error {
+        HandlerError::DeadlineExpired {
+            classified: self.published(),
+        }
+        .into()
     }
 
     pub fn roots(&self) -> &[ProjectRoot] {
@@ -501,7 +571,7 @@ impl ProjectView {
         // Checked first rather than after: starting I/O whose result cannot be
         // used spends the window that has already proved to be short of it.
         if self.deadline.expired() {
-            return Err(HandlerError::DeadlineExpired.into());
+            return Err(self.expired());
         }
 
         let absolute = path.to_absolute();

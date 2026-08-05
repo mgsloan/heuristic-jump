@@ -188,7 +188,10 @@ impl SnapshotSeed {
 
         let tree = match (tree, abandoned) {
             (Some(tree), _) => tree,
-            (None, true) => return Err(HandlerError::DeadlineExpired.into()),
+            // Nothing had classified anything: this is the expiry that happens
+            // *before* there is a handler, which is why it is the one route
+            // `core-025`'s option C cannot empty.
+            (None, true) => return Err(HandlerError::expired_unclassified().into()),
             (None, false) => {
                 return Err(ParseError::NoTree {
                     uri: self.uri.clone(),

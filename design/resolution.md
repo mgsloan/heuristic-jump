@@ -523,6 +523,22 @@ impl ProjectView {
         origin: &SearchOrigin,
     ) -> CandidateFiles<'_>;
 
+    /// The prior this query's reference was assigned, published as soon as
+    /// section 8's rule has produced it and before the search starts.
+    ///
+    /// Nothing reads it back. Its only consumer is the expiry the methods
+    /// below raise: `HandlerError::DeadlineExpired` carries it, so a handler
+    /// that classified and then `?`-propagated an expired read keeps the
+    /// class `core.md` section 7 reports coverage on. Without it the
+    /// commonest expiry under load — section 8 assigns the prior before the
+    /// search, and the search is where the I/O is — arrives with no stratum
+    /// at all.
+    ///
+    /// Optional and unchecked: a handler that abstains before classifying
+    /// anything never calls it, and that residue is a real absence rather
+    /// than a missing call. `core-025`.
+    pub fn classified(&self, prior: Stratum);
+
     /// Text of a project file. Open documents return editor state.
     pub fn read(&self, path: &ProjectPath) -> Result<FileText, Error>;
 

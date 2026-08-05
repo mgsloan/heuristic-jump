@@ -120,10 +120,10 @@ fn a_late_failure_is_still_recorded_as_a_failure() {
     let budget = DeadlineMs::PROXYING.budget();
     let deadline = Deadline::new(Arc::clone(&clock) as Arc<dyn Clock>, arrived_at, budget);
     clock.advance(budget);
-    let broken = Dispatched::Failed(Error::Handler(HandlerError::DeadlineExpired));
+    let broken = Dispatched::Failed(Error::Handler(HandlerError::expired_unclassified()));
 
     match hard_cap(&deadline, broken) {
-        Dispatched::Failed(Error::Handler(HandlerError::DeadlineExpired)) => {}
+        Dispatched::Failed(Error::Handler(HandlerError::DeadlineExpired { classified: _ })) => {}
         other @ (Dispatched::Failed(_)
         | Dispatched::Decided(_)
         | Dispatched::DeadlineExpired(_)) => {
