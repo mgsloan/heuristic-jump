@@ -5974,11 +5974,16 @@ def replay_digest(records: list[dict]) -> dict:
         name = record.get("stratum_prior")
         if not isinstance(name, str):
             continue
-        bucket = strata.setdefault(name, {"n": 0, "latency_us": [], "stage_us": {}})
+        bucket = strata.setdefault(
+            name, {"n": 0, "latency_us": [], "stage_us": {}, "returned": []}
+        )
         bucket["n"] += 1
         latency = record.get("heuristic_latency_us")
         if isinstance(latency, (int, float)) and not isinstance(latency, bool):
             bucket["latency_us"].append(float(latency))
+        returned = record.get("returned")
+        if isinstance(returned, int) and not isinstance(returned, bool):
+            bucket["returned"].append(float(returned))
         for stage, micros in (record.get("stage_us") or {}).items():
             if isinstance(micros, (int, float)) and not isinstance(micros, bool):
                 bucket["stage_us"].setdefault(stage, []).append(float(micros))
@@ -5996,6 +6001,14 @@ def replay_digest(records: list[dict]) -> dict:
         }
         if stage_p50:
             entry["stage_p50_us"] = stage_p50
+        # §10's "result count", which the frontier reports beside itself and
+        # never on it — it is "the price of containment", and a point that
+        # raised containment by lengthening lists must not read as an advance.
+        # The mean rather than the distribution, which §10's row spec asks for
+        # and `QueryRecord` does not carry in a form that survives a mean; the
+        # per-query `returned` is in the records file for whoever needs it.
+        if bucket["returned"]:
+            entry["result_count"] = sum(bucket["returned"]) / len(bucket["returned"])
         digested[name] = entry
 
     return {
@@ -6117,7 +6130,14 @@ FRONTIER_AXES = ("top1", "coverage")
 # and the concept stops selecting anything", so the failure it guards against
 # is a *later* campaign promoting one of these to an axis, which nothing else
 # here would notice.
-FRONTIER_BESIDE = ("contained", "result_count", "latency", "loc")
+#
+# These are the keys a stratum carries them under, not the concept names —
+# the first draft used the concepts, and every consumer then looked up
+# `latency` in a row that spells it `latency_p50_us` and printed nothing. LOC
+# is missing from the list for a real reason rather than that one: it is not
+# per-stratum. It rides in the row's own `loc` field, per crate, which is
+# where §10 wants it reported and is already what the dashboard draws.
+FRONTIER_BESIDE = ("contained", "result_count", "latency_p50_us")
 
 # §10: "Phase 3 has no frontier of its own, because it may not move quality at
 # all. It has one axis, size, and a ratchet. The frontier reappears there only
@@ -7948,6 +7968,7 @@ def selftest_cases() -> list[tuple[str, object]]:
         assert entry["n"] == 2 and entry["latency_p50_us"] == 100.0, entry
         assert entry["latency_p99_us"] == 900.0, entry
         assert entry["stage_p50_us"] == {"rank": 100.0, "scan": 90.0}, entry
+        assert "result_count" not in entry, "no record carried `returned`, so there is no mean"
         assert digest["work"] == {"bytes_scanned": 150, "files_parsed": 3}, digest["work"]
         assert "nodes_visited" not in digest["work"], (
             "§10 names three work counters and QueryRecord carries two; a zero "
@@ -8028,7 +8049,7 @@ def selftest_cases() -> list[tuple[str, object]]:
         }
         records = [
             {"stratum_prior": "explicitly_imported", "decision": "committed",
-             "stages": [], "bytes_scanned": 10, "files_parsed": 1,
+             "stages": [], "bytes_scanned": 10, "files_parsed": 1, "returned": 3,
              "heuristic_latency_us": 500, "stage_us": {"scan": 400}},
         ]
         with tempfile.TemporaryDirectory() as directory:
@@ -8051,6 +8072,7 @@ def selftest_cases() -> list[tuple[str, object]]:
         entry = fields["strata"]["explicitly_imported"]
         assert entry["coverage"] == 0.8 and entry["top1"] == 0.75, entry
         assert entry["latency_p50_us"] == 500.0, "the cost half landed in the same stratum"
+        assert entry["result_count"] == 3.0, "the price of containment, beside and not on"
         position = frontier_axes_of(fields)
         assert position == {"top1": 0.75, "coverage": 0.8}, position
 
@@ -8120,8 +8142,21 @@ def selftest_cases() -> list[tuple[str, object]]:
             "objective it is the old flaw wearing new clothes"
         )
         assert not set(FRONTIER_AXES) & set(FRONTIER_BESIDE)
-        for name in ("contained", "result_count", "latency", "loc"):
+        # The keys a stratum actually carries, not the concept names. Naming
+        # the concept was the first draft, and every consumer then looked up
+        # `latency` in a row that spells it `latency_p50_us`.
+        for name in ("contained", "result_count", "latency_p50_us"):
             assert name in FRONTIER_BESIDE, name
+        example = {
+            "strata": {
+                "a": {"n": 1, "judged": 1, "contained": 0.9, "result_count": 3.0,
+                      "latency_p50_us": 900.0}
+            }
+        }
+        for name in FRONTIER_BESIDE:
+            assert stratum_mean(example, name) is not None, (
+                f"{name} is printed beside the frontier and nothing writes it"
+            )
 
     def a_stratum_mean_is_weighted_by_its_n():
         row = {"strata": {"Common": {"top1": 0.9, "n": 900}, "Rare": {"top1": 0.1, "n": 100}}}

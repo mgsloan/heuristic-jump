@@ -1312,6 +1312,46 @@ def sparkline(values: list[float], width: int = 320, height: int = 40) -> str:
     return f'<svg class="spark" viewBox="0 0 {width} {height}" preserveAspectRatio="none"><polyline points="{points}"/></svg>'
 
 
+def frontier_table(rows: list[dict]) -> str:
+    """`design/loops.md` §10's frontier, rendered.
+
+    Two axes and never three. The numbers reported beside it get their own
+    column, labelled as not being axes, because a table that put containment
+    next to top-1 agreement without saying which one is the objective is
+    exactly how a third axis arrives — and §10's argument against that is that
+    past two, "non-domination becomes nearly free ... and the concept stops
+    selecting anything".
+    """
+    points = hj.frontier_points(rows)
+    if not points:
+        return empty(
+            "No row carries both of "
+            + " and ".join(hj.FRONTIER_AXES)
+            + ", so there is nothing to plot. `measure replay` produces them and "
+            "`hj record --replay-report` puts them in the row; until a tuning loop "
+            "runs one, the frontier is computable and empty rather than absent."
+        )
+    head = "".join(f"<th>{esc(axis)}</th>" for axis in hj.FRONTIER_AXES)
+    body = ""
+    for point in points:
+        axes = point["frontier_axes"]
+        beside = ", ".join(
+            f"{name} {value:g}"
+            for name in hj.FRONTIER_BESIDE
+            if (value := hj.stratum_mean(point, name)) is not None
+        )
+        body += (
+            f"<tr><td><code>{esc((point.get('commit') or '')[:12])}</code></td>"
+            + "".join(f"<td>{axes[axis]:.4f}</td>" for axis in hj.FRONTIER_AXES)
+            + f"<td class='note'>{esc(beside)}</td></tr>"
+        )
+    return (
+        f'<table class="sections"><thead><tr><th>commit</th>{head}'
+        '<th>beside, never an axis</th></tr></thead>'
+        f"<tbody>{body}</tbody></table>"
+    )
+
+
 def panel_metrics(loop: str = "") -> str:
     phase = hj.load_phase()
     blocks = []
@@ -1398,10 +1438,15 @@ def panel_metrics(loop: str = "") -> str:
           <h3>{esc(owner)}</h3>
           {headline}
           <div class="charts">{charts}</div>
+          <h4>Frontier <span class="note">non-dominated commits of phase {esc(phase.phase)}</span></h4>
+          {frontier_table([row for row in rows if row.get("phase") == phase.phase])}
           <p class="note">{len(rows)} metrics row(s). The history is a cache — replay is deterministic, so any row can be recomputed from its commit.</p>
         </article>""")
 
-    note = "the frontier chart is a phase 2a object; there is nothing to plot until there is a corpus"
+    note = (
+        "the frontier is computed from the metrics rows; it stays empty until a "
+        "corpus run puts top-1 agreement and coverage in one"
+    )
     return panel("Metrics", "".join(blocks), note=note)
 
 
