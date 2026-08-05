@@ -3313,16 +3313,53 @@ def worker_findings(owner: str, worker: str) -> str:
     return "\n\n".join(parts)
 
 
+def digest_sources(other: str, owners: set[str], files: dict[str, str]) -> list[tuple[str, str]]:
+    """Which files are the `other` loop's published digest, `(name, body)`.
+
+    A loop with workers has no loop-level digest and cannot get one: §13's
+    "What is per worker and what is shared" moved the file per worker because
+    three branches rewriting one capped file conflict on every merge. So
+    `state/findings/core.md` stopped being written the day `core` went to
+    three workers, and reading it published a fossil — a day stale against
+    three current files — to every other loop in the fleet.
+
+    The loop's digest is therefore its workers' digests when it has any, and
+    its own file only when it has none. Not both: the owner file survives on
+    disk after the split and is exactly the thing that should not be read.
+
+    Pure, and takes the directory listing rather than reading it, so the
+    resolution is fixtured on cases the live tree does not currently hold —
+    a loop that has workers but no digest yet, a fossil beside a current
+    file — instead of on whatever `state/findings/` happens to contain.
+    """
+    # A glob for `{other}-*` would also match a *loop* whose name starts with
+    # another loop's; the phase's own owner list is what tells the two apart.
+    workers = sorted(
+        (name, body.strip())
+        for name, body in files.items()
+        if name.startswith(f"{other}-") and name not in owners and body.strip()
+    )
+    if workers:
+        return workers
+    body = files.get(other, "").strip()
+    return [(other, body)] if body else []
+
+
 def other_loop_findings(owners: list[str], owner: str) -> list[str]:
     """Every other *loop's* digest, for this loop's volatile tail.
 
     `design/loops.md` §13, "Campaigns compare notes, asymmetrically". Driven by
-    the owners in `state/phase.toml` rather than by a glob over
-    `state/findings/`, because a glob also matches `core-1.md`, `core-2.md`
-    and `core-3.md` — sibling *workers*, which are `worker_findings`' job and
-    are three views of an implementation a different loop shares none of.
-    §13's sizing is per loop for the same reason: "a dozen loops, 512 words
-    each" fits a tail, and a dozen loops times three workers does not.
+    the owners in `state/phase.toml` rather than by a bare glob over
+    `state/findings/`, because a glob cannot tell a worker of one loop from a
+    loop of its own — and the two are read differently: a sibling worker's
+    digest is `worker_findings`' job, and a *different* loop's arrives here
+    under the asymmetry heading, as a candidate rather than a result.
+
+    §13's sizing — "a dozen loops, 512 words each" — is per loop, and a loop
+    with N workers now spends N caps rather than one. That is the price of the
+    alternative being nothing at all, and it is the same arithmetic §13 says
+    stops working at phase 6, where thirty loops need a selection rule this
+    phase deliberately does not guess at.
 
     The asymmetry §13 is named for — falsified broadcast plainly, confirmed
     published as a candidate — is not enforceable here, because it is a
@@ -3330,14 +3367,30 @@ def other_loop_findings(owners: list[str], owner: str) -> list[str]:
     instruction that tells a digest's *writer* to mark which is which, and the
     heading above this splice that tells its *reader* how the two differ.
     """
+    directory = STATE / "findings"
+    files = {path.stem: path.read_text() for path in sorted(directory.glob("*.md"))}
     digests = []
     for other in owners:
         if other == owner:
             continue
-        path = STATE / "findings" / f"{other}.md"
-        body = path.read_text().strip() if path.exists() else ""
-        if body:
-            digests.append(f"### What the `{other}` loop concluded\n\n{body}")
+        sources = digest_sources(other, set(owners), files)
+        if not sources:
+            continue
+        heading = f"### What the `{other}` loop concluded"
+        if [name for name, _ in sources] == [other]:
+            digests.append(f"{heading}\n\n{sources[0][1]}")
+            continue
+        # Named per worker rather than merged: three workers do have three
+        # views (§13, "Workers"), and a reader deciding whether to test a
+        # candidate wants to know that two of them agreed.
+        bodies = "\n\n".join(f"#### {name}\n\n{body}" for name, body in sources)
+        digests.append(
+            f"{heading}\n\n`{other}` runs {len(sources)} workers, so its digest is "
+            f"{len(sources)} digests and not one: the file is per worker because three "
+            "branches rewriting one capped file conflict on every merge "
+            '(`design/loops.md` §13, "What is per worker and what is shared"). They are '
+            f"one loop's conclusions, and the asymmetry above applies to all of them.\n\n{bodies}"
+        )
     return digests
 
 
@@ -3557,8 +3610,9 @@ def prompt_values(
         "language": config.language or "n/a",
         "campaign_id": campaign_id,
         "campaign_record": f"state/campaigns/{config.owner}/{campaign_id}.md",
-        # Per worker, because append-only prose conflicts on every merge; the
-        # findings digest below is deliberately shared and contended instead
+        # Per worker, because append-only prose conflicts on every merge, and
+        # the findings digest below is per worker for the same reason — an
+        # earlier revision shared it and git stopped and asked on every round
         # (`design/loops.md` §13, "What is per worker and what is shared").
         "journal": f"state/journal/{worker_name}.md",
         # Per worker for the same reason as the journal, and found the same
@@ -9445,20 +9499,34 @@ def selftest_cases() -> list[tuple[str, object]]:
         assert classify_diff_path("design/loops.md") == "markdown"
         assert classify_diff_path("harness/hj") == "other"
 
-    def a_loop_reads_loops_and_not_their_workers():
-        # A glob over state/findings/ matches core-1.md, core-2.md, core-3.md
-        # too. Those are sibling workers — `worker_findings`' job — and putting
-        # three views of one implementation in front of a loop that shares none
-        # of it is both noise and three times §13's per-loop sizing.
-        assert "phase.loops" in inspect.getsource(prompt_values), (
-            "the owner list is the phase's loops; a glob over state/findings/ "
-            "also matches core-1.md, core-2.md and core-3.md"
+    def a_loop_publishes_across_the_boundary_even_when_it_has_workers():
+        # The bug: `core` went to three workers, `state/findings/core.md`
+        # stopped being written, and every other loop went on reading it. §13
+        # says every loop reads every other loop's digest; what it read was a
+        # fossil, a day stale against three current files.
+        owners = {"core", "harness"}
+        fossil = {"core": "old", "core-1": "one", "core-3": "three", "harness": "mine"}
+        assert digest_sources("core", owners, fossil) == [("core-1", "one"), ("core-3", "three")], (
+            "the workers' digests are the loop's, and the owner file beside them is the fossil"
         )
+        assert digest_sources("core", owners, {"core": "old"}) == [("core", "old")], (
+            "a loop with no worker digest yet still publishes its own"
+        )
+        assert digest_sources("core", owners, {"core-1": "  "}) == [], "empty is not a digest"
+        assert digest_sources("core", owners | {"core-2"}, {"core-2": "x"}) == [], (
+            "a loop whose name starts with another's is a loop, not its worker"
+        )
+
+    def the_owner_list_is_the_phase_and_never_a_bare_glob():
+        # Which file belongs to which loop cannot be read off the directory:
+        # `core-1.md` is a worker of `core` only because `core-1` is not
+        # itself a loop, and that is in `state/phase.toml`.
+        assert "phase.loops" in inspect.getsource(prompt_values)
         assert other_loop_findings(["harness"], "harness") == [], "never its own"
         assert all(
             d.startswith("### What the `core` loop concluded")
             for d in other_loop_findings(["core", "harness"], "harness")
-        )
+        ), "one heading per loop, whatever the file count under it"
 
     def the_digest_asymmetry_reaches_both_ends():
         template = (HARNESS / "prompts" / "conformance.md").read_text()

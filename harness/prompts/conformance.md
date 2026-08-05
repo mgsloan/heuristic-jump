@@ -339,7 +339,9 @@ thin or wrong, fixing it is part of your own close.
 
 ## What the other loops have concluded
 
-Their digests, one per loop, rewritten at each of their campaign closes.
+Their digests — one per loop, or one per worker where a loop runs several,
+since a loop with workers keeps no loop-level file — rewritten at each of
+their campaign closes.
 `design/loops.md` section 13 shares these on purpose: the loops differ in
 mechanism and their problems rhyme, and prose creates neither write
 contention nor silent cross-loop regressions. **The two kinds of finding are
