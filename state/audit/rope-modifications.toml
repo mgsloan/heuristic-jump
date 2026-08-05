@@ -21,17 +21,7 @@ last_audited = "2026-08-05T02:55:45+00:00"
 
 [section."rope-modifications.md#4-what-changes"]
 state = "clean"
-last_audited = "2026-08-05T00:43:32+00:00"
-
-  [[section."rope-modifications.md#4-what-changes".minor]]
-  claim = "sum_tree needs no changes for this, and \u00a74 now says explicitly that vendor/sum_tree is not a pristine copy"
-  note = "the comment on the dimension impls still asserts the retracted claim, 'the vendored sum_tree stays a pristine copy'; newtype_api.rs pins the two documents against each other but reads no source comment"
-  where = "vendor/rope/src/rope.rs:1604"
-
-  [[section."rope-modifications.md#4-what-changes".minor]]
-  claim = "each newtype gets ZERO and MAX associated consts, so a literal never has to appear"
-  note = "ByteRange has EMPTY and neither ZERO nor MAX; the bounds test encodes the exception by asserting MAX for six types and EMPTY for the seventh, so it agrees with the code rather than the document"
-  where = "vendor/rope/src/offset.rs:116"
+last_audited = "2026-08-05T03:37:58+00:00"
 
 [section."rope-modifications.md#the-newtypes-are-opaque"]
 state = "clean"
@@ -50,14 +40,13 @@ state = "clean"
 last_audited = "2026-08-05T01:40:56+00:00"
 
 [section."rope-modifications.md#the-dimension-impls"]
-state = "gaps"
-last_audited = "2026-08-05T02:26:51+00:00"
+state = "clean"
+last_audited = "2026-08-05T03:37:58+00:00"
 
-  [[section."rope-modifications.md#the-dimension-impls".gap]]
-  claim = "the obvious stronger reading is false: vendor/sum_tree is NOT a pristine copy \u2014 vendor/README.md records three dependency-stripping patches, and what survives is only that the newtype work is not why it is patched"
-  found = "the comment introducing Offset's Dimension/TextDimension impls states the stronger reading outright: 'the impls live here and the vendored sum_tree stays a pristine copy', which is what a re-sync will read and act on"
-  where = "vendor/rope/src/rope.rs:1604"
-  found_at = "0e5f2f7a502b86df13267a1307b61a773c40211d"
+  [[section."rope-modifications.md#the-dimension-impls".minor]]
+  claim = "mirroring what OffsetUtf16 already has (rope.rs:1634, rope.rs:1644)"
+  note = "adding Offset's impls above them moved OffsetUtf16's to 1642 and 1652, so both cited lines now land inside the new impls"
+  where = "vendor/rope/src/rope.rs:1642"
 
 [section."rope-modifications.md#offsets-and-lengths-are-separate-types-and-bytelen-is-shared"]
 state = "clean"

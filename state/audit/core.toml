@@ -16,19 +16,13 @@ last_audited = "2026-08-05T02:55:45+00:00"
   where = "crates/shared/src/vocabulary.rs:58"
 
 [section."core.md#the-trait"]
-state = "gaps"
-last_audited = "2026-08-05T01:40:56+00:00"
-
-  [[section."core.md#the-trait".gap]]
-  claim = "handlers read, parse and search through ProjectView so the driver can cache reads within a query, reuse the parse LRU, and run the literal scan on the bounded pool"
-  found = "ProjectView has no read cache, `parse` builds a fresh Parser per call and documents that there is no LRU to reach, and `scan` is a sequential loop with no pool \u2014 all correct per conformance-005/012 and CLAUDE.md, so the fix is the tense fix \u00a79 already took in CHANGE-core-029. A check that ProjectView holds no cache or pool field would hold it mechanically"
-  where = "crates/shared/src/project.rs:591"
-  found_at = "975523384418d70ab58801dd65e363bfcd28000d"
+state = "clean"
+last_audited = "2026-08-05T03:37:58+00:00"
 
   [[section."core.md#the-trait".minor]]
-  claim = "ProjectPath has a private field and constructor: only ProjectView mints one"
-  note = "the type's own doc says only `FileList` mints one, and both do \u2014 `ProjectView::lookup` builds a probe through the same private `new`"
-  where = "crates/shared/src/project.rs:77"
+  claim = "ProjectPath has a private constructor and only ProjectView mints one"
+  note = "FileList::enumerate mints them and FileList::paths hands them out; a handler still cannot reach either, so the scope rule holds and only the named minting type is wrong"
+  where = "crates/shared/src/project.rs:99"
 
 [section."core.md#2-document-snapshots"]
 state = "clean"
@@ -57,7 +51,7 @@ last_audited = "2026-08-05T01:40:56+00:00"
 
 [section."core.md#5-deadlines-and-abstention"]
 state = "clean"
-last_audited = "2026-08-05T00:43:32+00:00"
+last_audited = "2026-08-05T03:37:58+00:00"
 
 [section."core.md#6-the-agreement-predicate"]
 state = "clean"
@@ -65,7 +59,7 @@ last_audited = "2026-08-05T01:40:56+00:00"
 
 [section."core.md#both-sides-are-sets"]
 state = "clean"
-last_audited = "2026-08-05T00:43:32+00:00"
+last_audited = "2026-08-05T03:37:58+00:00"
 
 [section."core.md#7-observability-and-the-corpus-scan"]
 state = "clean"
@@ -86,24 +80,19 @@ last_audited = "2026-08-05T02:55:45+00:00"
 
 [section."core.md#two-modes-collect-and-replay"]
 state = "clean"
-last_audited = "2026-08-05T00:43:32+00:00"
+last_audited = "2026-08-05T03:37:58+00:00"
 
 [section."core.md#the-table-is-not-enough-a-replay-has-to-show-its-failures"]
 state = "clean"
-last_audited = "2026-08-05T00:43:32+00:00"
-
-  [[section."core.md#the-table-is-not-enough-a-replay-has-to-show-its-failures".minor]]
-  claim = "abstentions are grouped by (stratum_prior, reason, stages)"
-  note = "the record has no `reason` column; the reason is appended into `stages`, so the partition is the same but the field the section names does not exist"
-  where = "crates/shared/src/record.rs:381"
+last_audited = "2026-08-05T03:37:58+00:00"
 
 [section."core.md#the-oracle-is-the-server-being-proxied"]
 state = "clean"
-last_audited = "2026-08-05T00:43:32+00:00"
+last_audited = "2026-08-05T03:37:58+00:00"
 
 [section."core.md#where-the-corpus-lives"]
 state = "clean"
-last_audited = "2026-08-05T00:43:32+00:00"
+last_audited = "2026-08-05T03:37:58+00:00"
 
 [section."core.md#the-command-line"]
 state = "clean"
@@ -141,17 +130,11 @@ last_audited = "2026-08-05T02:55:45+00:00"
 
 [section."core.md#85-the-untagged-unions-are-the-actual-risk"]
 state = "clean"
-last_audited = "2026-08-05T00:43:32+00:00"
+last_audited = "2026-08-05T03:37:58+00:00"
 
 [section."core.md#86-modelling-errors-must-fail-closed"]
-state = "gaps"
-last_audited = "2026-08-05T00:43:32+00:00"
-
-  [[section."core.md#86-modelling-errors-must-fail-closed".gap]]
-  claim = "didSave is a free end-to-end checksum: the rope's length or hash must match the file, the read belongs in a worker off the critical path, and a mismatch marks the document untrusted"
-  found = "only the half where the notification carries `text` is performed; `Documents::saved` returns `Saved::NeedsRead` otherwise and the actor logs it and returns, doing no read and no comparison, and `Documents::checked` has no caller in src/. A scan asserting `Documents::checked` is reached from driver/src/ would make this mechanical"
-  where = "crates/driver/src/actor.rs:477"
-  found_at = "fe25ac72eba0104d52a3b4100fdfb6fe59e7e9a9"
+state = "clean"
+last_audited = "2026-08-05T03:37:58+00:00"
 
 [section."core.md#87-where-it-lives"]
 state = "clean"
@@ -159,22 +142,11 @@ last_audited = "2026-08-05T02:55:45+00:00"
 
 [section."core.md#9-workspace-layout"]
 state = "clean"
-last_audited = "2026-08-05T00:43:32+00:00"
+last_audited = "2026-08-05T03:37:58+00:00"
 
 [section."core.md#the-dependency-graph"]
-state = "gaps"
-last_audited = "2026-08-05T00:43:32+00:00"
-
-  [[section."core.md#the-dependency-graph".gap]]
-  claim = "shared's authoritative dependency list includes rayon, for ProjectView::scan, which executes on the pool it is handed at construction"
-  found = "shared declares no rayon; ProjectView::new takes no pool and scan is a sequential for-loop over candidates. driver/tests/seam.rs:3508 asserts a subset rather than an equality precisely to permit this; making it an equality against \u00a79's list is the mechanical check"
-  where = "crates/shared/src/project.rs:584"
-  found_at = "fe25ac72eba0104d52a3b4100fdfb6fe59e7e9a9"
-
-  [[section."core.md#the-dependency-graph".minor]]
-  claim = "heuristic_jump depends on driver and every lang_*, plus clap, tracing-subscriber, and shared"
-  note = "heuristic_jump also declares `tracing`, which nothing in the crate uses and \u00a79 does not name; driver likewise carries lru and serde_json and lacks the rayon and rustc-hash \u00a79's arrow lists"
-  where = "crates/heuristic_jump/Cargo.toml:33"
+state = "clean"
+last_audited = "2026-08-05T03:37:58+00:00"
 
 [section."core.md#why-shared-is-separate-from-driver"]
 state = "clean"
@@ -182,11 +154,11 @@ last_audited = "2026-08-05T02:26:51+00:00"
 
 [section."core.md#adding-a-language"]
 state = "clean"
-last_audited = "2026-08-05T00:43:32+00:00"
+last_audited = "2026-08-05T03:37:58+00:00"
 
 [section."core.md#what-the-templates-handler-does"]
 state = "clean"
-last_audited = "2026-08-05T00:43:32+00:00"
+last_audited = "2026-08-05T03:37:58+00:00"
 
 [section."core.md#vendoring-the-zed-crates"]
 state = "clean"

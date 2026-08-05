@@ -3,34 +3,17 @@
 # document, so it follows the document rather than drifting from it.
 
 [section."deps.md#0-summary-table"]
-state = "gaps"
-last_audited = "2026-08-05T02:26:51+00:00"
-
-  [[section."deps.md#0-summary-table".gap]]
-  claim = "the summary table places every dependency and gives it a verdict"
-  found = "arraydeque, hashbrown, itertools and smallvec are declared in [workspace.dependencies] for crates/similarity and appear in no row of \u00a70 \u2014 nor anywhere in design/. A mechanical check is available and missing: every non-path key in [workspace.dependencies] must have a row in \u00a70, the inverse of the placement scan seam.rs already runs"
-  where = "Cargo.toml:56"
-  found_at = "0e5f2f7a502b86df13267a1307b61a773c40211d"
-
-  [[section."deps.md#0-summary-table".minor]]
-  claim = "clap (no default features) | heuristic_jump | chosen"
-  note = "measure_core and measure_rust also declare clap, which \u00a79 of the same document acknowledges; the tracing-subscriber row was widened for this same situation and clap's was not"
-  where = "crates/measure_core/Cargo.toml:27"
+state = "clean"
+last_audited = "2026-08-05T03:37:58+00:00"
 
 [section."deps.md#1-async-runtime-none"]
-state = "gaps"
-last_audited = "2026-08-05T02:26:51+00:00"
-
-  [[section."deps.md#1-async-runtime-none".gap]]
-  claim = "the one remaining timer (the file-list rescan debounce) is crossbeam::select! with after(dur) inside the core loop"
-  found = "both select! branches use a default(self.debounce.window()) arm, which fires only when no other operation is ready \u2014 so a sustained event stream starves tick(), and refresh_if_due (the only caller of Scanner::request) never sends the rescan. Mechanizable: an actor test that keeps the inbox non-empty past the debounce window and asserts a rescan is still requested"
-  where = "crates/driver/src/actor.rs:376"
-  found_at = "0e5f2f7a502b86df13267a1307b61a773c40211d"
+state = "clean"
+last_audited = "2026-08-05T03:37:58+00:00"
 
   [[section."deps.md#1-async-runtime-none".minor]]
-  claim = "the worker pool is CPU-bound work, which is what rayon is for"
-  note = "the dispatch pool is a hand-rolled std::thread::Builder pool over two crossbeam channels; rayon is undeclared in driver and core.md \u00a79 earmarks it for the per-query fan-out instead"
-  where = "crates/driver/src/workers.rs:363"
+  claim = "total thread count is 6 + max(1, available_parallelism() - 2)"
+  note = "the pool is available_parallelism() unreduced in standalone, on a shim.md \u00a710 argument this section does not carry"
+  where = "crates/driver/src/workers.rs:433"
 
 [section."deps.md#2-channels"]
 state = "clean"
@@ -52,7 +35,7 @@ last_audited = "2026-08-05T02:55:45+00:00"
 
 [section."deps.md#4-json"]
 state = "clean"
-last_audited = "2026-08-05T00:43:32+00:00"
+last_audited = "2026-08-05T03:37:58+00:00"
 
 [section."deps.md#5-text-vendored-zed-rope"]
 state = "clean"
@@ -90,7 +73,7 @@ last_audited = "2026-08-05T02:26:51+00:00"
 
 [section."deps.md#9-logging-and-tracing"]
 state = "clean"
-last_audited = "2026-08-05T02:55:45+00:00"
+last_audited = "2026-08-05T03:37:58+00:00"
 
 [section."deps.md#10-errors-one-enumerated-type-no-anyhow"]
 state = "clean"
@@ -111,7 +94,12 @@ last_audited = "2026-08-05T02:55:45+00:00"
 
 [section."deps.md#13-explicitly-not-depended-on"]
 state = "clean"
-last_audited = "2026-08-05T02:55:45+00:00"
+last_audited = "2026-08-05T03:37:58+00:00"
+
+  [[section."deps.md#13-explicitly-not-depended-on".minor]]
+  claim = "the literal scan primitive is a handler's; driver executes the scan on its pool but the matching lives behind that seam"
+  note = "the matching is shared's: whole_token_matches/matches_in under ProjectView::scan, and driver executes no scan. The rejection itself holds \u2014 no crate declares memchr, aho-corasick or grep-searcher"
+  where = "crates/shared/src/project.rs:712"
 
 [section."deps.md#14-workspace-cargotoml-shape"]
 state = "clean"
