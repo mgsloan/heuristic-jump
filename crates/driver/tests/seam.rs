@@ -3296,6 +3296,50 @@ fn our_log_lines_are_distinguishable_and_the_subscriber_is_installed_once() {
         "tracing-subscriber is declared as `{declared}` without env-filter: deps.md §9 names \
          it as one of the two features, and it is what --log is a string for"
     );
+
+    // The manifest's comment beside that entry is a second copy of §9's rule,
+    // and it went stale in the direction a second copy always does: it said
+    // `heuristic_jump` and nowhere else, for as long as `measure_core` had a
+    // subscriber. Nothing above catches it — every assertion so far reads the
+    // dependency tables, and a comment is not one.
+    //
+    // Only the forgiving direction, deliberately: the comment names `driver`
+    // and `shared` too, as the crates that emit through the facade and do not
+    // install, so "names no member outside the list" would fail on correct
+    // text. What is checkable is that adding an installer without saying so
+    // here does not pass.
+    let comment = comment_above(&workspace_file("Cargo.toml"), "tracing-subscriber");
+    assert!(
+        !comment.is_empty(),
+        "no comment above the tracing-subscriber entry, so the assertion below is vacuous"
+    );
+    for member in INSTALLS_THE_SUBSCRIBER {
+        assert!(
+            comment.contains(member),
+            "the workspace manifest's note on tracing-subscriber does not name {member}, which \
+             installs a subscriber: deps.md §9's rule is about which crates own a process, and a \
+             manifest comment that lists the wrong ones is the copy a reader reaches \
+             first\n{comment}"
+        );
+    }
+}
+
+/// The comment block immediately above a `[workspace.dependencies]` entry, as
+/// its lines joined. Empty if the entry has none, or is not there.
+fn comment_above(manifest: &str, entry: &str) -> String {
+    let mut block: Vec<&str> = Vec::new();
+    for line in manifest.lines() {
+        let line = line.trim();
+        if line.starts_with(entry) {
+            return block.join("\n");
+        }
+        if line.starts_with('#') {
+            block.push(line);
+        } else {
+            block.clear();
+        }
+    }
+    String::new()
 }
 
 /// The other half of `deps.md` §9's prefix rule, and the half that was missing:
