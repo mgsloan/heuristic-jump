@@ -34,11 +34,21 @@ last_audited = "2026-08-05T02:26:51+00:00"
 
 [section."deps.md#2-channels"]
 state = "clean"
-last_audited = "2026-08-04T23:43:10+00:00"
+last_audited = "2026-08-05T02:55:45+00:00"
+
+  [[section."deps.md#2-channels".minor]]
+  claim = "the core inbox length is a number we should log and watch"
+  note = "the log line says \"core is behind its inbox\" at any depth >= 1, while this file's own CoreLoad::Behind threshold is INBOX_BACKED_UP = 4"
+  where = "crates/driver/src/actor.rs:443"
 
 [section."deps.md#3-lsp-types-our-own-not-lsp-types"]
 state = "clean"
-last_audited = "2026-08-05T00:43:32+00:00"
+last_audited = "2026-08-05T02:55:45+00:00"
+
+  [[section."deps.md#3-lsp-types-our-own-not-lsp-types".minor]]
+  claim = "a differential oracle against a golden corpus of real Zed / VS Code / rust-analyzer traffic"
+  note = "33 corpus lines are genuinely captured from rust-analyzer, gopls, pyright and Eglot, but the test's own header still says the corpus is hand-authored and that captured traffic \"remains open\""
+  where = "crates/shared/tests/differential.rs:10"
 
 [section."deps.md#4-json"]
 state = "clean"
@@ -46,7 +56,7 @@ last_audited = "2026-08-05T00:43:32+00:00"
 
 [section."deps.md#5-text-vendored-zed-rope"]
 state = "clean"
-last_audited = "2026-08-04T23:43:10+00:00"
+last_audited = "2026-08-05T02:55:45+00:00"
 
 [section."deps.md#licensing-our-crates-are-mit-the-binary-is-gpl"]
 state = "clean"
@@ -54,12 +64,12 @@ last_audited = "2026-08-05T01:40:56+00:00"
 
 [section."deps.md#6-tree-sitter"]
 state = "clean"
-last_audited = "2026-08-04T23:43:10+00:00"
+last_audited = "2026-08-05T02:55:45+00:00"
 
   [[section."deps.md#6-tree-sitter".minor]]
-  claim = "`driver` depends on `tree-sitter` but on no grammar crate"
-  note = "driver's [dependencies] names neither; tree-sitter reaches it through shared's re-export, and tree-sitter-rust \u2014 a grammar crate \u2014 is a dev-dependency, which the seam test carves out on purpose"
-  where = "crates/driver/Cargo.toml:56"
+  claim = "the grammars match Zed's pinned revisions"
+  note = "`tree-sitter-rust = \"0.24.2\"` is a caret range, not a pin; the seam test treats three version components as pinned, which is the same defect its doc comment rejects for \"0.24\". Only the committed lockfile holds the revision"
+  where = "Cargo.toml:125"
 
 [section."deps.md#7-file-enumeration-and-watching"]
 state = "clean"
@@ -80,11 +90,11 @@ last_audited = "2026-08-05T02:26:51+00:00"
 
 [section."deps.md#9-logging-and-tracing"]
 state = "clean"
-last_audited = "2026-08-05T02:26:51+00:00"
+last_audited = "2026-08-05T02:55:45+00:00"
 
 [section."deps.md#10-errors-one-enumerated-type-no-anyhow"]
 state = "clean"
-last_audited = "2026-08-05T00:43:32+00:00"
+last_audited = "2026-08-05T02:55:45+00:00"
 
 [section."deps.md#11-cli-parsing-clap"]
 state = "clean"
@@ -92,11 +102,16 @@ last_audited = "2026-08-05T02:26:51+00:00"
 
 [section."deps.md#12-testing"]
 state = "clean"
-last_audited = "2026-08-05T00:43:32+00:00"
+last_audited = "2026-08-05T02:55:45+00:00"
+
+  [[section."deps.md#12-testing".minor]]
+  claim = "insta is used for frame-trace golden tests"
+  note = "no crate declares insta and it is not in Cargo.lock; consistent with \u00a714's \"arrives with its first user\" since the transport is unbuilt, but the table row reads as present use"
+  where = "Cargo.toml:117"
 
 [section."deps.md#13-explicitly-not-depended-on"]
 state = "clean"
-last_audited = "2026-08-05T02:26:51+00:00"
+last_audited = "2026-08-05T02:55:45+00:00"
 
 [section."deps.md#14-workspace-cargotoml-shape"]
 state = "clean"

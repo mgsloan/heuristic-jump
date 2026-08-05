@@ -8,11 +8,11 @@ last_audited = "2026-08-05T01:40:56+00:00"
 
 [section."core.md#vocabulary-types"]
 state = "clean"
-last_audited = "2026-08-04T23:43:10+00:00"
+last_audited = "2026-08-05T02:55:45+00:00"
 
   [[section."core.md#vocabulary-types".minor]]
   claim = "only ids some registered handler declared exist, so an unknown language cannot be constructed at all"
-  note = "LanguageId::new is a public const fn over any &'static str; what is prevented is an id built from wire text. measure_core's own comment records the removed fallback that minted LanguageId::new(\"unknown\")"
+  note = "LanguageId::new is a public const fn over any &'static str; the closure is a convention the type's doc argues for, and one invented id has already occurred in this workspace"
   where = "crates/shared/src/vocabulary.rs:58"
 
 [section."core.md#the-trait"]
@@ -32,32 +32,15 @@ last_audited = "2026-08-05T01:40:56+00:00"
 
 [section."core.md#2-document-snapshots"]
 state = "clean"
-last_audited = "2026-08-05T00:43:32+00:00"
+last_audited = "2026-08-05T02:55:45+00:00"
 
 [section."core.md#snapshots-are-o1-to-take-and-are-parsed-before-a-handler-sees-one"]
-state = "gaps"
-last_audited = "2026-08-04T23:43:10+00:00"
-
-  [[section."core.md#snapshots-are-o1-to-take-and-are-parsed-before-a-handler-sees-one".gap]]
-  claim = "the split keeps `core` doing O(1) work while the parse happens inside the worker; realise is called by the worker, never by `core`"
-  found = "dispatch calls SnapshotSeed::realise, and the only caller of dispatch is the single-threaded actor, so the parse and the whole query are paid on core's thread"
-  where = "crates/driver/src/dispatch.rs:351"
-  found_at = "4266031455e91fde2c3f8d08f91909260ab9a81f"
+state = "clean"
+last_audited = "2026-08-05T02:55:45+00:00"
 
 [section."core.md#text-and-tree-can-never-disagree"]
-state = "gaps"
-last_audited = "2026-08-04T23:43:10+00:00"
-
-  [[section."core.md#text-and-tree-can-never-disagree".gap]]
-  claim = "the parse is paid inside the worker and inside the deadline, never in `core`; `core` builds seeds and never realises one"
-  found = "Actor::requested realises the seed on the core thread by calling dispatch synchronously; core is not free of parsing"
-  where = "crates/driver/src/actor.rs:499"
-  found_at = "4266031455e91fde2c3f8d08f91909260ab9a81f"
-
-  [[section."core.md#text-and-tree-can-never-disagree".minor]]
-  claim = "the dispatch wrapper sends Parsed to `core`; the handler is not involved and cannot forget"
-  note = "the wrapper returns Completed { parsed: Option<Parsed> }, a public field a caller may drop; the actor happens to insert it, so the property is discipline at one call site rather than a type"
-  where = "crates/driver/src/dispatch.rs:409"
+state = "clean"
+last_audited = "2026-08-05T02:55:45+00:00"
 
 [section."core.md#3-position-encoding"]
 state = "clean"
@@ -90,16 +73,16 @@ last_audited = "2026-08-05T01:40:56+00:00"
 
 [section."core.md#the-corpus-scan-is-a-separate-program"]
 state = "clean"
-last_audited = "2026-08-04T23:43:10+00:00"
+last_audited = "2026-08-05T02:55:45+00:00"
 
   [[section."core.md#the-corpus-scan-is-a-separate-program".minor]]
-  claim = "`measure collect` enumerates identifiers with the handler's grammar, asks both sides, and writes the records"
-  note = "the work is split across enumerate/collect/replay: collect asks only the oracle and freezes truth.jsonl, replay asks the handler and writes the records. That follows core.md#the-command-line, so the code obeys one section against another"
-  where = "crates/measure_core/src/collect.rs:45"
+  claim = "measure collect spawns a fresh server per repository, opens documents, enumerates identifiers with the handler's own grammar, asks both sides, and writes the records"
+  note = "collect does not enumerate; it reads positions/<repo>.jsonl written by the `enumerate` subcommand, which is what the command-line section specifies"
+  where = "crates/measure_core/src/collect.rs:75"
 
 [section."core.md#one-measurement-library-one-tiny-binary-per-language"]
 state = "clean"
-last_audited = "2026-08-04T23:43:10+00:00"
+last_audited = "2026-08-05T02:55:45+00:00"
 
 [section."core.md#two-modes-collect-and-replay"]
 state = "clean"
@@ -124,7 +107,7 @@ last_audited = "2026-08-05T00:43:32+00:00"
 
 [section."core.md#the-command-line"]
 state = "clean"
-last_audited = "2026-08-04T23:43:10+00:00"
+last_audited = "2026-08-05T02:55:45+00:00"
 
 [section."core.md#8-protocol-types"]
 state = "clean"
@@ -148,14 +131,13 @@ state = "clean"
 last_audited = "2026-08-05T02:26:51+00:00"
 
 [section."core.md#84-location-is-byte-based-and-this-fixes-a-real-inconsistency"]
-state = "gaps"
-last_audited = "2026-08-04T23:43:10+00:00"
+state = "clean"
+last_audited = "2026-08-05T02:55:45+00:00"
 
-  [[section."core.md#84-location-is-byte-based-and-this-fixes-a-real-inconsistency".gap]]
-  claim = "the Location -> WireLocation conversion happens in the worker, not in `core`, because it reads the target file and `core` never touches the filesystem"
-  found = "there is no worker pool: Actor::requested calls dispatch in line, so encode's per-location re-read runs on the core thread. dispatch.rs:334 asserts the opposite. Mechanisable: assert the thread calling dispatch is not the one running Actor::run"
-  where = "crates/driver/src/actor.rs:499"
-  found_at = "4266031455e91fde2c3f8d08f91909260ab9a81f"
+  [[section."core.md#84-location-is-byte-based-and-this-fixes-a-real-inconsistency".minor]]
+  claim = "handlers never see a WireLocation and cannot construct one"
+  note = "WireLocation::new is public and PositionEncoding's variants are public unit variants; the outbound half is enforced by a source scan in driver/tests/seam.rs rather than by the types, which proto.rs states outright"
+  where = "crates/shared/src/proto.rs:286"
 
 [section."core.md#85-the-untagged-unions-are-the-actual-risk"]
 state = "clean"
@@ -173,7 +155,7 @@ last_audited = "2026-08-05T00:43:32+00:00"
 
 [section."core.md#87-where-it-lives"]
 state = "clean"
-last_audited = "2026-08-04T23:43:10+00:00"
+last_audited = "2026-08-05T02:55:45+00:00"
 
 [section."core.md#9-workspace-layout"]
 state = "clean"
@@ -208,7 +190,7 @@ last_audited = "2026-08-05T00:43:32+00:00"
 
 [section."core.md#vendoring-the-zed-crates"]
 state = "clean"
-last_audited = "2026-08-04T23:43:10+00:00"
+last_audited = "2026-08-05T02:55:45+00:00"
 
 [section."core.md#10-testing"]
 state = "clean"

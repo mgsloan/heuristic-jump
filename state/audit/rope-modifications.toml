@@ -8,16 +8,16 @@ last_audited = "2026-08-05T02:26:51+00:00"
 
 [section."rope-modifications.md#2-where-the-types-live-is-forced"]
 state = "clean"
-last_audited = "2026-08-05T00:43:32+00:00"
+last_audited = "2026-08-05T02:55:45+00:00"
 
 [section."rope-modifications.md#3-what-keeps-this-safe"]
 state = "clean"
-last_audited = "2026-08-05T00:43:32+00:00"
+last_audited = "2026-08-05T02:55:45+00:00"
 
   [[section."rope-modifications.md#3-what-keeps-this-safe".minor]]
   claim = "every edit changes representation, never arithmetic; a hunk that is not one of the five shapes is a bug in the patch"
-  note = "TextSummary::add_newline carries two arithmetic hunks \u2014 an added `chars.0 += 1` and a changed len_utf16 increment. Deliberate upstream bug fixes, recorded as a separate patch class in vendor/README.md, but \u00a73's stated verification (upstream's tests) cannot cover them since nothing upstream calls the method"
-  where = "vendor/rope/src/rope.rs:1412"
+  note = "add_newline carries a deliberate arithmetic edit (two upstream bug fixes); only vendor/README.md patch 8 separates it from the sweep's five shapes, and \u00a73 states the rule unqualified"
+  where = "vendor/rope/src/rope.rs:1413"
 
 [section."rope-modifications.md#4-what-changes"]
 state = "clean"
