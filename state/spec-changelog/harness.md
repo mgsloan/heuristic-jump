@@ -723,3 +723,39 @@ second — the claim as narrowed is now enforced rather than merely reworded,
 which is the only version of this edit worth having.
 
 **Campaign:** 2953c426-61d6-4c26-ab02-4de263107557
+
+## CHANGE-harness-017 — loops.md#campaigns-are-the-unit-of-fresh-context — a campaign is one hypothesis, and several targets when they share their reading
+
+**Contradiction:** the section says
+
+> A session spans a **campaign**: one target, one hypothesis […]
+
+and the table under it says a conformance campaign is "one open gap, or one
+unjudged section". The prompt every conformance campaign is generated from has
+said the opposite since `7a68d47`:
+
+> **The test for taking several is shared context, not interdependence.** They
+> do not have to be one claim seen from two sides, and neither has to block the
+> other.
+
+**Resolution:** the prompt's, into the document. The evidence that decides
+which side is stale is outside both and is not a preference: `7a68d47` is
+authored by a human, argues the change in its commit message — "what a campaign
+spends is reading, so what makes a second target cheap is that it needs no new
+reading" — and is logged in `state/interventions.jsonl` as `prompt-revised`,
+which §16 calls the one intervention that cannot be replayed. The decision was
+taken deliberately, at the level that takes decisions, and the document was
+simply never updated to match it.
+
+So this trades nothing off: the hypothesis remains the unit, one target remains
+the usual shape of it, and the thing the old wording was protecting — a
+campaign that is a list of unrelated items worked through in sequence — is
+refused more sharply than before, by a check anyone can apply ("name the files
+or sections these targets share") rather than by a bar that also refused two
+gaps in one function.
+
+No code changed under this anchor. The prompt already said this; the document
+is what moved, and it moved toward a human's ruling rather than toward a loop's
+code.
+
+**Campaign:** 2953c426-61d6-4c26-ab02-4de263107557

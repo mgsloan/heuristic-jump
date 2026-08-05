@@ -284,16 +284,16 @@ campaign.
 
 ### Campaigns are the unit of fresh context
 
-A session spans a **campaign**: one target, one hypothesis, however many
-experiments it takes to confirm or kill it. Context persists across the
-experiments inside a campaign and is discarded at its boundary.
+A session spans a **campaign**: one hypothesis, however many experiments
+it takes to confirm or kill it. Context persists across the experiments
+inside a campaign and is discarded at its boundary.
 
 A campaign:
 
 1. **Opens** by picking a target and writing it down in
    `state/campaigns/<owner>/<id>.md` — for a tuning loop, the
    (stratum, language) with the largest share × gap, plus the
-   hypothesis about why it is losing coverage; for a conformance loop, a
+   hypothesis about why it is losing coverage; for a conformance loop, an
    open gap, or an unjudged section. The
    session id and its resume command are recorded here at open
    ([section 16](#16-the-operator-view)).
@@ -316,9 +316,29 @@ Which unit each loop uses:
 
 | Loop | Campaign is |
 |---|---|
-| conformance (1a, 2b) | one open gap, or one unjudged section |
+| conformance (1a, 2b) | one open gap or one unjudged section, and more of them when they share their reading |
 | tuning (2a) | one hypothesis about one stratum |
 | phase 3 | one refactor target |
+
+**One hypothesis is the unit; one target is the usual shape of it, not
+the rule.** A campaign may take several targets, and what makes them one
+campaign is **shared context rather than interdependence**: they do not
+have to be one claim seen from two sides, and neither has to block the
+other. It is enough that closing them means working in the same files,
+reading the same types, or having the same design sections open. What a
+campaign actually spends is reading — a fresh session inherits no context
+and re-derives it from nothing — so a second target that needs no new
+reading is nearly free, and the same target taken later is paid for in
+full.
+
+What that refuses is a grab-bag, and the refusal is a concrete check
+rather than a matter of taste: **name the files or sections the targets
+share.** If there is no honest answer they are not one campaign, and a
+cheap-to-reach target that shares nothing with what was done is still a
+grab-bag — worth leaving for a session that will do it without carrying
+this one's context. Batching unrelated targets also costs attribution: a
+partial close or a stall over a grab-bag says nothing about which part
+failed.
 
 The conformance loops sit close to pure Ralph, because gaps genuinely
 are independent and the spec is the memory. Tuning sits
