@@ -461,6 +461,16 @@ Notes on the shape:
   A handler reads a field describing a behaviour; it does not ask which
   server it is talking to.
 
+  Like the commit funnel below, this is held by review rather than by the
+  types, and for once that is not obvious from the outside: `ServerId`'s field
+  is private and there is no public constructor from a string, which reads as
+  though an identity cannot be named at all. It can — `ServerId::KNOWN` is a
+  `pub const` of the whole matrix and `ServerId::from_name` is public, both so
+  that `measure_core` can resolve `--server` — so the mechanical check is the
+  same shape as the other one:
+  `crates/shared/tests/handler.rs::no_language_crate_asks_which_server_it_is_standing_in_for`
+  scans every `lang_*` source for the identity and for `ServerProfile::id`.
+
   **The identity is a private field behind a constructor per situation**,
   rather than a public `id: Option<ServerId>`. The absence has to be
   representable — standalone has no oracle, and a proxied server we have no

@@ -330,20 +330,7 @@ fn enclosed(text: &str) -> &str {
 /// `resolution.md` §7.4 refuses to schedule.
 #[test]
 fn no_language_crate_constructs_the_committed_arm_itself() {
-    let sources = language_crate_sources();
-    assert!(
-        !sources.is_empty(),
-        "no crates/lang_* workspace member, so this scan would pass vacuously"
-    );
-
-    assert!(
-        sources
-            .iter()
-            .any(|(_, text)| text.contains("impl LanguageHandler")),
-        "none of {:?} implements the seam, so this walked the wrong files and \
-         would pass against a handler that commits on every line",
-        sources.iter().map(|(file, _)| file).collect::<Vec<_>>()
-    );
+    let sources = language_sources_that_implement_the_seam();
 
     let mut constructing = Vec::new();
     for (file, text) in &sources {
@@ -370,6 +357,76 @@ fn no_language_crate_constructs_the_committed_arm_itself() {
          commit site in every `lang_*` crate at the moment when there are the most \
          of them"
     );
+}
+
+/// §1's other claim that the types deliberately do not hold: "handlers must
+/// not dispatch on server *identity* — `if server.id == PYRIGHT` scattered
+/// through a handler is the per-language configuration format
+/// `resolution.md` §1.2 rules out, wearing yet another hat. A handler reads a
+/// field describing a behaviour; it does not ask which server it is talking
+/// to."
+///
+/// Worth a scan because it is one accessor away from possible, and it took
+/// reading `vocabulary.rs` to be sure it was not already prevented: the field
+/// inside `ServerId` is private and the type carries no public constructor
+/// from a `&'static str`, which reads like the identity cannot be named at
+/// all. It can. `ServerId::KNOWN` is a `pub const` of all eight servers in the
+/// matrix and `ServerId::from_name` is public, so `q.server.id() ==
+/// ServerId::from_name("pyright")` compiles today from any language crate.
+///
+/// `ServerProfile::id` is the same claim from the other side, and §1 names
+/// that one too: "`None` in standalone, and when proxying a server we have no
+/// profile for. A handler that branches on this is doing something wrong."
+/// There is nothing else on `ServerProfile` for a handler to read — §1 has it
+/// "Empty in v1: a field appears only once the corpus shows a systematic
+/// divergence that a field would fix" — so in v1 every use of the accessor is
+/// the identity dispatch this refuses, and a behaviour field arriving is what
+/// makes the distinction need drawing.
+#[test]
+fn no_language_crate_asks_which_server_it_is_standing_in_for() {
+    let sources = language_sources_that_implement_the_seam();
+
+    let mut asking = Vec::new();
+    for (file, text) in &sources {
+        for line in text.lines() {
+            let code = line.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            if code.contains("ServerId") || code.contains("server.id()") {
+                asking.push(format!("{file}: {code}"));
+            }
+        }
+    }
+
+    assert!(
+        asking.is_empty(),
+        "a language crate asks which server it is standing in for: {asking:?}. core.md §1 \
+         makes ServerProfile data rather than a trait for exactly this reason — a handler \
+         reads a field describing a behaviour, and a handler that branches on identity has \
+         rebuilt the per-language configuration format resolution.md §1.2 rules out"
+    );
+}
+
+/// The `lang_*` sources, with the two vacuity checks every scan over them
+/// needs: that there are some, and that they are the files the seam is
+/// actually implemented in rather than whatever the module walk happened to
+/// reach.
+fn language_sources_that_implement_the_seam() -> Vec<(String, String)> {
+    let sources = language_crate_sources();
+    assert!(
+        !sources.is_empty(),
+        "no crates/lang_* workspace member, so this scan would pass vacuously"
+    );
+    assert!(
+        sources
+            .iter()
+            .any(|(_, text)| text.contains("impl LanguageHandler")),
+        "none of {:?} implements the seam, so this walked the wrong files and would pass \
+         against a handler doing the very thing being scanned for",
+        sources.iter().map(|(file, _)| file).collect::<Vec<_>>()
+    );
+    sources
 }
 
 /// Every source file of every `crates/lang_*` member, as `(crate/src/name.rs,
