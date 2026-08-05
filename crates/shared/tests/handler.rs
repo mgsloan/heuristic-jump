@@ -23,6 +23,8 @@
 
 use std::path::Path;
 
+use shared::{ByteLen, CandidateCount, FileCount, Margin, Micros, StageLabel, StageName, Trace};
+
 /// The section that prints the seam. Sliced by heading rather than by line
 /// number, which moves.
 const HEADING: &str = "### The trait";
@@ -414,6 +416,140 @@ fn module_of(line: &str) -> Option<&str> {
         .strip_prefix("mod ")
         .or_else(|| line.trim().strip_prefix("pub mod "))
         .and_then(|rest| rest.strip_suffix(';'))
+}
+
+/// §1 prints `Trace` with two claims attached to the type rather than to its
+/// members: "**Boxed and not allocated until something is reported**, so the
+/// commonest abstention does not pay for a channel it never writes to."
+///
+/// **The first half is held here and the second is not, and the difference is
+/// worth writing down rather than rediscovering.** A `Trace` that inlined its
+/// six fields is caught by the width below, which is the property the source
+/// says the shape was for: one pointer wide, so that widening `Outcome` did not
+/// widen every `Result` carrying one past clippy's `result_large_err`
+/// threshold. A `Trace` that kept `Option<Box<_>>` but filled it in `new()` is
+/// **not** caught, by this or by anything else in the repository — it produces
+/// a byte-identical record, so every test in `driver` and `measure_core` passes
+/// against it too. Observing an allocation needs a counting
+/// `#[global_allocator]`, and `GlobalAlloc` cannot be implemented without
+/// `unsafe`, which `CLAUDE.md` bans outright. So the second half is a
+/// performance claim held by review, and the assertion that a fresh trace
+/// reports *nothing* is the part of it that has observable consequences.
+#[test]
+fn a_trace_is_one_pointer_wide_and_an_unwritten_one_reports_nothing() {
+    assert_eq!(
+        size_of::<Trace>(),
+        size_of::<*const ()>(),
+        "a `Trace` is one pointer wide, which is what let §1 widen `Outcome` \
+         with one. Inlined, this is six fields, and `driver`'s `Dispatched` \
+         crossed `result_large_err` the last time it was"
+    );
+
+    let parts = Trace::new().into_parts();
+    assert!(
+        parts.stages.is_empty()
+            && parts.stage_us.is_empty()
+            && parts.bytes_scanned == ByteLen::ZERO
+            && parts.files_parsed == FileCount(0)
+            && parts.margin.is_none()
+            && parts.considered.is_none(),
+        "a handler that reported nothing produces §7's columns at the values \
+         that say no account was given, not zeroes standing in for \
+         measurements nobody took: {parts:?}"
+    );
+}
+
+/// The three accumulating writers on §1's reporting channel, each of which the
+/// source describes and none of which anything reads back.
+///
+/// `stage` is the one with two ways to be wrong rather than one. §7 asks for "a
+/// small fixed maximum number of short labels, **truncated rather than
+/// grown**", and the source adds which end goes: "Dropping the tail rather than
+/// the head keeps the prefix stable across runs, which is what lets failures be
+/// *grouped* by `stages` rather than merely listed." A ring buffer that dropped
+/// the head would satisfy the bound and destroy the grouping, and nothing in
+/// the repository reports more than two stages, so no existing test reaches the
+/// bound at all.
+#[test]
+fn an_account_is_truncated_at_its_tail_and_a_re_entered_stage_accumulates() {
+    let mut trace = Trace::new();
+    let overrun = Trace::MAX_STAGES + 8;
+    for stage in 0..overrun {
+        trace.stage(StageLabel::new(&format!("stage:{stage}")));
+    }
+
+    // A stage re-entered during a fan-out is one stage that cost more, so the
+    // second call adds to the first rather than replacing it.
+    trace.timed(StageName::new("search"), Micros(900));
+    trace.timed(StageName::new("search"), Micros(100));
+    trace.scanned(ByteLen(1234));
+    trace.scanned(ByteLen(1));
+    trace.parsed(FileCount(3));
+    trace.parsed(FileCount(1));
+    trace.ranked(
+        Margin::new(0.5).expect("a finite, non-negative margin"),
+        CandidateCount(7),
+    );
+
+    let parts = trace.into_parts();
+    let labels: Vec<&str> = parts.stages.iter().map(StageLabel::as_str).collect();
+    assert_eq!(
+        labels.len(),
+        Trace::MAX_STAGES,
+        "{overrun} stages were reported and the bound is {}, so the account \
+         grew instead of truncating",
+        Trace::MAX_STAGES
+    );
+    assert_eq!(
+        (labels.first(), labels.last()),
+        (Some(&"stage:0"), Some(&"stage:31")),
+        "the tail is what goes. A trace that kept the last {} labels would \
+         satisfy the bound and still make two runs of the same query \
+         ungroupable, which is the only thing §7 asks `stages` for",
+        Trace::MAX_STAGES
+    );
+
+    assert_eq!(
+        parts.stage_us.get(&StageName::new("search")),
+        Some(&Micros(1000)),
+        "a stage entered twice cost 900µs and then 100µs, so it cost 1000µs"
+    );
+    assert_eq!(
+        (parts.bytes_scanned, parts.files_parsed),
+        (ByteLen(1235), FileCount(4)),
+        "`scanned` and `parsed` are counters, so a second report adds to the \
+         first rather than replacing it"
+    );
+    assert_eq!(parts.considered, Some(CandidateCount(7)));
+}
+
+/// §1 gives `margin` a newtype so that "the 0.0..=1.0 invariant is checked once
+/// in the constructor instead of assumed at every comparison" — the argument it
+/// makes for `Confidence`, applied here to the half of it that survives: a
+/// margin is a difference between the handler's own scores, so there is no
+/// upper bound, and what is left to check is that it is a difference at all.
+///
+/// Both non-finite cases have to be named separately, because the two halves of
+/// the guard catch different ones and either half alone looks sufficient: `>=
+/// 0.0` is false for a NaN, so dropping `is_finite` still rejects it and lets
+/// an infinity through as a margin that outranks every real one.
+#[test]
+fn a_margin_is_a_gap_between_two_scores_or_it_is_not_a_margin() {
+    assert!(
+        Margin::new(-0.1).is_none(),
+        "a negative margin says the runner-up outranked the top candidate"
+    );
+    assert!(Margin::new(f32::NAN).is_none(), "a NaN is not a gap");
+    assert!(
+        Margin::new(f32::INFINITY).is_none(),
+        "an infinite margin is accepted by `>= 0.0` alone, and would outrank \
+         every margin a handler could actually measure"
+    );
+    assert!(
+        Margin::new(0.0).is_some() && Margin::new(12.5).is_some(),
+        "a tie and an ordinary gap are both margins -- without this the \
+         rejections above pass against a constructor that refuses everything"
+    );
 }
 
 /// The trait's method names, which are the part of it a language crate has to
