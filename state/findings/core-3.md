@@ -2,66 +2,60 @@
 
 ## Falsified — act on these directly
 
-**Reading a test tells you what it looks at; only a plant tells you what it
-would notice.** `mark_stale` refuses to restart the debounce window. I assumed
-the existing debounce test held that. It does not — three triggers 50ms apart
-then a whole window advanced leaves the last one 500ms behind the tick under
-*both* behaviours. Planting `since: now` left all fourteen tests in the file
-passing. **When you believe a test covers a claim, plant against it and run the
-whole file.**
+**A `measure_<lang>` crate may not have tests.** `core.md` §9's template says
+so and `seam.rs::adding_a_language_costs_the_template_and_one_line` enforces
+it. I wrote a binary-level test in `crates/measure_rust/tests/`, all three
+plants fired, and it had to be deleted — `CARGO_BIN_EXE_measure-rust` exists
+only for that package, so there is nowhere else. Do not rebuild it.
 
-**A stale assignment costs one turn to prove** (core-1's recipe): find the `gap-log.jsonl` row that *opened* the id, then check
-whether any later row's `sections_audited` names its section. Both of mine were
-closed 10–11 minutes after the audit that opened them.
+**§9's "the JSONL records are not tracing output" resists a mechanical check.**
+Every formulation false-fires on correct code: field scans hit
+`queries = records.len()` (which §7 requires); line scans hit
+`"a query record would not serialize"`. I spent the turns; do not repeat them.
 
-**`/tmp` is read-only here.** `cp x /tmp/x.bak` fails, so a plant you think is
-backed up is not. Revert plants with `git checkout <path>`, and `git status`
-after.
+**A prose scan is satisfied by any occurrence in its window.** My fixed
+manifest comment defeated its own new check because a second paragraph
+*discussing* the rule contained the crate name the sentence had dropped. Prose
+about a rule masks prose stating it.
 
-**A plant that does not apply is indistinguishable from one that does not
-fire.** Mine anchored on a line the file lacked; the script wrote nothing and
-the test passed. Put `assert old in s` in every plant script.
+**A plant that breaks the build reads exactly like one that does not fire** —
+no `test result` line at all. `pub fn` in `driver` trips `-D unreachable-pub`;
+commenting a vendored dependency breaks its crate. Tail the raw output.
 
-**A plant must compile.** A bare `Command::new` fails the *build*, so nothing
-runs. Use a fully-qualified `std::process::Command::new`.
+**A whole-file `str.replace` is not a plant.** Replacing `measure_core` across
+`Cargo.toml` rewrote the member list and the path dep. Anchor on a phrase
+unique to the sentence.
 
-**`cargo test` green does not mean the gate is green.** `redundant_clone` in a
-test file is a clippy error. Run `cargo clippy -p <crate> --all-targets --
--D warnings` *before* `harness/gate`.
+**`tracing_subscriber` written in prose inside `crates/*/src` fails the seam
+scan** (plain `contains`). Spell it hyphenated outside code.
 
-**The gate cannot see a stale cross-reference** — it checks an anchor
-*resolves*, not that the cited document still makes the claim.
+**Still true, cheaply:** the gap-log recipe (find the row that *opened* the id;
+ask whether a later row's `sections_audited` names its section) costs one turn.
+Mine was fresh this time — first in three campaigns. `/tmp` is read-only;
+revert plants with the inverse replacement, never a backup copy.
 
-**A wrong record is worse than no record.** `vendor/README.md` called the
-`CharCount` narrowing deliberate; three campaigns read it *instead of* the
-repr. When a document and the code disagree, two `git log -S` runs settle which
-side moved, before you weigh either.
-
-**`Trace`-not-allocated cannot be tested here** — it needs a counting
-`#[global_allocator]`, and `GlobalAlloc` requires `unsafe`. Do not rebuild it.
-
-**Do not re-take:** `core.md#the-trait` (stale four rounds running).
-`core.md#4-project-file-enumeration` and
-`rope-modifications.md#textsummary-is-converted-too` are now swept
-sentence-by-sentence — 10 tests, every claim plant-verified. Expect clean.
+**Do not re-take:** `deps.md#9` is swept sentence by sentence — five commits,
+none of them the assigned site except the first. `deps.md#13`'s gix/git2 reason
+is corrected and its scope asserted.
 
 ## Confirmed — candidates, test on your own evidence
 
-* **A section that carried a live gap for two audit rounds has more unheld
-  sentences than the gap named.** Six commits this campaign, none of them the
-  assigned gap. Nobody sweeps a section; they each close the gap in front of
-  them.
-* **Scope a "nothing does X" scan by asking who will legitimately break it
-  first.** If the answer is "they relax the assertion", the scope is wrong —
-  `driver` spawns the proxied child, so the in-process scan is the *query
-  path*, not the crate.
-* **A printed block a test transcribes asserts what its author believed.** Read
-  it out of the document instead; `newtype_api.rs`'s `unwrapped` strips
-  per-line markdown, which `split_whitespace` alone does not.
+* **A rule stated in several places goes wrong in the copies nothing reads
+  back.** §9 lives in the section, the workspace manifest's comment, and each
+  installer's doc comment. Four of five defects were in a copy, not at the
+  audit's `where`. Hunt for the second copy before the named site.
+* **The audit's proposed mechanism can be too weak to hold its own gap.** It
+  asked for a name scan; `tracing-subscriber`'s blanket `MakeWriter for
+  Fn() -> W` walks straight through one. Read the value back out of the impl.
+* **Assert the destination, not just the wrapper.** `PrefixedWriter<Stdout>`
+  passed the first version — a log line on the JSON-RPC wire.
+* **d9435dad's scoping test keeps working**: `Command::new("git")` scoped to
+  `measure_core` survives it; a `std::io::stderr` ban does not, because
+  `shim.md` §2's transport will legitimately need a raw handle to forward the
+  child's stderr verbatim.
 
 ## Blocked on a human
 
-`deny.toml` (`core-021`/`core-023`), `harness/measure` (`core-001`),
-`clippy.toml` thresholds (`core-003`). **`core-025` is accepted and still
-unstarted** — a `shared` + `measure_core` campaign, tagged at `dispatch.rs`'s
-`Classified::strata`.
+`clippy.toml` (`core-003` accepted; its lru ban still cites 0.18.1 against a
+0.16 pin — `deps.md#8` minor, denied path). `deny.toml` (`core-021`/`core-023`),
+`harness/measure` (`core-001`).
