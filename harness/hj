@@ -1145,6 +1145,13 @@ KINDS_IN_USE = (
     # deletions to be flagged for review regardless of count, and a review
     # that leaves no trace is indistinguishable from nobody looking.
     "test-deletion-reviewed",
+    # The prompt-drift queue's own, and the sibling of the two above. `status`
+    # reads this kind to decide what a human has looked at, and it was added
+    # without being added here — so the queue it created rejected the only kind
+    # that could empty it, and the first review had to be forced through with
+    # `--new-kind`. A reader and a vocabulary that disagree is the same defect
+    # `merge-blocked` had one entry down.
+    "prompt-drift-reviewed",
     # `design/loops.md` §13, "Branches exist for one commit at a time": a
     # rebase that turns the gate red is escalated as a blocked item rather
     # than repaired locally. `harness/loop`'s `blocked` is the only caller and
@@ -7390,6 +7397,27 @@ def selftest_cases() -> list[tuple[str, object]]:
         assert set(SIZE_RATCHET_PHASES) == {"3", "7"}, "the two cost phases, and no others"
         phase = Phase(phase="2a", loops={"lang-rust": _selftest_loop("lang-rust", "rust")})
         assert check_size_ratchet(phase.loops["lang-rust"], phase) == 0
+
+    def every_kind_the_code_reads_is_a_kind_the_log_accepts():
+        # Twice now a queue has been built whose clearing kind `cmd_intervene`
+        # rejected: `merge-blocked`, then `prompt-drift-reviewed`, which had to
+        # be forced through with `--new-kind` on its first use. The reader and
+        # the vocabulary are written in different places and nothing made them
+        # agree, so the failure is silent until someone tries to answer.
+        source = (PINNED_HARNESS / "hj").read_text()
+        first, past = selftest_line_range(source)
+        # `kind` is also a field on the cost rows, whose values are not
+        # intervention kinds and never reach `hj intervene`. Named rather than
+        # pattern-matched, so a third vocabulary on the same field has to be
+        # added here deliberately instead of being silently exempt.
+        not_an_intervention = {"campaign", "audit"}
+        read = set()
+        for number, line in enumerate(source.splitlines(), start=1):
+            if first <= number < past:
+                continue
+            read.update(re.findall(r'get\("kind"\)\s*==\s*"([a-z-]+)"', line))
+        unknown = sorted(read - set(KNOWN_KINDS) - not_an_intervention)
+        assert not unknown, f"read but not in KNOWN_KINDS, so `hj intervene` refuses them: {unknown}"
 
     def a_worker_changelog_still_reports_its_loop():
         assert loop_of_worker("core-2") == "core"
