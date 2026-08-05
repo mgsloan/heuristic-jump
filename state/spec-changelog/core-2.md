@@ -115,3 +115,43 @@ already asserts, so a direct `rope` edge would be a divergence and not another
 spelling of the same edge.
 
 **Campaign:** 26e3bb3c-2937-495c-afea-2f1d0ae858f3
+
+## CHANGE-core-032 — core.md#the-trait — the same false claim was corrected in one section and left standing in another
+
+**Contradiction:** §1's `LanguageId` bullet ends
+
+> Unknown languages fail to resolve at the boundary rather than travelling
+> inward as a string that matches nothing, and lookup becomes pointer
+> comparison.
+
+`crates/shared/src/vocabulary.rs:48` says the opposite, in a comment written
+deliberately to say it:
+
+> Comparison is `str` equality on the interned text and deliberately not
+> pointer identity: two crates may each write `"rust"` into their own
+> `&'static str`, and an id that compared unequal to itself across a crate
+> boundary would fail to resolve a handler that had declared it.
+
+The code is right and the reason is decisive rather than a preference. The
+registry resolves an incoming `languageId` against ids a `lang_*` crate
+declared; those two `"rust"`s are literals in different crates. Under pointer
+identity they differ, the handler is not found, and nothing reports an error —
+an unresolved id is exactly what an unsupported language looks like.
+
+What makes this worth an entry rather than a one-word fix is where it had
+already been fixed. Commit `ffbd71b` ("LanguageId compares by text, not by
+address", campaign 2c129b10) corrected this claim under
+`core.md#vocabulary-types`, argued it in the same words, and added
+`a_language_id_compares_by_text_and_not_by_address` — which leaks a
+runtime-built `"rust"` so the compiler merging two equal literals cannot
+answer the question for it. It corrected the doc comment in `vocabulary.rs`
+and left §1's own sentence untouched, because the two sections are audited
+separately and §1 was not the one being worked.
+
+**Resolution:** §1 now states the `str`-equality rule, gives the
+different-crates argument for why pointer identity would be wrong rather than
+merely unimplemented, and names the test. Nothing is traded: no code changes,
+the claim already holds, and the correction is one already made elsewhere in
+the same document under a campaign that argued it.
+
+**Campaign:** 26e3bb3c-2937-495c-afea-2f1d0ae858f3

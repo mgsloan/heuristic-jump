@@ -365,7 +365,19 @@ Notes on the shape:
   declares its ids as consts; the driver resolves an incoming LSP `languageId`
   against the registry and gets `Option<LanguageId>`. Unknown languages fail
   to resolve at the boundary rather than travelling inward as a string that
-  matches nothing, and lookup becomes pointer comparison.
+  matches nothing.
+
+  **Comparison is `str` equality on the interned text, and must not be pointer
+  identity.** The registry resolves an incoming `languageId` against ids a
+  `lang_*` crate declared, and those two `"rust"`s are literals in different
+  crates: comparing addresses would have them differ, and the language would go
+  quietly unhandled — a failure with no error anywhere, since an unresolved id
+  is exactly what an unsupported language looks like. What interning buys is
+  therefore a cheap comparison over a short string with no allocation, not one
+  over an address. `crates/shared/tests/` has
+  `a_language_id_compares_by_text_and_not_by_address`, which leaks a
+  runtime-built `"rust"` so the compiler merging two equal literals cannot
+  answer the question for it.
 *  **Handlers get a snapshot, not a lock —literally, with no primitive in it
   at all.** `DocumentSnapshot` holds a cloned `Rope` and a `Tree`, both O(1)
   to clone, taken at dispatch —so a handler is immune to edits that arrive
