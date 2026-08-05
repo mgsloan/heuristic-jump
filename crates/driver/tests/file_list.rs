@@ -508,6 +508,186 @@ fn a_location_the_view_cannot_resolve_is_the_other_failure_that_marks_the_list_s
         .expect("an unresolvable target schedules the rescan");
 }
 
+/// §4's second bullet: the walk is "**built in-process rather than by shelling
+/// out to ripgrep**: subprocess spawn plus pipe overhead is a meaningful
+/// fraction of a 50ms p50 target, and in-process gives direct control over
+/// cancellation at the deadline".
+///
+/// The second half is held by `shared/tests/project.rs`'s
+/// `a_scan_past_its_deadline_reports_nothing_rather_than_less`. The first half
+/// is held by nothing, and it is the half that fails *silently*: `rg --files`
+/// piped into a candidate list returns the same paths, and `rg -w <name>`
+/// returns the same hits, so every assertion in this file and in
+/// `shared/tests/project.rs` would go on passing. What changes is a latency
+/// nothing measures in phase 1a and a cancellation story that stops being
+/// ours — which is exactly the shape of a change that works and passes review.
+///
+/// **Scoped to the query path rather than to `driver`.** The whole of `shared`
+/// is in it, since that is where `FileList::enumerate` and `ProjectView::scan`
+/// live and there is no other reason for the seam crate to start a process;
+/// `driver`'s share is this file's subject, the enumeration cache and its
+/// walker thread. The rest of `driver` is deliberately exempt: `shim.md` has
+/// it spawning the proxied child, which is why `ServerCommand` already exists
+/// in `config.rs`, and a scan that forbade that would have to be weakened by
+/// the campaign that writes it — a test whose first real encounter with the
+/// design is being relaxed was not holding a claim.
+#[test]
+fn the_walk_and_the_scan_are_in_process_and_never_shell_out() {
+    let on_the_query_path: Vec<(String, String)> = crate_sources()
+        .into_iter()
+        .filter(|(file, _)| file.starts_with("shared/") || file == "driver/src/files.rs")
+        .collect();
+
+    assert!(
+        on_the_query_path.len() > 5,
+        "only {} query-path source file(s) walked, so this scan would pass \
+         against almost anything",
+        on_the_query_path.len()
+    );
+    assert!(
+        on_the_query_path
+            .iter()
+            .any(|(file, _)| file == "driver/src/files.rs"),
+        "the enumeration cache itself is not in the scanned set, which is the \
+         one file §4's bullet is literally about"
+    );
+
+    let offenders: Vec<String> = on_the_query_path
+        .iter()
+        .flat_map(|(file, text)| {
+            spawns_a_subprocess(text)
+                .into_iter()
+                .map(move |used| format!("{file}: {used}"))
+        })
+        .collect();
+
+    assert!(
+        offenders.is_empty(),
+        "the file list walk or the literal scan reaches for a subprocess. §4 \
+         builds both in-process because \"subprocess spawn plus pipe overhead \
+         is a meaningful fraction of a 50ms p50 target\", and because \
+         cancelling a child at the deadline is a different and worse problem \
+         than returning early from a loop:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The control. The scan above passes today and would pass just as well if it
+/// were looking for the wrong string, so the marker list has to be shown
+/// finding a spawn — and has to be shown *not* finding the two things that
+/// look like one: the prose recording that the design refuses it, and
+/// `ServerCommand`, which is `driver`'s name for the child `shim.md` requires
+/// and appears in `config.rs` as an ordinary type.
+#[test]
+fn the_subprocess_scan_finds_what_it_is_looking_for() {
+    let planted = "
+        // Built in-process rather than by shelling out to std::process::Command.
+        use std::process::Command;
+        pub struct ServerCommand { program: OsString }
+        let files = Command::new(\"rg\").arg(\"--files\").output()?;
+        let walked = FileList::enumerate(roots)?;
+    ";
+
+    assert_eq!(
+        spawns_a_subprocess(planted),
+        vec!["std::process", "Command::new"],
+        "the scan must see both the import and the call, must not read the \
+         comment that records the decision, and must not mistake \
+         `ServerCommand` for one"
+    );
+}
+
+/// Every way a source file starts a process, in `text`, skipping comments.
+///
+/// Two markers and not three: `process::Command` looks like a third but is
+/// subsumed, because reaching it needs an import that names `std::process` on
+/// its own line. The control below is what established that — it was written
+/// expecting three and got the redundant one back.
+fn spawns_a_subprocess(text: &str) -> Vec<&'static str> {
+    const MARKERS: [&str; 2] = ["std::process", "Command::new"];
+
+    let mut found = Vec::new();
+    for line in text.lines() {
+        let code = line.trim_start();
+        if code.starts_with("//") {
+            continue;
+        }
+        for marker in MARKERS {
+            if code.contains(marker) && !found.contains(&marker) {
+                found.push(marker);
+            }
+        }
+    }
+    found
+}
+
+/// §4's last paragraph: "**Search scope is the workspace folders only.**
+/// External dependency sources (`~/.cargo/registry` and equivalents) are
+/// excluded per `high-level.md`; this is also what keeps the walk small enough
+/// for the no-index approach to be viable at all."
+///
+/// `shared/src/project.rs` says what rests on it: "A Rust handler resolving
+/// `serde::Deserialize` knows perfectly well where `~/.cargo/registry` is, and
+/// the one-line change to peek at it would work and pass review. Not being
+/// able to name the file is what makes `ExternalDependency` a measured
+/// abstention rather than an accident."
+///
+/// `lookup_refuses_a_path_the_walker_did_not_return` holds the half where the
+/// path is *inside* a root and gitignored. The escape is the other half and
+/// nothing held it: every `RelPath::new` call site in this workspace —
+/// fourteen of them, in five test files — `expect`s success, so the rejection
+/// that makes the scope rule true had no test at all. It is asserted here
+/// rather than in `shared` because `FileListCache::view` is `driver`'s only
+/// route to a `ProjectView`, which is what a query is actually dispatched
+/// against.
+#[test]
+fn no_project_path_names_a_file_outside_the_workspace_roots() {
+    let root = fixture("outside_the_roots");
+    let clock = Arc::new(TestClock::new());
+    let mut cache = cache(&root, &clock);
+    let view = cache
+        .view(Deadline::none(), grammar())
+        .expect("the first walk");
+
+    // A real file, really outside, really readable, and really the sort of
+    // thing a Rust handler would want: a sibling of the workspace root.
+    let outside = root
+        .parent()
+        .expect("the fixture root has a parent")
+        .join("registry_stand_in.rs");
+    fs::write(&outside, "fn alpha() {}\n").expect("a readable file outside the roots");
+
+    for escape in ["../registry_stand_in.rs", "src/../../registry_stand_in.rs"] {
+        assert!(
+            RelPath::new(Path::new(escape)).is_none(),
+            "`RelPath::new` accepted {escape:?}, so a handler can name a file \
+             outside the workspace by spelling the way out. §4 excludes \
+             external dependency sources, and `ProjectPath` being unforgeable \
+             is the whole mechanism — a `..` that survives makes it a \
+             convention again"
+        );
+    }
+
+    // The absolute path is not a second route: `lookup` takes a `RelPath`, so
+    // the escape above is the only spelling there is, and the walker never
+    // returned this file for the relative one to be found under.
+    let relative = RelPath::new(Path::new("registry_stand_in.rs")).expect("a relative path");
+    assert!(
+        view.lookup(&ProjectRoot::new(&root), &relative).is_none(),
+        "lookup minted a ProjectPath for a file that is not under the root it \
+         was asked about, which would make the scope rule depend on the caller \
+         passing the right root"
+    );
+
+    assert!(
+        !relative_paths(&cache.list().expect("the list in hand"))
+            .iter()
+            .any(|path| path.contains("registry_stand_in")),
+        "the walk reached outside its root, which is what §4 says keeps the \
+         no-index approach viable at all"
+    );
+}
+
 /// Every `.rs` candidate, scanned for the one identifier the fixture defines.
 fn scan_for_alpha(view: &ProjectView, root: &Path) -> Result<shared::ScanOutcome, Error> {
     let origin = SearchOrigin::from_document(project_path(view, root, "src/lib.rs"));
