@@ -748,3 +748,78 @@ targets here were sitting behind that question.
 * `panel_metrics` in `harness/dashboard/serve` computes `outstanding` and
   `settled` and uses neither; `panel_sections` has the live copy. Left alone
   rather than deleted mid-campaign in a file I was editing for another reason.
+
+## fb78b589 — the two dimensions the metrics row was missing
+
+Target: `loops.md#10-objectives-phases-and-the-frontier[1ccaa8e7c4]` and
+`#11-size-and-loc-as-objectives[c3735e6f6d]`, plus the unjudged
+`#several-servers-do-not-mean-several-loops`. Extended to `#what-is-on-it`,
+`#what-cannot-be-measured-in-isolation`, `#mechanics-isolation-in-four-layers`
+(the `harness-011` half, not its gap) and `#what-this-retires`. Seven commits,
+no reverts, `hj selftest` 139 → 151.
+
+### The audit was three gaps stale, and the staleness is patterned
+
+Of the four gaps whose `found:` line carried the "harness/hj has changed since
+this was found" warning, **three were already closed** by the previous
+campaign: `#7`'s frontier progress term, the `merge-blocked` intervention kind,
+and (in effect) the metrics history's contents. One `grep` each settled it.
+
+The pattern is worth carrying: the warned gaps are the ones the *previous*
+campaign worked, and the previous campaign is the one whose journal entry you
+are reading. So check the warned ones against the last entry's target list
+before spending anything on them.
+
+### Approaches considered and not taken
+
+* **Merging two servers' strata into one frontier point.** This is the obvious
+  implementation and the section forbids it in four words — "never average the
+  two". The agreement subset it does want is a join over *positions*, and
+  `measure_core::positions` enumerates them once per language precisely so the
+  servers' answers are joinable; aggregate reports have already thrown that
+  away. So a two-server row with no agreement report carries no frontier
+  position, and `record`, `hj frontier` and the dashboard each say so. **The
+  temptation to watch for is that the refusal looks like a bug**: a language
+  that records rows and never produces a frontier point scores no §7 progress
+  and eventually stalls. That is correct behaviour and it is why all three
+  consumers name the missing producer rather than printing nothing.
+* **Splitting `state/metrics/` per server.** Rejected by the section directly —
+  "a language is one loop, and it reads every table for its language" — and the
+  earlier revision that split them is described there as producing "a loop with
+  almost no legal move". The dimension goes *inside* the row, not into the path.
+* **A mean over strata for `query_micros`.** Wrong, and the reason generalises:
+  `data-collection.md` sizes the strata an order of magnitude apart, so an
+  n-weighted mean is exactly the aggregate that cannot see the rare stratum —
+  and the rare stratum is where an exhaustive fallback search runs. The
+  guardrail takes the worst stratum's p99 and names which stratum it was.
+* **Editing §10's third work counter out of the spec.** "Bytes read, files
+  parsed, nodes visited" appears twice and `QueryRecord` carries two.
+  Correcting the document would have closed the gap with no code change, which
+  is precisely the one gaming route §7 admits the audit cannot catch. It is
+  `harness-012` instead, and the spec is deliberately left wrong while it waits.
+* **Reading `HARNESS` in the new `check_one_loop_per_language`.** It reads
+  `state/phase.toml`, which is denied to every loop, so every live branch
+  satisfies it — the `harness-011` test passes and it is not scoped to
+  `writes_harness` like the two checks beside it. Getting this backwards is
+  what cost two earlier campaigns, and it is now a selftest rather than a habit.
+
+### Things worth knowing about the machinery
+
+* **`dashboard/serve` had no test coverage at all** before this campaign. It
+  was checked by being run, which is how `FRONTIER_BESIDE`'s wrong key names
+  survived a selftest two campaigns ago. `_selftest_dashboard` loads it as a
+  module from `PINNED_HARNESS`, and it must save and restore
+  `sys.modules["hj"]` — `serve` installs its own copy of `hj` under that name
+  at import time, and leaving it there breaks something three checks later that
+  looks unrelated.
+* **`--replay-seconds` stopped being `type=float`** when it gained a `<server>=`
+  prefix. An argument that used to fail in argparse now has to be validated
+  before the row is built, or it fails halfway through `cmd_record`.
+* **A path with an `=` in it is not a server prefix.** `replay_source` requires
+  the part before the `=` to contain no `/`. A `servers.toml` key never does.
+* **The gate runs the *pinned* `check-metrics`,** so a new check in step 7 does
+  not appear in the gate output of the campaign that adds it. Step 3 runs the
+  tree's own selftest, which is where it is actually exercised.
+* **Floating-point in a slope assertion.** `0.60 - 0.50` is not `0.10`, so an
+  exchange-rate fixture asserting `== 2_000_000.0` fails by 5e-7. Compare with
+  a tolerance.
