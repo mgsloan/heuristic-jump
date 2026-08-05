@@ -335,11 +335,21 @@ impl<'a> sum_tree::Dimension<'a, ChunkSummary> for Offset { … }
 impl TextDimension for Offset { … }
 ```
 
-**`sum_tree` needs no changes at all.** `Dimension` is generic over the
-summary type, so the impls live in rope. That matters:
-`sum_tree` stays a pristine copy, and
-[section 9](core.md#vendoring-the-zed-crates)'s claim
-that it needs no patching survives.
+**`sum_tree` needs no changes *for this*.** `Dimension` is generic over the
+summary type, so the impls live in rope. That matters, and it is worth saying
+exactly what it buys, because the obvious stronger reading is false:
+`vendor/sum_tree` is **not** a pristine copy. `vendor/README.md` records three
+patches to it — `src/tree_map.rs` deleted, `ztracing::instrument` →
+`tracing::instrument` in two files, and the `ctor`/`zlog` test logger deleted —
+all of them dependency-stripping, none of them this document's.
+
+What survives is [section 9](core.md#vendoring-the-zed-crates)'s claim in the
+form that section actually makes it: "**`sum_tree` is patched, minimally, and
+the newtype work is not why.**" The distinction is the one a re-sync needs. A
+crate patched only to remove dependencies re-syncs as a small replayable diff;
+a crate patched throughout for an API change re-syncs as a merge, which is what
+[section 6](#6-consequences-for-re-syncing) concedes for `rope` and does not have
+to concede for `sum_tree`.
 
 ### Offsets and lengths are separate types, and `ByteLen` is shared
 

@@ -120,14 +120,27 @@ property (`deps.md` §14).
      `floor_char_boundary_raw`, `ceil_char_boundary_raw`,
      `offset_utf16_to_offset_raw`, `point_utf16_to_offset_raw`,
      `seek_raw`. A `_raw` name in this crate always means exactly that.
-   * **Two edits are more than a rewrapping**, and both are deliberate.
-     `TextSummary.chars` narrows from `usize` to `CharCount`'s `u32`, which is
-     what §4's printed struct asks for and which bounds a summary to 4G scalar
-     values — the bound `Point.row` already imposed. And `Offset`'s
+   * **One edit is more than a rewrapping**, and it is deliberate. `Offset`'s
      `Dimension`/`TextDimension` impls add a `ByteLen` to a position rather
      than two `usize`s, which is the one place §4's position/quantity split is
      crossed on purpose: a running seek total *is* a position advanced by a
      length.
+
+     This entry used to name a second one, and it was a **bug rather than a
+     patch**: `TextSummary.chars` was said to narrow from `usize` to
+     `CharCount`'s `u32`, "which is what §4's printed struct asks for and which
+     bounds a summary to 4G scalar values — the bound `Point.row` already
+     imposed". Both halves were false. §4 prints
+     `chars: CharCount, // usize before and after`, and §2 answers the
+     `Point.row` argument in as many words: "The bound `Point.row` happens to
+     impose is not an argument for imposing another." `CharCount` is now
+     `usize`, and a summary is bounded by `usize` as it is upstream. The
+     mechanism is `tests/newtype_api.rs`'s
+     `a_summary_accumulates_scalar_values_across_the_whole_usize_range`, which
+     sums two summaries rather than building a 4G-character rope — that is the
+     same `AddAssign` the sum tree runs at every internal node. A re-sync that
+     widens something back to `usize` to match upstream is meeting this crate
+     rather than diverging from it.
    * **`usize` survives inside bodies and in the internal fields** of
      `Chunks`, `Bytes` and `Cursor`, which are private. §5 also keeps the
      `usize` dimension impls, so `cursor.summary::<usize>()` still compiles —

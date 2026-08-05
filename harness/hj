@@ -44,6 +44,13 @@ from pathlib import Path
 # `harness/` makes necessary again).
 REPO = Path(os.environ.get("HJ_REPO") or Path(__file__).resolve().parent.parent).resolve()
 HARNESS = REPO / "harness"
+# The harness directory this file is actually in, which under gate step 3 is
+# the *reviewed* copy while `HARNESS` is the worktree being judged. A selftest
+# that asserts how two harness files agree with each other must use this one:
+# `harness/gate` is denied to every loop, so a branch that has not merged main
+# yet carries an older copy, and asserting against it fails a campaign for
+# something it is forbidden to fix. See `state/decisions/harness-011.md`.
+PINNED_HARNESS = Path(__file__).resolve().parent
 # Desired state, which is control rather than history and must have one
 # answer for the whole fleet. A worker reads `state/phase.toml` from its own
 # branch otherwise, so pausing the integration checkout does not stop it and
@@ -1147,6 +1154,13 @@ KINDS_IN_USE = (
     # deletions to be flagged for review regardless of count, and a review
     # that leaves no trace is indistinguishable from nobody looking.
     "test-deletion-reviewed",
+    # The prompt-drift queue's own, and the sibling of the two above. `status`
+    # reads this kind to decide what a human has looked at, and it was added
+    # without being added here — so the queue it created rejected the only kind
+    # that could empty it, and the first review had to be forced through with
+    # `--new-kind`. A reader and a vocabulary that disagree is the same defect
+    # `merge-blocked` had one entry down.
+    "prompt-drift-reviewed",
     # `design/loops.md` §13, "Branches exist for one commit at a time": a
     # rebase that turns the gate red is escalated as a blocked item rather
     # than repaired locally. `harness/loop`'s `blocked` is the only caller and
@@ -8378,6 +8392,27 @@ def selftest_cases() -> list[tuple[str, object]]:
         phase = Phase(phase="2a", loops={"lang-rust": _selftest_loop("lang-rust", "rust")})
         assert check_size_ratchet(phase.loops["lang-rust"], phase) == 0
 
+    def every_kind_the_code_reads_is_a_kind_the_log_accepts():
+        # Twice now a queue has been built whose clearing kind `cmd_intervene`
+        # rejected: `merge-blocked`, then `prompt-drift-reviewed`, which had to
+        # be forced through with `--new-kind` on its first use. The reader and
+        # the vocabulary are written in different places and nothing made them
+        # agree, so the failure is silent until someone tries to answer.
+        source = (PINNED_HARNESS / "hj").read_text()
+        first, past = selftest_line_range(source)
+        # `kind` is also a field on the cost rows, whose values are not
+        # intervention kinds and never reach `hj intervene`. Named rather than
+        # pattern-matched, so a third vocabulary on the same field has to be
+        # added here deliberately instead of being silently exempt.
+        not_an_intervention = {"campaign", "audit"}
+        read = set()
+        for number, line in enumerate(source.splitlines(), start=1):
+            if first <= number < past:
+                continue
+            read.update(re.findall(r'get\("kind"\)\s*==\s*"([a-z-]+)"', line))
+        unknown = sorted(read - set(KNOWN_KINDS) - not_an_intervention)
+        assert not unknown, f"read but not in KNOWN_KINDS, so `hj intervene` refuses them: {unknown}"
+
     def a_worker_changelog_still_reports_its_loop():
         assert loop_of_worker("core-2") == "core"
         assert loop_of_worker("core") == "core"
@@ -8423,7 +8458,7 @@ def selftest_cases() -> list[tuple[str, object]]:
         # the failure would surface as the first cost-phase campaign's gate
         # dying on an unrecognised subcommand. `harness-008` is the record; the
         # step spent a whole phase hard-failing before anyone looked.
-        gate = (HARNESS / "gate").read_text()
+        gate = (PINNED_HARNESS / "gate").read_text()
         assert '"$hj" check-ratchets "$loop"' in gate, (
             "step 5 no longer calls check-ratchets; see state/decisions/harness-008.md"
         )
@@ -8434,7 +8469,7 @@ def selftest_cases() -> list[tuple[str, object]]:
         # It ran from `check-metrics` too while step 5 could not call it. Two
         # routes meant a loop could be failed twice for one regression, and the
         # answer to `harness-008` was explicit that the second goes away.
-        source = (HARNESS / "hj").read_text()
+        source = (PINNED_HARNESS / "hj").read_text()
         first, past = selftest_line_range(source)
         callers = [
             number
@@ -8671,7 +8706,65 @@ def _selftest_adapter_cost(events: list[dict]) -> dict:
         os.unlink(path)
 
 
+def worktree_roots() -> list[Path]:
+    """Every checkout a live loop branch is currently in, integration first.
+
+    Read from git rather than from `state/phase.toml`'s `worktree`, which gives
+    the stem a worker number is appended to and would have to be re-derived
+    here; `git worktree list` already knows what exists.
+    """
+    roots = [CONTROL]
+    for line in git("worktree", "list", "--porcelain", check=False).splitlines():
+        if line.startswith("worktree "):
+            root = Path(line.split(" ", 1)[1]).resolve()
+            if root not in roots:
+                roots.append(root)
+    return roots
+
+
 def cmd_selftest(args: argparse.Namespace) -> int:
+    """`harness-011`: `--across-worktrees` is the convention made runnable.
+
+    Gate step 3 runs *this* copy of the selftest against whichever tree
+    `HJ_REPO` names, so a case that reads `HARNESS` asserts about the candidate
+    rather than about itself. That is what the three surviving `HARNESS` reads
+    are for — they catch a campaign introducing a defect. It is also how two
+    cases came to fail every branch at once: they encoded a requirement added
+    in the integration checkout, and `harness/gate` is denied to every loop, so
+    no branch could satisfy it and green-or-revert had no green to revert to.
+
+    The record's option B was "assert only what every live branch already
+    satisfies", and its own stated cost is that conventions are what failed
+    twice. This makes the question decidable instead: run the checks against
+    every checkout and see. It is what to run before committing a selftest
+    case that reads `HARNESS`.
+    """
+    if getattr(args, "across_worktrees", False):
+        failures = 0
+        for root in worktree_roots():
+            environment = {**os.environ, "HJ_REPO": str(root)}
+            result = subprocess.run(
+                [str(PINNED_HARNESS / "hj"), "selftest"],
+                capture_output=True,
+                text=True,
+                check=False,
+                env=environment,
+            )
+            tail = (result.stdout + result.stderr).strip().splitlines()
+            print(f"{root.name}: {tail[-1] if tail else 'no output'}")
+            if result.returncode:
+                failures += 1
+                for line in tail[:-1]:
+                    print(f"    {line}")
+        if failures:
+            print(
+                f"selftest: the reviewed checks fail in {failures} checkout(s). A case that "
+                "reads HARNESS asserts about the tree being judged, so it fails every branch "
+                "that has not merged what it encodes — see state/decisions/harness-011.md.",
+                file=sys.stderr,
+            )
+            return 1
+        return 0
     cases = selftest_cases()
     failed = []
     for name, case in cases:
@@ -8981,6 +9074,11 @@ def main() -> int:
     p.set_defaults(run=cmd_estimates)
 
     p = sub.add_parser("selftest", help="gate step: hj's own parsing and arithmetic still hold")
+    p.add_argument(
+        "--across-worktrees",
+        action="store_true",
+        help="run these checks against every checkout; run before committing a case that reads HARNESS",
+    )
     p.set_defaults(run=cmd_selftest)
 
     p = sub.add_parser("budget", help="spend against each ceiling; exit 1 when one is reached")

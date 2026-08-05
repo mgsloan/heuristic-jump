@@ -134,3 +134,11 @@ If the answer is "leave it", the thing to watch is the crude SPDX predicate.
 The first false alarm will be a permissively-licensed crate that ships only a
 `license-file`, which this test flags as unreadable on purpose. If that
 happens twice, the answer has changed and this record is the evidence.
+
+## Reconciliation
+
+The `// DECISION-core-021: provisional` tag came off in campaign
+`340b4361-1c73-4b85-a5c8-0de27852ea8d`. The test it marked,
+`no_third_copyleft_input_reaches_the_dependency_graph`, is **kept** rather than
+deleted — see the Reconciliation section of `core-023`, which carries the
+ruling and the reason.

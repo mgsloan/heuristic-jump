@@ -1686,6 +1686,76 @@ fn a_replay_refuses_a_position_whose_file_it_cannot_read() {
     );
 }
 
+/// The fifth way, and the only one that is not about *which* file was read:
+/// a row this checkout can open, at a position that still exists, whose stored
+/// answer is not one the deserializer reads.
+///
+/// §7 keeps the oracle's answer as "the raw JSON the server sent" precisely so
+/// that a replay hands those bytes to "the same deserializer the shim reads a
+/// live answer with" — which makes bytes that deserializer refuses a corrupt
+/// artifact, not an oracle that answered nothing. Reading them as `null` is the
+/// substitute that looks harmless and is not: §6 calls two empty sides a match,
+/// so a corrupt row scores as the mutual "no definition here" wherever the
+/// handler abstained and as a mismatch wherever it committed. Either way the
+/// table carries a verdict about a handler that was invented from a file
+/// holding nothing about it — and unlike every refusal above, nothing about the
+/// run looks wrong.
+///
+/// The refusal names `(file, offset)` rather than a line: a truth file is
+/// regenerated and never edited (§7), so what an operator does with it is
+/// re-collect that position.
+#[test]
+fn a_replay_refuses_a_truth_row_whose_answer_it_cannot_read() {
+    let corpus = fixture("unreadable_answer");
+    enumerate(&corpus);
+    write_truth(&corpus);
+
+    let path = truth_path(&corpus, "oracle");
+    let text = fs::read_to_string(&path).expect("the truth file");
+    let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+    // Row one, not the header, and corrupted in place rather than appended: the
+    // position has to be one this checkout holds, so that the run reaches the
+    // answer at all instead of failing earlier on the file.
+    let row = lines.get_mut(1).expect("a truth file with rows");
+    let file = between(row, "\"file\":\"", "\"").to_owned();
+    let offset: usize = between(row, "\"offset\":", ",")
+        .parse()
+        .expect("a truth row's offset");
+    // A bare number matches none of `DefinitionResult`'s four shapes: `null`
+    // is the unit variant, a location is a map, and the two list variants are
+    // arrays.
+    let corrupted = row.replace("\"answer\":null", "\"answer\":42");
+    assert_ne!(
+        &corrupted, row,
+        "the fixture row carries no `answer` field to corrupt, so this test \
+         would pass against a replay that never reads one"
+    );
+    *row = corrupted;
+    fs::write(&path, format!("{}\n", lines.join("\n"))).expect("a truth row with a corrupt answer");
+
+    let Err(refused) = replay_result(&corpus, measure_core::Format::Json) else {
+        panic!(
+            "a truth row whose answer will not deserialize was replayed, and \
+             scored against the handler as though the oracle had answered"
+        );
+    };
+    let Error::Config(shared::ConfigError::AnswerMalformed {
+        file: named,
+        offset: at,
+        ..
+    }) = &refused
+    else {
+        panic!("an unreadable oracle answer was refused as {refused}");
+    };
+    assert_eq!(
+        (&**named, *at),
+        (&*file, offset),
+        "the refusal names another position. The repair is to re-collect this \
+         one, and a refusal that does not say which row is corrupt sends an \
+         operator to re-collect the repository"
+    );
+}
+
 /// §7's "the table is not enough": `replay --records <path>` writes the
 /// per-query JSONL "unchanged and unfiltered", and digesting those into
 /// something readable is the harness's job — the same split that keeps
@@ -2215,6 +2285,18 @@ fn the_records_and_the_table_are_the_same_run_counted_twice() {
                         settled_of(line) == stratum && agreement_of(line) == "mismatch"
                     }),
                 ),
+                // Not a tally of rows but a sum over them, because this counter
+                // is the one thing in the table that is not a count of queries:
+                // §"both sides are sets" reports containment beside the result
+                // count, and a result count the records file cannot reproduce
+                // is the number that says a containment was not gamed, taken on
+                // trust.
+                (
+                    "locations",
+                    returned(&text, |line| {
+                        settled_of(line) == stratum && !agreement_of(line).is_empty()
+                    }),
+                ),
             ] {
                 assert_eq!(
                     counted,
@@ -2300,6 +2382,7 @@ fn the_printed_table_and_the_json_report_are_one_table() {
             coverage,
             precision,
             contained,
+            results,
         ] = columns[..]
         else {
             continue;
@@ -2315,7 +2398,6 @@ fn the_printed_table_and_the_json_report_are_one_table() {
             ("commit", committed, "committed"),
             ("abstain", abstained, "abstained"),
             ("fail", failed, "failed"),
-            ("contained", contained, "match_contained"),
         ] {
             assert_eq!(
                 printed.parse::<u64>().expect("a printed count"),
@@ -2351,6 +2433,27 @@ fn the_printed_table_and_the_json_report_are_one_table() {
              number — which is why the denominator is the three agreement \
              counters"
         );
+        let judged = counted("match_top1") + counted("match_contained") + counted("mismatch");
+        assert_eq!(
+            contained.trim_end_matches('%'),
+            percent(counted("match_top1") + counted("match_contained"), judged),
+            "the {stratum} row prints {contained} contained. §\"both sides are \
+             sets\" makes the three agreement values ordered — `match_top1` \
+             implies `match_contained` — so containment is both counters over \
+             the judged rows, and the disjoint counter alone would report a run \
+             that matched every answer on its first location as containing none \
+             of them"
+        );
+        assert_eq!(
+            results,
+            mean(counted("locations"), judged),
+            "the {stratum} row prints {results} results against {} locations \
+             over {judged} judged answers. §\"both sides are sets\" reports \
+             containment \"only alongside the result count, since alone it is \
+             gameable\", and a containment printed without one is the number a \
+             handler raises by returning everything it considered",
+            counted("locations")
+        );
     }
 
     assert_eq!(
@@ -2358,6 +2461,91 @@ fn the_printed_table_and_the_json_report_are_one_table() {
         STRATUM_NAMES.len(),
         "the printed table has {rows} of the nine strata, so the reconciliation \
          above skipped rows the JSON carries\n{printed}"
+    );
+}
+
+/// §"both sides are sets" on what a table reports for a set: `contained` is
+/// "any of the shim's locations matches", the three values are **ordered** —
+/// "`match_top1` implies `match_contained`" — and containment "is reported only
+/// alongside the result count, since alone it is gameable".
+///
+/// [`the_printed_table_and_the_json_report_are_one_table`] reconciles the two
+/// renderings and cannot reach either claim: `ReportingHandler` commits an
+/// empty list against an oracle that answered `null`, so every judged row is a
+/// `match_top1` and the disjoint counter is zero in every row of the fixture.
+/// Here the oracle answers five ways against a two-location ranked list, so the
+/// counter and the containment are different numbers — and a table reporting
+/// the counter under that name would say this run contained 3 of its 14
+/// answers where it reached 6.
+///
+/// The result count is what makes a containment readable at all, and it has to
+/// come from *our* ranked list: the fixture's oracle answers with one location
+/// per row, so a count taken from the child's side reads 1.0 for a handler
+/// returning two — which is the gaming this column exists to expose, printed as
+/// though it had not happened.
+#[test]
+fn containment_implies_a_top1_match_and_is_printed_beside_the_result_count() {
+    let corpus = fixture("containment");
+    enumerate(&corpus);
+    write_truth_answered(&corpus);
+
+    let printed = replay_report(&MismatchingHandler, &corpus, measure_core::Format::Table);
+    let report = replay_report(&MismatchingHandler, &corpus, measure_core::Format::Json);
+
+    // `MismatchingHandler` refines nothing, so coverage and judgement land in
+    // one row and the whole run is under the reference's stratum.
+    let stratum = "explicitly_imported";
+    let counted = |field: &str| reported(&report, stratum, field);
+    let judged = counted("match_top1") + counted("match_contained") + counted("mismatch");
+    assert!(
+        counted("match_top1") > 0 && counted("match_contained") > 0,
+        "the fixture stopped exercising both counters — {} top-1 and {} \
+         contained of {judged} judged — so the implication below holds however \
+         it is computed",
+        counted("match_top1"),
+        counted("match_contained")
+    );
+
+    let row = printed_row(&printed, stratum);
+    let [_, _, _, _, _, _, precision, contained, results] = row[..] else {
+        panic!("the {stratum} row is not the nine columns the table prints:\n{printed}");
+    };
+
+    assert_eq!(
+        contained.trim_end_matches('%'),
+        percent(counted("match_top1") + counted("match_contained"), judged),
+        "the table prints {contained} contained against {} top-1 and {} \
+         contained of {judged} judged. The three agreement values are ordered, \
+         so containment is both counters: reporting the disjoint remainder \
+         under that name makes a run that ranks every answer first look like a \
+         run the user could reach nothing through",
+        counted("match_top1"),
+        counted("match_contained")
+    );
+    let percentage = |column: &str| {
+        column
+            .trim_end_matches('%')
+            .parse::<f64>()
+            .expect("a printed percentage")
+    };
+    assert!(
+        percentage(contained) > percentage(precision),
+        "the table prints {contained} contained and {precision} precision. \
+         `match_top1` implies `match_contained`, so containment is never the \
+         smaller number and is strictly larger wherever a later location \
+         matched — which is this fixture, {} times",
+        counted("match_contained")
+    );
+
+    assert_eq!(
+        (results, counted("locations")),
+        ("2.0", judged * 2),
+        "the table prints {results} results per judged answer. \
+         `MismatchingHandler` commits the same two locations for every query, \
+         and the count reported beside a containment has to be the size of the \
+         list that containment was computed over — the oracle's own answers are \
+         one location each, so a count taken from that side hides exactly the \
+         handler that returns more to reach more"
     );
 }
 
@@ -3225,6 +3413,41 @@ fn percent(part: u64, whole: u64) -> String {
         return "0.0".to_owned();
     }
     format!("{:.1}", part as f64 / whole as f64 * 100.0)
+}
+
+/// One stratum's row of the printed table, as its columns.
+fn printed_row<'a>(printed: &'a str, stratum: &str) -> Vec<&'a str> {
+    printed
+        .lines()
+        .map(|line| line.split_whitespace().collect::<Vec<&str>>())
+        .find(|columns| columns.first() == Some(&stratum))
+        .unwrap_or_else(|| panic!("the printed table has no {stratum} row:\n{printed}"))
+}
+
+/// A mean as the text table prints it, computed here for the same reason
+/// [`percent`] is.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "two counts bounded by the fixture, formatted for comparison against a printed column"
+)]
+fn mean(part: u64, whole: u64) -> String {
+    if whole == 0 {
+        return "0.0".to_owned();
+    }
+    format!("{:.1}", part as f64 / whole as f64)
+}
+
+/// How many locations the picked rows returned, from §7's `returned` column —
+/// the record's own account of the size of each ranked list.
+fn returned(text: &str, wanted: impl Fn(&str) -> bool) -> u64 {
+    text.lines()
+        .filter(|line| wanted(line))
+        .map(|line| {
+            between(line, "\"returned\":", ",")
+                .parse::<u64>()
+                .expect("a record's returned count")
+        })
+        .sum()
 }
 
 fn tally(text: &str, wanted: impl Fn(&str) -> bool) -> u64 {

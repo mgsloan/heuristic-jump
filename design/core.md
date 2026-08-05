@@ -2394,7 +2394,7 @@ seven languages grow out of.
 Beyond the mechanical patches below, `vendor/rope` gets one substantive change:
 its public API speaks in newtypes — `Offset`, `ByteLen`, and `ByteRange`
 instead of `usize` and `Range<usize>`, and `LineIndex` / `ByteColumn` /
-`Utf16Column` / `CharCount` instead of the bare `u32`s in `Point`,
+`Utf16Column` / `CharCount` instead of the bare integers in `Point`,
 `PointUtf16`, and `TextSummary` — so the
 vocabulary survives contact with the text rather than being unwrapped at the
 boundary. It is a design decision with its own re-sync cost and its own
