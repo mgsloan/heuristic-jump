@@ -2758,13 +2758,21 @@ def cmd_record(args: argparse.Namespace) -> int:
             ceiling = phase.guardrail.get("measure_binary_bytes")
             if ceiling is not None and measured["stripped"] > ceiling:
                 print(
-                    f"guardrail: {measured['binary']} is {measured['stripped']} bytes "
-                    f"against a standing ceiling of {ceiling}. This is not a verdict on "
-                    "the last change (design/loops.md section 11); it means the loop has "
-                    "wandered somewhere no legitimate experiment goes. It stops the loop "
-                    "between campaigns, not this gate.",
+                    guardrail_warning(
+                        f"{measured['binary']} is {measured['stripped']} bytes", ceiling
+                    ),
                     file=sys.stderr,
                 )
+    # §11's other ceiling, said here for the same reason and from the same row.
+    # It is the replay that just ran rather than the history, so a campaign
+    # hears about the query it made pathological before the next one starts.
+    query_ceiling = phase.guardrail.get("query_micros")
+    worst = worst_stratum_query_micros(row)
+    if query_ceiling is not None and worst is not None and worst[0] > query_ceiling:
+        print(
+            guardrail_warning(f"{worst[1]} answers at {worst[0]}us p99", query_ceiling),
+            file=sys.stderr,
+        )
     append_jsonl(metrics_path(config.owner), row)
     commit_harness_state([metrics_path(config.owner)], f"metrics row for {target[:8]}")
     print(json.dumps(row, sort_keys=True))
@@ -6713,22 +6721,77 @@ def cmd_gate_select(args: argparse.Namespace) -> int:
     return 0
 
 
-# §11's guardrail is on two things and only one of them is measurable today.
-# Naming the second anyway is what stops it being forgotten: a guardrail table
-# that silently covers half of what the section asks for reads, from the
-# outside, exactly like one that covers all of it.
+# §11's guardrail is on two things: "`measure_<lang>` size and per-query work".
+# Both are read out of the metrics row. The second was a reason string for six
+# campaigns, on the argument that nothing measured per-query work — which
+# stopped being true when `replay_digest` started writing per-stratum latency
+# percentiles, and a guardrail that cannot fire is one the table describes and
+# the code does not have.
 GUARDRAILS = {
     "measure_binary_bytes": "the stripped size of measure_<lang>",
     "query_micros": "per-query work",
 }
 
 
-def last_recorded_size(owner: str) -> int | None:
-    for row in reversed(read_jsonl(metrics_path(owner))):
+def last_recorded_size(rows: list[dict]) -> int | None:
+    for row in reversed(rows):
         binary = row.get("binary")
         if isinstance(binary, dict) and isinstance(binary.get("stripped"), int):
             return binary["stripped"]
     return None
+
+
+def worst_stratum_query_micros(row: dict) -> tuple[int, str] | None:
+    """The slowest stratum's p99 in one row, and which stratum it was.
+
+    The worst stratum rather than an aggregate over them, and the tail rather
+    than the median, for the reason §11 gives for the ceiling existing at all:
+    it is set "an order of magnitude above where anything reasonable sits", so
+    what it watches for is one stratum having gone pathological. An n-weighted
+    mean of the kind `stratum_mean` computes for a frontier axis would hide
+    exactly that — `data-collection.md` sizes the strata an order of magnitude
+    apart, so the rare stratum is the one an aggregate cannot see, and the rare
+    stratum is where an exhaustive fallback search runs.
+
+    A p50 that stays put while the p99 goes to seconds is a search that has
+    stopped terminating on some inputs, which is per-query work in the sense
+    §11 bounds it.
+    """
+    worst: tuple[int, str] | None = None
+    for name, numbers in sorted((row.get("strata") or {}).items()):
+        if not isinstance(numbers, dict):
+            continue
+        value = numbers.get("latency_p99_us")
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            continue
+        if worst is None or round(value) > worst[0]:
+            worst = (round(value), name)
+    return worst
+
+
+def last_recorded_query_micros(rows: list[dict]) -> tuple[int, str] | None:
+    for row in reversed(rows):
+        worst = worst_stratum_query_micros(row)
+        if worst is not None:
+            return worst
+    return None
+
+
+def guardrail_warning(observed: str, ceiling: int) -> str:
+    """The one wording for a crossed ceiling, said in two places.
+
+    §11 asks for it "within a campaign rather than at a gate", so `record`
+    says it as the number is taken; the stop happens between campaigns, where
+    `harness/loop` says it again. Two sites, and the sentence that keeps a
+    guardrail from reading like a ratchet is the whole point of it — so it is
+    written once rather than agreed twice.
+    """
+    return (
+        f"guardrail: {observed} against a standing ceiling of {ceiling}. This is not "
+        "a verdict on the last change (design/loops.md section 11); it means the loop "
+        "has wandered somewhere no legitimate experiment goes. It stops the loop "
+        "between campaigns, not this gate."
+    )
 
 
 def guardrail_scopes(phase: Phase, owner: str | None = None) -> list[dict]:
@@ -6736,19 +6799,25 @@ def guardrail_scopes(phase: Phase, owner: str | None = None) -> list[dict]:
 
     Read out of the metrics history rather than measured here. The guardrail is
     consulted between campaigns and again from `record`, and a fresh release
-    build at either point would put minutes on both — where the number it would
-    produce is the one the last row already carries.
+    build or corpus replay at either point would put minutes on both — where
+    the number it would produce is the one the last row already carries.
     """
+    rows = read_jsonl(metrics_path(owner)) if owner else []
     scopes = []
     for name, description in GUARDRAILS.items():
         observed: int | None = None
         reason: str | None = None
+        note: str | None = None
         if name == "measure_binary_bytes":
-            observed = last_recorded_size(owner) if owner else None
+            observed = last_recorded_size(rows)
             if observed is None:
                 reason = "no row of this loop's carries a binary size yet"
         else:
-            reason = "nothing measures per-query work until there is a corpus run"
+            worst = last_recorded_query_micros(rows)
+            if worst is None:
+                reason = "no row of this loop's carries a replayed latency yet"
+            else:
+                observed, note = worst[0], f"p99 of {worst[1]}, the slowest stratum"
         scopes.append(
             {
                 "scope": name,
@@ -6756,6 +6825,7 @@ def guardrail_scopes(phase: Phase, owner: str | None = None) -> list[dict]:
                 "ceiling": phase.guardrail.get(name),
                 "observed": observed,
                 "reason": reason,
+                "note": note,
             }
         )
     return scopes
@@ -6783,6 +6853,8 @@ def cmd_guardrail(args: argparse.Namespace) -> int:
             state = f"ceiling {ceiling}, nothing observed — {entry['reason']}"
         else:
             state = f"{observed} of {ceiling} ({observed / ceiling * 100:.0f}%)"
+            if entry["note"]:
+                state += f" — {entry['note']}"
             if observed > ceiling:
                 state += "  — CROSSED"
                 crossed.append(entry["scope"])
@@ -8355,8 +8427,51 @@ def selftest_cases() -> list[tuple[str, object]]:
         assert scopes["measure_binary_bytes"]["ceiling"] == 60_000_000
         assert scopes["query_micros"]["ceiling"] is None, "an unset ceiling is not a zero one"
         assert scopes["query_micros"]["reason"], (
-            "§11 guards two things and only one is measurable; a table that "
-            "silently covers half of it reads like one that covers all of it"
+            "with no owner there is no history to read either ceiling out of, "
+            "and a scope that says so is not a scope that measured nothing"
+        )
+
+    def the_per_query_ceiling_reads_the_row_the_replay_wrote():
+        # §11's second ceiling. It was a reason string until `replay_digest`
+        # started writing per-stratum latency percentiles; a guardrail that
+        # cannot fire is one the table describes and the code does not have.
+        row = {
+            "strata": {
+                "Common": {"n": 900, "latency_p50_us": 40.0, "latency_p99_us": 120.0},
+                "Rare": {"n": 9, "latency_p50_us": 60.0, "latency_p99_us": 4_000_000.4},
+            }
+        }
+        assert worst_stratum_query_micros(row) == (4_000_000, "Rare"), (
+            "the worst stratum, not a mean over them: the strata are sized an "
+            "order of magnitude apart, so an aggregate hides the rare one"
+        )
+        assert worst_stratum_query_micros({"strata": {"Common": {"n": 900}}}) is None
+        assert worst_stratum_query_micros({}) is None, "an absent number is not a zero one"
+        rows = [{"strata": {"Common": {"latency_p99_us": 120.0}}}, {"loc": {}}]
+        assert last_recorded_query_micros(rows) == (120, "Common"), (
+            "the last row that carries one, the way the size half already "
+            "reads past a row that measured no binary"
+        )
+        assert last_recorded_query_micros([]) is None
+
+    def both_ceilings_say_the_same_thing_when_they_are_crossed():
+        # §11's guardrail "is emphatically not a ratchet: crossing it does not
+        # mean the last change was wrong". That sentence is the whole of the
+        # difference, and two sites saying it in their own words is how one of
+        # them ends up reading like a gate failure.
+        text = guardrail_warning("Rare answers at 4000000us p99", 1_000_000)
+        assert "not a verdict on the last change" in text, text
+        assert "between campaigns, not this gate" in text, text
+        source = (PINNED_HARNESS / "hj").read_text()
+        first, past = selftest_line_range(source)
+        outside = [
+            line
+            for number, line in enumerate(source.splitlines(), start=1)
+            if not first <= number < past
+        ]
+        assert sum("standing ceiling of" in line for line in outside) == 1, (
+            "the wording has one home; a second copy is how the two ceilings "
+            "start describing different mechanisms"
         )
 
     def guardrails_are_absent_by_default():
