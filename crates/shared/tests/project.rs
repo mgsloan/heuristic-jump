@@ -20,9 +20,9 @@ use std::time::Duration;
 
 use shared::{
     ByteLen, Clock, CommitPolicy, Deadline, DocumentUri, DocumentVersion, Error, FileExtension,
-    FileList, Generation, HandlerError, LanguageId, Offset, ProjectPath, ProjectRoot, ProjectView,
-    Query, RelPath, Rope, ScanRequest, SearchOrigin, ServerProfile, SnapshotSeed, Stratum,
-    TestClock,
+    FileList, FileText, Generation, HandlerError, LanguageId, Offset, ProjectPath, ProjectRoot,
+    ProjectView, Query, RelPath, Rope, ScanRequest, SearchOrigin, ServerProfile, SnapshotSeed,
+    Stratum, TestClock,
 };
 use tree_sitter::Language;
 
@@ -414,6 +414,99 @@ fn a_second_parse_of_the_same_path_is_a_fresh_parse() {
          here: ProjectView is reached through the Sync &Query several fan-out \
          threads hold, so a cache on it is a lock in a design that has none"
     );
+}
+
+/// The open-document half of `parse`, which no test reached.
+///
+/// Every other test here gets its text from `read`, and `read` returns
+/// `FileText::Disk` — one `&str`, one chunk, no boundaries. The `Open` arm is a
+/// rope, and `parse` feeds it to tree-sitter through a read callback that hands
+/// back one chunk at a time; `resolution.md` §3 asks for exactly that, so a
+/// large open file is not flattened to a `String` to answer one query. `scan`'s
+/// helper says of the same split that "a match spanning two chunks is the whole
+/// difficulty, and getting it wrong drops definitions silently on exactly the
+/// files large enough to have several chunks".
+///
+/// Silently is the operative word, and it is why the assertion is on the child
+/// count rather than on the root node: a callback that returned the wrong slice
+/// still produces a tree, and `core.md` §1 has an unparseable file fail at
+/// dispatch — but a *mis*-parsed one abstains per query, in a class nobody
+/// looks at, on documents the user is actively editing.
+///
+/// `core.md` §4 says the driver's document map does not exist yet, so nothing
+/// in the shipping path builds an `Open` today. That is the reason to hold it
+/// now rather than a reason not to: the branch is written, and the campaign
+/// that wires the map up will read the tests it passes as evidence.
+#[test]
+fn an_open_document_is_parsed_across_its_chunk_boundaries() {
+    let root = fixture("chunks");
+    let view = view(&root);
+    let document = path(&view, &root, "src/lib.rs");
+
+    let functions = 400;
+    let text: String = (0..functions)
+        .map(|index| {
+            format!("fn generated_{index}(argument: u32) -> u32 {{ argument + {index} }}\n")
+        })
+        .collect();
+    let rope = Rope::from(text.as_str());
+    assert!(
+        rope.chunks().count() > 1,
+        "the rope fits in one chunk, so this test is the Disk case with extra \
+         steps and would pass against a callback that ignored the offset"
+    );
+
+    let tree = view
+        .parse(&document, &FileText::Open(rope))
+        .expect("a tree for an open document");
+
+    assert!(
+        !tree.root_node().has_error(),
+        "the tree of a well-formed open document has an error node, so the \
+         read callback handed the parser bytes from the wrong offset"
+    );
+    assert_eq!(
+        tree.root_node().named_child_count(),
+        functions,
+        "the parse saw a different number of items than the document has. A \
+         callback that returns a chunk starting anywhere but `offset` loses or \
+         repeats bytes at every boundary, which is a mis-parse rather than a \
+         failure — so it would reach a handler as an abstention and never as \
+         an error"
+    );
+    assert_eq!(
+        tree.root_node().end_byte(),
+        text.len(),
+        "the tree does not span the text, so a byte range from the scan cannot \
+         be read against it"
+    );
+}
+
+/// `core.md` §1 rests the scope rule on a `ProjectPath` a handler cannot build.
+/// `RelPath` is the half it *can* build — `new` is public and takes any path —
+/// so the escape check is what stands between a handler and
+/// `lookup(root_of(uri), "../../.cargo/registry/...")`. `resolution.md` §3
+/// puts it at construction "so the escape check happens once here rather than
+/// at every join", which makes this the one site where getting it wrong is
+/// invisible everywhere else.
+#[test]
+fn a_relative_path_that_could_escape_its_root_is_refused() {
+    for escape in [
+        "..",
+        "../outside.rs",
+        "src/../../outside.rs",
+        "/etc/passwd",
+        "",
+    ] {
+        assert!(
+            RelPath::new(Path::new(escape)).is_none(),
+            "{escape:?} was accepted as a path below a root. Every component \
+             has to be a normal one, because the check is made here once and \
+             nowhere else — a `..` that survives construction is joined onto a \
+             root without anything looking at it again"
+        );
+    }
+    assert!(RelPath::new(Path::new("src/lib.rs")).is_some());
 }
 
 /// `core.md` §4's file list over the one shape an editor can send and nothing
