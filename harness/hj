@@ -1205,6 +1205,13 @@ KINDS_IN_USE = (
     # file and nothing else, which is the failure mode §13 describes: the
     # branch keeps accumulating while nobody is told.
     "merge-blocked",
+    # `design/loops.md` §17: a CLI upgrade "changes the generator of campaigns
+    # exactly as a prompt revision does, arrives without anyone deciding
+    # anything, and is otherwise completely invisible". The version was already
+    # on every session row and compared against nothing, so two upgrades went
+    # by unremarked. `design/external-dependencies.md` §7 both pins the version
+    # and names this kind, so the spelling is the document's rather than ours.
+    "cli-upgraded",
 )
 
 KNOWN_KINDS = INTERVENTION_KINDS + KINDS_IN_USE
@@ -2214,6 +2221,24 @@ def check_test_ratchet(config: LoopConfig) -> int:
         file=sys.stderr,
     )
     return 1
+
+
+def resume_command(campaign_id: str) -> str:
+    """How to resume this campaign, asked of the adapter.
+
+    `design/loops.md` §17: every vendor-specific invocation lives in one file,
+    and the rest of the harness talks to that file. The campaign record's
+    session line was the one place that had copied a flag out of it, so it
+    printed `claude --resume …` whatever `$HJ_RUNNER` was set to — in the field
+    a human uses to go and look at the campaign.
+    """
+    result = subprocess.run(
+        [str(HARNESS / "adapter"), "resume-command", campaign_id],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip() or f"(harness/adapter resume-command {campaign_id})"
 
 
 def cli_version() -> str:
@@ -4323,7 +4348,7 @@ CAMPAIGN_STUB = """# Campaign {campaign_id}
 - phase: {phase}
 - opened: {opened}
 - commit at open: {commit}
-- session: `claude --resume {campaign_id}`
+- session: `{resume}`
 
 ## Target
 
@@ -4565,6 +4590,21 @@ def cmd_campaign_open(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
 
+    version = cli_version()
+    previous_version = next(
+        (str(row["cli_version"]) for row in reversed(campaigns_of(config.owner)) if row.get("cli_version")),
+        "",
+    )
+    upgrade = cli_upgrade_reason(version, previous_version, pinned_cli_version())
+    if upgrade and cli_upgrade_unlogged(version, read_jsonl(INTERVENTIONS)):
+        print(
+            f"campaign: the CLI is {version} and {upgrade}. Logged as an intervention; "
+            "metrics either side of an upgrade are not strictly comparable "
+            "(design/loops.md §17).",
+            file=sys.stderr,
+        )
+        log_cli_upgrade(campaign_id, phase, config.owner, version, upgrade)
+
     record = STATE / "campaigns" / config.owner / f"{campaign_id}.md"
     record.parent.mkdir(parents=True, exist_ok=True)
     if not record.exists():
@@ -4575,6 +4615,11 @@ def cmd_campaign_open(args: argparse.Namespace) -> int:
                 phase=phase.phase,
                 opened=now(),
                 commit=head_sha(),
+                # From the adapter, which is the only file that knows how the
+                # runner is invoked (`design/loops.md` §17). Hardcoded here, it
+                # printed `claude --resume …` under any `$HJ_RUNNER`, in the one
+                # field a human uses to go and look at the campaign.
+                resume=resume_command(campaign_id),
             )
         )
 
@@ -4604,7 +4649,7 @@ def cmd_campaign_open(args: argparse.Namespace) -> int:
             # a campaign's behaviour is a function of both, and the join is
             # only possible if both are on the row.
             "constitution_sha": constitution,
-            "cli_version": cli_version(),
+            "cli_version": version,
             "started": now(),
             "start_commit": head_sha(),
             "record": str(record.relative_to(REPO)),
@@ -4778,6 +4823,103 @@ def constitution_change_unlogged(previous: str, current: str, rows: list[dict]) 
         and row.get("target") == "CLAUDE.md"
         and current[:12] in str(row.get("answer") or "")
         for row in rows
+    )
+
+
+CLI_PIN_SECTION = "## 7. The Claude Code CLI"
+CLI_PIN = re.compile(r"\*\*(\d[\d.]*)\*\*")
+
+
+def pinned_cli_version() -> str:
+    """The version `design/external-dependencies.md` §7 pins, or "".
+
+    Read from the document rather than copied into a constant here, because
+    §17 asks for the pin to live "in `external-dependencies.md` with the
+    language servers" and a second copy is a second answer. The document is
+    also the only place that can be *changed* when a human accepts an upgrade:
+    `design/` outside `loops.md` is denied to this loop, which is the right way
+    round — the loop reports the drift and a human decides it.
+    """
+    path = REPO / "design" / "external-dependencies.md"
+    if not path.exists():
+        return ""
+    _, _, after = path.read_text().partition(CLI_PIN_SECTION)
+    match = CLI_PIN.search(after)
+    return match.group(1) if match else ""
+
+
+def cli_upgrade_reason(current: str, previous: str, pinned: str) -> str:
+    """Why this campaign's CLI version is worth a row, or "".
+
+    The pin comes first because it outlives the comparison against the last
+    campaign: once an upgrade has been logged, every campaign after it runs
+    the new version and the campaign-to-campaign check goes quiet, while the
+    tree is still running something no document says it should. The previous
+    campaign is the fallback for a change the pin cannot see — an upgrade
+    while the document is being edited, or a document that has lost the pin.
+
+    `cli_version` returns the whole banner ("2.1.222 (Claude Code)"), so the
+    pin is matched inside it rather than against it.
+    """
+    if not current or current == "unknown":
+        return ""
+    if pinned:
+        return "" if pinned in current else f"design/external-dependencies.md §7 pins {pinned}"
+    if previous and previous != current:
+        return f"this loop's previous campaign ran {previous}"
+    return ""
+
+
+def cli_upgrade_unlogged(current: str, rows: list[dict]) -> bool:
+    """Whether this version still needs a row.
+
+    Keyed on the version rather than on the transition, so it fires once and
+    then stays quiet: three workers open against one `main` and the first to
+    notice is the one that logs, and a mismatch that persists — the tree ahead
+    of the pin until a human moves one of them — must not re-log every campaign
+    of every loop.
+    """
+    return not any(
+        canonical_kind(str(row.get("kind"))) == "cli-upgraded"
+        and current in str(row.get("answer") or "")
+        for row in rows
+    )
+
+
+def log_cli_upgrade(campaign_id: str, phase: Phase, owner: str, current: str, reason: str) -> None:
+    """`design/loops.md` §17's "treat an upgrade as the intervention it is".
+
+    The version was on every session row from the beginning and compared
+    against nothing, which is the shape of a measurement that is not an
+    instrument: two upgrades (2.1.220 → 2.1.221 → 2.1.222) went by against a
+    pin of 2.1.220 with nothing in the log and nothing on the dashboard.
+
+    Written by the harness, like `log_prompt_revision` and
+    `log_constitution_change`, and for the same reason: nobody is present at a
+    campaign open to give a rationale, and a flag with no row leaves §16's
+    mechanism with no entry at all.
+    """
+    append_jsonl(
+        INTERVENTIONS,
+        {
+            "ts": now(),
+            "kind": "cli-upgraded",
+            "phase": phase.phase,
+            "target": "claude-code",
+            "answer": f"campaigns are now running {current}",
+            "commit": head_sha(),
+            "automatic": True,
+            "rationale": (
+                f"Noticed at the open of campaign {campaign_id[:8]} ({owner}): {reason}. "
+                "design/loops.md §17 puts the CLI in the same category as a prompt "
+                "revision — it changes the generator of campaigns, arrives without "
+                "anyone deciding anything, and is otherwise invisible — so metrics "
+                "either side of it are not strictly comparable. Logged by the harness "
+                "because nobody is present at a campaign open. A human either accepts "
+                "the version by moving the pin in design/external-dependencies.md §7, "
+                "or moves the tree back to it."
+            ),
+        },
     )
 
 
@@ -9895,6 +10037,41 @@ def selftest_cases() -> list[tuple[str, object]]:
         assert "unjudged_sections" in inspect.getsource(prompt_values), (
             "the prompt's target list and the queue's emptiness must be one definition"
         )
+
+    def a_cli_upgrade_is_measured_against_the_pin_and_then_against_the_last_campaign():
+        # The version was on every session row from the first campaign and
+        # compared against nothing, so 2.1.220 -> 2.1.221 -> 2.1.222 went by
+        # with nothing in the log: a measurement that is not an instrument.
+        assert cli_upgrade_reason("2.1.222 (Claude Code)", "2.1.220", "2.1.220"), "ahead of the pin"
+        assert cli_upgrade_reason("2.1.220 (Claude Code)", "2.1.219", "2.1.220") == "", (
+            "at the pin is the answer, whatever the previous campaign ran"
+        )
+        assert cli_upgrade_reason("2.1.222", "2.1.220", "") != "", "no pin falls back to the last campaign"
+        assert cli_upgrade_reason("2.1.222", "2.1.222", "") == ""
+        assert cli_upgrade_reason("unknown", "2.1.220", "2.1.220") == "", "an absent CLI is not an upgrade"
+
+    def the_record_asks_the_adapter_how_to_resume():
+        assert "{resume}" in CAMPAIGN_STUB and "--resume" not in CAMPAIGN_STUB, (
+            "§17 keeps every runner flag in the adapter; the stub had copied one out"
+        )
+        assert resume_command("abc").endswith("abc")
+
+    def the_cli_pin_is_read_from_the_document_that_holds_it():
+        pinned = pinned_cli_version()
+        assert re.fullmatch(r"\d+\.\d+\.\d+", pinned), (
+            f"design/external-dependencies.md §7 pins a version and this read {pinned!r}; "
+            "a second copy of the pin in harness/ would be a second answer"
+        )
+        assert "cli-upgraded" in KNOWN_KINDS, "the document names the kind; the vocabulary must have it"
+
+    def one_row_per_version_and_not_one_per_campaign():
+        # Three workers open against one main, and a mismatch persists until a
+        # human moves the pin or the tree — so this has to be keyed on the
+        # version, not on the transition.
+        logged = [{"kind": "cli-upgraded", "answer": "campaigns are now running 2.1.222 (x)"}]
+        assert cli_upgrade_unlogged("2.1.222 (x)", logged) is False
+        assert cli_upgrade_unlogged("2.1.223 (x)", logged) is True
+        assert cli_upgrade_unlogged("2.1.222 (x)", []) is True
 
     def the_digest_asymmetry_reaches_both_ends():
         template = (HARNESS / "prompts" / "conformance.md").read_text()
