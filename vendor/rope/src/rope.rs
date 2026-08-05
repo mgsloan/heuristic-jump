@@ -1600,8 +1600,16 @@ impl TextDimension for usize {
 
 // Ours, not upstream's: the two impls that make `Offset` seekable, exactly
 // mirroring `OffsetUtf16`'s below (`rope-modifications.md` §4). `sum_tree`
-// needs no change for this — `Dimension` is generic over the summary type, so
-// the impls live here and the vendored `sum_tree` stays a pristine copy.
+// needs no change *for this* — `Dimension` is generic over the summary type,
+// so the impls live here.
+//
+// Not the stronger claim, which is false and is the one a re-sync would act
+// on: `vendor/sum_tree` is **not** a pristine copy. `vendor/README.md` records
+// three patches to it, all dependency-stripping and none of them this
+// document's. What survives is `core.md` §9's claim in the form §9 makes it —
+// "`sum_tree` is patched, minimally, and the newtype work is not why" — which
+// is what tells a re-sync it is replaying a short diff rather than merging an
+// API change (`rope-modifications.md` §4, CHANGE-core-027).
 //
 // A summary's length is a `ByteLen` and a seek dimension is a position, which
 // is the one place §4's split between the two is crossed on purpose: adding a

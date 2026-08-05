@@ -54,6 +54,22 @@ pin that is a design constraint rather than a resolution detail.
 | `toml` (parse only) | measure_core | **chosen** for `servers.toml` — `state/decisions/conformance-010.md` |
 | `num_cpus` | — | **rejected**, `available_parallelism` |
 | `tokio` | — | **rejected** — see §1 |
+| `tree-sitter-rust` | lang_rust; dev-only in driver, shared, measure_core | chosen; the grammar revision is pinned to Zed's — §6 |
+| `arraydeque` | `crates/similarity` | noted, out of scope — §5's port |
+| `hashbrown` | `crates/similarity` | noted, out of scope — §5's port |
+| `itertools` | `crates/similarity` | noted, out of scope — §5's port |
+| `smallvec` (`const_generics`) | `crates/similarity` | noted, out of scope — §5's port |
+
+The last five rows are here to make the table *complete* rather than to settle
+anything. This document's scope is the core driver, and it says so above:
+`similarity` and `lang_*` dependencies "are named where they are already
+implied, but not settled here". A crate that appears in
+`[workspace.dependencies]` and in no row of this table is indistinguishable
+from one nobody has considered, which is the state the four `similarity` rows
+were in — the argument for each is in the root `Cargo.toml` beside the
+version, and `crates/similarity` is a port whose dependencies came with it.
+`memchr` above has carried the same verdict for the same reason since this
+table was written.
 
 ## 1. Async runtime: none
 

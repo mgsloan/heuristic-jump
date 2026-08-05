@@ -40,7 +40,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use crossbeam_channel::{Receiver, RecvError, Sender, select};
+use crossbeam_channel::{Receiver, RecvError, Sender, after, select};
 use serde_json::value::RawValue;
 use shared::proto::{
     DefinitionParams, DefinitionResult, NotifiedDocument, PositionEncoding, ShowMessageParams,
@@ -347,6 +347,20 @@ impl Actor {
     /// this one does: the timer arm is `core.md` §4's debounce tick, which is
     /// the reason the loop cannot simply block until something arrives.
     pub fn run(mut self, events: &Receiver<Event>) -> Result<(), Error> {
+        // `after(dur)` and a deadline held across iterations, which is what
+        // `deps.md` §1 names. A `default(dur)` arm runs only when *nothing*
+        // else becomes ready within `dur`, so a sustained event stream re-arms
+        // it every time round and the tick never runs — and `refresh_if_due`
+        // is the only caller of `Scanner::request`, so a pending rescan would
+        // wait for the editor to go quiet. That is the case §4's debounce
+        // exists for: a burst of file events is exactly when the list is
+        // stale.
+        //
+        // The deadline is held rather than recreated from `window()` each
+        // iteration, because a timer restarted on every event starves in the
+        // same way for the same reason. It moves only when it fires, which is
+        // also what stops `after(0)` from spinning once the instant is past.
+        let mut deadline = self.clock.now() + self.debounce.window();
         loop {
             // Cloned per iteration rather than held, because the receiver only
             // exists once a root does — `select!` needs an arm that is there,
@@ -358,6 +372,9 @@ impl Actor {
             // Cloned for the same reason and at the same price: the arm needs
             // a borrow that ends before `answered` takes `&mut self`.
             let answers = self.workers.finished().clone();
+            // Recreated per iteration from the *remaining* time, so the wait
+            // shortens as events arrive rather than restarting.
+            let timer = after(deadline.saturating_duration_since(self.clock.now()));
             let arrived = match &rescans {
                 Some(rescans) => select! {
                     recv(events) -> event => event.ok(),
@@ -373,8 +390,9 @@ impl Actor {
                         }
                         continue;
                     }
-                    default(self.debounce.window()) => {
+                    recv(&timer) -> _ => {
                         self.tick();
+                        deadline = self.clock.now() + self.debounce.window();
                         continue;
                     }
                 },
@@ -390,7 +408,12 @@ impl Actor {
                         Running::Continue => continue,
                         Running::Stopped => return Ok(()),
                     },
-                    default(self.debounce.window()) => continue,
+                    recv(&timer) -> _ => {
+                        // No file list to refresh, but the deadline still has
+                        // to move or `after(0)` is ready on every iteration.
+                        deadline = self.clock.now() + self.debounce.window();
+                        continue;
+                    }
                 },
             };
             let Some(event) = arrived else {

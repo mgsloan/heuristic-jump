@@ -1370,6 +1370,23 @@ fn the_dimension_impls_cost_sum_tree_nothing_but_sum_tree_is_not_pristine() {
          about `sum_tree`, so nothing connects the two documents' accounts of \
          the same crate and they may drift apart again"
     );
+
+    // The third place the claim is stated, and the one a re-sync actually
+    // reads: both documents were corrected and the comment above the impls was
+    // left saying "the vendored `sum_tree` stays a pristine copy". A person
+    // re-syncing works from the source, not from `design/`, so a comment that
+    // contradicts both documents is the copy that matters most.
+    let impls = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("rope.rs"),
+    )
+    .expect("vendor/rope/src/rope.rs, where the Dimension impls live");
+    assert!(
+        !impls.contains("stays a pristine copy"),
+        "vendor/rope/src/rope.rs claims `sum_tree` stays a pristine copy. Both \
+         design documents were corrected (CHANGE-core-027) and this comment is \
+         the copy a re-sync reads first — it would be told to expect a clean \
+         checkout and find three patches"
+    );
 }
 
 /// §4's `util` fold-in, in the three parts that are checkable: `vendor/` holds

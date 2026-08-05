@@ -126,6 +126,17 @@ property (`deps.md` §14).
      crossed on purpose: a running seek total *is* a position advanced by a
      length.
 
+     The comment above those impls was corrected on 2026-08-05 and the change
+     is a comment only. It read "the impls live here and the vendored
+     `sum_tree` stays a pristine copy", which is the stronger claim
+     `CHANGE-core-027` had already found false in both design documents and
+     left standing here — the copy a re-sync reads first, since a person
+     re-syncing works from the source rather than from `design/`. It now says
+     what §4 says: `sum_tree` needs no change *for this*, and is patched three
+     times for reasons that are not this document's. Held by
+     `the_dimension_impls_cost_sum_tree_nothing_but_sum_tree_is_not_pristine`
+     in `vendor/rope/tests/newtype_api.rs`, which now reads this file too.
+
      This entry used to name a second one, and it was a **bug rather than a
      patch**: `TextSummary.chars` was said to narrow from `usize` to
      `CharCount`'s `u32`, "which is what §4's printed struct asks for and which

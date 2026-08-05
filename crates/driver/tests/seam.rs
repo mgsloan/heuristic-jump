@@ -1443,6 +1443,68 @@ fn the_testing_crates_are_placed_where_section_12_puts_them() {
     );
 }
 
+/// `deps.md` §0 opens "the summary table places every dependency and gives it
+/// a verdict", and nothing held it to that. Four crates — `arraydeque`,
+/// `hashbrown`, `itertools`, `smallvec` — were declared in
+/// `[workspace.dependencies]` for `crates/similarity` and appeared in no row
+/// of §0 nor anywhere else in `design/`, and `tree-sitter-rust` was named only
+/// in §12's prose.
+///
+/// **A crate in the manifest and in no row is indistinguishable from one
+/// nobody considered**, which is the whole cost: §0's verdict column is where
+/// "rejected", "deferred" and "out of scope" are recorded, so an absence reads
+/// as an omission rather than as a decision. It is not an argument for
+/// settling `similarity`'s dependencies here — §0's own scope paragraph says
+/// they are not this document's — but a row saying so is the difference
+/// between a scope boundary and a gap.
+///
+/// One direction only, and deliberately. Every non-path key has to appear;
+/// rows without a key need not exist, because §0 also carries verdicts on
+/// crates that are *not* declared — `tokio`, `anyhow`, `num_cpus`, `tempfile`
+/// — and those rows are the most load-bearing in the table. A both-ways check
+/// would delete exactly the rejections this document exists to record.
+#[test]
+fn every_workspace_dependency_has_a_row_in_the_summary_table() {
+    let declared: Vec<String> = table_of(&workspace_file("Cargo.toml"), "workspace.dependencies")
+        .iter()
+        .filter(|line| !line.contains("path ="))
+        // The head before the *first* `=`, and only when it is a bare crate
+        // name. `clap`'s entry spans lines, so the table also yields
+        // `"derive",` and `] }` — neither has an `=`, and a filter that split
+        // on whitespace instead took `"derive",` for a crate.
+        .filter_map(|line| {
+            let name = line.split_once('=')?.0.trim().split('.').next()?.trim();
+            let bare = !name.is_empty()
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+            bare.then(|| name.to_owned())
+        })
+        .collect();
+    assert!(
+        declared.len() > 20,
+        "only {} workspace dependencies parsed, so this scan would pass vacuously",
+        declared.len()
+    );
+
+    let table = section_of(&workspace_file("design/deps.md"), "\n## 0. Summary table");
+    assert!(
+        !table.is_empty(),
+        "deps.md §0's summary table did not read, so this scan would pass vacuously"
+    );
+
+    for name in declared {
+        assert!(
+            table.contains(&format!("`{name}`")),
+            "`{name}` is in [workspace.dependencies] and in no row of deps.md §0, which \
+             opens by saying the table places every dependency and gives it a verdict. A \
+             crate with no row is indistinguishable from one nobody considered — if it is \
+             out of this document's scope, that is itself a verdict and belongs in the \
+             table beside `memchr`"
+        );
+    }
+}
+
 /// The version `[workspace.dependencies]` resolves a crate at, whether written
 /// bare or inside a table. Empty when the crate is not declared, which every
 /// caller reports as a failed pin rather than passing silently.
@@ -1547,6 +1609,58 @@ fn no_crate_of_ours_is_async_shaped() {
             );
         }
     }
+}
+
+/// `deps.md` §1's fourth receiver: "the one remaining timer (the file-list
+/// rescan debounce) is `crossbeam::select!` with `after(dur)` inside the core
+/// loop".
+///
+/// A `default(dur)` arm is not the same mechanism, and the difference is the
+/// whole claim rather than a spelling. `default(d)` runs only when *no other*
+/// operation becomes ready within `d`, so a sustained event stream re-arms it
+/// on every iteration and the tick never runs at all. `Actor::tick` reaches
+/// `FileListCache::refresh_if_due`, which is the only caller of
+/// `Scanner::request` — so a rescan pending behind a burst of file events
+/// would wait for the editor to go quiet, and a burst of file events is
+/// precisely when the list is stale. §4's debounce would be starved by the
+/// thing it exists for.
+///
+/// **Asserted against the source, and the limit is worth stating.** `select!`
+/// chooses at random among the arms that are ready, so "the tick still fires
+/// under load" is a coin flip per iteration rather than a property a test can
+/// wait for without being flaky. What this catches is the mechanism going
+/// back, which is how it was wrong: the arm read `default(self.debounce.window())`
+/// and looked like a timer.
+///
+/// The scan is for a `select!` arm specifically — `default(` followed later on
+/// the line by `=>` — because `Map::default()` and `TreeCache::default()` are
+/// ordinary and appear in this same file.
+#[test]
+fn the_debounce_arm_is_a_timer_and_not_a_default() {
+    let source = workspace_file("crates/driver/src/actor.rs");
+    assert!(
+        !source.is_empty(),
+        "crates/driver/src/actor.rs did not read, so this scan would pass vacuously"
+    );
+
+    for (number, line) in source.lines().enumerate() {
+        let trimmed = line.trim_start();
+        let arm = trimmed.starts_with("default(") && trimmed.contains("=>");
+        assert!(
+            !arm,
+            "actor.rs:{} is a `default(..)` select arm: deps.md §1 names `after(dur)` for the \
+             debounce, and a `default` arm runs only when nothing else is ready — so a \
+             sustained event stream starves the tick that requests a rescan",
+            number + 1
+        );
+    }
+
+    assert!(
+        source.contains("after(deadline.saturating_duration_since"),
+        "actor.rs no longer waits on a held deadline. A timer rebuilt from `window()` each \
+         iteration restarts on every event and starves identically, which is why the instant \
+         is kept across iterations and moved only when it fires"
+    );
 }
 
 /// Whether the source contains a real `.await`, as opposed to a method whose
