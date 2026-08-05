@@ -1080,13 +1080,17 @@ fn the_constructors_take_the_newtype_and_not_something_convertible_to_it() {
 
 /// §4: `Offset` "gains the two impls that make it usable as a seek dimension,
 /// mirroring what `OffsetUtf16` already has", and — the part that matters
-/// beyond rope — "**`sum_tree` needs no changes at all.** `Dimension` is
-/// generic over the summary type, so the impls live in rope. That matters:
-/// `sum_tree` stays a pristine copy".
+/// beyond rope — "**`sum_tree` needs no changes *for this*.** `Dimension` is
+/// generic over the summary type, so the impls live in rope."
 ///
 /// Seeking with `Offset` is what proves the impls are there and reachable;
 /// `sum_tree` not naming any of rope's types is what proves they did not have
 /// to be paid for on the other side.
+///
+/// *For this* is the whole of it, and is narrower than the sentence this test
+/// was written against: `vendor/sum_tree` is patched, just not by this
+/// document. [`the_dimension_impls_cost_sum_tree_nothing_but_sum_tree_is_not_pristine`]
+/// is that half (CHANGE-core-027).
 #[test]
 fn offset_seeks_the_rope_and_sum_tree_never_hears_about_it() {
     let rope = Rope::from("aé\nbb\n");
@@ -1129,8 +1133,78 @@ fn offset_seeks_the_rope_and_sum_tree_never_hears_about_it() {
         mentions.is_empty(),
         "`sum_tree` names one of rope's vocabulary types. §4's argument for \
          putting the dimension impls in rope is that `sum_tree` needs no \
-         changes at all and stays a pristine copy, and this is that claim:\n{}",
+         changes *for this*, and this is that claim:\n{}",
         mentions.join("\n")
+    );
+}
+
+/// §4's dimension-impls paragraph used to end "`sum_tree` stays a pristine
+/// copy, and [section 9]'s claim that it needs no patching survives". Both
+/// halves were false (CHANGE-core-027), and the second was false in the way a
+/// cross-reference goes false: `core.md#vendoring-the-zed-crates` had already
+/// been corrected to say the opposite — in bold, "**`sum_tree` is patched,
+/// minimally, and the newtype work is not why**" — and this document went on
+/// citing the sentence it used to have. Nothing could say so, because a claim
+/// about another document is prose to everything that reads it.
+///
+/// A quotation is the part of a cross-reference a scan *can* hold, so this
+/// holds it both ways round: the sentence §4 quotes has to be one `core.md`
+/// still contains, and the patch list that makes it true has to be non-empty
+/// and observable in the tree. Checking only the list would pass against a
+/// `vendor/README.md` that records a patch nobody applied — which is the
+/// failure this campaign found in the entry two headings above it.
+#[test]
+fn the_dimension_impls_cost_sum_tree_nothing_but_sum_tree_is_not_pristine() {
+    let vendored = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("sum_tree");
+    assert!(
+        !vendored.join("src").join("tree_map.rs").exists(),
+        "vendor/README.md's first patch to `sum_tree` is `src/tree_map.rs` \
+         deleted, and it is back"
+    );
+    for file in ["sum_tree.rs", "cursor.rs"] {
+        let text = fs::read_to_string(vendored.join("src").join(file))
+            .expect("an instrumented sum_tree source");
+        assert!(
+            text.contains("use tracing::instrument;") && !text.contains("ztracing"),
+            "vendor/README.md's second patch rewrites `ztracing::instrument` to \
+             `tracing::instrument` in {file}, because `ztracing` is a \
+             Zed-internal crate that is not in this workspace"
+        );
+    }
+
+    let readme = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../README.md"))
+        .expect("vendor/README.md, which records every patch");
+    let recorded = readme
+        .split("## Patches to `sum_tree`")
+        .nth(1)
+        .and_then(|rest| rest.split("\n## ").next())
+        .expect("vendor/README.md records what was done to `sum_tree`")
+        .lines()
+        .filter(|line| line.starts_with(|first: char| first.is_ascii_digit()))
+        .count();
+    assert!(
+        recorded >= 3,
+        "vendor/README.md lists {recorded} patches to `sum_tree` and the tree \
+         shows at least two applied, so the record is short of what was done \
+         — which is the direction that makes a re-sync silently drop one"
+    );
+
+    // Both documents are hard-wrapped, so the quotation spans a line break in
+    // one of them and would span a different one after any reflow. A scan for
+    // a sentence has to read the prose the way a reader does.
+    const QUOTED: &str = "`sum_tree` is patched, minimally, and the newtype work is not why.";
+    assert!(
+        unwrapped(&design("core.md")).contains(QUOTED),
+        "`core.md` no longer contains the sentence `rope-modifications.md` §4 \
+         quotes it for. Requote §4 against whatever it says now — do not delete \
+         the quotation, which is what left §4 citing a claim `core.md` had \
+         stopped making"
+    );
+    assert!(
+        unwrapped(&design("rope-modifications.md")).contains(QUOTED),
+        "§4's dimension-impls paragraph no longer quotes `core.md`'s claim \
+         about `sum_tree`, so nothing connects the two documents' accounts of \
+         the same crate and they may drift apart again"
     );
 }
 
@@ -1273,12 +1347,7 @@ fn the_dependency_plan_is_the_one_section_7_settled() {
 
 /// The function names in §4's two conversion tables, from the document itself.
 fn functions_named_in_the_signature_tables() -> Vec<String> {
-    let document = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("design")
-        .join("rope-modifications.md");
-    let text = fs::read_to_string(document).expect("reading design/rope-modifications.md");
+    let text = design("rope-modifications.md");
     let section = text
         .split("### The signatures")
         .nth(1)
@@ -1415,6 +1484,24 @@ fn line_end(text: &str, row: LineIndex) -> Offset {
         start += line.len() + 1;
     }
     Offset(text.len())
+}
+
+/// Prose with its hard wrapping removed, so that a scan for a sentence finds
+/// one that a line break happens to fall inside. Every run of whitespace
+/// becomes a single space, which also makes the scan survive a reflow.
+fn unwrapped(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// A design document, by file name. `vendor/rope` is two levels below the
+/// workspace root, which is the only thing this and [`source`] disagree about.
+fn design(name: &str) -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("design")
+        .join(name);
+    fs::read_to_string(&path).unwrap_or_else(|_| panic!("reading design/{name}"))
 }
 
 fn sources() -> Vec<PathBuf> {
