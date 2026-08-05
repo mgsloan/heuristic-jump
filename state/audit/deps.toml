@@ -33,7 +33,7 @@ last_audited = "2026-08-04T23:43:10+00:00"
 
 [section."deps.md#licensing-our-crates-are-mit-the-binary-is-gpl"]
 state = "clean"
-last_audited = "2026-08-04T20:33:33+00:00"
+last_audited = "2026-08-05T01:40:56+00:00"
 
 [section."deps.md#6-tree-sitter"]
 state = "clean"
@@ -46,24 +46,35 @@ last_audited = "2026-08-04T23:43:10+00:00"
 
 [section."deps.md#7-file-enumeration-and-watching"]
 state = "clean"
-last_audited = "2026-08-04T21:12:07+00:00"
+last_audited = "2026-08-05T01:40:56+00:00"
 
 [section."deps.md#8-parse-cache"]
 state = "clean"
-last_audited = "2026-08-04T21:12:07+00:00"
+last_audited = "2026-08-05T01:40:56+00:00"
+
+  [[section."deps.md#8-parse-cache".minor]]
+  claim = "`lru` bounds only entries, so driver wraps it with a byte ceiling"
+  note = "the clippy.toml ban that protects the wrapper cites lru 0.18.1, while the workspace pins 0.16 and the lockfile resolves 0.16.4"
+  where = "clippy.toml:64"
 
 [section."deps.md#fxhashmap-and-fxhashset-are-the-default"]
 state = "clean"
 last_audited = "2026-08-04T21:12:07+00:00"
 
 [section."deps.md#9-logging-and-tracing"]
-state = "clean"
-last_audited = "2026-08-04T20:33:33+00:00"
+state = "gaps"
+last_audited = "2026-08-05T01:40:56+00:00"
+
+  [[section."deps.md#9-logging-and-tracing".gap]]
+  claim = "every line we emit gets a distinguishing prefix, and measure_core may default to `info` because a measure run has neither a child nor an editor"
+  found = "measure_core installs a subscriber on a bare stderr with no LOG_PREFIX, and `collect` spawns a child language server with stderr inherited into that same stream \u2014 the interleaving the prefix rule exists for. Mechanisable: seam.rs already lists the crates that may install a subscriber; require each to name driver::PrefixedWriter"
+  where = "crates/measure_core/src/measure_core.rs:184"
+  found_at = "975523384418d70ab58801dd65e363bfcd28000d"
 
   [[section."deps.md#9-logging-and-tracing".minor]]
-  claim = "every line we emit gets a distinguishing prefix"
-  note = "`measure_core`'s subscriber installs no prefix while `collect` inherits the language server's stderr into its own, which is the interleaving the prefix exists for"
-  where = "crates/measure_core/src/measure_core.rs:181"
+  claim = "the subscriber is installed by the crate that owns a process, and there are two processes"
+  note = "the workspace manifest's comment on tracing-subscriber says it is installed in `heuristic_jump` and nowhere else"
+  where = "Cargo.toml:108"
 
 [section."deps.md#10-errors-one-enumerated-type-no-anyhow"]
 state = "clean"
@@ -97,4 +108,4 @@ last_audited = "2026-08-04T23:43:10+00:00"
 
 [section."deps.md#15-clippy-in-workspace-toml"]
 state = "clean"
-last_audited = "2026-08-04T21:12:07+00:00"
+last_audited = "2026-08-05T01:40:56+00:00"
