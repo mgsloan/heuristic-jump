@@ -312,6 +312,49 @@ fn the_two_triggers_share_one_debounce_rather_than_one_each() {
     );
 }
 
+/// The debounce window is not restarted by a trigger inside it, and
+/// `mark_stale` says what that costs when it is: "a burst would otherwise push
+/// the rescan out indefinitely, which is the failure mode of debouncing a
+/// signal that repeats."
+///
+/// [`the_two_triggers_share_one_debounce_rather_than_one_each`] does not hold
+/// this, and the arithmetic is why: it fires three triggers 50ms apart and
+/// then advances a whole window, so the last trigger is 500ms behind the tick
+/// whether the window restarted or not. Measured rather than reasoned —
+/// rewriting the `Pending` arm to `Refresh::Pending { since: now }` leaves all
+/// fourteen tests in this file passing.
+///
+/// The signal §4 debounces is exactly the repeating kind. One
+/// `workspace/didChangeWatchedFiles` frame "can carry thousands of events
+/// after a branch switch", and a build or a rebase produces them for as long
+/// as it runs. A restarting window means the rescan is scheduled and
+/// re-scheduled and never sent, so the list stays stale for the whole burst —
+/// and the burst is precisely when it went stale.
+#[test]
+fn a_trigger_inside_the_window_does_not_push_the_rescan_out() {
+    let root = fixture("steady_burst");
+    let clock = Arc::new(TestClock::new());
+    let mut cache = cache(&root, &clock);
+    drop(cache.list().expect("the first walk"));
+
+    // A signal that repeats faster than the window closes, ticked the way the
+    // actor's `select!` timer would tick it.
+    let interval = DEBOUNCE.window() / 5;
+    cache.watched_files_changed();
+    for _ in 0..10 {
+        clock.advance(interval);
+        cache.watched_files_changed();
+        cache.refresh_if_due();
+    }
+
+    cache.rescans().recv_timeout(patience()).expect(
+        "ten triggers spanning twice the debounce window produced no rescan at \
+         all, so each one restarted the window and the list stays stale for as \
+         long as the frames keep arriving — the indefinite postponement \
+         `mark_stale` names",
+    );
+}
+
 /// The state no test reached: a trigger that arrives *while a walk is out*.
 ///
 /// `Refresh::InFlight` carries a `pending` slot and says why — "the walk
