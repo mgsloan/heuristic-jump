@@ -1130,10 +1130,10 @@ parsed, nodes visited — deterministic, machine-independent, local, and
 strongly correlated with the thing that cannot be measured. They go in
 every row. If a cost-phase iteration triples the bytes read per query,
 that shows up immediately rather than at the next gate, and the
-wall-clock run at the gate confirms it. They are also what the replay
-deadline is enforced against
-([section 9](#determinism-is-a-precondition-not-a-description)), so they
-are already being computed.
+wall-clock run at the gate confirms it. They cost nothing extra to
+collect: a handler produces them as it works, and the per-query record
+`measure replay --records` writes already carries them, so putting them
+in the row is a digest rather than a measurement.
 
 ### `measure_<lang>` size covers the size gap
 
@@ -1645,6 +1645,23 @@ own worktree, so a revision committed in one campaign generates the
 next one with no review in between. What the loop cannot do is change
 how it is *scored*; what it can do, from its next campaign on, is change
 what it is *told*.
+
+**The same split cuts the other way inside the checks themselves**, and
+it is worth stating because two campaigns lost time to it before anybody
+wrote it down. A check in the reviewed harness that resolves a path
+through `HJ_REPO` asserts about the *candidate* tree, not about the copy
+it is written in. That is right for a check on an invariant every live
+branch already satisfies, which is where it catches a campaign
+introducing a defect. It is wrong for a check on how two harness files
+agree with each other: a branch carrying an older copy of a file every
+loop is denied is behind rather than broken, and failing it for that
+fails a campaign for something it may not fix — and leaves
+green-or-revert with no green to revert to. So such a check reads the
+reviewed copy's own siblings, the deliberate exceptions are named in a
+list rather than remembered, and `hj selftest --across-worktrees` runs
+the reviewed checks against every checkout so that "would this fail a
+branch that predates it" is answered by running rather than by
+judgement.
 
 **A language is one loop, servers and all.** An earlier revision split
 `lang_python/` between a language loop and a per-server profile loop, on
@@ -2846,11 +2863,27 @@ with no model in it at all.
 
 ### What is deliberately not built yet
 
-The supervisor, the frontier, the evaluation half of held-out selection,
-the per-language link delta, and the tuning and optimisation prompts.
+The supervisor, the evaluation half of held-out selection, the
+per-language link delta, and the tuning and optimisation prompts.
 Each is specified here because the specification is what makes the
 followup cheap — but every one of them exists to serve tuning loops, and
 there are none until 2a.
+
+**Crossed off so far: the frontier**, and with it the arithmetic half of
+the gate's selection step — `hj frontier` and `hj gate-select`. The two
+cross together because neither is worth anything alone: the frontier's
+only automatic consumer is [section 7](#7-progress-stall-and-the-ways-it-is-faked)'s
+fifth form of progress, and its only manual one is
+[the selection at a gate](#selecting-a-version-at-a-phase-gate). What
+stayed behind is the *evaluation* in the middle of that selection, which
+is a corpus run rather than arithmetic over the metrics history, and
+which nothing outside `measure_<lang>` can perform. Crossing them off
+early rather than at 1.5 costs nothing the argument below protects —
+nothing consumes a frontier before 2a, and every function computing one
+answers "no row carries both axes" until a tuning loop records one. What
+it buys is that the axes are fixed before there are numbers to pick them
+by, which is the whole of the discipline
+[section 10](#the-frontier-and-why-it-stays-two-dimensional) asks for.
 
 **This list shortens as the followup is built, and it is the list rather
 than the argument that moves.** The argument is unchanged: a thing that

@@ -1312,6 +1312,231 @@ def sparkline(values: list[float], width: int = 320, height: int = 40) -> str:
     return f'<svg class="spark" viewBox="0 0 {width} {height}" preserveAspectRatio="none"><polyline points="{points}"/></svg>'
 
 
+def frontier_table(rows: list[dict]) -> str:
+    """`design/loops.md` §10's frontier, rendered.
+
+    Two axes and never three. The numbers reported beside it get their own
+    column, labelled as not being axes, because a table that put containment
+    next to top-1 agreement without saying which one is the objective is
+    exactly how a third axis arrives — and §10's argument against that is that
+    past two, "non-domination becomes nearly free ... and the concept stops
+    selecting anything".
+    """
+    points = hj.frontier_points(rows)
+    if not points:
+        unshared = sum(1 for row in rows if row.get("servers") and "strata" not in row)
+        return empty(
+            "No row carries both of "
+            + " and ".join(hj.FRONTIER_AXES)
+            + ", so there is nothing to plot. `measure replay` produces them and "
+            "`hj record --replay-report` puts them in the row; until a tuning loop "
+            "runs one, the frontier is computable and empty rather than absent."
+            + (
+                f" {unshared} row(s) carry per-server numbers only: the frontier is "
+                "over the positions where every server for the language agrees, and "
+                "nothing has produced that report for them."
+                if unshared
+                else ""
+            )
+        )
+    head = "".join(f"<th>{esc(axis)}</th>" for axis in hj.FRONTIER_AXES)
+    body = ""
+    for point in points:
+        axes = point["frontier_axes"]
+        beside = ", ".join(
+            f"{name} {value:g}"
+            for name in hj.FRONTIER_BESIDE
+            if (value := hj.stratum_mean(point, name)) is not None
+        )
+        body += (
+            f"<tr><td><code>{esc((point.get('commit') or '')[:12])}</code></td>"
+            + "".join(f"<td>{axes[axis]:.4f}</td>" for axis in hj.FRONTIER_AXES)
+            + f"<td class='note'>{esc(beside)}</td></tr>"
+        )
+        # One row per server, indented under the point and never a point of its
+        # own. §10 evaluates a `ServerProfile` on the positions where the
+        # servers differ, against that server alone, so these numbers are not
+        # comparable with the ones above them or with each other — they are
+        # reported beside, the same treatment containment gets.
+        for name, entry in sorted((point.get("servers") or {}).items()):
+            cells = [
+                f"{value:.4f}" if (value := hj.stratum_mean(entry, axis)) is not None else "—"
+                for axis in hj.FRONTIER_AXES
+            ]
+            body += (
+                f"<tr><td class='note'>↳ {esc(name)}</td>"
+                + "".join(f"<td class='note'>{cell}</td>" for cell in cells)
+                + "<td class='note'>on this server's own positions</td></tr>"
+            )
+    return (
+        f'<table class="sections"><thead><tr><th>commit</th>{head}'
+        '<th>beside, never an axis</th></tr></thead>'
+        f"<tbody>{body}</tbody></table>"
+    )
+
+
+# §16 asks the metrics panel for "the per-stratum table — one per server where
+# a language has several". The columns are the two frontier axes, the three
+# numbers reported beside them, and the stratum's own population, which is the
+# denominator every one of the others is read against.
+STRATUM_COLUMNS = (
+    ("n", "n", "{:.0f}"),
+    ("coverage", "coverage", "{:.3f}"),
+    ("top1", "top1", "{:.3f}"),
+    ("contained", "contained", "{:.3f}"),
+    ("result_count", "results", "{:.2f}"),
+    ("latency_p50_us", "p50 µs", "{:.0f}"),
+    ("latency_p99_us", "p99 µs", "{:.0f}"),
+)
+
+
+def stratum_body(strata: dict) -> str:
+    body = ""
+    for name, numbers in sorted((strata or {}).items()):
+        cells = "".join(
+            f"<td>{template.format(value)}</td>"
+            if isinstance(value := (numbers or {}).get(key), (int, float))
+            and not isinstance(value, bool)
+            else "<td class='note'>—</td>"
+            for key, _, template in STRATUM_COLUMNS
+        )
+        body += f"<tr><td><code>{esc(name)}</code></td>{cells}</tr>"
+    return body
+
+
+def stratum_table(rows: list[dict]) -> str:
+    """§16's per-stratum table, from the most recent row that carries one.
+
+    One table per surface rather than one merged table, because the surfaces
+    are measured on different position sets and a merged one would invite the
+    comparison §10 says never to make: shared logic is evaluated where every
+    server agrees, a profile where they differ, and neither number is the
+    other's baseline.
+
+    The single-server case renders once. Its numbers are promoted to the shared
+    surface by `hj.replay_row_fields`, so a naive loop would print the same
+    table twice under two headings and read as though something had been
+    measured two ways.
+    """
+    latest = next(
+        (row for row in reversed(rows) if row.get("strata") or row.get("servers")), None
+    )
+    if latest is None:
+        return empty(
+            "No row carries per-stratum numbers yet. `measure replay --format json` "
+            "produces them and `hj record --replay-report` puts them in the row."
+        )
+    servers = {
+        name: entry.get("strata")
+        for name, entry in sorted((latest.get("servers") or {}).items())
+        if (entry or {}).get("strata")
+    }
+    shared = latest.get("strata")
+    if shared and len(servers) == 1 and next(iter(servers.values())) == shared:
+        only = next(iter(servers))
+        surfaces = [(f"{only} — the language's only server, so every position agrees", shared)]
+    else:
+        agreement = (
+            "where every server agrees — what the frontier reads"
+            if servers
+            else "the shared surface — what the frontier reads"
+        )
+        surfaces = [(agreement, shared)] if shared else []
+        surfaces += [
+            (f"{name} — on the positions where the servers differ", strata)
+            for name, strata in servers.items()
+        ]
+    head = "<thead><tr><th>stratum</th>" + "".join(
+        f"<th>{esc(label)}</th>" for _, label, _ in STRATUM_COLUMNS
+    ) + "</tr></thead>"
+    return "".join(
+        f'<p class="note">{esc(caption)}</p>'
+        f'<table class="sections">{head}<tbody>{stratum_body(strata)}</tbody></table>'
+        for caption, strata in surfaces
+    )
+
+
+def baseline_table(config, rows: list[dict]) -> str:
+    """§16's "current versus the recorded baseline".
+
+    Only the metrics that have one. `harness/ratchets.toml` says which those
+    are and why the others are not: `sections_clean` "falls honestly whenever a
+    fresh audit re-judges a section it had called clean", and LOC is "reported
+    always, gated never" (§11). A column of baselines beside numbers that have
+    none would read as though every row here were held to something.
+    """
+    latest = rows[-1] if rows else {}
+    lines = []
+    measured = latest.get("tests")
+    if isinstance(measured, int):
+        baseline = hj.ratchet_baseline(config.owner, "tests")
+        floor = hj.ratchet_floor(config.owner, "tests")
+        lines.append(
+            ("tests", measured, baseline, floor, "may not fall (§7's first gaming route)")
+        )
+    binary = latest.get("binary")
+    if isinstance(binary, dict) and isinstance(binary.get("stripped"), int):
+        package = binary.get("binary") or ""
+        lines.append(
+            (
+                f"{package} stripped bytes",
+                binary["stripped"],
+                hj.size_baseline(config.owner, package),
+                hj.ratchet_floor(config.owner, "measure_binary_bytes"),
+                "gated in a cost phase only (§11)",
+            )
+        )
+    if not lines:
+        return empty(
+            "No metric this loop records has a recorded baseline yet. The test "
+            "count gets one as soon as the loop owns a crate with tests in it."
+        )
+    body = "".join(
+        f"<tr><td>{esc(name)}</td><td>{current}</td>"
+        f"<td>{baseline if baseline is not None else '—'}</td>"
+        f"<td>{floor if floor is not None else '—'}</td>"
+        f"<td class='note'>{esc(note)}</td></tr>"
+        for name, current, baseline, floor, note in lines
+    )
+    return (
+        '<table class="sections"><thead><tr><th>metric</th><th>current</th>'
+        '<th>recorded baseline</th><th>floor in ratchets.toml</th><th></th>'
+        f"</tr></thead><tbody>{body}</tbody></table>"
+    )
+
+
+def heldout_block(config, phase) -> str:
+    """§16's held-out verdict, and §12's rule about what a verdict may contain.
+
+    The verdict text and never a number, exactly as `hj heldout` prints it.
+    §12: "the loop is shown a verdict, not the numbers … enough to know
+    something went wrong and where; not enough to hill-climb." The dashboard is
+    a generated file in the repository, so a loop can read it; a panel that
+    printed the held-out numbers would be the leak §12 exists to prevent,
+    arriving through the operator's view.
+    """
+    if not config.language:
+        return empty(
+            "This loop declares no language, so there is no held-out split to "
+            "evaluate it against."
+        )
+    verdict, widened = hj.heldout_verdict(
+        hj.heldout_rows(config.language), phase.heldout_threshold
+    )
+    if widened:
+        return (
+            f'<p class="headline"><strong>{esc(verdict)}</strong></p>'
+            '<p class="note">design/loops.md §12 stops the loop here: a widening gap '
+            "is the one signal that means the last several iterations were probably "
+            "net negative, and it needs a human to look at the diff.</p>"
+        )
+    return (
+        f'<p class="headline" style="font-size:16px">{esc(verdict)}</p>'
+        '<p class="note">The verdict and never the numbers (§12): enough to know '
+        "something went wrong and where, not enough to hill-climb.</p>"
+    )
+
+
 def panel_metrics(loop: str = "") -> str:
     phase = hj.load_phase()
     blocks = []
@@ -1398,10 +1623,21 @@ def panel_metrics(loop: str = "") -> str:
           <h3>{esc(owner)}</h3>
           {headline}
           <div class="charts">{charts}</div>
+          <h4>Frontier <span class="note">non-dominated commits of phase {esc(phase.phase)}</span></h4>
+          {frontier_table([row for row in rows if row.get("phase") == phase.phase])}
+          <h4>Per stratum <span class="note">the most recent row that carries one</span></h4>
+          {stratum_table(rows)}
+          <h4>Current versus the recorded baseline</h4>
+          {baseline_table(config, rows)}
+          <h4>Held out</h4>
+          {heldout_block(config, phase)}
           <p class="note">{len(rows)} metrics row(s). The history is a cache — replay is deterministic, so any row can be recomputed from its commit.</p>
         </article>""")
 
-    note = "the frontier chart is a phase 2a object; there is nothing to plot until there is a corpus"
+    note = (
+        "the frontier is computed from the metrics rows; it stays empty until a "
+        "corpus run puts top-1 agreement and coverage in one"
+    )
     return panel("Metrics", "".join(blocks), note=note)
 
 

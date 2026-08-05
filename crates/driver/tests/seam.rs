@@ -145,19 +145,72 @@ fn the_measurement_crates_have_the_edges_section_9_gives_them() {
         }
     }
 
-    let measure_core = dependencies_in(&manifest_text("measure_core"));
-    let measure_rust = dependencies_in(&manifest_text("measure_rust"));
-    assert!(
-        measure_core.iter().any(|name| name == "shared"),
-        "measure_core does not depend on shared, and core.md §9 says it depends \
-         on shared and nothing else of ours"
+    // "depends on `shared` and nothing else of ours" is an equality, and the
+    // prefix bans above are a subset of it: `measure_core` could acquire
+    // `similarity` or `rope` and every assertion so far would pass. Quantified
+    // over the whole member list rather than over a second list of prefixes,
+    // because the crate that breaks this is the one nobody thought to ban.
+    //
+    // `vendor/` is included, which is stricter than §9's own use of the word —
+    // "ours" there means `crates/`, or the `shared` bullet's "depends on
+    // nothing of ours" would contradict the `rope` on its own list
+    // (CHANGE-core-030). The strict reading is deliberate and §9 now says so:
+    // the text vocabulary reaches `measure_core` through `shared`'s re-export,
+    // which `the_text_vocabulary_is_nameable_through_shared_and_defined_in_rope`
+    // asserts, so a direct `rope` edge here would be a divergence rather than
+    // another spelling of the same one.
+    let ours = ours_named_by(&dependencies_in(&manifest_text("measure_core")));
+    assert_eq!(
+        ours,
+        vec!["shared".to_owned()],
+        "core.md §9 says measure_core depends on shared and nothing else of ours"
     );
-    assert!(
-        measure_rust.iter().any(|name| name == "measure_core")
-            && measure_rust.iter().any(|name| name == "lang_rust"),
-        "measure_rust is the one crate depending on both measure_core and a \
-         language, and it is not depending on both"
+
+    // §9's other measurement edge — `measure_<lang>` "is the only crate that
+    // depends on both `measure_core` and a language" — is deliberately *not*
+    // asserted here. `adding_a_language_costs_the_template_and_one_line`
+    // already holds every `measure_*` manifest to a full equality against §9's
+    // template, which is the stronger claim and quantified over languages
+    // rather than over `measure_rust`. A copy here would be a third statement
+    // of one rule, and the copy is what goes stale.
+
+    // §9 calls `similarity` **frozen** — "Nothing is added to it during phase
+    // 2" — and nothing read its manifest. The crate is outside every loop's
+    // writable paths, so an edge appearing there arrives from a human or a
+    // phase-3 extraction and lands unremarked in the one crate the section
+    // says does not move.
+    //
+    // Ours only. §9's bullets are an edge list of our crates, and `similarity`
+    // carries third-party crates the ported code came with that no bullet
+    // names; `deps.md` §0 declines to settle those in as many words —
+    // "`similarity` and `lang_*` dependencies are named where they are already
+    // implied, but not settled here" — which is why
+    // `the_core_crates_declare_only_what_section_0_places_there` leaves the
+    // crate out. Asserting an equality over all of them would be this test
+    // inventing a rule two sections deliberately withheld.
+    assert_eq!(
+        ours_named_by(&dependencies_in(&manifest_text("similarity"))),
+        vec!["shared".to_owned()],
+        "core.md §9 gives similarity one edge of ours, to shared, and calls the crate \
+         frozen: it holds only what is ported from the prior implementation, and phase 3's \
+         equality constraint is what any addition has to go through"
     );
+}
+
+/// Those of `named` that are workspace members, sorted — the crate names
+/// rather than the `crates/`-and-`vendor/` paths the member list holds.
+fn ours_named_by(named: &[String]) -> Vec<String> {
+    let members: Vec<String> = workspace_members()
+        .iter()
+        .filter_map(|path| path.rsplit('/').next().map(str::to_owned))
+        .collect();
+    let mut ours: Vec<String> = named
+        .iter()
+        .filter(|name| members.contains(name))
+        .cloned()
+        .collect();
+    ours.sort();
+    ours
 }
 
 /// `core.md` §9: `heuristic_jump` "is also the single place where the language
@@ -3505,10 +3558,21 @@ fn the_default_map_and_set_are_the_aliases_shared_exports() {
 /// invisible until someone rereads the section beside the manifest, and
 /// `tracing` sat outside the list for four campaigns that way.
 ///
-/// A subset rather than an equality, because §9 lists `rayon` for
-/// `ProjectView::scan` and `deps.md` §14 has each dependency arrive with its
-/// first user — a listed crate not yet declared is the intended state, where a
-/// declared crate not on the list is the thing being caught.
+/// An **equality** against §9's list minus the entries §9 names as chosen and
+/// not yet declared. It was a subset until CHANGE-core-029, because `deps.md`
+/// §14 has each dependency arrive with its first user and a listed crate not
+/// yet declared is the intended state — but a subset forgives that in both
+/// directions at once, so a dependency *deleted* from the manifest read
+/// exactly like one that had not arrived, and `shared` could have lost
+/// `ignore` without a single test noticing. Naming the deferred set in the
+/// document is what splits the two apart.
+///
+/// The deferred set is read from `core.md`; the authoritative list is
+/// transcribed. That asymmetry is deliberate: the list is what the manifest is
+/// checked *against*, so transcribing it means a manifest change fails here
+/// and sends the reader to §9, where parsing it would only ever agree with
+/// whatever the document had drifted to. The deferred set is the half that
+/// drifted, so it is the half that is parsed.
 #[test]
 fn shared_declares_only_the_dependencies_section_9_lists() {
     const AUTHORITATIVE: &[&str] = &[
@@ -3524,14 +3588,116 @@ fn shared_declares_only_the_dependencies_section_9_lists() {
         "url",
     ];
 
-    for dependency in dependencies_in(&manifest_text("shared")) {
+    assert_section_9_edges("shared", AUTHORITATIVE, &[]);
+}
+
+/// The same equality for the other two crates §9 draws edges from, which is
+/// where the divergence actually was: §9's arrow named neither `lru` nor
+/// `serde_json`, both of which `driver` has declared for campaigns, and
+/// `heuristic_jump` declared a `tracing` that §9 does not name and that no
+/// line in the crate uses. A section that names a crate's dependencies is
+/// making a claim about that manifest whether or not anything reads it, and
+/// nothing read these two.
+///
+/// `lang_*` edges are excluded here and asserted by
+/// `the_language_list_is_enumerated_in_heuristic_jump` instead, because §9's
+/// claim about them is "every one of them" rather than a fixed list, and a
+/// transcribed list would have to be edited by the campaign that adds a
+/// language — which is the one campaign guaranteed to be looking at §9 anyway.
+#[test]
+fn driver_and_heuristic_jump_declare_only_the_edges_section_9_draws() {
+    // §9's arrow, plus the one edge of ours its prose gives: "`driver`
+    // depends on `shared` only".
+    const DRIVER: &[&str] = &[
+        "crossbeam-channel",
+        "lru",
+        "notify",
+        "rayon",
+        "rustc-hash",
+        "serde_json",
+        "shared",
+        "tracing",
+    ];
+    // "`heuristic_jump` depends on `driver` and every `lang_*`, plus `clap`,
+    // `tracing-subscriber`, and `shared` for the error type its `main`
+    // returns."
+    const HEURISTIC_JUMP: &[&str] = &["clap", "driver", "shared", "tracing-subscriber"];
+
+    assert_section_9_edges("driver", DRIVER, &[]);
+    assert_section_9_edges("heuristic_jump", HEURISTIC_JUMP, &language_members());
+}
+
+/// `declared == named \ deferred`, both directions, with §9's own deferred
+/// list as the only permitted excuse for an absence.
+fn assert_section_9_edges(crate_name: &str, named: &[&str], ignored: &[String]) {
+    let deferred = deferred_dependencies_in_section_9();
+    assert!(
+        !deferred.is_empty(),
+        "core.md §9's deferred list parsed as empty, so every absence below would be \
+         forgiven and this whole test would assert a subset again"
+    );
+
+    let declared: Vec<String> = dependencies_in(&manifest_text(crate_name))
+        .into_iter()
+        .filter(|name| !ignored.contains(name))
+        .collect();
+
+    for dependency in &declared {
         assert!(
-            AUTHORITATIVE.contains(&dependency.as_str()),
-            "shared depends on {dependency}, which is not on core.md §9's list — and that \
-             list calls itself the authoritative one, so either the dependency or the \
-             section is wrong and a spec-changelog entry says which"
+            named.contains(&dependency.as_str()),
+            "{crate_name} depends on {dependency}, which core.md §9 does not name — and §9 \
+             calls its list the authoritative one, so either the dependency or the section \
+             is wrong and a spec-changelog entry says which"
+        );
+        assert!(
+            !deferred.contains(&(crate_name.to_owned(), dependency.clone())),
+            "{crate_name} declares {dependency}, which core.md §9 lists as chosen and not \
+             yet declared. The dependency arriving is the good outcome; what has to happen \
+             with it is that §9's deferred list stops naming it, in the same commit"
         );
     }
+
+    for dependency in named {
+        let absent_by_design =
+            deferred.contains(&(crate_name.to_owned(), (*dependency).to_owned()));
+        assert!(
+            declared.iter().any(|name| name == dependency) || absent_by_design,
+            "core.md §9 names {dependency} as a dependency of {crate_name} and the manifest \
+             does not declare it. A crate that has not arrived yet is deps.md §14's intended \
+             state, but §9 has to say so in its deferred list for that to be the reading"
+        );
+    }
+}
+
+/// §9's "chosen and not yet declared" list, as (crate, dependency) pairs.
+///
+/// Parsed rather than transcribed, which is the point of it existing in the
+/// document at all: the set is the one thing here that legitimately changes
+/// every time a deferred dependency acquires its first user, so a copy in this
+/// file would be the copy that goes stale.
+fn deferred_dependencies_in_section_9() -> Vec<(String, String)> {
+    let section = section_of(
+        &workspace_file("design/core.md"),
+        "\n### The dependency graph",
+    );
+    let mut found = Vec::new();
+    for line in section.lines() {
+        // "* `rayon` in `shared` — for `ProjectView::scan`."
+        let Some(rest) = line.trim_start().strip_prefix("* `") else {
+            continue;
+        };
+        let Some((dependency, rest)) = rest.split_once('`') else {
+            continue;
+        };
+        let Some(rest) = rest.strip_prefix(" in `") else {
+            continue;
+        };
+        let Some((crate_name, _)) = rest.split_once('`') else {
+            continue;
+        };
+        found.push((crate_name.to_owned(), dependency.to_owned()));
+    }
+    found
 }
 
 /// The `[dependencies]` table only. A hand-rolled scan rather than

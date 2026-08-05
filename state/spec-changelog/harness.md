@@ -568,3 +568,114 @@ paragraph and the two sections it edits are what has to be reverted, and the
 evidence `harness-009` says would justify revisiting it.
 
 **Campaign:** 59da1668-66ac-46f5-9479-0075734f62b3
+
+## CHANGE-harness-013 — loops.md#what-is-deliberately-not-built-yet — the frontier crosses off the deferral list
+
+**Contradiction:** not a contradiction between two claims, and this entry is
+here for the other reason. §18 says "The supervisor, the frontier, the
+evaluation half of held-out selection, the per-language link delta, and the
+tuning and optimisation prompts" are deliberately not built. The same section
+says "**This list shortens as the followup is built, and it is the list rather
+than the argument that moves** … [section 18] points the conformance loop at
+this document precisely so that they cross it during phase 1.5. Anything
+crossed off here has a section that now describes something real."
+
+So the edit is one the document asks for, and it is still worth writing down,
+because **this campaign edited a design document and the code that document
+describes, in the same run** — three commits building `hj frontier`,
+`hj gate-select` and §7's fifth progress term, then this. That is the one
+gaming route §7's own table concedes the audit cannot catch, so it goes in
+front of a person rather than being left to be noticed.
+
+**Resolution:** "the frontier" is removed from the list, and a paragraph
+underneath names what was crossed off, what it was crossed off *by*
+(`hj frontier`, `hj gate-select`), and what stayed behind — the evaluation in
+the middle of the gate's selection, which is a corpus run and not arithmetic
+over the metrics history. The argument is untouched, which is what §18 says
+should happen: nothing consumes a frontier before 2a, and every function
+computing one answers "no row carries both axes" until a tuning loop records
+one. The claim the audit can now check is that three sections describe
+something real — §10's frontier, §10's gate selection, and §7's fifth form —
+rather than that a list got shorter.
+
+What is deliberately *not* crossed off, though the code exists: the
+per-language link delta. `hj link-delta` is implemented, but it reports
+`unmeasured` because `heuristic_jump` declares no `lang-<x>` features, so the
+number the section is about still cannot be taken. Crossing that off would be
+the version of this edit that trades something off — a list that says "built"
+where the measurement is unavailable is worse than one that says nothing.
+
+**Campaign:** 68b83370-8fef-4b7d-8ad1-13b3a3ad2b60
+
+## CHANGE-harness-014 — loops.md#what-cannot-be-measured-in-isolation — the work counters are not what a replay deadline is enforced against, because replay has none
+
+**Contradiction:** `#what-cannot-be-measured-in-isolation` closed its work-counter
+paragraph with
+
+> They are also what the replay deadline is enforced against
+> ([section 9](#determinism-is-a-precondition-not-a-description)), so they are
+> already being computed.
+
+The section it cites says the opposite, at length:
+
+> `core.md` §7 now requires replay to enforce **no deadline at all**, and
+> `resolution.md` §1.3 makes a search exhaustive — it reads every candidate
+> file and stops when it runs out of them. So there is no stopping rule left
+> for machine load to perturb … An earlier revision got there by substituting
+> a reproducible byte budget for the clock, which worked but had to be
+> calibrated against a wall-clock deadline to mean anything.
+
+`design/core.md` §7 states it a third time: "**Replay enforces no deadline at
+all.** This is the constraint that makes replay worth having." So the cited
+support is a leftover from the revision that had a byte budget, and it names
+the very subsection that removed it.
+
+**Resolution:** the *conclusion* survives and only its reason is replaced. The
+counters really are already being computed, and the reason is now the one that
+is true: a handler produces them as it works and
+`shared::record::QueryRecord` carries `bytes_scanned` and `files_parsed`
+through `measure replay --records`, so putting them in the row is a digest
+rather than a measurement. Nothing is traded — the stale clause asserted a
+mechanism that does not exist, and no claim anywhere rests on it.
+
+No code changed under this anchor in this campaign, and the section's open gap
+is untouched: the gap is the third counter, "nodes visited", which `QueryRecord`
+does not carry. That is `state/decisions/harness-012.md` and it is a Class B
+question, not this edit.
+
+**Campaign:** fb78b589-0b53-462a-b22d-f65de1c9a78f
+
+## CHANGE-harness-015 — loops.md#mechanics-isolation-in-four-layers — the pinned-harness argument says what it means for a check, which §13 left out
+
+**Contradiction:** not a contradiction but an omission the answered record
+`harness-011` names as outstanding work, quoted from it verbatim:
+
+> The harness loop's: `design/loops.md` §13 and `harness/readme.md` both warn
+> that a check reaching through `HJ_REPO` tests the candidate tree, and neither
+> says what to do about it. They should name `PINNED_HARNESS`, the three
+> deliberate exceptions, and the command.
+
+§13 already carried the pinned-harness argument in the direction that protects
+the score — "an edit to `hj` cannot change the verdict on the campaign that
+made it" — and said nothing about the direction that costs campaigns. Twice a
+check was written that resolved a path through `HJ_REPO` and so asserted about
+whichever tree the gate was judging; the second time it encoded a requirement
+no branch could satisfy, and the campaign that hit it had no green to revert
+to.
+
+**Resolution:** §13 gains a paragraph stating the split as a rule with the two
+sides named — a check on an invariant every live branch already satisfies reads
+the candidate, a check on how two harness files agree with each other reads the
+reviewed copy's own siblings — and names both mechanisms the record settled on:
+the list of deliberate exceptions, and `hj selftest --across-worktrees`. This
+trades nothing off: it is the ruling in an answered record written into the
+document that record says is missing it, and the human who answered it asked
+for exactly this text.
+
+Code changed in the same campaign under this anchor, and it should be read
+together rather than separately: `CANDIDATE_TREE_CHECKS` and the check that
+holds it to the source are the "named in a list rather than remembered" half of
+the paragraph. The section's open gap — the evaluation worktree,
+`[8e7ec3af37]` — is untouched by either.
+
+**Campaign:** fb78b589-0b53-462a-b22d-f65de1c9a78f

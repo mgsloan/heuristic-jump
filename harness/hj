@@ -18,9 +18,14 @@ this could edit the thing that scores it.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
+import importlib.machinery
+import importlib.util
 import inspect
+import io
 import json
+import math
 import os
 import re
 import shutil
@@ -59,6 +64,11 @@ PINNED_HARNESS = Path(__file__).resolve().parent
 CONTROL = Path(os.environ.get("HJ_CONTROL") or REPO).resolve()
 STATE = REPO / "state"
 DESIGN = REPO / "design"
+# The server matrix, `design/phases.md` §1c. Read and never written: the file
+# "names the oracle every language loop is scored against, and a loop that
+# could edit it could choose its own examiner", so it is where the harness
+# learns which server names are real rather than keeping a second list.
+SERVERS = REPO / "servers.toml"
 
 # Denied to every loop in every phase, and deliberately a constant here
 # rather than a row in `state/phase.toml`: the ownership table is data the
@@ -164,8 +174,16 @@ CAMPAIGN_MAX_LIFETIME_SECONDS = 6 * 3600
 #       moves the attributed *term* on 13 and the progress *verdict* on
 #       none, because every campaign it takes the audit-side term from had
 #       already scored at close. `state/decisions/harness-010.md`.
+#   4 — §7's fifth form arrives: "a frontier point being added that is not
+#       dominated by an existing one". Rules 1 to 3 computed four of the five
+#       because nothing computed a frontier. Strictly a loosening — it is a
+#       disjunct — and before phase 2a no metrics row carries an axis, so
+#       `progress-replay --rule 4` differs from rule 3 on nothing at all:
+#       same terms, same verdicts, same longest run without progress. That
+#       is the whole reason this could be bumped without a history sweep,
+#       and it stops being true the moment a tuning loop records a row.
 # DECISION-harness-010: provisional
-PROGRESS_RULE = 3
+PROGRESS_RULE = 4
 
 OUTCOMES = ("confirmed", "falsified", "no-movement", "partial", "budget", "crashed", "error")
 
@@ -2681,6 +2699,11 @@ def cmd_check_metrics(args: argparse.Namespace) -> int:
     failed = check_test_ratchet(config)
     failed = check_prompt_prefix(config, phase) or failed
     failed = check_denial_table(config) or failed
+    # Not scoped to `writes_harness`, unlike the two above it. Those read a
+    # document only one loop is judged on; this reads `state/phase.toml`, which
+    # is denied to every loop — so every live branch satisfies it and no branch
+    # can be failed for something it is forbidden to fix (`harness-011`).
+    failed = check_one_loop_per_language(phase) or failed
     return 1 if failed else 0
 
 
@@ -2701,8 +2724,207 @@ def cmd_check_ratchets(args: argparse.Namespace) -> int:
     return check_size_ratchet(config, phase)
 
 
+# --------------------------------------------------------------------------
+# §10's other dimension: "metrics still per (language, server)".
+#
+# A language is still one loop and one metrics file — `#several-servers-do-not-
+# mean-several-loops` argues that out at length, and the earlier revision that
+# gave each server its own loop produced "a loop with almost no legal move".
+# What the section keeps from the split is an *evaluation* rule, and it is the
+# rule that decides this row's shape:
+#
+# * Shared handler logic is evaluated "on the positions where *every* server
+#   for that language agrees … and it is **the frontier** — one per language,
+#   still 2D". That is the unprefixed surface below, and it is the only one
+#   `frontier_axes_of` ever sees.
+# * A `ServerProfile` is evaluated "on the positions where servers differ,
+#   against that server alone", and those numbers are "*reported beside* the
+#   frontier, the same treatment containment and result count get". That is
+#   `servers` below.
+#
+# What the harness deliberately does not do is synthesise the first from the
+# second. The agreement subset is a join over positions, which only
+# `measure_core` can compute — it is the thing that enumerates them once per
+# language precisely so the servers' answers are joinable (`positions.rs`). Two
+# servers' aggregate reports merged here would be the average the section says
+# never to take, and it would be an average wearing a frontier point's clothes.
+# So with two servers and no agreement report the row carries no frontier
+# position at all, and `record` says why.
+#
+# For a language with one usable server — Rust, Go — "every position is
+# trivially unanimous, there is no profile, and none of this machinery does
+# anything", so that server's own surface *is* the shared one and is promoted
+# to it. That is the section's stated intended behaviour rather than a special
+# case, and it is what keeps a single-server row identical in shape to every
+# row recorded before this existed.
+
+
+def servers_for_language(language: str) -> list[str]:
+    """The `servers.toml` keys that serve one language, in name order.
+
+    Empty for a language the matrix does not name, and empty when the file is
+    absent — which is what a checkout without the corpus repository beside it
+    looks like. Both are reported by the caller rather than treated as "no
+    server named is fine", since a run that produced numbers against something
+    is a run whose something has a name.
+    """
+    if not SERVERS.exists():
+        return []
+    table = tomllib.loads(SERVERS.read_text()).get("server") or {}
+    return sorted(
+        name
+        for name, entry in table.items()
+        if isinstance(entry, dict) and language in (entry.get("languages") or [])
+    )
+
+
+def replay_source(value: str) -> tuple[str | None, str]:
+    """`--replay-report PATH`, or `--replay-report <server>=PATH`.
+
+    A `servers.toml` key never contains `/`, and a path routinely does, so a
+    path with an `=` in it is not mistaken for a prefix.
+    """
+    server, separator, rest = value.partition("=")
+    if separator and server and "/" not in server:
+        return server, rest
+    return None, value
+
+
+def replay_surfaces(args: argparse.Namespace) -> dict[str | None, dict]:
+    """`record`'s replay arguments, grouped by the server each was run against.
+
+    `None` is the shared surface. Three arguments per surface because
+    `measure replay` writes two files — `--format json` on stdout and
+    `--records <path>` beside it — and knows the duration of neither:
+    `measure_core` keeps every clock out of the table it prints, so the wall
+    clock is only ever known to whoever ran it.
+    """
+    grouped: dict[str | None, dict] = {}
+    for attribute, key in (
+        ("replay_report", "report"),
+        ("replay_records", "records"),
+        ("replay_seconds", "seconds"),
+    ):
+        for value in getattr(args, attribute, None) or []:
+            server, rest = replay_source(str(value))
+            grouped.setdefault(server, {})[key] = rest
+    return grouped
+
+
+def replay_argument_problems(
+    surfaces: dict[str | None, dict], language: str | None
+) -> list[str]:
+    """What is wrong with `record`'s replay arguments, before any row is written.
+
+    Server names are checked rather than trusted because the failure is silent
+    otherwise: a typo'd name is a new series that looks like a server nobody
+    has replayed in a while, and the row it lands in is indistinguishable from
+    a real one. `servers.toml` is in no loop's write list — it "names the
+    oracle every language loop is scored against" — which is what makes it the
+    place to learn the names from rather than a second list here.
+
+    The duration is checked in the same pass because `--replay-seconds` stopped
+    being `type=float` when it gained a prefix, and an argument that used to
+    fail in argparse must not start failing in the middle of `record` with the
+    row half built.
+    """
+    problems = []
+    for name, surface in sorted(surfaces.items(), key=lambda pair: pair[0] or ""):
+        seconds = surface.get("seconds")
+        if seconds is not None:
+            try:
+                float(seconds)
+            except ValueError:
+                where = f"{name}=" if name else ""
+                problems.append(f"--replay-seconds {where}{seconds} is not a number")
+    named = sorted(name for name in surfaces if name is not None)
+    if not named:
+        return problems
+    if not language:
+        return problems + [
+            f"{name}: this loop declares no language, so there is no server matrix "
+            "to resolve it against"
+            for name in named
+        ]
+    known = servers_for_language(language)
+    if not known:
+        return problems + [
+            f"{name}: servers.toml names no server for {language}" for name in named
+        ]
+    return problems + [
+        f"{name}: not a servers.toml server for {language} ({', '.join(known)})"
+        for name in named
+        if name not in known
+    ]
+
+
+def digest_surface(surface: dict) -> dict:
+    """One surface's half of §10's row, out of what `measure replay` wrote.
+
+    Absent rather than null when nothing ran, which is the same rule `binary`
+    already follows: a row from before this existed and a row from a commit
+    nobody replayed are the same shape, and neither is the same shape as a row
+    that measured and found nothing.
+    """
+    fields: dict = {}
+    strata: list[dict[str, dict]] = []
+    if surface.get("report"):
+        report = json.loads(Path(surface["report"]).read_text())
+        strata.append(report_strata(report))
+        if isinstance(report.get("uncollected"), int):
+            fields["uncollected"] = report["uncollected"]
+    if surface.get("records"):
+        digest = replay_digest(read_jsonl(Path(surface["records"])))
+        strata.append(digest.pop("strata"))
+        fields["replay"] = digest
+    if surface.get("seconds") is not None:
+        fields.setdefault("replay", {})["wall_clock_seconds"] = float(surface["seconds"])
+    if strata:
+        fields["strata"] = merge_strata(*strata)
+    return fields
+
+
+def replay_row_fields(shared: dict, named: dict[str, dict]) -> dict:
+    """§10's replay half, assembled from surfaces that have already been digested.
+
+    Separate from the digesting so that what the section actually decides —
+    which surface the frontier reads — is one short function rather than
+    something only a corpus run can exercise.
+    """
+    if not shared and len(named) == 1:
+        # Deep-copied rather than aliased, so that a later edit to the row does
+        # not reach into the per-server entry it was promoted from and leave
+        # two fields that are supposed to be independent sharing one dict.
+        shared = json.loads(json.dumps(next(iter(named.values()))))
+    return dict(shared, servers=named) if named else shared
+
+
+def replay_fields(surfaces: dict[str | None, dict]) -> dict:
+    """The half of §10's row that a corpus run produces, when one has run."""
+    return replay_row_fields(
+        digest_surface(surfaces.get(None) or {}),
+        {
+            name: digest_surface(surface)
+            for name, surface in sorted(surfaces.items(), key=lambda pair: pair[0] or "")
+            if name is not None
+        },
+    )
+
+
 def cmd_record(args: argparse.Namespace) -> int:
     phase, config = loop_config(args.loop)
+    surfaces = replay_surfaces(args)
+    problems = replay_argument_problems(surfaces, config.language)
+    if problems:
+        for problem in problems:
+            print(f"metrics: {problem}", file=sys.stderr)
+        print(
+            "metrics: design/loops.md section 10 keeps metrics per (language, server), "
+            "so a `<server>=` prefix has to name a server the matrix has. Nothing was "
+            "appended.",
+            file=sys.stderr,
+        )
+        return 1
     target = last_loop_commit(config.owner) or head_sha()
     if target in {row.get("commit") for row in read_jsonl(metrics_path(config.owner))}:
         print(f"metrics: {target[:12]} is already recorded; nothing appended")
@@ -2726,6 +2948,23 @@ def cmd_record(args: argparse.Namespace) -> int:
         "tests_removed": removed_tests_in(target, crate_paths(config))[:20],
         "provisional_decisions": provisional_decisions(),
     }
+    row.update(replay_fields(surfaces))
+    # The one case where a row that measured plenty still carries no frontier
+    # position. Said out loud because the alternative is a series that silently
+    # stops producing points, which reads exactly like a loop that stopped
+    # making progress.
+    if "servers" in row and "strata" not in row:
+        print(
+            "metrics: "
+            + ", ".join(sorted(row["servers"]))
+            + " were replayed and none of them is the shared surface, so this row "
+            "carries no frontier position. design/loops.md section 10 puts the "
+            "frontier over the positions where every server agrees and says never to "
+            "average two servers, and the agreement subset is a join over positions "
+            "that only `measure replay` can compute. Pass it unprefixed when it "
+            "exists.",
+            file=sys.stderr,
+        )
     # §11's first of two numbers, and the only one a loop can compute in
     # isolation. Absent for a loop with no language rather than null, so that a
     # row from before this existed and a row that could not measure are not the
@@ -2741,13 +2980,21 @@ def cmd_record(args: argparse.Namespace) -> int:
             ceiling = phase.guardrail.get("measure_binary_bytes")
             if ceiling is not None and measured["stripped"] > ceiling:
                 print(
-                    f"guardrail: {measured['binary']} is {measured['stripped']} bytes "
-                    f"against a standing ceiling of {ceiling}. This is not a verdict on "
-                    "the last change (design/loops.md section 11); it means the loop has "
-                    "wandered somewhere no legitimate experiment goes. It stops the loop "
-                    "between campaigns, not this gate.",
+                    guardrail_warning(
+                        f"{measured['binary']} is {measured['stripped']} bytes", ceiling
+                    ),
                     file=sys.stderr,
                 )
+    # §11's other ceiling, said here for the same reason and from the same row.
+    # It is the replay that just ran rather than the history, so a campaign
+    # hears about the query it made pathological before the next one starts.
+    query_ceiling = phase.guardrail.get("query_micros")
+    worst = worst_stratum_query_micros(row)
+    if query_ceiling is not None and worst is not None and worst[0] > query_ceiling:
+        print(
+            guardrail_warning(f"{worst[1]} answers at {worst[0]}us p99", query_ceiling),
+            file=sys.stderr,
+        )
     append_jsonl(metrics_path(config.owner), row)
     commit_harness_state([metrics_path(config.owner)], f"metrics row for {target[:8]}")
     print(json.dumps(row, sort_keys=True))
@@ -3522,6 +3769,47 @@ def documented_harness_denials(text: str) -> tuple[set[str], str]:
             "names what a loop writing `harness/` still may not touch"
         )
     return set(re.findall(r"`(harness/[^`\s]+)`", paragraphs[0])), ""
+
+
+def check_one_loop_per_language(phase: Phase) -> int:
+    """§10's "several servers do not mean several loops", as a check.
+
+    The section argues the per-server split out and rejects it — such a loop
+    "owns one file it is forbidden to grow except on corpus evidence" and is
+    forbidden the one shape that would let it do anything locally, so it is "a
+    loop with almost no legal move" — and concludes that "a language is one
+    loop, and it reads every table for its language".
+
+    Two loops declaring one language is that split arriving anyway, whatever
+    they are named. What it produces is two metrics files, two frontiers over
+    one set of numbers, and two loops contending on one crate. Nothing else
+    here would notice, because every command is per loop and each of the two
+    looks perfectly correct on its own — which is why the row's server
+    dimension needs this beside it rather than instead of it.
+    """
+    owners: dict[str, list[str]] = {}
+    for owner, config in sorted(phase.loops.items()):
+        if config.language:
+            owners.setdefault(config.language, []).append(owner)
+    if not owners:
+        print("loops: no loop declares a language, so no two can share one")
+        return 0
+    doubled = {language: names for language, names in owners.items() if len(names) > 1}
+    for language, names in sorted(doubled.items()):
+        print(
+            f"loops: {language} is declared by {' and '.join(names)}. design/loops.md "
+            "section 10 makes a language one loop that reads every server's table for "
+            "it; two loops for one language are two metrics files and two frontiers "
+            "over one set of numbers, and a per-server split is the shape that "
+            "section rejects outright.",
+            file=sys.stderr,
+        )
+    if not doubled:
+        print(
+            "loops: "
+            + ", ".join(f"{language} -> {names[0]}" for language, names in sorted(owners.items()))
+        )
+    return 1 if doubled else 0
 
 
 def check_denial_table(config: LoopConfig) -> int:
@@ -4832,7 +5120,7 @@ def replay_progress(rule: int) -> list[dict]:
                 if tests_only
                 else "none"
             )
-        elif rule == 3:
+        elif rule in (3, 4):
             started = opened.get("started") or ""
             window = [
                 audit
@@ -4872,7 +5160,18 @@ def replay_progress(rule: int) -> list[dict]:
             # row is read directly rather than from `merged`, which also
             # carries the settled row's answer and would make this circular.
             carried = bool(closed.get("progress"))
-            verdict = bool(cleaned or attributed or tests_only or carried)
+            # Rule 4 is rule 3 plus §7's fifth form, which rule 3 did not
+            # have because nothing computed a frontier. It is a disjunct, so
+            # it can only reclassify a campaign from no-progress to progress
+            # — and before phase 2a no metrics row carries an axis, so it
+            # reclassifies none. That is what the backtest is for and it is
+            # the whole justification for bumping the rule without a sweep:
+            # `hj progress-replay --rule 4` against rule 3 differs nowhere.
+            advanced = rule == 4 and campaign_frontier_advance(
+                [row for row in metrics.get(owner, []) if row.get("phase") == merged.get("phase")],
+                campaign_id,
+            )
+            verdict = bool(cleaned or attributed or tests_only or carried or advanced)
             term = (
                 "sections_clean"
                 if cleaned
@@ -4882,6 +5181,8 @@ def replay_progress(rule: int) -> list[dict]:
                 if tests_only
                 else "carried"
                 if carried
+                else "frontier"
+                if advanced
                 else "none"
             )
         else:
@@ -5081,7 +5382,17 @@ def settle_progress(
         attributed = gap_attribution(merged, closed, audited_sections)
         cleaned = current["sections_clean"] > opened.get("sections_clean", 0)
         consolidated = earned_consolidation_credit(merged, opened, current)
-        progress = bool(cleaned or attributed or consolidated or merged.get("progress"))
+        # Recomputed rather than left to the `merged.get("progress")` disjunct
+        # below, which would carry it anyway: what would be lost is the *term*.
+        # A settled row saying "carried" where the frontier is what moved makes
+        # the one term §7 added last unreadable in the history, and the row
+        # stamps `progress_rule` as though it had computed all five.
+        advanced = campaign_advanced_the_frontier(
+            config.owner, campaign_id, merged.get("phase") or ""
+        )
+        progress = bool(
+            cleaned or attributed or consolidated or advanced or merged.get("progress")
+        )
         append_jsonl(
             sessions_path(),
             {
@@ -5098,6 +5409,8 @@ def settle_progress(
                     if attributed
                     else "consolidation"
                     if consolidated
+                    else "frontier"
+                    if advanced
                     else "carried"
                 ),
                 **current,
@@ -5124,16 +5437,24 @@ def cmd_campaign_close(args: argparse.Namespace) -> int:
 
     reconciled = decisions_reconciled(args.id)
 
-    # Four of §7's five forms. The fifth is a frontier point that is not
-    # dominated by an existing one, and there is no frontier before phase 2a:
-    # it is produced by the corpus run, which is what `measure_<lang>` will
-    # write and no loop writes yet. Adding a term that reads a file nobody
-    # produces would make this look complete while behaving identically.
+    # All five of §7's forms. The fifth — "a frontier point being added that
+    # is not dominated by an existing one" — was absent while nothing computed
+    # a frontier, and its absence was not neutral: a campaign whose only
+    # result was a non-dominated point scored as no progress and counted
+    # toward the stall threshold, which is the one outcome §7 most wants a
+    # loop to be free to reach.
+    #
+    # It reads the metrics history rather than a corpus, so it is answerable
+    # today and answers False today: `record` writes no axis before there is
+    # a tuning loop. `hj progress-replay --rule 4` against rule 3 is the
+    # backtest, and it differs on nothing.
+    advanced = campaign_advanced_the_frontier(config.owner, args.id, phase.phase)
     progress = (
         after["sections_clean"] > before["sections_clean"]
         or after["open_gaps"] < before["open_gaps"]
         or (tests_before is not None and tests_after is not None and tests_after > tests_before)
         or bool(reconciled)
+        or advanced
     )
     drift = spec_drift(args.id, args.target)
     prompts = prompt_drift(args.id, config)
@@ -5932,6 +6253,626 @@ def cmd_budget(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------
+# The metrics history's other half. `design/loops.md` §10, "The metrics
+# history", and §9, "There is no replay-time target, and that is deliberate".
+#
+# §10's row spec names more than `record` was writing:
+#
+#   work counters (bytes read, files parsed, nodes visited),
+#   replay wall clock, per-stratum heuristic latency percentiles and the
+#   per-stage breakdown, deadline-abstention rate
+#
+# None of it is computed here from scratch. `measure replay --records <path>`
+# writes `shared::record::QueryRecord` as JSONL, and the doc comment on its
+# writer says whose job the rest is: "Digesting these into something readable
+# is the harness's job, not `measure_core`'s: the same split that keeps this
+# crate ignorant of `state/`." So this is that digest, and the shape it reads
+# is a real type in this repository rather than a guessed one.
+#
+# The wall clock is not in the digest and cannot be. `measure_core`'s table
+# holds no clock on purpose — "§7's command line makes the table byte-identical
+# across two runs of the same corpus at the same commit, which is what makes it
+# usable as a gate rather than a report" — so whoever runs the replay reports
+# how long it took, and `record --replay-seconds` puts it in the row. §9 wants
+# it "recorded as an ordinary metric alongside the work counters ... per
+# language, per commit, from the very first run", read "as a trend, never gated
+# on", and that is exactly what a field with no threshold beside it is.
+
+# §7 puts an abstention's reason in `stages` rather than in a column of its
+# own, "because `stages` is the field §7 makes the handler's account of what it
+# did and a second reason column would be two vocabularies for one question".
+# `shared::record::abstain_label` is where the spelling is decided.
+DEADLINE_ABSTENTION = "abstain:deadline"
+
+
+def percentile(values: list[float], fraction: float) -> float | None:
+    """Nearest-rank, on an already-small sample.
+
+    Not interpolated: a corpus stratum can hold a handful of queries, and an
+    interpolated p99 over eleven samples reports a number no query took. §10
+    reads these as a trend and says they are "not trustworthy to better than a
+    factor while the loops run in parallel", so the honest estimator is the
+    one that only ever returns an observation.
+    """
+    if not values:
+        return None
+    ordered = sorted(values)
+    rank = max(1, math.ceil(fraction * len(ordered)))
+    return ordered[min(rank, len(ordered)) - 1]
+
+
+def replay_digest(records: list[dict]) -> dict:
+    """§10's work counters, per-stratum latency percentiles, per-stage
+    breakdown and deadline-abstention rate, from §7's per-query records.
+
+    Grouped on `stratum_prior` rather than `stratum_final`, for the reason
+    `measure_core`'s table gives for putting coverage there: the prior "is
+    fixed by the reference and does not move when the implementation changes".
+    A latency series grouped on the settled stratum would shift rows between
+    buckets whenever the search got better at refining, and a percentile that
+    moves because its denominator moved is the kind of number that survives a
+    whole phase before anyone notices.
+
+    Two of §10's three work counters. The section names "bytes read, files
+    parsed, nodes visited" and `QueryRecord` carries `bytes_scanned` and
+    `files_parsed` and no node count — recorded as the two that exist rather
+    than as a zero for the third, so that a row cannot claim a measurement
+    nothing took.
+    """
+    # DECISION-harness-012: provisional — whether the third counter arrives as
+    # a field on `QueryRecord` or the spec drops to the two that exist. The
+    # tuple below is the whole of what changes under either answer.
+    strata: dict[str, dict] = {}
+    counters = {"bytes_scanned": 0, "files_parsed": 0}
+    deadline = 0
+    for record in records:
+        for name in counters:
+            value = record.get(name)
+            if isinstance(value, int) and not isinstance(value, bool):
+                counters[name] += value
+        stages = [stage for stage in (record.get("stages") or []) if isinstance(stage, str)]
+        if record.get("decision") == "abstained" and DEADLINE_ABSTENTION in stages:
+            deadline += 1
+        name = record.get("stratum_prior")
+        if not isinstance(name, str):
+            continue
+        bucket = strata.setdefault(
+            name, {"n": 0, "latency_us": [], "stage_us": {}, "returned": []}
+        )
+        bucket["n"] += 1
+        latency = record.get("heuristic_latency_us")
+        if isinstance(latency, (int, float)) and not isinstance(latency, bool):
+            bucket["latency_us"].append(float(latency))
+        returned = record.get("returned")
+        if isinstance(returned, int) and not isinstance(returned, bool):
+            bucket["returned"].append(float(returned))
+        for stage, micros in (record.get("stage_us") or {}).items():
+            if isinstance(micros, (int, float)) and not isinstance(micros, bool):
+                bucket["stage_us"].setdefault(stage, []).append(float(micros))
+
+    digested = {}
+    for name, bucket in sorted(strata.items()):
+        entry = {"n": bucket["n"]}
+        for label, fraction in (("p50", 0.5), ("p90", 0.9), ("p99", 0.99)):
+            value = percentile(bucket["latency_us"], fraction)
+            if value is not None:
+                entry[f"latency_{label}_us"] = value
+        stage_p50 = {
+            stage: percentile(series, 0.5)
+            for stage, series in sorted(bucket["stage_us"].items())
+        }
+        if stage_p50:
+            entry["stage_p50_us"] = stage_p50
+        # §10's "result count", which the frontier reports beside itself and
+        # never on it — it is "the price of containment", and a point that
+        # raised containment by lengthening lists must not read as an advance.
+        # The mean rather than the distribution, which §10's row spec asks for
+        # and `QueryRecord` does not carry in a form that survives a mean; the
+        # per-query `returned` is in the records file for whoever needs it.
+        if bucket["returned"]:
+            entry["result_count"] = sum(bucket["returned"]) / len(bucket["returned"])
+        digested[name] = entry
+
+    return {
+        "queries": len(records),
+        "work": counters,
+        # The number §10 says is "the one worth watching most", "since it is
+        # the whole of the gap between what replay reports and what the shim
+        # would deliver". A rate rather than a count, so that it is comparable
+        # across corpus versions.
+        "deadline_abstention_rate": (deadline / len(records)) if records else None,
+        "strata": digested,
+    }
+
+
+# Coverage is committed over queries; top-1 agreement is `match_top1` over the
+# three agreement counters, which "partition the judged commits exactly". Both
+# formulas are `measure_core::table::Row`'s, whose own comment says a ratio is
+# "computed here rather than by every consumer, because a metric with two
+# definitions is two metrics" — and then serialises the counters and not the
+# ratios, so a consumer has no choice. Written once here for the same reason it
+# is written once there, and the raw counters go into the row beside them so
+# that a redefinition can be swept rather than lost.
+def report_strata(report: dict) -> dict[str, dict]:
+    """`measure replay --format json`, in the shape the metrics row wants.
+
+    `judged` is carried as its own denominator because it is not `n`: coverage
+    is counted on the reference stratum and agreement on the settled one, so a
+    query that refined its stratum contributes to two different rows. Weighting
+    a top-1 mean by `n` would weight it by the wrong row's population.
+    """
+    strata = {}
+    for row in report.get("strata") or []:
+        name = row.get("stratum")
+        if not isinstance(name, str):
+            continue
+        queries = row.get("queries") or 0
+        judged = sum(
+            row.get(key) or 0 for key in ("match_top1", "match_contained", "mismatch")
+        )
+        entry = {
+            "n": queries,
+            "judged": judged,
+            **{
+                key: row[key]
+                for key in (
+                    "queries", "committed", "abstained", "failed",
+                    "match_top1", "match_contained", "mismatch",
+                )
+                if key in row
+            },
+        }
+        if queries:
+            entry["coverage"] = (row.get("committed") or 0) / queries
+        if judged:
+            entry["top1"] = (row.get("match_top1") or 0) / judged
+            entry["contained"] = ((row.get("match_top1") or 0) + (row.get("match_contained") or 0)) / judged
+        strata[name] = entry
+    return strata
+
+
+def merge_strata(*sources: dict[str, dict]) -> dict[str, dict]:
+    """One `strata` map out of several, keyed by stratum name.
+
+    The quality half comes from the report and the cost half from the records,
+    and they are two files because `measure_core` writes them as two. Merged
+    here rather than kept apart so that a metrics row has one place a stratum
+    lives — `frontier_axes_of` and the latency percentiles read the same map.
+    """
+    merged: dict[str, dict] = {}
+    for source in sources:
+        for name, entry in source.items():
+            merged.setdefault(name, {}).update(entry)
+    return merged
+
+
+# --------------------------------------------------------------------------
+# The frontier. `design/loops.md` §10, "The frontier, and why it stays
+# two-dimensional".
+#
+# "A commit is on the frontier if no other commit beats it on every axis. Over
+# a run of a few hundred iterations that is a real, computable object, and it
+# is strictly more informative than the current numbers: it is the record of
+# what was *achievable*, including by versions that were later abandoned."
+#
+# §18 lists the frontier under what is deliberately not built, on the argument
+# that "a thing that only serves tuning loops is not built before there are
+# tuning loops". The same section says what ends that: "this list shortens as
+# the followup is built, and it is the list rather than the argument that
+# moves". The argument is untouched by building it — nothing consumes a
+# frontier before 2a, and during phase 1a every function here answers "no row
+# carries both axes". What it buys is that the axes are fixed *before* there
+# are numbers to pick them by, which is the whole of §10's discipline: adding
+# a third axis to escape a bad-looking chart is easy, and impossible to notice
+# afterwards.
+
+# The two axes, and the order they print in. §10 chooses between the three
+# quality numbers by a criterion rather than by taste — "it must not be
+# improvable by answering more". Top-1 agreement passes it; containment "rises
+# monotonically with list length, so as an objective it is the old flaw
+# wearing new clothes"; result count is "the price of containment".
+FRONTIER_AXES = ("top1", "coverage")
+
+# Reported beside the frontier and never on it. Three different reasons, worth
+# keeping apart because they fail differently:
+#
+# * containment and result count — "a point that raises containment by
+#   lengthening lists is not a frontier advance and must not read as one";
+# * latency — a constraint rather than an objective, and already counted:
+#   past the hard cap a query abstains, so blown latency "spends itself as
+#   lost recall" and is visible on the quality axis. A third axis for it would
+#   double-count it;
+# * LOC — "it correlates with binary size, it is gameable by formatting, and
+#   what it is really a proxy for — maintainability — is not something a
+#   frontier can see".
+#
+# The list is the subject of a check rather than decoration. §10's stated
+# reason for the discipline is that with four or more objectives
+# "non-domination becomes nearly free — almost every point is on the frontier
+# and the concept stops selecting anything", so the failure it guards against
+# is a *later* campaign promoting one of these to an axis, which nothing else
+# here would notice.
+#
+# These are the keys a stratum carries them under, not the concept names —
+# the first draft used the concepts, and every consumer then looked up
+# `latency` in a row that spells it `latency_p50_us` and printed nothing. LOC
+# is missing from the list for a real reason rather than that one: it is not
+# per-stratum. It rides in the row's own `loc` field, per crate, which is
+# where §10 wants it reported and is already what the dashboard draws.
+FRONTIER_BESIDE = ("contained", "result_count", "latency_p50_us")
+
+# §10: "Phase 3 has no frontier of its own, because it may not move quality at
+# all. It has one axis, size, and a ratchet. The frontier reappears there only
+# inside an escalation, to show what a proposed exception would cost."
+FRONTIER_PHASES = ("2a", "2b")
+
+# Each axis's denominator, because they are not the same one. Coverage is
+# counted on the reference stratum and agreement on the settled one
+# (`core.md` §7, and `measure_core::table::Table::observe`), so a query that
+# refined its stratum contributes to two different rows — and a top-1 mean
+# weighted by `n` would be weighted by the wrong row's population. Falls back
+# to `n` where the row does not carry the finer count, which is what a row
+# written before `report_strata` existed looks like.
+AXIS_DENOMINATOR = {"top1": "judged", "contained": "judged"}
+
+
+def stratum_mean(row: dict, key: str, weight_key: str | None = None) -> float | None:
+    """One number out of §10's per-stratum metrics row, n-weighted.
+
+    The row spec is per stratum — "per-stratum {coverage, top1, contained,
+    result-count distribution, n}" — and the frontier is over commits, so an
+    axis has to be aggregated before it is one. Weighted by the stratum's `n`
+    rather than a plain mean: `data-collection.md` sizes the strata an order
+    of magnitude apart, and an unweighted mean lets the rarest one outvote
+    everything else.
+
+    A top-level value wins where a row carries one, so that a replay sweep
+    which recomputes and writes the aggregate directly cannot disagree with
+    this about which number is authoritative.
+    """
+    direct = row.get(key)
+    if isinstance(direct, (int, float)) and not isinstance(direct, bool):
+        return float(direct)
+    denominator = weight_key or AXIS_DENOMINATOR.get(key, "n")
+    total = weight = 0.0
+    for numbers in (row.get("strata") or {}).values():
+        if not isinstance(numbers, dict):
+            continue
+        value = numbers.get(key)
+        count = numbers.get(denominator)
+        if count is None:
+            count = numbers.get("n", 1)
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            continue
+        if isinstance(count, (int, float)) and not isinstance(count, bool) and count > 0:
+            total += float(value) * float(count)
+            weight += float(count)
+    return total / weight if weight else None
+
+
+def frontier_axes_of(row: dict) -> dict[str, float] | None:
+    """A row's position on the frontier's plane, or None if it is not on it.
+
+    Both axes or neither. A point with one coordinate cannot be compared, and
+    filling the missing one in with zero would park every phase-1 row at the
+    origin and then read the first tuning commit as an advance over all of
+    them — a hundred campaigns of free progress from one absent field.
+    """
+    position = {axis: stratum_mean(row, axis) for axis in FRONTIER_AXES}
+    return None if any(value is None for value in position.values()) else position
+
+
+def dominates(better: dict, worse: dict) -> bool:
+    """Pareto domination: at least as good on every axis, strictly better on
+    at least one.
+
+    §10 phrases the frontier as "no other commit beats it on every axis",
+    which read strictly would keep a point that ties on one axis and loses on
+    the other. The two readings agree wherever no two commits tie; where they
+    do not, the literal one keeps points that are better than nothing. The
+    difference is settled in `advances_frontier` rather than here, because
+    that is the reading §7 pays for and this one only reports.
+    """
+    return all(better[axis] >= worse[axis] for axis in FRONTIER_AXES) and any(
+        better[axis] > worse[axis] for axis in FRONTIER_AXES
+    )
+
+
+def advances_frontier(point: dict, existing: list[dict]) -> bool:
+    """§7's fifth form of progress: "a frontier point being added that is not
+    dominated by an existing one".
+
+    Stricter than `not any(dominates(other, point))` by exactly the tie, and
+    the tie is the whole of it. `record` writes a row per commit, and a commit
+    that changes no behaviour carries the previous commit's numbers exactly;
+    under the looser reading that identical row is undominated, so every
+    commit forever scores progress and §7's stall detection stops existing.
+    That is the shape §7's own gaming table is about, arriving through the
+    term meant to reward real work.
+
+    So a point advances only if it is strictly better than *every* existing
+    point on at least one axis.
+    """
+    return not any(
+        all(other[axis] >= point[axis] for axis in FRONTIER_AXES) for other in existing
+    )
+
+
+def frontier_points(rows: list[dict]) -> list[dict]:
+    """The non-dominated rows, in the order they were recorded, each carrying
+    its position under `frontier_axes`.
+
+    Ties keep the earliest commit: the frontier is "the record of what was
+    achievable", and the commit that first achieved a point is the one that
+    achieved it. Keeping the latest would let a run of no-op commits reassign
+    every point on the frontier to whichever ran most recently, which is the
+    same free-progress route `advances_frontier` closes one step earlier.
+    """
+    positioned = [
+        (row, position)
+        for row in rows
+        if (position := frontier_axes_of(row)) is not None
+    ]
+    kept: list[tuple[dict, dict]] = []
+    for row, position in positioned:
+        if any(dominates(other, position) for _, other in positioned):
+            continue
+        if any(other == position for _, other in kept):
+            continue
+        kept.append((row, position))
+    return [dict(row, frontier_axes=position) for row, position in kept]
+
+
+# --------------------------------------------------------------------------
+# The exchange rate. `design/loops.md` §10, "What this retires".
+#
+# "The **local slope of the cost-phase frontier is the empirical rate** — it
+# says what a coverage point actually cost in bytes, at this operating point,
+# on this corpus. Deriving it beats declaring it, and it can be re-derived
+# whenever the operating point moves."
+#
+# A different object from the quality frontier above it, and deliberately not
+# built on the same functions. §10 is explicit that "phase 3 has no frontier of
+# its own … the frontier reappears there only inside an escalation, to show
+# what a proposed exception would cost", so this plane is coverage against
+# bytes and one of its axes is a minimisation. Sharing `dominates` would mean
+# giving it a direction table, and a direction table is how a third axis and a
+# weighting arrive later.
+#
+# What it must not become is a threshold. §10's whole argument is that "nobody
+# has to write down what a coverage point is worth in kilobytes in the
+# abstract" — the rate is derived to be *looked at* by the human ruling on an
+# escalation, and a rate that decided anything by itself would be that written
+# -down number arriving through the back door.
+
+
+def cost_point_of(row: dict) -> tuple[float, int] | None:
+    """A row's position on the cost plane: coverage, and stripped bytes.
+
+    Both or neither, for `frontier_axes_of`'s reason. A row missing the size
+    would otherwise sit at zero bytes and dominate everything that measured.
+    """
+    coverage = stratum_mean(row, "coverage")
+    binary = row.get("binary")
+    if coverage is None or not isinstance(binary, dict):
+        return None
+    stripped = binary.get("stripped")
+    if not isinstance(stripped, int) or isinstance(stripped, bool):
+        return None
+    return coverage, stripped
+
+
+def cost_frontier(rows: list[dict]) -> list[dict]:
+    """Non-dominated on more coverage and fewer bytes, cheapest first.
+
+    Ties on both axes keep the earliest commit, as the quality frontier does
+    and for the same reason: the commit that first reached a point is the one
+    that reached it.
+    """
+    positioned = [
+        (row, point) for row in rows if (point := cost_point_of(row)) is not None
+    ]
+    kept: list[tuple[dict, tuple[float, int]]] = []
+    for row, (coverage, size) in positioned:
+        dominated = any(
+            other_coverage >= coverage
+            and other_size <= size
+            and (other_coverage > coverage or other_size < size)
+            for _, (other_coverage, other_size) in positioned
+        )
+        if dominated or any(other == (coverage, size) for _, other in kept):
+            continue
+        kept.append((row, (coverage, size)))
+    kept.sort(key=lambda pair: pair[1][1])
+    return [
+        dict(row, cost_point={"coverage": coverage, "stripped": size})
+        for row, (coverage, size) in kept
+    ]
+
+
+def exchange_rates(points: list[dict]) -> list[dict]:
+    """The local slope between adjacent points: bytes per coverage point.
+
+    Local rather than a fit through the whole frontier. The section says "at
+    this operating point", and a single fitted rate over a curve that bends —
+    which is the shape the incompressible-peak failure in §19 predicts — would
+    read as one price for a surface that has several.
+    """
+    rates = []
+    for earlier, later in zip(points, points[1:]):
+        cheap, dear = earlier["cost_point"], later["cost_point"]
+        gained = dear["coverage"] - cheap["coverage"]
+        if gained <= 0:
+            continue
+        rates.append(
+            {
+                "from": earlier.get("commit"),
+                "to": later.get("commit"),
+                "coverage": gained,
+                "bytes": dear["stripped"] - cheap["stripped"],
+                "bytes_per_coverage_point": (dear["stripped"] - cheap["stripped"]) / gained,
+            }
+        )
+    return rates
+
+
+def cmd_exchange_rate(args: argparse.Namespace) -> int:
+    """§10's empirical exchange rate, derived rather than declared.
+
+    Not a gate step, not consulted by `harness/loop`, and exit 0 whatever it
+    finds. It exists to be read by the human ruling on a phase-3 escalation,
+    which is the one place §10 lets the frontier back in.
+    """
+    phase = load_phase()
+    owners = [args.loop] if args.loop else sorted(phase.loops)
+    wanted = args.phase or phase.phase
+    for owner in owners:
+        rows = [row for row in read_jsonl(metrics_path(owner)) if row.get("phase") == wanted]
+        points = cost_frontier(rows)
+        if len(points) < 2:
+            print(
+                f"exchange-rate: {owner}: {len(points)} point(s) on the cost plane, of "
+                f"{len(rows)} row(s) in phase {wanted}. A slope needs two, and a point "
+                "needs a row carrying both coverage and a stripped size — which is a "
+                "replayed commit of a loop that builds a measure_<lang>."
+            )
+            continue
+        print(
+            f"exchange-rate: {owner}: {len(points)} point(s) on coverage x stripped "
+            f"bytes in phase {wanted}, cheapest first"
+        )
+        for point in points:
+            place = point["cost_point"]
+            print(
+                f"  {(point.get('commit') or '')[:12]}  coverage {place['coverage']:.4f}"
+                f"  {place['stripped']} bytes"
+            )
+        for rate in exchange_rates(points):
+            print(
+                f"  {(rate['from'] or '')[:12]} -> {(rate['to'] or '')[:12]}  "
+                f"{rate['bytes_per_coverage_point']:,.0f} bytes per coverage point"
+            )
+        print(
+            "exchange-rate: derived and never declared (design/loops.md section 10). "
+            "It is what a coverage point cost at this operating point on this corpus, "
+            "for a human ruling on a phase-3 escalation to look at — not a threshold, "
+            "and nothing here reads it."
+        )
+    return 0
+
+
+def campaign_frontier_advance(rows: list[dict], campaign_id: str) -> bool:
+    """§7's fifth form, for one campaign, over one phase's metrics rows.
+
+    The baseline is the frontier as it stood *before* this campaign's first
+    row rather than over the whole phase: a campaign is judged on what it
+    added, and leaving its own rows in the comparison set would have every
+    point dominated by itself.
+
+    Keyed on `campaign` rather than on a commit list, because the metrics row
+    already carries the campaign from the commit's trailer — which makes this
+    answerable in a replay, where the working tree is whatever it is now and
+    `git log` for a campaign twenty campaigns ago is not.
+    """
+    index = next(
+        (number for number, row in enumerate(rows) if row.get("campaign") == campaign_id), None
+    )
+    if index is None:
+        return False
+    baseline = [point["frontier_axes"] for point in frontier_points(rows[:index])]
+    return any(
+        advances_frontier(position, baseline)
+        for row in rows[index:]
+        if row.get("campaign") == campaign_id
+        and (position := frontier_axes_of(row)) is not None
+    )
+
+
+def campaign_advanced_the_frontier(owner: str, campaign_id: str, phase: str) -> bool:
+    rows = [row for row in read_jsonl(metrics_path(owner)) if row.get("phase") == phase]
+    return campaign_frontier_advance(rows, campaign_id)
+
+
+def cmd_frontier(args: argparse.Namespace) -> int:
+    """§10's frontier, computed rather than described.
+
+    Deliberately not a gate step and not consulted by `harness/loop`. §10
+    makes the frontier a reporting object and a gate's selection input, and
+    the one place it decides anything on its own is §7's progress term, which
+    calls `advances_frontier` directly. A command that both printed the
+    frontier and enforced something against it would be the third axis
+    arriving by the back door.
+    """
+    phase = load_phase()
+    owners = [args.loop] if args.loop else sorted(phase.loops)
+    wanted = args.phase or phase.phase
+    if wanted not in FRONTIER_PHASES:
+        print(
+            f"frontier: phase {wanted} has no frontier of its own (design/loops.md "
+            "section 10). "
+            + (
+                "Phase 3 has one axis, size, and a ratchet; the frontier reappears "
+                "there only inside an escalation, to show what a proposed exception "
+                "would cost."
+                if wanted.startswith("3")
+                else "The frontier is a phase 2a object: top-1 agreement x coverage."
+            )
+        )
+    for owner in owners:
+        rows = [row for row in read_jsonl(metrics_path(owner)) if row.get("phase") == wanted]
+        points = frontier_points(rows)
+        if not points:
+            line = (
+                f"frontier: {owner}: nothing to compare — {len(rows)} row(s) in phase "
+                f"{wanted}, none carrying both of {' and '.join(FRONTIER_AXES)}"
+            )
+            # The one absence that is not "nobody replayed this". Distinguished
+            # because the remedy is different: a row replayed against two
+            # servers and no agreement report is a row whose shared surface was
+            # never produced, not one whose loop stopped measuring.
+            unshared = sum(1 for row in rows if row.get("servers") and "strata" not in row)
+            if unshared:
+                line += (
+                    f"; {unshared} of them carry per-server numbers only, and the "
+                    "frontier is over the positions where every server agrees"
+                )
+            print(line)
+            continue
+        print(
+            f"frontier: {owner}: {len(points)} of {len(rows)} row(s) in phase {wanted} "
+            f"are non-dominated on {' x '.join(FRONTIER_AXES)}"
+        )
+        for point in points:
+            axes = point["frontier_axes"]
+            beside = {
+                name: value
+                for name in FRONTIER_BESIDE
+                if (value := stratum_mean(point, name)) is not None
+            }
+            line = f"  {(point.get('commit') or '')[:12]}  " + "  ".join(
+                f"{axis} {axes[axis]:.4f}" for axis in FRONTIER_AXES
+            )
+            if beside:
+                line += "   beside, never an axis: " + ", ".join(
+                    f"{name} {value:g}" for name, value in beside.items()
+                )
+            print(line)
+            # A server's own numbers get "the same treatment containment and
+            # result count get" — printed under the point and never compared
+            # with it, since they are measured on the positions where the
+            # servers differ and no two servers' sets are the same one.
+            for name, entry in sorted((point.get("servers") or {}).items()):
+                numbers = [
+                    f"{axis} {value:.4f}"
+                    for axis in FRONTIER_AXES
+                    if (value := stratum_mean(entry, axis)) is not None
+                ]
+                if numbers:
+                    print(f"    beside, on its own positions: {name}  " + "  ".join(numbers))
+    return 0
+
+
+# --------------------------------------------------------------------------
 # Held-out integrity. `design/loops.md` §12.
 #
 # The section's first two bullets are a single mechanism stated twice, and the
@@ -6121,22 +7062,237 @@ def cmd_heldout(args: argparse.Namespace) -> int:
     return 1 if widened else 0
 
 
-# §11's guardrail is on two things and only one of them is measurable today.
-# Naming the second anyway is what stops it being forgotten: a guardrail table
-# that silently covers half of what the section asks for reads, from the
-# outside, exactly like one that covers all of it.
+# --------------------------------------------------------------------------
+# Selecting a version at a phase gate. `design/loops.md` §10.
+#
+# "**HEAD is not automatically what proceeds.** At a gate:
+#
+#   1. Compute the frontier over the phase's commits. Usually a handful of
+#      points survive.
+#   2. Evaluate *those points only* on the held-out corpus.
+#   3. Pick one. Continue from it."
+#
+# Step 1 is the frontier above. Step 3 is here. **Step 2 is not, and cannot
+# be**: it is a corpus run, which is `measure_<lang>`'s and outside every path
+# this loop owns, against a corpus and a handler that phase 1a does not have.
+# What is here instead is the refusal — a candidate with no held-out row makes
+# the whole selection stop rather than being quietly dropped, because "the
+# held-out evaluation at step 2 is not a nicety here; it is what makes step 3
+# mean anything".
+#
+# That refusal is the load-bearing half. §10's own argument is that "selecting
+# on the tuning corpus alone would be model selection on the training set, and
+# the frontier makes that worse rather than better, because it explicitly
+# searches the whole history for the best-looking point". A selection command
+# that ranked whatever it happened to have evaluated would do exactly that, on
+# a smaller set, and read as though it had not.
+
+
+def heldout_score(row: dict) -> float | None:
+    """A candidate's held-out number, aggregated the way an axis is.
+
+    One number and not two: §12's row carries `{tuning, heldout}` per stratum,
+    and the axis §10 selects on is top-1 agreement — the one quality number
+    that "must not be improvable by answering more". Coverage is the frontier's
+    other axis, but it is a property of the candidate rather than of the split
+    and is already read from the metrics row at step 1.
+    """
+    return stratum_mean(row, "heldout")
+
+
+def gate_selection(
+    candidates: list[dict], evaluated: dict[str, dict]
+) -> tuple[dict | None, list[str]]:
+    """§10's step 3, and the refusal that makes it mean anything.
+
+    Returns the chosen candidate and the candidate commits step 2 has not
+    evaluated. Any unevaluated candidate refuses the whole selection rather
+    than being skipped: skipping would rank the remainder, and the remainder
+    was chosen by the tuning numbers alone.
+
+    Ties break on the earlier commit — `sorted` is stable and the candidates
+    arrive in record order — and deliberately not on a tuning number. Using
+    one would be a small dose of the thing step 2 exists to stop, and it would
+    be the invisible kind, since it only ever decides cases where held-out has
+    already said the candidates are the same.
+    """
+    missing = [
+        candidate.get("commit") or ""
+        for candidate in candidates
+        if heldout_score(evaluated.get(candidate.get("commit") or "") or {}) is None
+    ]
+    if missing or not candidates:
+        return None, missing
+    ranked = sorted(
+        candidates,
+        key=lambda candidate: -(heldout_score(evaluated[candidate["commit"]]) or 0.0),
+    )
+    return ranked[0], []
+
+
+def gate_verdict_rows(
+    evaluations: list[dict], candidates: list[dict], chosen: str
+) -> list[dict]:
+    """What §12's widening test compares at a gate: the previous gate's row,
+    then the chosen one.
+
+    Not the previous *row*. The other candidates of this gate sit between them
+    in the file, so the naive reading compares the selected version against a
+    sibling it was selected over — which reports a widening every time the
+    frontier had more than one point on it, on the gates where selection was
+    doing the most work.
+    """
+    contenders = {candidate.get("commit") for candidate in candidates}
+    earlier = [row for row in evaluations if row.get("commit") not in contenders]
+    current = [row for row in evaluations if row.get("commit") == chosen]
+    return earlier[-1:] + current[-1:]
+
+
+def cmd_gate_select(args: argparse.Namespace) -> int:
+    """The three steps, run at a gate by a person.
+
+    Exit 1 means no version was selected — either step 2 has not run on every
+    candidate, or the chosen one's held-out gap widened, which §12 says "needs
+    a human to look at the diff".
+
+    Nothing here prints a held-out number, for §12's fourth bullet: "the loop
+    is shown a verdict, not the numbers ... enough to know something went
+    wrong and where; not enough to hill-climb." The tuning axes *are* printed,
+    because `hj frontier` already shows them to anyone who asks and hiding
+    them would only make the choice unreadable.
+    """
+    phase, config = loop_config(args.loop)
+    wanted = args.phase or phase.phase
+    if not config.language:
+        die(
+            f"loop {args.loop} declares no language, so it has no held-out corpus to "
+            "select against (design/loops.md section 10)"
+        )
+    rows = [row for row in read_jsonl(metrics_path(config.owner)) if row.get("phase") == wanted]
+    candidates = frontier_points(rows)
+    print(
+        f"gate-select: {config.language}: step 1 — {len(candidates)} of {len(rows)} "
+        f"row(s) in phase {wanted} are on the frontier"
+    )
+    if not candidates:
+        print(
+            "gate-select: nothing to select between. No row of this phase carries both "
+            f"of {' and '.join(FRONTIER_AXES)}, so there is no frontier to evaluate.",
+            file=sys.stderr,
+        )
+        return 1
+    for candidate in candidates:
+        axes = candidate["frontier_axes"]
+        print(
+            f"  {(candidate.get('commit') or '')[:12]}  "
+            + "  ".join(f"{axis} {axes[axis]:.4f}" for axis in FRONTIER_AXES)
+        )
+
+    evaluations = heldout_rows(config.language)
+    evaluated = {row.get("commit"): row for row in evaluations if row.get("commit")}
+    chosen, missing = gate_selection(candidates, evaluated)
+    if chosen is None:
+        print(
+            "gate-select: step 2 has not run on "
+            + ", ".join(commit[:12] for commit in missing)
+            + f". Evaluate those points on the held-out corpus and append to "
+            f"state/heldout/{config.language}.jsonl. design/loops.md section 10 "
+            "refuses to select without them: selecting on the tuning corpus alone "
+            "would be model selection on the training set, and the frontier makes "
+            "that worse rather than better because it searches the whole history "
+            "for the best-looking point.",
+            file=sys.stderr,
+        )
+        return 1
+
+    commit = chosen["commit"]
+    verdict, widened = heldout_verdict(
+        gate_verdict_rows(evaluations, candidates, commit), phase.heldout_threshold
+    )
+    print(f"gate-select: step 3 — {commit[:12]} proceeds; held-out {verdict}")
+    if widened:
+        print(
+            f"gate-select: {', '.join(widened)} widened against the previous gate. "
+            "design/loops.md section 12 stops here and escalates: it is the one "
+            "signal that means the last several iterations were probably net "
+            "negative, and it needs a human to look at the diff.",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
+# §11's guardrail is on two things: "`measure_<lang>` size and per-query work".
+# Both are read out of the metrics row. The second was a reason string for six
+# campaigns, on the argument that nothing measured per-query work — which
+# stopped being true when `replay_digest` started writing per-stratum latency
+# percentiles, and a guardrail that cannot fire is one the table describes and
+# the code does not have.
 GUARDRAILS = {
     "measure_binary_bytes": "the stripped size of measure_<lang>",
     "query_micros": "per-query work",
 }
 
 
-def last_recorded_size(owner: str) -> int | None:
-    for row in reversed(read_jsonl(metrics_path(owner))):
+def last_recorded_size(rows: list[dict]) -> int | None:
+    for row in reversed(rows):
         binary = row.get("binary")
         if isinstance(binary, dict) and isinstance(binary.get("stripped"), int):
             return binary["stripped"]
     return None
+
+
+def worst_stratum_query_micros(row: dict) -> tuple[int, str] | None:
+    """The slowest stratum's p99 in one row, and which stratum it was.
+
+    The worst stratum rather than an aggregate over them, and the tail rather
+    than the median, for the reason §11 gives for the ceiling existing at all:
+    it is set "an order of magnitude above where anything reasonable sits", so
+    what it watches for is one stratum having gone pathological. An n-weighted
+    mean of the kind `stratum_mean` computes for a frontier axis would hide
+    exactly that — `data-collection.md` sizes the strata an order of magnitude
+    apart, so the rare stratum is the one an aggregate cannot see, and the rare
+    stratum is where an exhaustive fallback search runs.
+
+    A p50 that stays put while the p99 goes to seconds is a search that has
+    stopped terminating on some inputs, which is per-query work in the sense
+    §11 bounds it.
+    """
+    worst: tuple[int, str] | None = None
+    for name, numbers in sorted((row.get("strata") or {}).items()):
+        if not isinstance(numbers, dict):
+            continue
+        value = numbers.get("latency_p99_us")
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            continue
+        if worst is None or round(value) > worst[0]:
+            worst = (round(value), name)
+    return worst
+
+
+def last_recorded_query_micros(rows: list[dict]) -> tuple[int, str] | None:
+    for row in reversed(rows):
+        worst = worst_stratum_query_micros(row)
+        if worst is not None:
+            return worst
+    return None
+
+
+def guardrail_warning(observed: str, ceiling: int) -> str:
+    """The one wording for a crossed ceiling, said in two places.
+
+    §11 asks for it "within a campaign rather than at a gate", so `record`
+    says it as the number is taken; the stop happens between campaigns, where
+    `harness/loop` says it again. Two sites, and the sentence that keeps a
+    guardrail from reading like a ratchet is the whole point of it — so it is
+    written once rather than agreed twice.
+    """
+    return (
+        f"guardrail: {observed} against a standing ceiling of {ceiling}. This is not "
+        "a verdict on the last change (design/loops.md section 11); it means the loop "
+        "has wandered somewhere no legitimate experiment goes. It stops the loop "
+        "between campaigns, not this gate."
+    )
 
 
 def guardrail_scopes(phase: Phase, owner: str | None = None) -> list[dict]:
@@ -6144,19 +7300,25 @@ def guardrail_scopes(phase: Phase, owner: str | None = None) -> list[dict]:
 
     Read out of the metrics history rather than measured here. The guardrail is
     consulted between campaigns and again from `record`, and a fresh release
-    build at either point would put minutes on both — where the number it would
-    produce is the one the last row already carries.
+    build or corpus replay at either point would put minutes on both — where
+    the number it would produce is the one the last row already carries.
     """
+    rows = read_jsonl(metrics_path(owner)) if owner else []
     scopes = []
     for name, description in GUARDRAILS.items():
         observed: int | None = None
         reason: str | None = None
+        note: str | None = None
         if name == "measure_binary_bytes":
-            observed = last_recorded_size(owner) if owner else None
+            observed = last_recorded_size(rows)
             if observed is None:
                 reason = "no row of this loop's carries a binary size yet"
         else:
-            reason = "nothing measures per-query work until there is a corpus run"
+            worst = last_recorded_query_micros(rows)
+            if worst is None:
+                reason = "no row of this loop's carries a replayed latency yet"
+            else:
+                observed, note = worst[0], f"p99 of {worst[1]}, the slowest stratum"
         scopes.append(
             {
                 "scope": name,
@@ -6164,6 +7326,7 @@ def guardrail_scopes(phase: Phase, owner: str | None = None) -> list[dict]:
                 "ceiling": phase.guardrail.get(name),
                 "observed": observed,
                 "reason": reason,
+                "note": note,
             }
         )
     return scopes
@@ -6191,6 +7354,8 @@ def cmd_guardrail(args: argparse.Namespace) -> int:
             state = f"ceiling {ceiling}, nothing observed — {entry['reason']}"
         else:
             state = f"{observed} of {ceiling} ({observed / ceiling * 100:.0f}%)"
+            if entry["note"]:
+                state += f" — {entry['note']}"
             if observed > ceiling:
                 state += "  — CROSSED"
                 crossed.append(entry["scope"])
@@ -7372,6 +8537,525 @@ def selftest_cases() -> list[tuple[str, object]]:
         rows = [{"commit": "aaa"}, {"commit": "bbb"}, {"commit": "ccc"}]
         assert rows_since(rows, None) == rows, "no re-baseline commit means the whole history"
 
+    def a_percentile_only_ever_returns_an_observation():
+        assert percentile([], 0.5) is None, "no sample is not a zero"
+        assert percentile([7.0], 0.99) == 7.0
+        assert percentile([1.0, 2.0, 3.0, 4.0], 0.5) == 2.0
+        assert percentile([1.0, 2.0, 3.0, 4.0], 0.99) == 4.0, (
+            "interpolating a p99 over four samples reports a number no query took"
+        )
+
+    def the_digest_groups_latency_on_the_reference_stratum():
+        # `stratum_final` moves when the search gets better at refining, so a
+        # series grouped on it changes bucket without changing behaviour.
+        records = [
+            {
+                "stratum_prior": "explicitly_imported", "stratum_final": "ambiguous_name",
+                "decision": "committed", "stages": ["scan"], "bytes_scanned": 100,
+                "files_parsed": 2, "heuristic_latency_us": 900,
+                "stage_us": {"scan": 800, "rank": 100},
+            },
+            {
+                "stratum_prior": "explicitly_imported", "stratum_final": "explicitly_imported",
+                "decision": "committed", "stages": ["scan"], "bytes_scanned": 50,
+                "files_parsed": 1, "heuristic_latency_us": 100,
+                "stage_us": {"scan": 90},
+            },
+        ]
+        digest = replay_digest(records)
+        assert set(digest["strata"]) == {"explicitly_imported"}, digest["strata"]
+        entry = digest["strata"]["explicitly_imported"]
+        assert entry["n"] == 2 and entry["latency_p50_us"] == 100.0, entry
+        assert entry["latency_p99_us"] == 900.0, entry
+        assert entry["stage_p50_us"] == {"rank": 100.0, "scan": 90.0}, entry
+        assert "result_count" not in entry, "no record carried `returned`, so there is no mean"
+        assert digest["work"] == {"bytes_scanned": 150, "files_parsed": 3}, digest["work"]
+        assert "nodes_visited" not in digest["work"], (
+            "§10 names three work counters and QueryRecord carries two; a zero "
+            "for the third would claim a measurement nothing took"
+        )
+
+    def only_a_deadline_abstention_counts_toward_the_deadline_rate():
+        records = [
+            {"decision": "abstained", "stages": ["abstain:deadline"], "stratum_prior": "a"},
+            {"decision": "abstained", "stages": ["abstain:no_candidates"], "stratum_prior": "a"},
+            {"decision": "committed", "stages": ["abstain:deadline"], "stratum_prior": "a"},
+            {"decision": "failed", "stages": [], "stratum_prior": "a"},
+        ]
+        assert replay_digest(records)["deadline_abstention_rate"] == 0.25
+        assert replay_digest([])["deadline_abstention_rate"] is None, (
+            "no queries is not a rate of zero"
+        )
+
+    def the_report_carries_both_denominators_because_they_differ():
+        # A query that refined its stratum is counted for coverage on the
+        # reference row and for agreement on the settled one, so `n` is the
+        # wrong weight for top-1 and `judged` is the right one.
+        strata = report_strata(
+            {
+                "strata": [
+                    {
+                        "stratum": "explicitly_imported", "queries": 100, "committed": 80,
+                        "abstained": 20, "failed": 0, "match_top1": 30,
+                        "match_contained": 10, "mismatch": 10,
+                    }
+                ]
+            }
+        )
+        entry = strata["explicitly_imported"]
+        assert entry["n"] == 100 and entry["judged"] == 50, entry
+        assert entry["coverage"] == 0.8 and entry["top1"] == 0.6, entry
+        assert entry["contained"] == 0.8, entry
+        assert entry["committed"] == 80, "the counters ride along, so a redefinition can be swept"
+
+    def an_axis_is_weighted_by_its_own_denominator():
+        row = {
+            "strata": {
+                "common": {"n": 1000, "judged": 10, "coverage": 0.9, "top1": 0.1},
+                "rare": {"n": 10, "judged": 1000, "coverage": 0.1, "top1": 0.9},
+            }
+        }
+        assert abs(stratum_mean(row, "coverage") - 901 / 1010) < 1e-12
+        assert abs(stratum_mean(row, "top1") - 901 / 1010) < 1e-12
+        assert abs(stratum_mean(row, "top1", "n") - 109 / 1010) < 1e-12, (
+            "the control: weighting top-1 by `n` moves it from 0.89 to 0.11, "
+            "because `n` is the wrong row's population for an agreement number"
+        )
+        assert AXIS_DENOMINATOR["top1"] == "judged"
+
+    def a_row_without_the_finer_count_falls_back_to_n():
+        row = {"strata": {"a": {"n": 4, "top1": 0.5}}}
+        assert stratum_mean(row, "top1") == 0.5, "a row written before `judged` existed still reads"
+
+    def the_two_halves_of_a_stratum_land_in_one_map():
+        quality = {"a": {"n": 10, "top1": 0.5}}
+        cost = {"a": {"n": 10, "latency_p50_us": 900.0}, "b": {"n": 1}}
+        merged = merge_strata(quality, cost)
+        assert merged["a"] == {"n": 10, "top1": 0.5, "latency_p50_us": 900.0}, merged
+        assert set(merged) == {"a", "b"}
+
+    def a_replay_becomes_a_row_the_frontier_can_read():
+        # The whole path in one check: what `measure replay` writes, through
+        # `record`, to a point on §10's plane. Each half is tested above; this
+        # is the one that fails if they stop fitting together, which is the
+        # failure neither of them can see.
+        report = {
+            "strata": [
+                {"stratum": "explicitly_imported", "queries": 10, "committed": 8,
+                 "abstained": 2, "failed": 0, "match_top1": 6,
+                 "match_contained": 1, "mismatch": 1},
+            ],
+            "uncollected": 3,
+        }
+        records = [
+            {"stratum_prior": "explicitly_imported", "decision": "committed",
+             "stages": [], "bytes_scanned": 10, "files_parsed": 1, "returned": 3,
+             "heuristic_latency_us": 500, "stage_us": {"scan": 400}},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            report_path = Path(directory) / "report.json"
+            records_path = Path(directory) / "records.jsonl"
+            report_path.write_text(json.dumps(report))
+            records_path.write_text(json.dumps(records[0]) + "\n")
+            fields = replay_fields(
+                replay_surfaces(
+                    argparse.Namespace(
+                        replay_report=[str(report_path)],
+                        replay_records=[str(records_path)],
+                        replay_seconds=["41.5"],
+                    )
+                )
+            )
+        assert fields["uncollected"] == 3
+        assert fields["replay"]["wall_clock_seconds"] == 41.5, (
+            "§9 records replay wall clock as an ordinary metric, per commit"
+        )
+        assert fields["replay"]["work"] == {"bytes_scanned": 10, "files_parsed": 1}
+        entry = fields["strata"]["explicitly_imported"]
+        assert entry["coverage"] == 0.8 and entry["top1"] == 0.75, entry
+        assert entry["latency_p50_us"] == 500.0, "the cost half landed in the same stratum"
+        assert entry["result_count"] == 3.0, "the price of containment, beside and not on"
+        position = frontier_axes_of(fields)
+        assert position == {"top1": 0.75, "coverage": 0.8}, position
+
+    def a_row_from_a_commit_nobody_replayed_carries_no_replay_key():
+        empty = argparse.Namespace(replay_report=None, replay_records=None, replay_seconds=None)
+        assert replay_fields(replay_surfaces(empty)) == {}, (
+            "absent rather than null, so a row from before this existed and a "
+            "row nobody replayed are the same shape"
+        )
+
+    def a_prefix_names_a_server_and_a_path_with_an_equals_in_it_does_not():
+        assert replay_source("pyright=/tmp/report.json") == ("pyright", "/tmp/report.json")
+        assert replay_source("/tmp/report.json") == (None, "/tmp/report.json")
+        assert replay_source("/tmp/a=b/report.json") == (None, "/tmp/a=b/report.json"), (
+            "a servers.toml key never contains a slash and a path routinely does"
+        )
+        assert replay_source("=/tmp/report.json") == (None, "=/tmp/report.json")
+        arguments = argparse.Namespace(
+            replay_report=["shared.json", "pyright=py.json"],
+            replay_records=["pyright=py.jsonl"],
+            replay_seconds=["12", "pyright=30"],
+        )
+        assert replay_surfaces(arguments) == {
+            None: {"report": "shared.json", "seconds": "12"},
+            "pyright": {"report": "py.json", "records": "py.jsonl", "seconds": "30"},
+        }
+
+    def one_servers_numbers_are_the_shared_surface_and_two_servers_are_not():
+        # §10, "several servers do not mean several loops". For a language with
+        # one usable server "every position is trivially unanimous, there is no
+        # profile, and none of this machinery does anything" — so that server's
+        # surface *is* the frontier's, and the row keeps the shape every row
+        # recorded before this existed has.
+        one = {"strata": {"a": {"n": 10, "judged": 8, "top1": 0.75, "coverage": 0.8}}}
+        assert replay_row_fields({}, {}) == {}, "a commit nobody replayed is unchanged"
+        promoted = replay_row_fields({}, {"gopls": one})
+        assert frontier_axes_of(promoted) == {"top1": 0.75, "coverage": 0.8}, promoted
+        promoted["strata"]["a"]["top1"] = 0.1
+        assert promoted["servers"]["gopls"]["strata"]["a"]["top1"] == 0.75, (
+            "promoted and not aliased: an edit to the row must not reach into "
+            "the per-server entry it was copied from"
+        )
+
+    def two_servers_never_average_into_one_frontier_point():
+        # The section says "never average the two", and the agreement subset it
+        # does want is a join over positions that only `measure replay` can
+        # compute. A row that carried a mean of two servers' strata would be
+        # that average wearing a frontier point's clothes.
+        one = {"strata": {"a": {"n": 10, "judged": 8, "top1": 0.75, "coverage": 0.8}}}
+        other = {"strata": {"a": {"n": 10, "judged": 8, "top1": 0.55, "coverage": 0.9}}}
+        two = replay_row_fields({}, {"pyright": one, "pylsp": other})
+        assert frontier_axes_of(two) is None, (
+            "with no agreement report there is no shared surface, and the row "
+            "carries no frontier position rather than a synthesised one"
+        )
+        assert sorted(two["servers"]) == ["pylsp", "pyright"], two
+        assert frontier_points([dict(two, commit="x")]) == [], (
+            "and the point does not arrive later through the frontier either"
+        )
+        # With one, the agreement subset is what the frontier reads and the
+        # per-server numbers stay beside it.
+        both = replay_row_fields(one, {"pyright": one, "pylsp": other})
+        assert frontier_axes_of(both) == {"top1": 0.75, "coverage": 0.8}, both
+        assert sorted(both["servers"]) == ["pylsp", "pyright"]
+
+    def a_check_that_reads_the_candidate_tree_is_on_the_list_that_says_so():
+        # `harness-011`, made mechanical. Two campaigns lost time to a case
+        # that read `HARNESS` and so asserted about whichever tree the gate was
+        # judging — one of them encoding a requirement no branch could satisfy,
+        # which left green-or-revert with no green to revert to.
+        #
+        # Reads `PINNED_HARNESS`, being an assertion about this file's own
+        # contents. Gate step 3 runs the tree's own copy whenever `hj` differs,
+        # which is exactly when a new read could have appeared.
+        reads = candidate_tree_reads((PINNED_HARNESS / "hj").read_text())
+        unlisted = [name for name in reads if name not in CANDIDATE_TREE_CHECKS]
+        assert not unlisted, (
+            "these read HARNESS — the tree being judged — without being on "
+            f"CANDIDATE_TREE_CHECKS: {unlisted}. If that is deliberate, add the "
+            "name and run `hj selftest --across-worktrees` first; if it is not, "
+            "read PINNED_HARNESS instead"
+        )
+        stale = [name for name in CANDIDATE_TREE_CHECKS if name not in reads]
+        assert not stale, (
+            f"listed as reading HARNESS and no longer does: {stale}. A stale "
+            "exemption is how the next one gets added without anybody noticing"
+        )
+
+    def the_per_stratum_table_renders_one_surface_per_server():
+        # §16 asks the metrics panel for "the per-stratum table — one per
+        # server where a language has several". The trap is the other half of
+        # §10: a single server's numbers *are* the shared surface, promoted by
+        # `replay_row_fields`, so the naive loop prints the same table twice
+        # under two headings and reads as two measurements.
+        serve = _selftest_dashboard()
+        one = {"strata": {"Common": {"n": 10, "coverage": 0.8, "top1": 0.75}}}
+        single = serve.stratum_table([replay_row_fields({}, {"gopls": one})])
+        assert single.count("<table") == 1, "the promoted surface is one table, not two"
+        assert "only server" in single, single
+        other = {"strata": {"Common": {"n": 10, "coverage": 0.6, "top1": 0.55}}}
+        several = serve.stratum_table([replay_row_fields(one, {"pyright": one, "pylsp": other})])
+        assert several.count("<table") == 3, "the agreement surface and one per server"
+        assert "where the servers differ" in several, several
+        assert serve.stratum_table([]).startswith("<p class=\"empty\""), (
+            "no row is an empty panel that says what would fill it, not a blank"
+        )
+
+    def the_held_out_panel_shows_a_verdict_and_never_a_number():
+        # §12: "the loop is shown a verdict, not the numbers … enough to know
+        # something went wrong and where; not enough to hill-climb." The
+        # dashboard is a file in the repository, so a loop can read it.
+        serve = _selftest_dashboard()
+        rendered = serve.heldout_block(_selftest_loop("lang-rust", "rust"), Phase(phase="2a"))
+        assert "no held-out evaluation has run yet" in rendered, rendered
+        assert not re.search(r"\d+\.\d+", rendered), (
+            "a per-stratum gap printed here is the leak section 12 exists to "
+            "prevent, arriving through the operator's view"
+        )
+        assert "declares no language" in serve.heldout_block(
+            _selftest_loop("harness", None), Phase(phase="1a")
+        )
+
+    def two_loops_may_not_declare_one_language():
+        # §10 rejects the per-server split — "a loop with almost no legal move"
+        # — and concludes "a language is one loop". Two loops for one language
+        # are two metrics files and two frontiers over one set of numbers, and
+        # every command here is per loop, so each of the two looks correct
+        # alone. This is the only place the pair is visible at once.
+        def verdict(phase: Phase) -> tuple[int, str]:
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = check_one_loop_per_language(phase)
+            return code, err.getvalue()
+
+        code, _ = verdict(
+            Phase(
+                phase="2a",
+                loops={
+                    "lang-rust": _selftest_loop("lang-rust", "rust"),
+                    "lang-python": _selftest_loop("lang-python", "python"),
+                },
+            )
+        )
+        assert code == 0
+        code, said = verdict(
+            Phase(
+                phase="2a",
+                loops={
+                    "lang-python-pyright": _selftest_loop("lang-python-pyright", "python"),
+                    "lang-python-pylsp": _selftest_loop("lang-python-pylsp", "python"),
+                },
+            )
+        )
+        assert code == 1, (
+            "a per-server split arrives by declaring the same language twice, "
+            "whatever the two loops are named"
+        )
+        assert "lang-python-pylsp and lang-python-pyright" in said, said
+        assert verdict(Phase(phase="1a"))[0] == 0, (
+            "phase 1a declares no language, and a check that failed there would "
+            "fail every gate of every loop until one did"
+        )
+
+    def a_server_name_is_resolved_against_the_matrix_and_not_trusted():
+        # A typo'd name is a new series that looks like a server nobody has
+        # replayed in a while, and nothing downstream can tell the two apart.
+        assert servers_for_language("go") == ["gopls"], servers_for_language("go")
+        assert servers_for_language("klingon") == []
+        python = servers_for_language("python")
+        assert set(python) == {"pyright", "basedpyright", "pylsp"}, python
+        surfaces = {None: {"report": "x"}, "pyrite": {"report": "y"}}
+        problems = replay_argument_problems(surfaces, "python")
+        assert len(problems) == 1 and "pyrite" in problems[0], problems
+        assert "pyright" in problems[0], "the message names what it could have been"
+        assert replay_argument_problems({None: {"report": "x"}}, None) == [], (
+            "a loop with no language records the shared surface as it always has"
+        )
+        assert replay_argument_problems({"gopls": {}}, None), (
+            "but a prefixed name with no language has nothing to resolve against"
+        )
+        assert replay_argument_problems({None: {"seconds": "12.5"}}, None) == []
+        assert replay_argument_problems({None: {"seconds": "quick"}}, None), (
+            "`--replay-seconds` stopped being type=float when it gained a "
+            "prefix; it must not start failing halfway through building a row"
+        )
+
+    def a_commit_beaten_on_every_axis_is_off_the_frontier():
+        rows = [
+            {"commit": "aaa", "top1": 0.80, "coverage": 0.60},
+            {"commit": "bbb", "top1": 0.90, "coverage": 0.70},
+        ]
+        assert [point["commit"] for point in frontier_points(rows)] == ["bbb"]
+
+    def a_trade_between_the_two_axes_keeps_both_points():
+        # The whole reason the object exists. A point that answers less but
+        # gets more of what it answers right is "the record of what was
+        # achievable", including by a version later abandoned.
+        rows = [
+            {"commit": "aaa", "top1": 0.95, "coverage": 0.40},
+            {"commit": "bbb", "top1": 0.70, "coverage": 0.90},
+        ]
+        assert len(frontier_points(rows)) == 2
+
+    def the_frontier_keeps_the_commit_that_first_reached_a_point():
+        rows = [
+            {"commit": "first", "top1": 0.9, "coverage": 0.9},
+            {"commit": "later", "top1": 0.9, "coverage": 0.9},
+        ]
+        assert [point["commit"] for point in frontier_points(rows)] == ["first"], (
+            "keeping the latest would let a run of no-op commits reassign every "
+            "point on the frontier to whichever ran last"
+        )
+
+    def an_identical_row_is_not_a_frontier_advance():
+        # `record` writes a row per commit, so a commit that changes no
+        # behaviour carries the previous commit's numbers exactly. Reading §7's
+        # "not dominated by an existing one" as strict domination would pay
+        # progress for that row, and for every row after it forever.
+        existing = [{"top1": 0.9, "coverage": 0.8}]
+        assert not advances_frontier({"top1": 0.9, "coverage": 0.8}, existing)
+        assert not advances_frontier({"top1": 0.5, "coverage": 0.5}, existing)
+        assert advances_frontier({"top1": 0.9, "coverage": 0.81}, existing)
+        assert advances_frontier({"top1": 0.95, "coverage": 0.1}, existing), (
+            "a trade is an advance; it is a point nothing existing reaches"
+        )
+
+    def the_exchange_rate_is_derived_from_the_cost_frontier_and_never_declared():
+        # §10: "the local slope of the cost-phase frontier is the empirical
+        # rate — it says what a coverage point actually cost in bytes, at this
+        # operating point, on this corpus."
+        def row(commit, coverage, stripped):
+            return {
+                "commit": commit,
+                "strata": {"a": {"n": 10, "coverage": coverage}},
+                "binary": {"binary": "measure_rust", "stripped": stripped},
+            }
+
+        rows = [
+            row("cheap", 0.50, 1_000_000),
+            row("mid", 0.60, 1_200_000),
+            row("dear", 0.62, 2_000_000),
+            # Dominated: less coverage than `mid` for more bytes than `mid`.
+            row("waste", 0.55, 1_500_000),
+        ]
+        points = cost_frontier(rows)
+        assert [point["commit"] for point in points] == ["cheap", "mid", "dear"], points
+        assert cost_frontier([{"commit": "x", "strata": {"a": {"coverage": 0.9}}}]) == [], (
+            "a row with no size would sit at zero bytes and dominate every row "
+            "that measured one"
+        )
+        rates = [rate["bytes_per_coverage_point"] for rate in exchange_rates(points)]
+        assert all(
+            abs(measured - wanted) < 1 for measured, wanted in zip(rates, (2e6, 4e7))
+        ) and len(rates) == 2, (
+            "local slopes, not one fit through the curve: the second point is "
+            f"twenty times dearer than the first and a single rate hides that: {rates}"
+        )
+        assert exchange_rates(points[:1]) == [], "a slope needs two points"
+        flat = [
+            {"commit": "a", "cost_point": {"coverage": 0.5, "stripped": 10}},
+            {"commit": "b", "cost_point": {"coverage": 0.5, "stripped": 20}},
+        ]
+        assert exchange_rates(flat) == [], "no coverage gained is not an infinite price"
+
+    def a_row_missing_one_axis_is_not_a_point():
+        assert frontier_axes_of({"top1": 0.9}) is None
+        assert frontier_axes_of({"top1": 0.9, "coverage": 0.8}) == {"top1": 0.9, "coverage": 0.8}
+        assert frontier_points([{"commit": "x", "coverage": 0.8}]) == [], (
+            "filling a missing axis with zero would park every phase-1 row at "
+            "the origin and read the first tuning commit as an advance over all"
+        )
+
+    def the_axes_stay_two_and_the_others_stay_beside():
+        # §10: with four or more objectives "non-domination becomes nearly
+        # free — almost every point is on the frontier and the concept stops
+        # selecting anything". The failure this catches is a later campaign
+        # promoting one of the reported numbers to an axis.
+        assert len(FRONTIER_AXES) == 2, FRONTIER_AXES
+        assert "top1" in FRONTIER_AXES and "contained" not in FRONTIER_AXES, (
+            "containment rises monotonically with list length, so as an "
+            "objective it is the old flaw wearing new clothes"
+        )
+        assert not set(FRONTIER_AXES) & set(FRONTIER_BESIDE)
+        # The keys a stratum actually carries, not the concept names. Naming
+        # the concept was the first draft, and every consumer then looked up
+        # `latency` in a row that spells it `latency_p50_us`.
+        for name in ("contained", "result_count", "latency_p50_us"):
+            assert name in FRONTIER_BESIDE, name
+        example = {
+            "strata": {
+                "a": {"n": 1, "judged": 1, "contained": 0.9, "result_count": 3.0,
+                      "latency_p50_us": 900.0}
+            }
+        }
+        for name in FRONTIER_BESIDE:
+            assert stratum_mean(example, name) is not None, (
+                f"{name} is printed beside the frontier and nothing writes it"
+            )
+
+    def a_stratum_mean_is_weighted_by_its_n():
+        row = {"strata": {"Common": {"top1": 0.9, "n": 900}, "Rare": {"top1": 0.1, "n": 100}}}
+        assert abs(stratum_mean(row, "top1") - 0.82) < 1e-9, stratum_mean(row, "top1")
+        assert stratum_mean(row, "coverage") is None, "an absent number is not zero"
+        assert stratum_mean({"top1": 0.5, "strata": {"A": {"top1": 0.1}}}, "top1") == 0.5, (
+            "a recomputed aggregate is authoritative over the per-stratum rows"
+        )
+
+    def a_campaign_is_judged_against_the_frontier_as_it_stood_before_it():
+        rows = [
+            {"campaign": "old", "top1": 0.90, "coverage": 0.80},
+            {"campaign": "mine", "top1": 0.90, "coverage": 0.80},
+            {"campaign": "mine", "top1": 0.91, "coverage": 0.80},
+        ]
+        assert campaign_frontier_advance(rows, "mine")
+        assert not campaign_frontier_advance(rows[:2], "mine"), (
+            "matching the previous row is not an advance"
+        )
+        assert not campaign_frontier_advance(rows, "absent")
+        assert not campaign_frontier_advance(
+            [{"campaign": "mine", "sections_clean": 3}], "mine"
+        ), "a conformance row carries no axes, so it can never advance a frontier"
+
+    def an_unevaluated_candidate_refuses_the_whole_selection():
+        # Not "skip it and rank the rest". The rest was chosen by the tuning
+        # numbers, which is the model-selection-on-the-training-set §10 spends
+        # its closing paragraph on — and skipping reads exactly like selecting.
+        candidates = [
+            {"commit": "aaa", "frontier_axes": {"top1": 0.9, "coverage": 0.5}},
+            {"commit": "bbb", "frontier_axes": {"top1": 0.5, "coverage": 0.9}},
+        ]
+        evaluated = {"aaa": {"strata": {"A": {"tuning": 0.9, "heldout": 0.8}}}}
+        chosen, missing = gate_selection(candidates, evaluated)
+        assert chosen is None and missing == ["bbb"], (chosen, missing)
+
+    def the_selection_is_on_held_out_and_not_on_the_tuning_axes():
+        candidates = [
+            {"commit": "aaa", "frontier_axes": {"top1": 0.99, "coverage": 0.99}},
+            {"commit": "bbb", "frontier_axes": {"top1": 0.50, "coverage": 0.50}},
+        ]
+        evaluated = {
+            "aaa": {"strata": {"A": {"tuning": 0.99, "heldout": 0.20}}},
+            "bbb": {"strata": {"A": {"tuning": 0.50, "heldout": 0.49}}},
+        }
+        chosen, missing = gate_selection(candidates, evaluated)
+        assert missing == [] and chosen["commit"] == "bbb", chosen
+        assert candidates[0]["frontier_axes"]["top1"] > candidates[1]["frontier_axes"]["top1"], (
+            "the point of the check: the tuning-best candidate is the one not chosen"
+        )
+
+    def a_held_out_tie_breaks_on_the_earlier_commit():
+        candidates = [
+            {"commit": "first", "frontier_axes": {"top1": 0.5, "coverage": 0.9}},
+            {"commit": "later", "frontier_axes": {"top1": 0.9, "coverage": 0.5}},
+        ]
+        evaluated = {
+            "first": {"strata": {"A": {"tuning": 0.6, "heldout": 0.6}}},
+            "later": {"strata": {"A": {"tuning": 0.9, "heldout": 0.6}}},
+        }
+        chosen, _ = gate_selection(candidates, evaluated)
+        assert chosen["commit"] == "first", (
+            "breaking a held-out tie on a tuning number is a small dose of the "
+            "thing step 2 exists to stop, and the invisible kind"
+        )
+
+    def nothing_on_the_frontier_selects_nothing():
+        assert gate_selection([], {}) == (None, [])
+
+    def a_gate_is_compared_with_the_previous_gate_and_not_the_previous_row():
+        evaluations = [
+            {"commit": "old", "strata": {"A": {"tuning": 0.9, "heldout": 0.85}}},
+            {"commit": "aaa", "strata": {"A": {"tuning": 0.9, "heldout": 0.60}}},
+            {"commit": "bbb", "strata": {"A": {"tuning": 0.9, "heldout": 0.86}}},
+        ]
+        candidates = [{"commit": "aaa"}, {"commit": "bbb"}]
+        rows = gate_verdict_rows(evaluations, candidates, "bbb")
+        assert [row["commit"] for row in rows] == ["old", "bbb"], rows
+        assert heldout_verdict(rows, None)[1] == [], (
+            "comparing bbb against aaa — a sibling it was selected over — would "
+            "report a widening on every gate whose frontier had two points"
+        )
+
     def the_verdict_carries_no_number_a_loop_could_climb():
         rows = [
             {"strata": {"ExplicitImport": {"tuning": 0.9137, "heldout": 0.8942}}},
@@ -7473,8 +9157,51 @@ def selftest_cases() -> list[tuple[str, object]]:
         assert scopes["measure_binary_bytes"]["ceiling"] == 60_000_000
         assert scopes["query_micros"]["ceiling"] is None, "an unset ceiling is not a zero one"
         assert scopes["query_micros"]["reason"], (
-            "§11 guards two things and only one is measurable; a table that "
-            "silently covers half of it reads like one that covers all of it"
+            "with no owner there is no history to read either ceiling out of, "
+            "and a scope that says so is not a scope that measured nothing"
+        )
+
+    def the_per_query_ceiling_reads_the_row_the_replay_wrote():
+        # §11's second ceiling. It was a reason string until `replay_digest`
+        # started writing per-stratum latency percentiles; a guardrail that
+        # cannot fire is one the table describes and the code does not have.
+        row = {
+            "strata": {
+                "Common": {"n": 900, "latency_p50_us": 40.0, "latency_p99_us": 120.0},
+                "Rare": {"n": 9, "latency_p50_us": 60.0, "latency_p99_us": 4_000_000.4},
+            }
+        }
+        assert worst_stratum_query_micros(row) == (4_000_000, "Rare"), (
+            "the worst stratum, not a mean over them: the strata are sized an "
+            "order of magnitude apart, so an aggregate hides the rare one"
+        )
+        assert worst_stratum_query_micros({"strata": {"Common": {"n": 900}}}) is None
+        assert worst_stratum_query_micros({}) is None, "an absent number is not a zero one"
+        rows = [{"strata": {"Common": {"latency_p99_us": 120.0}}}, {"loc": {}}]
+        assert last_recorded_query_micros(rows) == (120, "Common"), (
+            "the last row that carries one, the way the size half already "
+            "reads past a row that measured no binary"
+        )
+        assert last_recorded_query_micros([]) is None
+
+    def both_ceilings_say_the_same_thing_when_they_are_crossed():
+        # §11's guardrail "is emphatically not a ratchet: crossing it does not
+        # mean the last change was wrong". That sentence is the whole of the
+        # difference, and two sites saying it in their own words is how one of
+        # them ends up reading like a gate failure.
+        text = guardrail_warning("Rare answers at 4000000us p99", 1_000_000)
+        assert "not a verdict on the last change" in text, text
+        assert "between campaigns, not this gate" in text, text
+        source = (PINNED_HARNESS / "hj").read_text()
+        first, past = selftest_line_range(source)
+        outside = [
+            line
+            for number, line in enumerate(source.splitlines(), start=1)
+            if not first <= number < past
+        ]
+        assert sum("standing ceiling of" in line for line in outside) == 1, (
+            "the wording has one home; a second copy is how the two ceilings "
+            "start describing different mechanisms"
         )
 
     def guardrails_are_absent_by_default():
@@ -7815,6 +9542,71 @@ def _selftest_loop(owner: str, language: str | None) -> LoopConfig:
     )
 
 
+# The selftest cases that deliberately read `HARNESS` — the tree being judged —
+# instead of `PINNED_HARNESS`, the reviewed copy this file sits in.
+#
+# `harness-011` answered that the two are not interchangeable, after two
+# campaigns lost time to the difference. A case asserting how two harness files
+# agree with *each other* reads `PINNED_HARNESS`: a branch carrying an older
+# copy of a file it is denied is behind rather than broken, and failing it for
+# that is failing a campaign for something it may not fix. A case asserting an
+# invariant every live branch already satisfies reads `HARNESS`, because
+# catching a campaign that introduces the defect is the whole of its value.
+#
+# Named rather than counted, so joining the list is a decision rather than a
+# habit — and `hj selftest --across-worktrees` is what answers "would this fail
+# a branch that predates it", which the record called undecidable.
+CANDIDATE_TREE_CHECKS = (
+    "the_reaper_is_the_only_caller_that_asks_the_process_table",
+    "a_tuple_returning_helper_is_not_used_as_one_value",
+    "the_digest_asymmetry_reaches_both_ends",
+)
+
+
+def candidate_tree_reads(source: str) -> list[str]:
+    """The selftest cases that read `HARNESS`, by name, in file order."""
+    first, past = selftest_line_range(source)
+    found, name = [], None
+    for number, line in enumerate(source.splitlines(), start=1):
+        match = re.match(r"    def ([a-z0-9_]+)\(\):", line)
+        if match:
+            name = match.group(1)
+        if first <= number < past and name and re.search(r"\(HARNESS\s*/", line):
+            if name not in found:
+                found.append(name)
+    return found
+
+
+def _selftest_dashboard():
+    """The reviewed `dashboard/serve`, loaded as a module so its renderers can
+    be called directly.
+
+    `PINNED_HARNESS` rather than `HARNESS`, per `harness-011`: this asserts how
+    two harness files agree with each other, and reading the candidate tree
+    would fail a branch for carrying an older copy of a file it may not be the
+    one to change.
+
+    `serve` loads its own `hj` at import time and registers it as
+    `sys.modules["hj"]`, so the entry is saved and put back — leaving a second
+    copy of this module installed under the name the running one has is the
+    kind of thing that goes wrong three checks later and looks unrelated.
+    """
+    previous = sys.modules.get("hj")
+    source = PINNED_HARNESS / "dashboard" / "serve"
+    spec = importlib.util.spec_from_loader(
+        "_hj_dashboard", importlib.machinery.SourceFileLoader("_hj_dashboard", str(source))
+    )
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        if previous is None:
+            sys.modules.pop("hj", None)
+        else:
+            sys.modules["hj"] = previous
+    return module
+
+
 def _selftest_adapter_cost(events: list[dict]) -> dict:
     """Run the real `adapter cost` over a synthetic stream.
 
@@ -8094,7 +9886,43 @@ def main() -> int:
 
     p = sub.add_parser("record", help="append the metrics row for HEAD")
     p.add_argument("loop")
+    # Each repeatable, and each taking an optional `<server>=` prefix. Bare is
+    # the shared surface the frontier reads; prefixed is one server's own
+    # numbers, reported beside it (loops.md §10, "several servers do not mean
+    # several loops"). Bare is also the whole of it for a single-server
+    # language, where every position is trivially unanimous.
+    p.add_argument(
+        "--replay-report",
+        action="append",
+        metavar="[SERVER=]PATH",
+        help="`measure replay --format json`",
+    )
+    p.add_argument(
+        "--replay-records",
+        action="append",
+        metavar="[SERVER=]PATH",
+        help="`measure replay --records <path>`",
+    )
+    p.add_argument(
+        "--replay-seconds",
+        action="append",
+        metavar="[SERVER=]N",
+        help="how long that replay took (loops.md §9 records it, never gates on it)",
+    )
     p.set_defaults(run=cmd_record)
+
+    p = sub.add_parser(
+        "exchange-rate",
+        help="what a coverage point cost in bytes, from the cost-phase frontier (loops.md §10)",
+    )
+    p.add_argument("loop", nargs="?")
+    p.add_argument("--phase", help="a phase other than the current one")
+    p.set_defaults(run=cmd_exchange_rate)
+
+    p = sub.add_parser("frontier", help="the non-dominated commits of a phase (loops.md §10)")
+    p.add_argument("loop", nargs="?")
+    p.add_argument("--phase", help="a phase other than the current one")
+    p.set_defaults(run=cmd_frontier)
 
     p = sub.add_parser("check-heldout", help="the held-out split is separate, and unnamed")
     p.set_defaults(run=cmd_check_heldout)
@@ -8102,6 +9930,11 @@ def main() -> int:
     p = sub.add_parser("heldout", help="the held-out verdict, and never the numbers")
     p.add_argument("language", nargs="?")
     p.set_defaults(run=cmd_heldout)
+
+    p = sub.add_parser("gate-select", help="which version proceeds past a phase gate (loops.md §10)")
+    p.add_argument("loop")
+    p.add_argument("--phase", help="a phase other than the current one")
+    p.set_defaults(run=cmd_gate_select)
 
     p = sub.add_parser("guardrail", help="the standing ceilings of loops.md §11")
     p.add_argument("loop", nargs="?")

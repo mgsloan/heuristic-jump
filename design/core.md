@@ -365,7 +365,19 @@ Notes on the shape:
   declares its ids as consts; the driver resolves an incoming LSP `languageId`
   against the registry and gets `Option<LanguageId>`. Unknown languages fail
   to resolve at the boundary rather than travelling inward as a string that
-  matches nothing, and lookup becomes pointer comparison.
+  matches nothing.
+
+  **Comparison is `str` equality on the interned text, and must not be pointer
+  identity.** The registry resolves an incoming `languageId` against ids a
+  `lang_*` crate declared, and those two `"rust"`s are literals in different
+  crates: comparing addresses would have them differ, and the language would go
+  quietly unhandled — a failure with no error anywhere, since an unresolved id
+  is exactly what an unsupported language looks like. What interning buys is
+  therefore a cheap comparison over a short string with no allocation, not one
+  over an address. `crates/shared/tests/` has
+  `a_language_id_compares_by_text_and_not_by_address`, which leaks a
+  runtime-built `"rust"` so the compiler merging two equal literals cannot
+  answer the question for it.
 *  **Handlers get a snapshot, not a lock —literally, with no primitive in it
   at all.** `DocumentSnapshot` holds a cloned `Rope` and a `Tree`, both O(1)
   to clone, taken at dispatch —so a handler is immune to edits that arrive
@@ -460,6 +472,16 @@ Notes on the shape:
   another hat.
   A handler reads a field describing a behaviour; it does not ask which
   server it is talking to.
+
+  Like the commit funnel below, this is held by review rather than by the
+  types, and for once that is not obvious from the outside: `ServerId`'s field
+  is private and there is no public constructor from a string, which reads as
+  though an identity cannot be named at all. It can — `ServerId::KNOWN` is a
+  `pub const` of the whole matrix and `ServerId::from_name` is public, both so
+  that `measure_core` can resolve `--server` — so the mechanical check is the
+  same shape as the other one:
+  `crates/shared/tests/handler.rs::no_language_crate_asks_which_server_it_is_standing_in_for`
+  scans every `lang_*` source for the identity and for `ServerProfile::id`.
 
   **The identity is a private field behind a constructor per situation**,
   rather than a public `id: Option<ServerId>`. The absence has to be
@@ -2245,9 +2267,9 @@ on any language crate.** Wiring happens in `heuristic_jump`.
               shared  <-- rope, tree-sitter, serde, serde_json, url,
              /  /  |  \      ignore, rayon, thiserror, rustc-hash, tracing
             /  /   |   \
-measure_core  /  similarity  driver  <-- crossbeam-channel, rayon,
-       |     /     |          |            rustc-hash, tracing
-       |     /     |          |
+measure_core  /  similarity  driver  <-- crossbeam-channel, lru, notify,
+       |     /     |          |            rayon, rustc-hash, serde_json,
+       |     /     |          |            tracing
        |    lang_* /          |
        |     /  \ /           |
        +--> measure_<lang>   heuristic_jump
@@ -2257,9 +2279,46 @@ measure_core  /  similarity  driver  <-- crossbeam-channel, rayon,
 the only crate that depends on both `measure_core` and a language, and it
 contains four lines.
 
+**Three of the crates named above are chosen and not yet declared, and this is
+the complete list of them.** `deps.md` §14 has each dependency arrive with its
+first user, so a crate this section names and no manifest declares is the
+intended state rather than a drift. But left implicit that rule forgives too
+much in the other direction — a dependency that *vanishes* from a manifest is
+indistinguishable from one that has not arrived yet — so the set is named here
+and `crates/driver/tests/seam.rs` reads it, which turns the difference between
+the two into an equality it can check:
+
+* `rayon` in `shared` — for `ProjectView::scan`. The fan-out onto a bounded
+  pool is the arrangement `resolution.md` §3 settles, and "executes on the pool
+  it is handed at construction" describes that arrangement rather than the code
+  as it stands: `ProjectView::new` takes no pool, and `scan` is a sequential
+  loop over candidates. Parallelising it is an optimisation, and `CLAUDE.md`
+  withholds those until the corpus harness shows the change is worth it and
+  there is a benchmark — so the dependency arrives with the benchmark, not
+  before it.
+* `rayon` in `driver` — the same fan-out, seen from the side that owns the pool
+  and hands it over.
+* `rustc-hash` in `driver` — `deps.md` §0 places it here, and every map
+  `driver` owns so far is small enough that nothing has reached for it.
+
 Every edge, and why:
 
-* **`shared` depends on nothing of ours.** The shared vocabulary: it holds
+* **`shared` depends on no crate of ours in `crates/`.** The vendored text
+  crates are not an exception to that and are not covered by it: `rope` is on
+  the list below and `shared` depends on it, and "ours" throughout this section
+  means the code in `crates/` rather than every workspace member. Keeping the
+  two apart is what `vendor/` is for — `deps.md` §14's tree separates them so
+  provenance and licensing stay obvious — and a `vendor/` crate is a dependency
+  like any other except for who wrote it. Where the distinction has teeth is
+  the other edges: `measure_core` "depends on `shared` and nothing else of
+  ours" is the same word used the same way, and
+  `crates/driver/tests/seam.rs::the_measurement_crates_have_the_edges_section_9_gives_them`
+  reads it strictly, quantifying over `vendor/` too — not because §9's sentence
+  demands it, but because the text vocabulary reaches `measure_core` through
+  `shared`'s re-export, so a direct `rope` edge there would be a divergence
+  worth failing on rather than a spelling of the same thing.
+
+  The shared vocabulary: it holds
   `LanguageHandler`, `Query`, `Outcome`, `Stratum`, `Deadline`,
   `DocumentSnapshot`, `ProjectView`, and `Error` — types every other
   crate needs to talk about, and almost no behaviour. It also holds `proto`, the
@@ -2268,14 +2327,16 @@ Every edge, and why:
   deserialization *produces* rather than what a conversion layer produces
   afterwards. Its own dependencies are `serde`, `serde_json`, `url`, `rope`,
   `tree-sitter`, `ignore` (for `ProjectView`'s walk), `rayon` (for
-  `ProjectView::scan`, which executes on the pool it is handed at
-  construction — `resolution.md` §3), `thiserror` (for `Error`'s derives),
+  `ProjectView::scan` — `resolution.md` §3, and the first of the three entries
+  above that are chosen and not yet declared), `thiserror` (for `Error`'s
+  derives),
   `rustc-hash`, and `tracing` — which is in the graph regardless, since `rope`
   and `sum_tree` depend on it and two logging facades would be silly
   (`deps.md` §9). This list is the authoritative one; §8.7 refers back to it
   rather than restating it, and
   `crates/driver/tests/seam.rs::shared_declares_only_the_dependencies_section_9_lists`
-  fails on a dependency that is not on it.
+  fails on a dependency that is not on it *and* on one that is on it, is not in
+  the deferred list above, and is missing from the manifest.
 
   ** `Error` is one enumerated type covering every failure in the system**,
   not an `anyhow` -style boxed `dyn Error`. It lives here rather than in

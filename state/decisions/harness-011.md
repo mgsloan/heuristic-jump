@@ -131,3 +131,12 @@ have to change with them. Under B nothing changes mechanically and the next
 occurrence is a matter of whoever writes the next check remembering. Under C
 step 3's contract changes for every loop, which is the widest blast radius of
 the three and wants a human rather than a campaign.
+
+### Reconciled
+
+The outstanding half above landed in campaign
+`fb78b589-0b53-462a-b22d-f65de1c9a78f`: `design/loops.md` §13 and
+`harness/readme.md` both state the `PINNED_HARNESS` / `HARNESS` split as a
+rule and name `hj selftest --across-worktrees`, and the deliberate exceptions
+are `CANDIDATE_TREE_CHECKS` in `hj` — held to the source by a selftest, so a
+fourth one appearing is a failure rather than a convention to remember.

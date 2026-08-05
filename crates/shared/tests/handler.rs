@@ -310,6 +310,67 @@ fn every_stratum_is_in_the_list_the_codec_decodes_from() {
     );
 }
 
+/// §1's "**`AbstainReason` carries no resolution vocabulary**", which the
+/// comparison above cannot see: [`variants`] takes names only — it splits on
+/// `[' ', '(', '{', ':']` and keeps the first token — so
+/// `External { name: Namespace }` and `External { name: Box<str> }` are the
+/// same string to it, and the two revisions §1 says were rejected would both
+/// have passed.
+///
+/// The rejected ones are named in the section: "Earlier revisions had
+/// `UnsupportedRole { role: ReferenceRole }` and `External { name: Namespace }`,
+/// which would have dragged two of `resolution.md`'s internal types into the
+/// seam — and `ReferenceRole`'s variant set is a claim about what kinds of
+/// reference exist, which is exactly the per-language decision
+/// [`resolution.md` §1.2] refuses to centralise." That is a claim about the
+/// *frozen* seam, so the cost of it slipping is paid by every language crate
+/// at once and by none of them visibly.
+///
+/// An allowlist rather than a grammar for what counts as a primitive, and it
+/// has one entry: every capitalised name in the enum body is a variant name or
+/// a type, `str` is lower case, and `Box` is the only type §1's printed block
+/// carries. A payload that names anything else fails and sends the reader to
+/// the section, which is the whole of what this has to do.
+#[test]
+fn no_abstention_reason_carries_a_type_from_the_resolution_vocabulary() {
+    /// Not "the primitives", which would be a list of things nobody has
+    /// written. It is the types §1's block actually prints, and it is meant to
+    /// stay this short — an entry earns its place by appearing in the section.
+    const PERMITTED: &[&str] = &["Box"];
+
+    let source = source();
+    let start = source
+        .find("pub enum AbstainReason {")
+        .expect("shared::handler declares AbstainReason");
+    let body = enclosed(&source[start + "pub enum AbstainReason ".len()..]);
+
+    assert!(
+        body.contains(':'),
+        "no AbstainReason variant carries a field, so this scan would pass against an \
+         allowlist nothing tests and would keep passing when one arrived"
+    );
+
+    let names = variants(&source, "pub enum AbstainReason {");
+    for line in body.lines() {
+        let code = line.trim();
+        if code.starts_with("//") || code.starts_with('#') {
+            continue;
+        }
+        for token in code.split(|c: char| !c.is_ascii_alphanumeric() && c != '_') {
+            if !token.starts_with(|first: char| first.is_ascii_uppercase()) {
+                continue;
+            }
+            assert!(
+                names.iter().any(|variant| variant == token) || PERMITTED.contains(&token),
+                "AbstainReason names {token} in a payload. core.md §1 keeps the resolution \
+                 vocabulary out of the seam — the variants are unit or carry primitives, and \
+                 the detail a handler knows reaches the metrics through the trace record \
+                 rather than through a type every language crate then has to speak"
+            );
+        }
+    }
+}
+
 /// Variant names of the enum introduced by `header`, in declaration order.
 ///
 /// Scanning rather than parsing, for the reason [`members`] gives — but the
@@ -380,20 +441,7 @@ fn enclosed(text: &str) -> &str {
 /// `resolution.md` §7.4 refuses to schedule.
 #[test]
 fn no_language_crate_constructs_the_committed_arm_itself() {
-    let sources = language_crate_sources();
-    assert!(
-        !sources.is_empty(),
-        "no crates/lang_* workspace member, so this scan would pass vacuously"
-    );
-
-    assert!(
-        sources
-            .iter()
-            .any(|(_, text)| text.contains("impl LanguageHandler")),
-        "none of {:?} implements the seam, so this walked the wrong files and \
-         would pass against a handler that commits on every line",
-        sources.iter().map(|(file, _)| file).collect::<Vec<_>>()
-    );
+    let sources = language_sources_that_implement_the_seam();
 
     let mut constructing = Vec::new();
     for (file, text) in &sources {
@@ -420,6 +468,76 @@ fn no_language_crate_constructs_the_committed_arm_itself() {
          commit site in every `lang_*` crate at the moment when there are the most \
          of them"
     );
+}
+
+/// §1's other claim that the types deliberately do not hold: "handlers must
+/// not dispatch on server *identity* — `if server.id == PYRIGHT` scattered
+/// through a handler is the per-language configuration format
+/// `resolution.md` §1.2 rules out, wearing yet another hat. A handler reads a
+/// field describing a behaviour; it does not ask which server it is talking
+/// to."
+///
+/// Worth a scan because it is one accessor away from possible, and it took
+/// reading `vocabulary.rs` to be sure it was not already prevented: the field
+/// inside `ServerId` is private and the type carries no public constructor
+/// from a `&'static str`, which reads like the identity cannot be named at
+/// all. It can. `ServerId::KNOWN` is a `pub const` of all eight servers in the
+/// matrix and `ServerId::from_name` is public, so `q.server.id() ==
+/// ServerId::from_name("pyright")` compiles today from any language crate.
+///
+/// `ServerProfile::id` is the same claim from the other side, and §1 names
+/// that one too: "`None` in standalone, and when proxying a server we have no
+/// profile for. A handler that branches on this is doing something wrong."
+/// There is nothing else on `ServerProfile` for a handler to read — §1 has it
+/// "Empty in v1: a field appears only once the corpus shows a systematic
+/// divergence that a field would fix" — so in v1 every use of the accessor is
+/// the identity dispatch this refuses, and a behaviour field arriving is what
+/// makes the distinction need drawing.
+#[test]
+fn no_language_crate_asks_which_server_it_is_standing_in_for() {
+    let sources = language_sources_that_implement_the_seam();
+
+    let mut asking = Vec::new();
+    for (file, text) in &sources {
+        for line in text.lines() {
+            let code = line.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            if code.contains("ServerId") || code.contains("server.id()") {
+                asking.push(format!("{file}: {code}"));
+            }
+        }
+    }
+
+    assert!(
+        asking.is_empty(),
+        "a language crate asks which server it is standing in for: {asking:?}. core.md §1 \
+         makes ServerProfile data rather than a trait for exactly this reason — a handler \
+         reads a field describing a behaviour, and a handler that branches on identity has \
+         rebuilt the per-language configuration format resolution.md §1.2 rules out"
+    );
+}
+
+/// The `lang_*` sources, with the two vacuity checks every scan over them
+/// needs: that there are some, and that they are the files the seam is
+/// actually implemented in rather than whatever the module walk happened to
+/// reach.
+fn language_sources_that_implement_the_seam() -> Vec<(String, String)> {
+    let sources = language_crate_sources();
+    assert!(
+        !sources.is_empty(),
+        "no crates/lang_* workspace member, so this scan would pass vacuously"
+    );
+    assert!(
+        sources
+            .iter()
+            .any(|(_, text)| text.contains("impl LanguageHandler")),
+        "none of {:?} implements the seam, so this walked the wrong files and would pass \
+         against a handler doing the very thing being scanned for",
+        sources.iter().map(|(file, _)| file).collect::<Vec<_>>()
+    );
+    sources
 }
 
 /// Every source file of every `crates/lang_*` member, as `(crate/src/name.rs,

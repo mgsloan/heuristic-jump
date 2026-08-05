@@ -726,3 +726,138 @@ reason for asserting `2.0` rather than a relation.
   printed block, `deps.md#2`) look stale against the spliced section text and
   my own earlier campaigns, but confirming that is the next session's turn to
   spend, not mine.
+
+## Campaign 26e3bb3c — the subset that forgave the wrong direction
+
+Seven commits, all green, 319 → 322 tests, three changelog entries
+(CHANGE-core-029/030/032). Both assigned gaps closed; one of them was already
+closed before I arrived.
+
+### Two traps that cost me turns, and both are avoidable in one line
+
+**`git checkout <file>` reverts the campaign's work in that file, not just the
+plant.** I did this twice — once on `seam.rs`, once on `design/core.md` — and
+each time lost twenty minutes of edits I then retyped from context. Plants are
+*inside* files you are also editing, which is exactly when the reflex is
+wrong. Revert a plant with the inverse `sed`/`python` replacement, and assert
+the replacement applied (`assert old in t`) so a silent no-op cannot pass for
+a revert. Where the plant is a whole-line insert, `sed -i '$ d'` or a
+`grep -c` afterwards confirms it.
+
+**A blank line before `Co-Authored-By` breaks the entire trailer block, and the
+symptom is silent.** Git trailers must be the last paragraph; putting
+`Co-Authored-By` in its own paragraph makes it the only trailer, and
+`audit:`/`tests:`/`loop:`/`campaign:` all become prose. Nothing errors.
+`harness/hj record` just prints "…is already recorded; nothing appended" and
+the metrics row never lands, which reads like the recorder being idempotent
+rather than like the commit being unreadable. Check with
+`git log -1 --format=%B | git interpret-trailers --parse` before recording —
+one turn — and put `Co-Authored-By` on the line directly after `campaign:`,
+which is what every prior loop commit does.
+
+### The audit's proposed fix was an option the design already refused
+
+`a7eaf1dfa1`'s `found:` ends "making it an equality against §9's list is the
+mechanical check". Doing that fails: §9 lists `rayon` and `deps.md` §14 has
+each dependency arrive with its first user, so a listed-and-undeclared crate is
+the *intended* state — and `shared_declares_only_the_dependencies_section_9_lists`
+said so in its own doc comment, three lines above the assertion.
+
+The defect was one level up and the audit could not see it: the test was a
+**subset**, so an absence was forgiven for any reason at all. `shared` could
+have dropped `ignore` and nothing in the repository would have failed. The fix
+is to make the document name the deferred set — then `declared == named \
+deferred` is checkable, and a deferred crate acquiring its first user fails
+until the same commit takes it off §9's list.
+
+**This turned out to be the shape of the whole campaign.** Five of seven
+commits were the same thing: a claim the document states as an equality,
+checked by something that could only catch an addition. §9's dependency list;
+`measure_core`'s "depends on `shared` and nothing else of ours" (a list of
+banned prefixes — `driver`, `lang_` — so `similarity` or `rope` would have
+passed); `similarity`'s frozen edge (no test at all); `AbstainReason`'s payload
+types. In every case the forgiving direction was deliberate and argued, and in
+every case nobody had asked the document *how much* it forgave. That is the
+question to bring to a section whose gap list is exhausted.
+
+### Two things I got wrong, and what they bought
+
+**The `similarity` equality was wrong on its first run, and the failure is the
+finding.** Asserted over the whole dependency list it printed
+`["shared", "arraydeque", "hashbrown", "itertools", "smallvec"]`. Those came
+with the ported code, and `deps.md` §0 declines to settle them in as many words
+— "`similarity` and `lang_*` dependencies are named where they are already
+implied, but not settled here" — which is why §0's own manifest test leaves the
+crate out. An equality over all of them would have been my test inventing a rule
+two sections deliberately withheld. Scoped to *our* edges it is right. Run the
+strict version first; what it prints tells you where the document's scope
+actually ends.
+
+**One of my assertions was redundant with a stronger one two hundred lines
+away.** I added a `measure_rust` dependency equality in one commit and deleted
+it in the next: `adding_a_language_costs_the_template_and_one_line` already
+holds every `measure_*` manifest to a full equality against §9's template,
+quantified over languages rather than over one crate. Before adding an equality
+to a manifest, grep the file for the crate name — `seam.rs` is four thousand
+lines and the test that already covers your claim is not near the one you are
+editing.
+
+### `ServerId` looks unforgeable and is not
+
+§1 argues `ServerProfile` is data rather than a trait because "handlers must not
+dispatch on server identity". `ServerId`'s field is private and there is no
+public constructor from a `&str`, which reads as though a language crate could
+not name a server at all — I nearly skipped the scan on that basis.
+`ServerId::KNOWN` is a `pub const` of all eight servers and `from_name` is
+public, both so `measure_core` can resolve `--server`. So
+`query.server.id() == ServerId::from_name("pyright")` compiles from any
+`lang_*` today. **A private field is not a private type**; check for public
+consts and named constructors before concluding the compiler holds a claim.
+
+### The printed-block comparison reads names, not types
+
+`the_printed_enums_a_handler_returns_have_the_variants_it_may_return` compares
+§1's block against the source, and looked like coverage for §1's
+"`AbstainReason` carries no resolution vocabulary". It is not: `variants()`
+splits on `[' ', '(', '{', ':']` and keeps the first token, so
+`External { name: Namespace }` and `External { name: Box<str> }` are the same
+string. Both revisions §1 says were rejected would have passed every test in
+the repository — on the *frozen seam*, where the cost is paid by every language
+crate at once and by none of them visibly. **Read the parser a printed-block
+test uses before believing the block is held**; two of these files compare
+names and arity only, and worker 3 hit the same thing with `MAX_STAGES`.
+
+The source-side plant for that one is not worth chasing: changing
+`External`'s payload type breaks four construction sites across two crates
+before any test runs. I planted the allowlist instead (empty it, confirm it
+fails naming `Box`), which is what shows the scan reaches the payload rather
+than stopping at the variant name.
+
+### A claim stated in two sections gets corrected in one
+
+§1 ended its `LanguageId` bullet "and lookup becomes pointer comparison".
+`vocabulary.rs:48` says the opposite deliberately, and commit `ffbd71b`
+(campaign 2c129b10) had already corrected exactly this claim — argued it in the
+same words, added `a_language_id_compares_by_text_and_not_by_address` — under
+`core.md#vocabulary-types`, and left §1's sentence untouched, because the
+sections are audited separately and §1 was not the one being worked.
+
+So: when you correct a claim, `grep` the *document* for the claim's distinctive
+phrase, not just the section you hold. `grep -n 'pointer comparison' design/`
+was one turn and found a stale sentence three campaigns old.
+
+### Not taken, and why
+
+- **`core-025` and `core-026`**, both answered and still tagged. They live in
+  `crates/driver/src/{dispatch,workers}.rs`, which worker 1 held this round.
+  `core-026` is the substantial one: shedding a query needs an `AbstainReason`
+  the frozen seam has no word for, so it is a `shared` change and a whole
+  campaign.
+- **`the_core_crates_declare_only_what_section_0_places_there`** has the
+  identical unbounded-subset hole against `deps.md` §0's table, and the deferred
+  list I added to §9 would bound it the same way. Left: `deps.md#0-summary-table`
+  is a different section, already clean, and held by nobody I could see. It is
+  the cheapest remaining instance of this campaign's pattern.
+- **`similarity`'s four third-party crates.** Real, unbounded by anything, and
+  deliberately unsettled by `deps.md` §0. Settling them is a decision, not a
+  fix, and `crates/similarity/**` is outside every loop's write list.
