@@ -577,10 +577,15 @@ impl ProjectView {
     /// after it searches a list without the removed file.
     ///
     /// Sequential, where `resolution.md` §3 has the fan-out run on a bounded
-    /// pool. The pool is `shim.md` §10's and does not exist, and `CLAUDE.md`
-    /// withholds optimisation until the corpus harness shows it is worth it
-    /// and there is a benchmark. Order is not an optimisation question:
-    /// `hits` comes back in candidate order either way.
+    /// pool. `shim.md` §10's pool now exists — `driver::workers` — but it is
+    /// the pool a whole query runs *on*, and nothing hands one to a
+    /// `ProjectView`: `new` takes no pool, so there is nothing here to fan out
+    /// onto. That is why `rayon` is still undeclared, and `core.md` §9 names it
+    /// in the list of dependencies chosen and not yet declared rather than
+    /// claiming this method already uses one. `CLAUDE.md` withholds the
+    /// optimisation until the corpus harness shows it is worth it and there is
+    /// a benchmark. Order is not an optimisation question: `hits` comes back in
+    /// candidate order either way.
     pub fn scan(&self, request: &ScanRequest<'_>) -> Result<ScanOutcome, Error> {
         let mut outcome = ScanOutcome {
             hits: Vec::new(),

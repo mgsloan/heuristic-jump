@@ -2184,9 +2184,9 @@ on any language crate.** Wiring happens in `heuristic_jump`.
               shared  <-- rope, tree-sitter, serde, serde_json, url,
              /  /  |  \      ignore, rayon, thiserror, rustc-hash, tracing
             /  /   |   \
-measure_core  /  similarity  driver  <-- crossbeam-channel, rayon,
-       |     /     |          |            rustc-hash, tracing
-       |     /     |          |
+measure_core  /  similarity  driver  <-- crossbeam-channel, lru, notify,
+       |     /     |          |            rayon, rustc-hash, serde_json,
+       |     /     |          |            tracing
        |    lang_* /          |
        |     /  \ /           |
        +--> measure_<lang>   heuristic_jump
@@ -2195,6 +2195,28 @@ measure_core  /  similarity  driver  <-- crossbeam-channel, rayon,
 `measure_core` and `driver` are siblings that never meet; `measure_<lang>` is
 the only crate that depends on both `measure_core` and a language, and it
 contains four lines.
+
+**Three of the crates named above are chosen and not yet declared, and this is
+the complete list of them.** `deps.md` §14 has each dependency arrive with its
+first user, so a crate this section names and no manifest declares is the
+intended state rather than a drift. But left implicit that rule forgives too
+much in the other direction — a dependency that *vanishes* from a manifest is
+indistinguishable from one that has not arrived yet — so the set is named here
+and `crates/driver/tests/seam.rs` reads it, which turns the difference between
+the two into an equality it can check:
+
+* `rayon` in `shared` — for `ProjectView::scan`. The fan-out onto a bounded
+  pool is the arrangement `resolution.md` §3 settles, and "executes on the pool
+  it is handed at construction" describes that arrangement rather than the code
+  as it stands: `ProjectView::new` takes no pool, and `scan` is a sequential
+  loop over candidates. Parallelising it is an optimisation, and `CLAUDE.md`
+  withholds those until the corpus harness shows the change is worth it and
+  there is a benchmark — so the dependency arrives with the benchmark, not
+  before it.
+* `rayon` in `driver` — the same fan-out, seen from the side that owns the pool
+  and hands it over.
+* `rustc-hash` in `driver` — `deps.md` §0 places it here, and every map
+  `driver` owns so far is small enough that nothing has reached for it.
 
 Every edge, and why:
 
@@ -2207,14 +2229,16 @@ Every edge, and why:
   deserialization *produces* rather than what a conversion layer produces
   afterwards. Its own dependencies are `serde`, `serde_json`, `url`, `rope`,
   `tree-sitter`, `ignore` (for `ProjectView`'s walk), `rayon` (for
-  `ProjectView::scan`, which executes on the pool it is handed at
-  construction — `resolution.md` §3), `thiserror` (for `Error`'s derives),
+  `ProjectView::scan` — `resolution.md` §3, and the first of the three entries
+  above that are chosen and not yet declared), `thiserror` (for `Error`'s
+  derives),
   `rustc-hash`, and `tracing` — which is in the graph regardless, since `rope`
   and `sum_tree` depend on it and two logging facades would be silly
   (`deps.md` §9). This list is the authoritative one; §8.7 refers back to it
   rather than restating it, and
   `crates/driver/tests/seam.rs::shared_declares_only_the_dependencies_section_9_lists`
-  fails on a dependency that is not on it.
+  fails on a dependency that is not on it *and* on one that is on it, is not in
+  the deferred list above, and is missing from the manifest.
 
   ** `Error` is one enumerated type covering every failure in the system**,
   not an `anyhow` -style boxed `dyn Error`. It lives here rather than in
