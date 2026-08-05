@@ -132,25 +132,20 @@ last_audited = "2026-08-05T01:40:56+00:00"
 
 [section."core.md#81-why-not-lsp-types"]
 state = "clean"
-last_audited = "2026-08-04T21:12:07+00:00"
+last_audited = "2026-08-05T02:26:51+00:00"
 
   [[section."core.md#81-why-not-lsp-types".minor]]
-  claim = "the newtypes are what deserialization produces, not what a conversion layer produces afterwards \u2014 DocumentUri, DocumentVersion, EditorRequestId, LanguageId, Offset"
-  note = "language_id deserializes as Box<str> and is turned into a LanguageId by a registry lookup afterwards. The code states the exception and the lookup is mandatory rather than optional, which is the section's real objection, but it is a conversion layer in one of the five named types"
-  where = "crates/shared/src/proto.rs:522"
+  claim = "the newtypes of section 1 \u2014 including LanguageId \u2014 are what deserialization produces, not what a conversion layer produces afterwards"
+  note = "TextDocumentItem.language_id deserializes to Box<str> and a registry lookup produces the LanguageId; the reason is documented at the site but \u00a78.1's list has no exception in it"
+  where = "crates/shared/src/proto.rs:512"
 
 [section."core.md#82-what-replaces-it-and-why-it-is-smaller-than-it-sounds"]
 state = "clean"
-last_audited = "2026-08-04T21:12:07+00:00"
-
-  [[section."core.md#82-what-replaces-it-and-why-it-is-smaller-than-it-sounds".minor]]
-  claim = "only a small set is ever constructed, and the three tables are the inventory"
-  note = "measure_core's ChildFrame/ChildResponseError (read) and ClientReply (constructed) are in neither table; the derive split still holds. tests/proto.rs transcribes the three lists as constants, so drift between the section's tables and the code is caught by nobody \u2014 unlike deps.md \u00a715, whose test reads the document as the fixture"
-  where = "crates/shared/src/proto.rs:1057"
+last_audited = "2026-08-05T02:26:51+00:00"
 
 [section."core.md#83-the-wire-position-type-is-inert"]
 state = "clean"
-last_audited = "2026-08-04T21:12:07+00:00"
+last_audited = "2026-08-05T02:26:51+00:00"
 
 [section."core.md#84-location-is-byte-based-and-this-fixes-a-real-inconsistency"]
 state = "gaps"
@@ -201,7 +196,7 @@ last_audited = "2026-08-05T00:43:32+00:00"
 
 [section."core.md#why-shared-is-separate-from-driver"]
 state = "clean"
-last_audited = "2026-08-04T21:12:07+00:00"
+last_audited = "2026-08-05T02:26:51+00:00"
 
 [section."core.md#adding-a-language"]
 state = "clean"
@@ -217,4 +212,4 @@ last_audited = "2026-08-04T23:43:10+00:00"
 
 [section."core.md#10-testing"]
 state = "clean"
-last_audited = "2026-08-04T23:43:10+00:00"
+last_audited = "2026-08-05T02:26:51+00:00"

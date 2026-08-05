@@ -4,7 +4,7 @@
 
 [section."rope-modifications.md#1-rope-already-works-this-way-byte-offsets-are-the-omission"]
 state = "clean"
-last_audited = "2026-08-04T23:43:10+00:00"
+last_audited = "2026-08-05T02:26:51+00:00"
 
 [section."rope-modifications.md#2-where-the-types-live-is-forced"]
 state = "clean"
@@ -35,11 +35,11 @@ last_audited = "2026-08-05T00:43:32+00:00"
 
 [section."rope-modifications.md#the-newtypes-are-opaque"]
 state = "clean"
-last_audited = "2026-08-04T21:12:07+00:00"
+last_audited = "2026-08-05T02:26:51+00:00"
 
 [section."rope-modifications.md#the-constructors-take-newtypes"]
 state = "clean"
-last_audited = "2026-08-04T21:12:07+00:00"
+last_audited = "2026-08-05T02:26:51+00:00"
 
 [section."rope-modifications.md#the-signatures"]
 state = "clean"
@@ -50,21 +50,22 @@ state = "clean"
 last_audited = "2026-08-05T01:40:56+00:00"
 
 [section."rope-modifications.md#the-dimension-impls"]
-state = "clean"
-last_audited = "2026-08-04T21:12:07+00:00"
+state = "gaps"
+last_audited = "2026-08-05T02:26:51+00:00"
 
-  [[section."rope-modifications.md#the-dimension-impls".minor]]
-  claim = "sum_tree needs no changes at all, and stays a pristine copy"
-  note = "the impls are in rope and sum_tree needed nothing for them, but the vendored sum_tree is not pristine: vendor/README.md records tree_map.rs deleted, ztracing->tracing in two files, and the ctor/zlog test logger deleted"
-  where = "vendor/sum_tree/src/sum_tree.rs:11"
+  [[section."rope-modifications.md#the-dimension-impls".gap]]
+  claim = "the obvious stronger reading is false: vendor/sum_tree is NOT a pristine copy \u2014 vendor/README.md records three dependency-stripping patches, and what survives is only that the newtype work is not why it is patched"
+  found = "the comment introducing Offset's Dimension/TextDimension impls states the stronger reading outright: 'the impls live here and the vendored sum_tree stays a pristine copy', which is what a re-sync will read and act on"
+  where = "vendor/rope/src/rope.rs:1604"
+  found_at = "0e5f2f7a502b86df13267a1307b61a773c40211d"
 
 [section."rope-modifications.md#offsets-and-lengths-are-separate-types-and-bytelen-is-shared"]
 state = "clean"
-last_audited = "2026-08-04T21:12:07+00:00"
+last_audited = "2026-08-05T02:26:51+00:00"
 
 [section."rope-modifications.md#folding-vendorutil-in"]
 state = "clean"
-last_audited = "2026-08-04T21:12:07+00:00"
+last_audited = "2026-08-05T02:26:51+00:00"
 
 [section."rope-modifications.md#5-what-deliberately-does-not-change"]
 state = "clean"
@@ -72,7 +73,7 @@ last_audited = "2026-08-05T01:40:56+00:00"
 
 [section."rope-modifications.md#lineindex-is-ropes-and-shared-re-exports-it"]
 state = "clean"
-last_audited = "2026-08-04T21:12:07+00:00"
+last_audited = "2026-08-05T02:26:51+00:00"
 
 [section."rope-modifications.md#6-consequences-for-re-syncing"]
 state = "clean"
@@ -88,7 +89,7 @@ last_audited = "2026-08-05T01:40:56+00:00"
 
 [section."rope-modifications.md#consequences-for-the-dependency-plan"]
 state = "clean"
-last_audited = "2026-08-04T21:12:07+00:00"
+last_audited = "2026-08-05T02:26:51+00:00"
 
 [section."rope-modifications.md#beyond-upstreams-tests"]
 state = "clean"
