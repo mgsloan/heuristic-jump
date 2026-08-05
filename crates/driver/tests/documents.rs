@@ -333,6 +333,64 @@ fn a_save_check_that_raced_the_editor_is_dropped_rather_than_believed() {
     assert_held(&documents, &uri, TEXT, 2);
 }
 
+/// Where the checksum's read is, which is the half of §8.6 no run can show.
+///
+/// "It costs a read, so it belongs in a worker, off the critical path." A run
+/// can witness the round trip — `driver/tests/actor.rs` asserts that a
+/// `didSave` puts a `Finished::Save` on the pool's channel — but not that there
+/// is no *second* route, and the second route is the tempting one: `core` holds
+/// the document map, so the shortest way to compare a rope against a file is
+/// two lines in `actor.rs`, and it would pass every behavioural test in this
+/// crate while doing the one thing `shim.md` §2 forbids `core` outright.
+///
+/// The other half is that the check is reached at all. It was written, tested,
+/// and had no caller in `src/` for as long as the pool took queries only —
+/// which is not a state any test of `Documents` can distinguish from a working
+/// one, because `Documents` is exactly the part that worked.
+#[test]
+fn the_saved_file_is_read_off_core_and_the_check_it_feeds_is_reached() {
+    let sources = driver_sources();
+    let named: Vec<&String> = sources.iter().map(|(file, _)| file).collect();
+    for expected in ["actor.rs", "workers.rs"] {
+        assert!(
+            named.iter().any(|file| file.as_str() == expected),
+            "no {expected} among {named:?}, so this scan is looking at the wrong files"
+        );
+    }
+
+    let reading: Vec<&str> = sources
+        .iter()
+        .filter(|(_, text)| code(text).any(|line| line.contains("fs::")))
+        .map(|(file, _)| file.as_str())
+        .collect();
+    assert!(
+        reading.contains(&"workers.rs"),
+        "nothing in {reading:?} reads a file the way `workers.rs` does, so the pattern this \
+         scan looks for no longer matches a read and its refusals are vacuous"
+    );
+    assert!(
+        !reading.contains(&"actor.rs"),
+        "`core` reads the filesystem. §8.6 puts the didSave checksum in a worker and §8.4 puts \
+         the target-file read there for the same reason: the thread that owns the state does \
+         only O(1) state transitions"
+    );
+
+    let checking: Vec<&str> = sources
+        .iter()
+        .filter(|(_, text)| {
+            code(text).any(|line| line.contains(".checked(") || line.contains("::checked("))
+        })
+        .map(|(file, _)| file.as_str())
+        .collect();
+    assert_eq!(
+        checking,
+        vec!["actor.rs"],
+        "the second half of §8.6's checksum is unreachable, or is reached from somewhere other \
+         than the actor that owns the document map. A `SaveCheck` that nothing ever redeems is \
+         a save nobody checked"
+    );
+}
+
 /// §8.6's rule at its first clause — a *deserialization* failure, not a
 /// detected inconsistency — and §8.5's `range: null` is the case that produces
 /// one on traffic that is otherwise well formed.
@@ -509,6 +567,43 @@ fn assert_held(documents: &Documents, uri: &DocumentUri, text: &str, version: i3
             panic!("{uri} is not queryable: {other:?}")
         }
     }
+}
+
+/// Every module of `driver`, by file name and text.
+///
+/// Read through the library root's `mod` declarations rather than by listing
+/// the directory, which `clippy.toml` denies for bypassing gitignore semantics
+/// — and which would be the weaker question anyway: what is compiled is what
+/// the root declares, so a file the root does not name cannot break a rule.
+fn driver_sources() -> Vec<(String, String)> {
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let root = std::fs::read_to_string(directory.join("driver.rs")).expect("driver's library root");
+    let sources: Vec<(String, String)> = root
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("mod ")?.strip_suffix(';'))
+        .map(|module| {
+            let name = format!("{module}.rs");
+            let text = std::fs::read_to_string(directory.join(&name))
+                .unwrap_or_else(|_| panic!("{name} is declared by driver.rs and is not readable"));
+            (name, text)
+        })
+        .collect();
+    assert!(
+        sources.len() > 1,
+        "driver's root declares one module or none, so the scans over them would pass vacuously"
+    );
+    sources
+}
+
+/// The lines of a source file that are not comments.
+///
+/// A module that explains in prose why it does *not* read a file must not be
+/// what fails a scan for reads — `workers.rs` quotes §8.6 at length and
+/// `actor.rs` says in as many words what it hands over instead.
+fn code(text: &str) -> impl Iterator<Item = &str> {
+    text.lines()
+        .map(str::trim_start)
+        .filter(|line| !line.starts_with("//"))
 }
 
 /// The outstanding half of a `didSave`, for the tests that are about what
