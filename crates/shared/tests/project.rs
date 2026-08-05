@@ -413,6 +413,60 @@ fn a_second_parse_of_the_same_path_is_a_fresh_parse() {
     );
 }
 
+/// `core.md` §1 maps exactly one error class back to a decision — the deadline
+/// — because an expiry is the one latency-shaped abstention `high-level.md`
+/// allows, and everything else that fails is recorded as a failure. `read` is
+/// where the view raises it, and `parse` deliberately does not: its return type
+/// is `Option`, so an expiry there would be the same value as an unparseable
+/// file, and §1's whole argument is that those two must not become one row.
+///
+/// Nothing held that. `document.rs` has the equivalent test for
+/// `SnapshotSeed::realise`, which is the *document* parse and does check the
+/// deadline — so the file that looks like coverage for this is coverage for the
+/// other one, and a deadline check added to `parse` would pass every test in the
+/// repository while reporting expiries on large repositories as broken grammars.
+#[test]
+fn a_parse_past_its_deadline_returns_a_tree_rather_than_an_ambiguous_none() {
+    let root = fixture("parse_deadline");
+    let document = path(&view(&root), &root, "src/lib.rs");
+    // Read before expiry, because `read` is the method that refuses: the point
+    // here is what `parse` does with text a handler already holds.
+    let text = view(&root).read(&document).expect("reading a candidate");
+
+    let clock = Arc::new(TestClock::new());
+    let arrived_at = clock.now();
+    let expired = Deadline::new(
+        Arc::clone(&clock) as Arc<dyn Clock>,
+        arrived_at,
+        Duration::ZERO,
+    );
+    clock.advance(Duration::from_millis(1));
+    let stopped = ProjectView::new(Arc::new(file_list(&root)), expired, grammar());
+    // Without this the assertion below passes against a view whose deadline
+    // never expired, which is the way this test would otherwise be vacuous.
+    assert!(
+        matches!(
+            stopped.read(&document),
+            Err(Error::Handler(HandlerError::DeadlineExpired { .. }))
+        ),
+        "this view's deadline has not expired, so what `parse` does with one \
+         is not what is being observed"
+    );
+
+    assert_eq!(
+        stopped
+            .parse(&document, &text)
+            .map(|tree| tree.root_node().kind()),
+        Some("source_file"),
+        "`parse` returned `None` past the deadline. `None` already means \
+         unparseable, and core.md §1 maps only the deadline back to an \
+         abstention — so an expiry spelled this way is recorded as a parse \
+         failure, which puts \"this repository has a file too large to parse in \
+         40ms\" and \"this grammar is broken\" in one row of the metrics table. \
+         The expiry belongs in the next `read`, where it has an `Err` to go in"
+    );
+}
+
 /// `core.md` §1's bullet on `ProjectView`, as CHANGE-core-035 corrected it:
 /// the view caches nothing and fans out onto nothing, and both are rulings
 /// rather than omissions — `conformance-005` answered **no** to a cache reached
