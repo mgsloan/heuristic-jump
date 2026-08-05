@@ -260,6 +260,67 @@ fn the_printed_enums_a_handler_returns_have_the_variants_it_may_return() {
     }
 }
 
+/// §1's "**`AbstainReason` carries no resolution vocabulary**", which the
+/// comparison above cannot see: [`variants`] takes names only — it splits on
+/// `[' ', '(', '{', ':']` and keeps the first token — so
+/// `External { name: Namespace }` and `External { name: Box<str> }` are the
+/// same string to it, and the two revisions §1 says were rejected would both
+/// have passed.
+///
+/// The rejected ones are named in the section: "Earlier revisions had
+/// `UnsupportedRole { role: ReferenceRole }` and `External { name: Namespace }`,
+/// which would have dragged two of `resolution.md`'s internal types into the
+/// seam — and `ReferenceRole`'s variant set is a claim about what kinds of
+/// reference exist, which is exactly the per-language decision
+/// [`resolution.md` §1.2] refuses to centralise." That is a claim about the
+/// *frozen* seam, so the cost of it slipping is paid by every language crate
+/// at once and by none of them visibly.
+///
+/// An allowlist rather than a grammar for what counts as a primitive, and it
+/// has one entry: every capitalised name in the enum body is a variant name or
+/// a type, `str` is lower case, and `Box` is the only type §1's printed block
+/// carries. A payload that names anything else fails and sends the reader to
+/// the section, which is the whole of what this has to do.
+#[test]
+fn no_abstention_reason_carries_a_type_from_the_resolution_vocabulary() {
+    /// Not "the primitives", which would be a list of things nobody has
+    /// written. It is the types §1's block actually prints, and it is meant to
+    /// stay this short — an entry earns its place by appearing in the section.
+    const PERMITTED: &[&str] = &["Box"];
+
+    let source = source();
+    let start = source
+        .find("pub enum AbstainReason {")
+        .expect("shared::handler declares AbstainReason");
+    let body = enclosed(&source[start + "pub enum AbstainReason ".len()..]);
+
+    assert!(
+        body.contains(':'),
+        "no AbstainReason variant carries a field, so this scan would pass against an \
+         allowlist nothing tests and would keep passing when one arrived"
+    );
+
+    let names = variants(&source, "pub enum AbstainReason {");
+    for line in body.lines() {
+        let code = line.trim();
+        if code.starts_with("//") || code.starts_with('#') {
+            continue;
+        }
+        for token in code.split(|c: char| !c.is_ascii_alphanumeric() && c != '_') {
+            if !token.starts_with(|first: char| first.is_ascii_uppercase()) {
+                continue;
+            }
+            assert!(
+                names.iter().any(|variant| variant == token) || PERMITTED.contains(&token),
+                "AbstainReason names {token} in a payload. core.md §1 keeps the resolution \
+                 vocabulary out of the seam — the variants are unit or carry primitives, and \
+                 the detail a handler knows reaches the metrics through the trace record \
+                 rather than through a type every language crate then has to speak"
+            );
+        }
+    }
+}
+
 /// Variant names of the enum introduced by `header`, in declaration order.
 ///
 /// Scanning rather than parsing, for the reason [`members`] gives — but the
