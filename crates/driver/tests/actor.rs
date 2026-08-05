@@ -413,6 +413,54 @@ fn a_read_that_expires_inside_the_handler_keeps_the_stratum_it_published() {
     );
 }
 
+/// The residue, and the other half of `core-025`: an expiry that really had no
+/// prior writes `null` rather than the template's stratum.
+///
+/// Option C empties the common route into this state and option B says what is
+/// left should say. What is left is a query nothing looked at — a parse
+/// abandoned before any handler ran, or a handler that expired before assigning
+/// a class — and the value it used to take was `Stratum::Unimplemented`, which
+/// `core.md` §9 makes self-identifying: "its presence in a metrics table means
+/// the template has not been replaced". So a real handler missing its deadline
+/// reported an unreplaced `lang_*` crate, and under load a real handler produces
+/// exactly this row.
+///
+/// Both columns, because the absence is an absence of *classification*: a
+/// `stratum_final` of `unimplemented` beside a null prior is the same guess in
+/// the column precision is computed on.
+#[test]
+fn an_expiry_nothing_classified_records_no_stratum_at_all() {
+    let fixture = Fixture::new("actor_unclassified_expiry", Proxying::No);
+    let mut actor = fixture.actor(Arc::new(Propagating {
+        clock: Arc::clone(&fixture.clock),
+        classify_as: None,
+    }));
+
+    fixture.open(&mut actor);
+    fixture.request(&mut actor, 1);
+
+    let rows = fixture.rows();
+    let [row] = rows.as_slice() else {
+        panic!("{} rows for one expired query", rows.len());
+    };
+    assert_eq!(
+        field(row, "decision"),
+        "\"abstained\"",
+        "an expiry was recorded as something other than an abstention, so the assertions \
+         below are not about the stratum: {row}"
+    );
+    for column in ["stratum_prior", "stratum_final"] {
+        assert_eq!(
+            field(row, column),
+            "null",
+            "{column} names a stratum for a query nothing classified. Any name here is a \
+             guess, and the one this used to guess was the template's — which core.md §9 \
+             makes a gate check, so a slow handler counterfeited an unreplaced language \
+             crate (core-025, option B): {row}"
+        );
+    }
+}
+
 /// `deps.md` §10: "Some `driver` code will convert an `Error` into an
 /// abstention; that conversion is explicit and logged."
 ///

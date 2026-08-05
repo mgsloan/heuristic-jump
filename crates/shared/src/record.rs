@@ -59,8 +59,20 @@ pub struct QueryRecord {
     /// reference and does not move when the implementation changes; precision
     /// on the final so an answer is judged against the class it turned out to
     /// be. One field cannot do both.
-    pub stratum_prior: StratumName,
-    pub stratum_final: StratumName,
+    ///
+    /// `null` when nothing classified the query — `core-025`, accepted on
+    /// option B. "There was no prior, and null says so where any stratum name
+    /// is a guess": the two routes are a parse abandoned on the deadline before
+    /// any handler ran, and a handler that returned `Err`. Both used to be filed
+    /// under `Stratum::Unimplemented`, which is the *template's* stratum, so a
+    /// corpus with either in it read as an unreplaced language template.
+    ///
+    /// Both fields and not only the prior, though the record names the prior:
+    /// the absence being recorded is an absence of *classification*, and a
+    /// `stratum_final` of `unimplemented` beside a null prior is the same guess
+    /// in the column precision is computed on.
+    pub stratum_prior: Option<StratumName>,
+    pub stratum_final: Option<StratumName>,
     pub confidence: Option<f32>,
     /// `margin` and `considered` are the features a floor would be set on.
     /// Nothing reads them in v1; a corpus run that kept only the collapsed
@@ -131,7 +143,9 @@ pub struct QueryContext<'a> {
 pub struct Answered {
     pub decision: Decision,
     pub failure: Option<Box<str>>,
-    pub strata: Strata,
+    /// `None` when nothing classified the query — see
+    /// [`QueryRecord::stratum_prior`]. `core-025`.
+    pub strata: Option<Strata>,
     pub locations: Vec<Location>,
     pub confidence: Option<f32>,
     pub margin: Option<f32>,
@@ -157,7 +171,7 @@ impl Answered {
             }) => (
                 Decision::Committed,
                 None,
-                strata,
+                Some(strata),
                 locations,
                 Some(confidence.get()),
                 trace.into_parts(),
@@ -170,7 +184,7 @@ impl Answered {
             }) => (
                 Decision::Abstained,
                 None,
-                strata,
+                Some(strata),
                 Vec::new(),
                 None,
                 trace.into_parts(),
@@ -185,10 +199,17 @@ impl Answered {
             // stratum from a broken handler. There is no outcome and therefore
             // no trace: a handler that returned `Err` reported nothing, and an
             // empty account is the honest record of that.
+            //
+            // No strata for the same reason: the pair is on the `Outcome` this
+            // error is *instead of*, so there is nothing to read one off.
+            // `core-025` (option B) is why that is now `None` rather than the
+            // template's stratum — a broken handler used to be indistinguishable
+            // from an unreplaced `lang_*` template, which is the one thing
+            // `core.md` §9 makes that stratum self-identifying for.
             Err(error) => (
                 Decision::Failed,
                 Some(failure_class(&error)),
-                Strata::from_reference(Stratum::Unimplemented),
+                None,
                 Vec::new(),
                 None,
                 Trace::new().into_parts(),
@@ -220,6 +241,35 @@ impl Answered {
             stage_us: stage_timings(stage_us),
         }
     }
+
+    /// The deadline abstention the *driver* raises, which is the one ending
+    /// neither producer can express as an `Outcome`.
+    ///
+    /// `Outcome::Abstain` requires a `Strata`, and `core-025` is precisely the
+    /// finding that a query nothing classified has none — so routing this
+    /// through [`Answered::of`] would mean synthesising the pair the record
+    /// exists to stop synthesising. It is a fourth ending rather than a fourth
+    /// *decision*: §7 still reads `abstained` with `abstain:deadline`, because
+    /// that is what happened to the query, and only the stratum is absent.
+    ///
+    /// Here rather than in `driver` for the reason the module header gives for
+    /// [`Answered::of`] itself: §7's columns are assembled in one place, or the
+    /// two producers drift in exactly the field being argued about.
+    pub fn expired(strata: Option<Strata>) -> Self {
+        Self {
+            decision: Decision::Abstained,
+            failure: None,
+            strata,
+            locations: Vec::new(),
+            confidence: None,
+            margin: None,
+            considered: None,
+            stages: vec![abstain_label(&AbstainReason::Deadline)],
+            bytes_scanned: 0,
+            files_parsed: 0,
+            stage_us: BTreeMap::new(),
+        }
+    }
 }
 
 /// The oracle's half, once it is known.
@@ -248,8 +298,8 @@ impl QueryRecord {
             server_health: context.server_health.clone(),
             decision: answered.decision,
             failure: answered.failure,
-            stratum_prior: StratumName(answered.strata.prior()),
-            stratum_final: StratumName(answered.strata.settled()),
+            stratum_prior: answered.strata.map(|strata| StratumName(strata.prior())),
+            stratum_final: answered.strata.map(|strata| StratumName(strata.settled())),
             confidence: answered.confidence,
             margin: answered.margin,
             considered: answered.considered,

@@ -16,8 +16,7 @@ use shared::proto::{PositionEncoding, WireLocation, WirePosition, WireRange};
 use shared::{
     ByteLen, CommitPolicy, Deadline, DocumentSnapshot, DocumentUri, DocumentVersion, EncodingError,
     Error, FileText, HandlerError, LanguageHandler, LanguageId, Map, Offset, Outcome, ProjectError,
-    ProjectPath, ProjectView, Query, RelPath, Rope, ServerProfile, SnapshotSeed, Strata, Stratum,
-    Tree,
+    ProjectPath, ProjectView, Query, RelPath, Rope, ServerProfile, SnapshotSeed, Strata, Tree,
 };
 
 /// The handler set, resolved once at startup. `heuristic_jump` is the one
@@ -169,34 +168,28 @@ pub enum Classified {
 }
 
 impl Classified {
-    /// What §7's two stratum columns are written from.
-    pub fn strata(self) -> Strata {
+    /// What §7's two stratum columns are written from, and `None` where there
+    /// is nothing to write them from.
+    pub fn strata(self) -> Option<Strata> {
         match self {
-            Classified::By(strata) => strata,
-            // The prior exists — `core-017` says so, and says the reference and
-            // the query are all its rule needs — but the rule is
-            // `resolution.md` §8's and is per-language by construction, so
-            // nothing here can evaluate it without the handler that owns it.
-            // Filed under the template's stratum for want of anywhere honest to
-            // put it, which is the same place `Answered::of` files a handler
-            // that returned `Err`.
+            Classified::By(strata) => Some(strata),
+            // `core-025`, both halves of it, and this arm is where the second
+            // lands. C emptied the route that used to dominate — a read that
+            // expired inside a handler which had already assigned a prior now
+            // carries it out on the `Error`, so it arrives as `By` — and what
+            // is left here is the parse abandoned before any handler ran, where
+            // there genuinely is no prior to have.
             //
-            // `core-025` is accepted and this is its site. It rules **C then
-            // B**: `ProjectView`'s expiry carries out the strata the handler
-            // had, as a change to `Error` — which empties the second of the two
-            // routes into `Nothing` above, leaving only the abandoned parse —
-            // and `stratum_prior` then becomes nullable for that residue,
-            // because "nothing ever looked at this reference" is the absence of
-            // a measurement rather than a kind of reference. So this arm does
-            // not get a better `Stratum`; it stops returning one.
-            //
-            // Tagged for `core-025` and not for `core-022`, which asked the same
-            // question from the driver's side and is closed as its duplicate:
-            // the ruling, and the work it leaves, are only in `core-025`, and a
-            // tag naming the closed record is one a search for the open work
-            // does not find.
-            // DECISION-core-025: provisional
-            Classified::Nothing => Strata::from_reference(Stratum::Unimplemented),
+            // B is why this returns nothing rather than a better `Stratum`. The
+            // prior's *rule* exists — `core-017` says the reference and the
+            // query are all it needs — but the rule is `resolution.md` §8's and
+            // is per-language by construction, so nothing here can evaluate it
+            // without the handler that owns it. "Nothing ever looked at this
+            // reference" is the absence of a measurement rather than a kind of
+            // reference, and the value it used to take was the *template's*
+            // stratum, which `core.md` §9 makes self-identifying: an abandoned
+            // parse read as an unreplaced `lang_*` crate.
+            Classified::Nothing => None,
         }
     }
 }

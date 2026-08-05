@@ -1049,6 +1049,36 @@ class it turned out to be. One field cannot do both, and collapsing them
 makes `high-level.md`'s central table non-comparable across versions — the
 one property it needs.
 
+**Both stratum fields are nullable, and `null` is not a tenth stratum.** Some
+queries end with nothing having classified them: a parse abandoned on the
+deadline before any handler ran, and a handler that returned `Err`, which has
+no `Outcome` for a stratum to be on. `resolution.md` §8's rule for the prior is
+per-language by construction, so the driver cannot evaluate it without the
+handler that owns it — there is no value to write, and any name is a guess.
+
+The guess it used to make was `Stratum::Unimplemented`, which is the *language
+template's* stratum and is self-identifying on purpose
+([section 9](#adding-a-language)): its presence in a metrics table means the
+template has not been replaced. So a real handler that missed its deadline, or
+one that was thoroughly broken, reported an unreplaced language crate — and
+under load a real handler produces that row. `null` says the true thing in the
+place the absence actually lives, and it forces each consumer to decide what to
+do with it rather than letting it be grouped away silently. This is
+`core-025`, accepted on option B; option C is the other half, and narrows what
+reaches this state to the abandoned parse by having `ProjectView`'s expiry
+carry out the prior the handler had published
+(`resolution.md` §3's `classified`).
+
+A consumer that groups on either field therefore gains a bucket that is not a
+stratum. It belongs *beside* a per-stratum table rather than in it — a tenth
+row would read as a kind of reference, which is exactly what makes `null` the
+honest shape and not merely the convenient one — and it must be reported
+rather than dropped, because `high-level.md`'s posture is that blowing the
+budget costs coverage and never correctness, which is only auditable if the
+coverage lost is visible as such. Splitting it by `decision` is what keeps
+"the parse ran out of time" and "the handler is broken" from becoming one
+number, which is the merge this section spends a paragraph refusing above.
+
 **`margin` and `considered` are the features a floor would be set on.**
 Nothing reads them in v1. They are recorded because a threshold can only be
 derived from data collected while nothing was being gated, and a corpus run

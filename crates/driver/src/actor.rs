@@ -49,7 +49,7 @@ use shared::proto::{
 use shared::record::{Answered, ChildAnswer, QueryContext, QueryRecord, definition_labels, micros};
 use shared::{
     Clock, CommitPolicy, Deadline, DocumentNotification, DocumentUri, EditorRequestId, Error,
-    InputEdit, Map, Micros, Outcome, Trace,
+    InputEdit, Map, Micros, Outcome,
 };
 
 use crate::config::{Config, DebounceMs, Heuristics};
@@ -828,11 +828,12 @@ impl Actor {
             // "was never the outcome's to carry away" — which is what keeps
             // §7's coverage denominator from moving by one query every time a
             // deadline expires.
-            Dispatched::DeadlineExpired(classified) => Answered::of(Ok(Outcome::Abstain {
-                reason: shared::AbstainReason::Deadline,
-                strata: classified.strata(),
-                trace: Trace::new(),
-            })),
+            //
+            // Not through `Answered::of`, because `Outcome::Abstain` requires a
+            // `Strata` and `core-025` is the finding that a query nothing
+            // classified has none: building one here to satisfy the type is the
+            // synthesis the record was raised to stop.
+            Dispatched::DeadlineExpired(classified) => Answered::expired(classified.strata()),
             // Served as an abstention on the wire — which here means silence —
             // and recorded as a failure, never as an abstention.
             Dispatched::Failed(error) => {

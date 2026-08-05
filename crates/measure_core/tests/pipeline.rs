@@ -421,70 +421,61 @@ fn the_unimplemented_stratum_identifies_the_template_and_not_a_broken_handler() 
     }
 }
 
-/// The counter above, read from the other side: what it costs that
-/// `Stratum::Unimplemented` is also where the driver files a query **nothing
-/// classified**.
+/// The counter above, read from the other side: where a query **nothing
+/// classified** goes now that it is not filed under the template's stratum.
 ///
-/// `core-022` is open on that, and this is its consequence made executable
-/// rather than described. The driver's provisional choice writes exactly this
-/// row — an `AbstainReason::Deadline` under the template's stratum — whenever a
-/// parse is abandoned on the deadline or a read expires before the handler
-/// assigned a class, and the table cannot tell it from an unreplaced template.
-/// Under load a real handler produces it.
+/// This replaces a test that asserted the opposite and was written to fail when
+/// `core-022`/`core-025` was answered. It never would have. It drove a handler
+/// that *returned* `Strata::from_reference(Stratum::Unimplemented)`, which is a
+/// handler claiming the template's stratum — correctly read as `unreplaced`
+/// then and now — rather than the driver synthesising one. A tripwire that
+/// plants the value it is watching for is not a tripwire, and this is the third
+/// time that shape has cost a campaign here.
 ///
-/// **This asserts the provisional, and is meant to fail when core-022 is
-/// answered.** Whichever way the answer goes — a seam method that supplies the
-/// prior, a nullable `stratum_prior`, or a narrower template check — this row
-/// stops reading `unreplaced`, and the test that has to change is the one
-/// holding the reason it changed.
+/// What `core-025`'s option B actually changed is reachable from a replay by
+/// one route: a handler that returns `Err` has no `Outcome` and therefore no
+/// strata, so its `stratum_prior` is now `null` instead of the template's. Three
+/// claims, because any two of them pass on a mistake — a run that measured
+/// nothing has an empty `unimplemented` row too, and a run whose rows all went
+/// missing has a `replaced` template.
 #[test]
-fn the_template_check_reads_an_abstention_no_handler_classified() {
-    let corpus = fixture("unclassified_deadline");
+fn a_query_no_handler_classified_is_not_the_templates_row() {
+    let corpus = fixture("unclassified_prior");
     enumerate(&corpus);
     write_truth(&corpus);
 
-    let report = measure_core::replay_table(
-        &UnclassifiedHandler,
-        &shared::SystemClock,
-        &replay_arguments(&corpus, measure_core::Format::Json),
-    )
-    .expect("replay");
+    let records = corpus.scratch.join("records.jsonl");
+    replay_with(&FailingHandler, &corpus, Some(&records));
+    let report = replay_report(&FailingHandler, &corpus, measure_core::Format::Json);
+    let text = fs::read_to_string(&records).expect("replay wrote the records file");
 
+    let failures = tally(&text, |line| decision_of(line) == "failed");
     assert!(
-        report.contains("\"template\": \"unreplaced\""),
-        "core-022's provisional stopped reaching the table, which is the answer landing \
-         rather than a test going stale: read the decision record before changing this \
-         assertion.\n{report}"
+        failures > 0,
+        "the fixture produced no failed row, so every assertion below holds against a \
+         replay that did nothing\n{text}"
     );
-}
-
-/// A handler that is not the template and reports the template's stratum,
-/// because its query ran out of time before anything classified it. See
-/// [`the_template_check_reads_an_abstention_no_handler_classified`].
-struct UnclassifiedHandler;
-
-impl LanguageHandler for UnclassifiedHandler {
-    fn language_ids(&self) -> &'static [LanguageId] {
-        const IDS: &[LanguageId] = &[LanguageId::new("rust")];
-        IDS
-    }
-
-    fn file_extensions(&self) -> &'static [FileExtension] {
-        const EXTENSIONS: &[FileExtension] = &[FileExtension::new("rs")];
-        EXTENSIONS
-    }
-
-    fn grammar(&self) -> Language {
-        tree_sitter_rust::LANGUAGE.into()
-    }
-
-    fn goto_definition(&self, _query: &Query<'_>) -> Result<Outcome, Error> {
-        Ok(Outcome::Abstain {
-            reason: AbstainReason::Deadline,
-            strata: Strata::from_reference(Stratum::Unimplemented),
-            trace: Trace::new(),
-        })
-    }
+    assert_eq!(
+        tally(&text, |line| prior_of(line).is_empty()),
+        failures,
+        "a handler that returned Err reported a stratum. There is no Outcome for one to \
+         be on, and the value it used to take was Stratum::Unimplemented — which core.md \
+         §9 makes self-identifying, so a broken handler counterfeited an unreplaced \
+         language template (core-025, option B)\n{text}"
+    );
+    assert_eq!(
+        reported(&report, "unimplemented", "queries"),
+        0,
+        "the template's row absorbed queries no handler classified, which is the \
+         counterfeit this ruling removes\n{report}"
+    );
+    assert_eq!(
+        unclassified(&report, "failed"),
+        failures,
+        "the rows that left the table did not arrive beside it. high-level.md asks that \
+         coverage lost be visible as such, and a query that vanishes from the report \
+         entirely is worse than one under the wrong heading\n{report}"
+    );
 }
 
 #[test]
@@ -2312,6 +2303,49 @@ fn the_records_and_the_table_are_the_same_run_counted_twice() {
                 *exercised.entry(field).or_default() += counted;
             }
         }
+
+        // The tenth bucket, which is not a stratum and is not allowed to be
+        // one. `core-025` (option B) made `stratum_prior` nullable, so a query
+        // nothing classified belongs to no row above — and the only way for the
+        // records and the table to still be two accounts of one run is to
+        // reconcile the rows that fell out of every row.
+        //
+        // It is also where `failed` is now exercised at all: a failure has no
+        // outcome, so it has no strata, so `stratum/failed` is structurally zero
+        // and the guard below would be asserting something impossible.
+        for (field, counted) in [
+            (
+                "committed",
+                tally(&text, |line| {
+                    prior_of(line).is_empty() && decision_of(line) == "committed"
+                }),
+            ),
+            (
+                "abstained",
+                tally(&text, |line| {
+                    prior_of(line).is_empty() && decision_of(line) == "abstained"
+                }),
+            ),
+            (
+                "failed",
+                tally(&text, |line| {
+                    prior_of(line).is_empty() && decision_of(line) == "failed"
+                }),
+            ),
+        ] {
+            assert_eq!(
+                counted,
+                unclassified(&report, field),
+                "the records file counts {counted} unclassified/{field} and the table \
+                 reports {}. A query with no stratum is still a query that happened, and \
+                 the two artifacts disagreeing about how many there were is the same \
+                 defect as disagreeing inside a row — with the extra sting that these are \
+                 the rows core-025 moved, so a drift here reads as the ruling having \
+                 landed cleanly\n{text}",
+                unclassified(&report, field)
+            );
+            *exercised.entry(field).or_default() += counted;
+        }
     }
 
     for (field, total) in &exercised {
@@ -3473,6 +3507,26 @@ fn reported(report: &str, stratum: &str, field: &str) -> u64 {
         .collect::<String>()
         .parse()
         .unwrap_or_else(|error| panic!("{stratum}/{field} is not a count: {error}\n{row}"))
+}
+
+/// One counter out of the report's `unclassified` object, which is beside the
+/// table rather than in it — `core-025`, option B.
+fn unclassified(report: &str, field: &str) -> u64 {
+    let object = report
+        .find("\"unclassified\": {")
+        .map(|at| &report[at..])
+        .unwrap_or_else(|| panic!("the report has no unclassified bucket:\n{report}"));
+    let marker = format!("\"{field}\": ");
+    let at = object
+        .find(&marker)
+        .unwrap_or_else(|| panic!("the unclassified bucket has no {field}:\n{object}"))
+        + marker.len();
+    object[at..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .unwrap_or_else(|error| panic!("unclassified/{field} is not a count: {error}"))
 }
 
 fn between<'a>(line: &'a str, open: &str, close: &str) -> &'a str {
