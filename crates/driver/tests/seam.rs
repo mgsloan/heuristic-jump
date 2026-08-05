@@ -145,19 +145,60 @@ fn the_measurement_crates_have_the_edges_section_9_gives_them() {
         }
     }
 
-    let measure_core = dependencies_in(&manifest_text("measure_core"));
-    let measure_rust = dependencies_in(&manifest_text("measure_rust"));
-    assert!(
-        measure_core.iter().any(|name| name == "shared"),
-        "measure_core does not depend on shared, and core.md §9 says it depends \
-         on shared and nothing else of ours"
+    // "depends on `shared` and nothing else of ours" is an equality, and the
+    // prefix bans above are a subset of it: `measure_core` could acquire
+    // `similarity` or `rope` and every assertion so far would pass. Quantified
+    // over the whole member list rather than over a second list of prefixes,
+    // because the crate that breaks this is the one nobody thought to ban —
+    // and `vendor/` counts, since `rope` is as much an edge in §9's graph as
+    // `driver` is.
+    let ours = ours_named_by(&dependencies_in(&manifest_text("measure_core")));
+    assert_eq!(
+        ours,
+        vec!["shared".to_owned()],
+        "core.md §9 says measure_core depends on shared and nothing else of ours"
     );
-    assert!(
-        measure_rust.iter().any(|name| name == "measure_core")
-            && measure_rust.iter().any(|name| name == "lang_rust"),
-        "measure_rust is the one crate depending on both measure_core and a \
-         language, and it is not depending on both"
+
+    // §9's other measurement edge, stated the same way: `measure_<lang>` "is
+    // the only crate that depends on both `measure_core` and a language".
+    // `shared` is here for the reason `heuristic_jump` carries it — `main`
+    // returns `Result<(), shared::Error>` and there is no route to that name
+    // except the crate defining it (CHANGE-conformance-009).
+    let mut ours = ours_named_by(&dependencies_in(&manifest_text("measure_rust")));
+    let languages: Vec<String> = ours
+        .iter()
+        .filter(|name| name.starts_with("lang_"))
+        .cloned()
+        .collect();
+    assert_eq!(
+        languages.len(),
+        1,
+        "measure_rust depends on {languages:?}: core.md §9 makes measure_<lang> the crate \
+         that pairs measure_core with *a* language, one apiece"
     );
+    ours.retain(|name| !name.starts_with("lang_"));
+    assert_eq!(
+        ours,
+        vec!["measure_core".to_owned(), "shared".to_owned()],
+        "core.md §9 gives measure_rust an edge to measure_core and to one language, and \
+         `shared` beside them for the error type its main returns"
+    );
+}
+
+/// Those of `named` that are workspace members, sorted — the crate names
+/// rather than the `crates/`-and-`vendor/` paths the member list holds.
+fn ours_named_by(named: &[String]) -> Vec<String> {
+    let members: Vec<String> = workspace_members()
+        .iter()
+        .filter_map(|path| path.rsplit('/').next().map(str::to_owned))
+        .collect();
+    let mut ours: Vec<String> = named
+        .iter()
+        .filter(|name| members.contains(name))
+        .cloned()
+        .collect();
+    ours.sort();
+    ours
 }
 
 /// `core.md` §9: `heuristic_jump` "is also the single place where the language
