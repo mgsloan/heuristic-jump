@@ -2175,7 +2175,13 @@ have —which is [section 2](#text-and-tree-can-never-disagree) 's failure mode
 arriving by a different route.
 
 Three cheap self-checks turn drift into a detectable event rather than a
-permanent one, and all three are `core`-side O(1):
+permanent one. The first two are `core`-side and O(1): each compares a number
+the message carries against one we already hold. The third is neither, and its
+own bullet says why — it costs a read, so the read is a worker's, and what
+`core` does with the answer is a comparison against the rope, which is linear in
+the document rather than constant. It is cheap in the sense that matters here:
+it is on the notification path rather than the query path, so nothing waits for
+it and no budget is spent on it.
 
 * **An incremental range outside our rope** is proof we have already diverged.
   It cannot happen if every prior change was applied correctly.

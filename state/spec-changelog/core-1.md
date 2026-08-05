@@ -139,3 +139,48 @@ because `core-026`'s own "What is left" names building these two limits as the
 core loop's ordinary work, and a limit cannot be built without a number.
 
 **Campaign:** 32a9eaee-72c3-4048-84a9-b89fb1d6967f
+
+## CHANGE-core-037 — core.md#86-modelling-errors-must-fail-closed — the third self-check is not `core`-side and not O(1), and its own bullet says so
+
+**Contradiction:** the lead-in claims all three self-checks are cheap in the
+same way —
+
+> Three cheap self-checks turn drift into a detectable event rather than a
+> permanent one, and all three are `core`-side O(1)
+
+— and the third bullet, four lines below it, says the opposite of both halves
+for itself:
+
+> **`didSave` is a free end-to-end checksum.** ... It costs a read, so it
+> belongs in a worker, off the critical path
+
+A read is not `core`-side: `shim.md` §2 forbids `core` the filesystem outright,
+which is the whole reason the bullet sends it to a worker. And the comparison
+`core` is left with is not O(1) either — the section asks that "our rope's
+length — or a hash of it — must match the file", and a hash is linear in the
+document. Only a length comparison would be constant, and that is the one
+reading the section does not take, because two texts of the same length are
+exactly the drift the check exists to find.
+
+**Resolution:** the lead-in now says the first two are `core`-side and O(1) —
+each compares a number the message carries against one we hold — and that the
+third is neither, for the reason its own bullet gives. What makes it cheap is
+stated instead of asserted: it is on the notification path rather than the
+query path, so nothing waits for it and no budget is spent on it.
+
+This trades nothing off because it is the more specific claim winning over the
+summary of it. The bullet is argued — it says why the read must leave `core`
+and what a mismatch does — where the lead-in is a one-line characterisation
+written of all three at once. Nothing downstream depends on the third check
+being O(1); what depends on anything is that it not be on the query path, and
+that is now what the sentence says.
+
+**This campaign also wrote the code the section describes**, which is the shape
+the loop rules say to declare rather than leave to be noticed: `9ff22ac`,
+`2e8c082` and `9aabbb6` build the `didSave` read as a second kind of pool job,
+and this edit is in the same section. It is not the code's claim being written
+back into the document — the contradiction is between two sentences of the
+section and would be there against an empty repository — but the edit was found
+by implementing the bullet, and a reader should weigh it knowing that.
+
+**Campaign:** 7fda63d7-fc75-4469-9bc5-ac456b8a0143
