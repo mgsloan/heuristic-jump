@@ -1269,6 +1269,27 @@ def shell_intervention_kinds() -> dict[str, list[str]]:
 SHELL_HJ_CALL = re.compile(r'"\$hj"\s+([a-z][a-z-]*)')
 
 
+def sibling_hj_source() -> str:
+    """The `hj` that the scripts `harness_scripts` reads actually run.
+
+    `harness/loop` invokes `$here/hj`, the copy beside it, so the pair that has
+    to agree is one tree's script against that tree's `hj` — not this file
+    against another tree's scripts. Reading this file made a subcommand and its
+    caller impossible to land in one commit: the reviewed copy predates the new
+    parser by construction, so the gate failed on precisely the change its own
+    message tells the campaign to make. That is a false positive rather than a
+    weakened check — the failure it exists for, a script naming a subcommand
+    the `hj` beside it does not have, is exactly what this still catches.
+
+    Falls back to this file when the tree has no `hj`, which is the case for a
+    branch that predates it rather than one that broke it.
+    """
+    try:
+        return (HARNESS / "hj").read_text()
+    except OSError:
+        return Path(__file__).read_text()
+
+
 def hj_subcommands(source: str) -> set[str]:
     return set(re.findall(r'sub\.add_parser\(\s*"([a-z][a-z-]*)"', source))
 
@@ -3346,6 +3367,30 @@ def digest_sources(other: str, owners: set[str], files: dict[str, str]) -> list[
     return [(other, body)] if body else []
 
 
+def unjudged_sections(docs: list[str]) -> list[str]:
+    """The sections a campaign may take that are not gaps.
+
+    Two kinds, and the second is the one that is easy to lose: a section the
+    audit reached and could not settle, and a section the audit has never
+    reached at all. `design/loops.md` §5 makes the difference from clean
+    visible on purpose, and a never-audited section is further from clean than
+    an unjudged one rather than nearer.
+
+    One definition, because it is now read twice — the prompt offers these as
+    targets and `hj queue` decides on their absence whether the loop has
+    anything left to do, and a queue that is empty for one reader and not for
+    the other is two queues.
+    """
+    keys: set[str] = set()
+    for doc in docs:
+        verdicts = read_audit(doc)
+        for section in sections_of(doc):
+            verdict = verdicts.get(section.key)
+            if verdict is None or verdict.state == "unjudged":
+                keys.add(section.key)
+    return sorted(keys)
+
+
 def other_loop_findings(owners: list[str], owner: str) -> list[str]:
     """Every other *loop's* digest, for this loop's volatile tail.
 
@@ -3508,14 +3553,7 @@ def prompt_values(
     ]
 
     index = section_index(config.docs)
-    unjudged = [
-        key
-        for doc in config.docs
-        for key, verdict in sorted(read_audit(doc).items())
-        if verdict.state == "unjudged" and key in index
-    ]
-    never_audited = [s.key for doc in config.docs for s in sections_of(doc) if s.key not in read_audit(doc)]
-    unjudged = sorted(set(unjudged) | set(never_audited))
+    unjudged = unjudged_sections(config.docs)
 
     spliced_keys: list[str] = []
     for key, _ in gaps:
@@ -4482,6 +4520,31 @@ def cmd_claim(args: argparse.Namespace) -> int:
 
 def cmd_campaign_open(args: argparse.Namespace) -> int:
     phase, config = loop_config(args.loop)
+    # §5's terminal condition, at the one place that decides whether a campaign
+    # starts. A campaign opened against an empty queue is handed a prompt with
+    # no gap and no unjudged section in it, which is a campaign that closes
+    # `no-movement` by construction and counts against the stall for doing
+    # exactly what it was told.
+    #
+    # Here rather than in `harness/loop` for a mechanical reason worth knowing:
+    # the reviewed selftest scans the candidate tree's scripts for `"$hj" <sub>`
+    # and looks the name up in the parser list, so a new subcommand and the
+    # shell line that calls it cannot land in one commit — the reviewed copy
+    # predates the parser. `sibling_hj_source` fixes that from the next merge
+    # onwards, and the runner's own stop, with its exit code and its logged
+    # intervention, belongs in `harness/loop` once it can land there.
+    if queue_is_empty(config):
+        print(
+            f"campaign: {config.owner} has no open gap and no unjudged section left. "
+            "design/loops.md §5 makes this terminal rather than an asymptote: the gap "
+            "count goes to zero and the minor count deliberately does not, and a loop "
+            "chasing minor items is spending campaigns where its judgement is least "
+            "reliable. A human reads the minor list and decides which are real. Run "
+            f"`harness/hj queue {config.owner}` for the counts.",
+            file=sys.stderr,
+        )
+        log_queue_exhausted(config)
+        return 3
     campaign_id = args.id or str(uuid.uuid4())
     template = (prompts_dir(config) / config.prompt).read_text()
     values = prompt_values(phase, config, campaign_id, claimed_gaps(config.owner, campaign_id))
@@ -6364,6 +6427,116 @@ def budget_scopes(phase: Phase, owner: str | None = None) -> list[dict]:
         }
     )
     return scopes
+
+
+def queue_state(gaps: int, unjudged: int, minors: int) -> str:
+    """`work`, `minors` or `empty`. `design/loops.md` §5's two lists, which
+    "terminate differently": the gap count should go to zero and the minor
+    count should not, so only the first two decide whether a campaign has
+    something to take."""
+    if gaps or unjudged:
+        return "work"
+    return "minors" if minors else "empty"
+
+
+def queue_is_empty(config: LoopConfig) -> bool:
+    """Whether this loop has anything a campaign may take.
+
+    False for a loop whose work does not come from the audit at all: a tuning
+    loop declares no documents, so every count here is zero for it and a naive
+    reading would refuse to open any of its campaigns forever. The terminal
+    condition belongs to the loops §5 is about, and `docs` is what says which
+    those are.
+    """
+    if not config.docs:
+        return False
+    counts = audit_counts(config.docs)
+    state = queue_state(counts["open_gaps"], len(unjudged_sections(config.docs)), counts["audit_minors"])
+    return state != "work"
+
+
+def log_queue_exhausted(config: LoopConfig) -> None:
+    """The stop, in the log a human reads, not only on a terminal nobody is at.
+
+    §5 calls this a terminal condition, and §16 makes the intervention log the
+    mechanism rather than a record of it: a loop that stopped and asked, with
+    nothing in the log, is a loop that looks idle.
+    """
+    counts = audit_counts(config.docs)
+    append_jsonl(
+        INTERVENTIONS,
+        {
+            "ts": now(),
+            "kind": "loop-killed",
+            "phase": load_phase().phase,
+            "target": config.owner,
+            "answer": "the queue is empty; only minor items remain",
+            "rationale": (
+                f"design/loops.md §5: {config.owner} has no open gap and no unjudged "
+                f"section left, and {counts['audit_minors']} minor item(s) remain. The gap "
+                "count is driven to zero and the minor count deliberately is not — chasing "
+                "minors is where a model's judgement is least reliable and where a fix "
+                "costs most relative to its value, so a human reads the list and decides "
+                "which are real. Recorded by the harness; no rationale was given at the "
+                "time because nobody was present."
+            ),
+            "automatic": True,
+            "commit": head_sha(),
+        },
+    )
+
+
+def cmd_queue(args: argparse.Namespace) -> int:
+    """§5's terminal condition, checked between campaigns.
+
+        **When only minor items remain, the loop stops and asks.** Chasing
+        them is where a model's judgement is least reliable and where the cost
+        of a fix is highest relative to its value […] That is a terminal
+        condition rather than an asymptote, which matters because an asymptote
+        is something a loop will happily grind against forever.
+
+    Exit 1 means there is nothing left for a campaign to take. What a campaign
+    may take is §3's queue — an open gap or an unjudged section — and minor
+    items are deliberately not on it, so the count that decides this is the
+    other two and the minors are only reported.
+
+    Never fires from an empty audit: a document nobody has audited is all
+    unjudged sections, which is the queue at its fullest rather than at its
+    emptiest. That is the failure mode worth being careful about here, because
+    it stops the loop at exactly the moment the loop has done nothing.
+    """
+    phase, config = loop_config(args.loop)
+    del phase
+    if not config.docs:
+        print(f"queue: {config.owner} declares no document; its work does not come from the audit")
+        return 0
+    counts = audit_counts(config.docs)
+    gaps, minors = counts["open_gaps"], counts["audit_minors"]
+    unjudged = unjudged_sections(config.docs)
+    state = queue_state(gaps, len(unjudged), minors)
+    print(
+        f"queue: {config.owner}  {gaps} open gap(s), {len(unjudged)} unjudged section(s), "
+        f"{minors} minor item(s) not on the queue"
+    )
+    if state == "work":
+        return 0
+    if state == "minors":
+        print(
+            f"queue: every section is settled and {minors} minor item(s) remain. "
+            "design/loops.md §5: the minor count is not driven to zero by a loop — "
+            "chasing it is where a model's judgement is least reliable and where a fix "
+            "costs most relative to its value. A human reads the list and decides which "
+            "are real",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            "queue: no gap, no unjudged section and no minor item. There is nothing "
+            "for a campaign to take, which is a phase-gate question rather than a "
+            "target (design/loops.md §8)",
+            file=sys.stderr,
+        )
+    return 1
 
 
 def cmd_budget(args: argparse.Namespace) -> int:
@@ -8444,14 +8617,18 @@ def selftest_cases() -> list[tuple[str, object]]:
         # Same seam as the intervention kinds and the same failure: the shell
         # names something this file does not have, and it fails inside a runner
         # whose output nobody reads until a campaign is already lost.
-        known = hj_subcommands(Path(__file__).read_text())
+        # The parsers come from the `hj` beside those scripts, because that is
+        # the one they run — `harness/loop` invokes `$here/hj`. Reading this
+        # file instead made "the subcommand belongs in the same commit" an
+        # instruction no commit could satisfy: the reviewed copy predates the
+        # parser by construction, so the gate failed on the correct change.
+        known = hj_subcommands(sibling_hj_source())
         assert "handoff" in known, "the parser scan found nothing; the regex has rotted"
         for name, called in shell_hj_calls().items():
             for subcommand in called:
                 assert subcommand in known, (
-                    f"harness/{name} calls `hj {subcommand}`, which this file has no parser "
-                    "for. If the call is new, the subcommand belongs in the same commit; if "
-                    "this copy of hj is the reviewed one and the tree's is newer, merge main."
+                    f"harness/{name} calls `hj {subcommand}`, which the `hj` beside it has "
+                    "no parser for. A script and the file it invokes belong in one commit"
                 )
 
     def a_stalled_campaign_is_not_told_to_write_the_file_the_loop_writes():
@@ -9678,6 +9855,47 @@ def selftest_cases() -> list[tuple[str, object]]:
             "a check nothing runs is a comment"
         )
 
+    def only_minor_items_left_is_terminal_and_not_an_asymptote():
+        assert queue_state(23, 3, 17) == "work"
+        assert queue_state(0, 1, 0) == "work", "an unjudged section is a target"
+        assert queue_state(1, 0, 0) == "work"
+        assert queue_state(0, 0, 17) == "minors", (
+            "§5 drives the gap count to zero and deliberately not the minor count; "
+            "when only minors remain the loop stops and a human decides"
+        )
+        assert queue_state(0, 0, 0) == "empty"
+        assert "queue_is_empty" in inspect.getsource(cmd_campaign_open), (
+            "a terminal condition nothing consults is a comment; campaign-open is the "
+            "one place that decides whether a campaign starts"
+        )
+
+    def a_loop_whose_work_is_not_the_audit_is_never_told_the_queue_is_empty():
+        # A tuning loop declares no document, so every audit count is zero for
+        # it. Read naively that is "nothing left to do" and campaign-open would
+        # refuse forever — the terminal condition belongs to the loops §5 is
+        # about, and `docs` is what says which those are.
+        _, config = loop_config("harness")
+        assert config.docs and queue_is_empty(config) is False
+        assert queue_is_empty(replace(config, docs=[])) is False, (
+            "no documents is not an empty queue; it is a different oracle"
+        )
+
+    def a_section_nobody_has_audited_is_on_the_queue():
+        # The easy half to lose: `read_audit` returns nothing for a document
+        # the audit has never opened, and counting only the sections it marked
+        # `unjudged` would report an untouched document as finished.
+        untouched = [
+            doc for doc in ("shim.md", "resolution.md", "data-collection.md")
+            if not (STATE / "audit" / f"{Path(doc).stem}.toml").exists()
+        ]
+        assert untouched, "pick a document the audit has not reached, or drop this case"
+        assert unjudged_sections(untouched[:1]) == sorted(
+            s.key for s in sections_of(untouched[0])
+        ), "every section of an unaudited document is work, not silence"
+        assert "unjudged_sections" in inspect.getsource(prompt_values), (
+            "the prompt's target list and the queue's emptiness must be one definition"
+        )
+
     def the_digest_asymmetry_reaches_both_ends():
         template = (HARNESS / "prompts" / "conformance.md").read_text()
         assert "{{other_findings}}" in template, (
@@ -10254,6 +10472,12 @@ def main() -> int:
     p = sub.add_parser("budget", help="spend against each ceiling; exit 1 when one is reached")
     p.add_argument("loop", nargs="?")
     p.set_defaults(run=cmd_budget)
+
+    p = sub.add_parser(
+        "queue", help="what is left for a campaign to take; exit 1 when only minor items remain"
+    )
+    p.add_argument("loop")
+    p.set_defaults(run=cmd_queue)
 
     p = sub.add_parser(
         "escalations",
