@@ -342,6 +342,13 @@ Bare is the shared surface and lands where it always did. Prefixed lands under
 `servers.<name>`, and the name is resolved against `servers.toml` — a typo'd
 server is otherwise a new series indistinguishable from a real one.
 
+The other half of that section is a check rather than a shape: gate step 7
+fails if two loops in `state/phase.toml` declare the same language. §10 rejects
+the per-server split by argument — such a loop has "almost no legal move" — and
+the split arrives anyway if two loops name one language, whatever they are
+called. Every other command here is per loop, so each of the two would look
+correct on its own; this is the only place the pair is visible at once.
+
 **Two rules that are easy to get backwards.** With exactly one server the row
 is *unchanged in shape*: the section says every position is then trivially
 unanimous, so that server's surface is promoted to the shared one and Rust and

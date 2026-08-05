@@ -18,8 +18,10 @@ this could edit the thing that scores it.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import inspect
+import io
 import json
 import math
 import os
@@ -2670,6 +2672,11 @@ def cmd_check_metrics(args: argparse.Namespace) -> int:
     failed = check_test_ratchet(config)
     failed = check_prompt_prefix(config, phase) or failed
     failed = check_denial_table(config) or failed
+    # Not scoped to `writes_harness`, unlike the two above it. Those read a
+    # document only one loop is judged on; this reads `state/phase.toml`, which
+    # is denied to every loop — so every live branch satisfies it and no branch
+    # can be failed for something it is forbidden to fix (`harness-011`).
+    failed = check_one_loop_per_language(phase) or failed
     return 1 if failed else 0
 
 
@@ -3726,6 +3733,47 @@ def documented_harness_denials(text: str) -> tuple[set[str], str]:
             "names what a loop writing `harness/` still may not touch"
         )
     return set(re.findall(r"`(harness/[^`\s]+)`", paragraphs[0])), ""
+
+
+def check_one_loop_per_language(phase: Phase) -> int:
+    """§10's "several servers do not mean several loops", as a check.
+
+    The section argues the per-server split out and rejects it — such a loop
+    "owns one file it is forbidden to grow except on corpus evidence" and is
+    forbidden the one shape that would let it do anything locally, so it is "a
+    loop with almost no legal move" — and concludes that "a language is one
+    loop, and it reads every table for its language".
+
+    Two loops declaring one language is that split arriving anyway, whatever
+    they are named. What it produces is two metrics files, two frontiers over
+    one set of numbers, and two loops contending on one crate. Nothing else
+    here would notice, because every command is per loop and each of the two
+    looks perfectly correct on its own — which is why the row's server
+    dimension needs this beside it rather than instead of it.
+    """
+    owners: dict[str, list[str]] = {}
+    for owner, config in sorted(phase.loops.items()):
+        if config.language:
+            owners.setdefault(config.language, []).append(owner)
+    if not owners:
+        print("loops: no loop declares a language, so no two can share one")
+        return 0
+    doubled = {language: names for language, names in owners.items() if len(names) > 1}
+    for language, names in sorted(doubled.items()):
+        print(
+            f"loops: {language} is declared by {' and '.join(names)}. design/loops.md "
+            "section 10 makes a language one loop that reads every server's table for "
+            "it; two loops for one language are two metrics files and two frontiers "
+            "over one set of numbers, and a per-server split is the shape that "
+            "section rejects outright.",
+            file=sys.stderr,
+        )
+    if not doubled:
+        print(
+            "loops: "
+            + ", ".join(f"{language} -> {names[0]}" for language, names in sorted(owners.items()))
+        )
+    return 1 if doubled else 0
 
 
 def check_denial_table(config: LoopConfig) -> int:
@@ -8436,6 +8484,47 @@ def selftest_cases() -> list[tuple[str, object]]:
         both = replay_row_fields(one, {"pyright": one, "pylsp": other})
         assert frontier_axes_of(both) == {"top1": 0.75, "coverage": 0.8}, both
         assert sorted(both["servers"]) == ["pylsp", "pyright"]
+
+    def two_loops_may_not_declare_one_language():
+        # §10 rejects the per-server split — "a loop with almost no legal move"
+        # — and concludes "a language is one loop". Two loops for one language
+        # are two metrics files and two frontiers over one set of numbers, and
+        # every command here is per loop, so each of the two looks correct
+        # alone. This is the only place the pair is visible at once.
+        def verdict(phase: Phase) -> tuple[int, str]:
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = check_one_loop_per_language(phase)
+            return code, err.getvalue()
+
+        code, _ = verdict(
+            Phase(
+                phase="2a",
+                loops={
+                    "lang-rust": _selftest_loop("lang-rust", "rust"),
+                    "lang-python": _selftest_loop("lang-python", "python"),
+                },
+            )
+        )
+        assert code == 0
+        code, said = verdict(
+            Phase(
+                phase="2a",
+                loops={
+                    "lang-python-pyright": _selftest_loop("lang-python-pyright", "python"),
+                    "lang-python-pylsp": _selftest_loop("lang-python-pylsp", "python"),
+                },
+            )
+        )
+        assert code == 1, (
+            "a per-server split arrives by declaring the same language twice, "
+            "whatever the two loops are named"
+        )
+        assert "lang-python-pylsp and lang-python-pyright" in said, said
+        assert verdict(Phase(phase="1a"))[0] == 0, (
+            "phase 1a declares no language, and a check that failed there would "
+            "fail every gate of every loop until one did"
+        )
 
     def a_server_name_is_resolved_against_the_matrix_and_not_trusted():
         # A typo'd name is a new series that looks like a server nobody has
