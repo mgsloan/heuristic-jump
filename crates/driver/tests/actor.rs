@@ -543,6 +543,7 @@ fn the_loop_drains_its_channel_and_ends_when_the_wire_closes() {
 /// case the number exists for.
 #[test]
 fn the_inbox_depth_is_logged_when_core_falls_behind() {
+    keep_callsites_enabled();
     let fixture = Fixture::new("actor_depth", Proxying::Yes);
     let target = fixture.definition_in("src/target.rs");
     let actor = fixture.actor(Arc::new(Committing {
@@ -915,14 +916,14 @@ fn the_child_may_answer_before_the_worker_does() {
 fn a_cancel_reaches_the_worker_that_is_still_running_the_query() {
     let fixture = Fixture::new("actor_cancel_in_flight", Proxying::No);
     let (go, wait) = crossbeam_channel::unbounded();
-    let (report, expired) = crossbeam_channel::unbounded();
+    let (report, observed) = crossbeam_channel::unbounded();
     // Held rather than dropped: a handler whose start signal has nowhere to go
     // logs about it, and the log is not what this test is reading.
     let (started, _starting) = crossbeam_channel::unbounded();
     let mut actor = fixture.actor(Arc::new(Waiting {
         started,
         go: wait,
-        expired: report,
+        observed: report,
     }));
 
     fixture.open(&mut actor);
@@ -941,7 +942,10 @@ fn a_cancel_reaches_the_worker_that_is_still_running_the_query() {
     settle(&mut actor, &answers);
 
     assert_eq!(
-        expired.try_iter().collect::<Vec<bool>>(),
+        observed
+            .try_iter()
+            .map(|observed| observed.expired)
+            .collect::<Vec<bool>>(),
         vec![true],
         "a handler polling its deadline was told the query is still live after the editor \
          cancelled it, so the worker spends the rest of the budget on an answer that will be \
@@ -956,6 +960,80 @@ fn a_cancel_reaches_the_worker_that_is_still_running_the_query() {
     assert!(
         fixture.outbound().is_empty(),
         "the shim answered a cancelled request, which `shim.md` §7 forbids outright"
+    );
+}
+
+/// `core.md` §2: "text and tree can never disagree" — across the window the
+/// pool opens.
+///
+/// A `didChange` or a `didOpen` forgets the cached tree for its document, and
+/// until dispatch left `core`'s thread that was the whole of the protection:
+/// the tree came back on the same event that built the seed, so nothing could
+/// arrive in between. Now something can. A worker that started before the
+/// notification returns a tree of text the editor has replaced, and caching it
+/// puts that tree back under the new document — where `seed` hands it to the
+/// next query as an incremental base with an **empty** edit log, and
+/// tree-sitter, told nothing changed, returns it unchanged.
+///
+/// A version comparison cannot catch this and `TreeCache::insert`'s already
+/// does not: §8.6 makes `didOpen` a *resync*, so the text behind a URI can be
+/// replaced at a version we have already seen — this fixture reopens at
+/// version 1, which is what the editor really does after a revert.
+///
+/// The second query is the assertion. The first only establishes that a tree
+/// of the old text exists to be wrongly cached.
+#[test]
+fn a_tree_of_text_the_editor_replaced_while_it_was_parsing_is_not_cached() {
+    let fixture = Fixture::new("actor_superseded_tree", Proxying::No);
+    let (started, starting) = crossbeam_channel::bounded(0);
+    let (go, wait) = crossbeam_channel::unbounded();
+    let (report, observed) = crossbeam_channel::unbounded();
+    let mut actor = fixture.actor(Arc::new(Waiting {
+        started,
+        go: wait,
+        observed: report,
+    }));
+
+    fixture.open(&mut actor);
+    let answers = actor.dispatches().clone();
+    actor
+        .handle(fixture.definition(1))
+        .expect("a definition request");
+    starting
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the handler to be reached");
+    // The window: the query is inside a worker, parsing `DOCUMENT`, and the
+    // editor replaces the document under it.
+    actor
+        .handle(fixture.did_open(REOPENED))
+        .expect("the document reopened while the query was running");
+    go.send(()).expect("letting the handler go");
+    settle(&mut actor, &answers);
+
+    // The second query, whose seed is built from whatever the first one left
+    // in the cache.
+    actor
+        .handle(fixture.definition(2))
+        .expect("a second definition request");
+    starting
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the second handler to be reached");
+    go.send(()).expect("letting the second handler go");
+    settle(&mut actor, &answers);
+
+    let spans: Vec<(usize, usize)> = observed
+        .try_iter()
+        .map(|observed| (observed.tree, observed.text))
+        .collect();
+    assert_eq!(
+        spans,
+        vec![
+            (DOCUMENT.len(), DOCUMENT.len()),
+            (REOPENED.len(), REOPENED.len()),
+        ],
+        "a handler was given a tree that does not span its own text. The first query was \
+         still parsing when the editor replaced the document, and its tree — correct for text \
+         nobody holds any more — was cached as though it described the new one"
     );
 }
 
@@ -984,11 +1062,11 @@ fn the_loop_records_a_query_the_pool_still_had_when_the_wire_closed() {
     // Held for the reason the start channel is held in the cancellation test:
     // the handler reports its deadline whatever the test is reading, and a
     // dropped receiver would put a warning in a log nobody here is looking at.
-    let (report, _expired) = crossbeam_channel::unbounded();
+    let (report, _observed) = crossbeam_channel::unbounded();
     let actor = fixture.actor(Arc::new(Waiting {
         started,
         go: wait,
-        expired: report,
+        observed: report,
     }));
 
     let (events, incoming) = crossbeam_channel::unbounded();
@@ -1083,6 +1161,7 @@ const HARD_CAP: &str = "dropping an answer that arrived after its deadline";
 /// a late answer, so it is the only parameter: the handler, the clock and the
 /// budget are the same on both.
 fn expiring_in(relative: &str, name: &str) -> Vec<String> {
+    keep_callsites_enabled();
     let fixture = Fixture::new(name, Proxying::No);
     let target = fixture.definition_in(relative);
     let mut actor = fixture.actor(Arc::new(Slow {
@@ -1117,6 +1196,7 @@ fn lines_saying<'a>(lines: &'a [String], message: &str) -> Vec<&'a String> {
 /// fixture would fail on the `HARD_CAP` count rather than pass quietly on the
 /// wrong route.
 fn expired_before_the_parse(name: &str) -> Vec<String> {
+    keep_callsites_enabled();
     let fixture = Fixture::new(name, Proxying::No);
     let text = large_document();
     fs::write(fixture.root.join("src").join("lib.rs"), &text).expect("the large fixture document");
@@ -1172,6 +1252,7 @@ fn large_document() -> String {
 /// propagates it with `?`, which is the one route that arrives having classified
 /// nothing *and* having had a handler run.
 fn propagated_from_a_read(name: &str) -> Vec<String> {
+    keep_callsites_enabled();
     let fixture = Fixture::new(name, Proxying::No);
     let mut actor = fixture.actor(Arc::new(Propagating {
         clock: Arc::clone(&fixture.clock),
@@ -1440,6 +1521,55 @@ fn field(row: &str, name: &str) -> String {
     rest.to_owned()
 }
 
+/// Keeps `tracing`'s callsite interest from settling on "disabled", once for
+/// the whole binary.
+///
+/// `tracing` caches, per callsite and **process-wide**, whether anything is
+/// interested in it, and computes that from the subscribers registered at the
+/// moment the callsite is first reached. `cargo test` runs these tests as
+/// threads in one process, so most of `driver`'s callsites are first reached
+/// by a test that captures nothing — and the answer cached then is the answer
+/// every later test gets, including the ones below that assert on a line.
+///
+/// It matters here and not before because a query is answered on a pool
+/// thread: the events a fixture is waiting for are emitted somewhere other
+/// than the thread that installed the capture, so they can no longer be
+/// ordered against it. A global subscriber that is interested in everything
+/// puts a floor under the cache; it collects nothing itself, and a scoped
+/// `with_default` still takes priority over it on any thread that sets one.
+fn keep_callsites_enabled() {
+    static INSTALLED: std::sync::Once = std::sync::Once::new();
+    INSTALLED.call_once(|| {
+        if tracing::subscriber::set_global_default(Interested).is_err() {
+            panic!("something else installed a global subscriber first");
+        }
+    });
+}
+
+/// The floor itself: interested in every callsite, and a sink for none of
+/// them.
+struct Interested;
+
+impl tracing::Subscriber for Interested {
+    fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+
+    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+
+    fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+    fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+
+    fn event(&self, _event: &tracing::Event<'_>) {}
+
+    fn enter(&self, _span: &tracing::span::Id) {}
+
+    fn exit(&self, _span: &tracing::span::Id) {}
+}
+
 /// A subscriber that keeps every event's fields as one line of text.
 ///
 /// Hand-written rather than `tracing_subscriber::fmt`, and not for want of the
@@ -1590,7 +1720,21 @@ struct Waiting {
     /// establish only that the handler had been reached eventually.
     started: crossbeam_channel::Sender<()>,
     go: Receiver<()>,
-    expired: crossbeam_channel::Sender<bool>,
+    observed: crossbeam_channel::Sender<Observed>,
+}
+
+/// What the waiting handler saw once it was let go. One channel and one struct
+/// rather than one channel per fact: the double is shared by three tests that
+/// each read a different field, and three senders would make every one of them
+/// carry the two it does not care about.
+#[derive(Debug)]
+struct Observed {
+    /// `Deadline::expired`, which is what a handler polls cooperatively.
+    expired: bool,
+    /// How far the tree reaches, beside how far the text does. `core.md` §2
+    /// says those cannot disagree.
+    tree: usize,
+    text: usize,
 }
 
 impl LanguageHandler for Waiting {
@@ -1617,8 +1761,13 @@ impl LanguageHandler for Waiting {
             Ok(()) => {}
             Err(error) => tracing::warn!(%error, "the test never let the handler go"),
         }
-        if self.expired.send(query.deadline.expired()).is_err() {
-            tracing::warn!("the test stopped listening for the deadline");
+        let observed = Observed {
+            expired: query.deadline.expired(),
+            tree: query.doc.tree().root_node().end_byte(),
+            text: query.doc.text.len().0,
+        };
+        if self.observed.send(observed).is_err() {
+            tracing::warn!("the test stopped listening for what the handler saw");
         }
         Ok(Outcome::Abstain {
             reason: AbstainReason::NoCandidates,

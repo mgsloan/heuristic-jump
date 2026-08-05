@@ -48,12 +48,12 @@ use shared::proto::{
 };
 use shared::record::{Answered, ChildAnswer, QueryContext, QueryRecord, definition_labels, micros};
 use shared::{
-    Clock, CommitPolicy, Deadline, DocumentNotification, EditorRequestId, Error, InputEdit, Map,
-    Micros, Outcome, Trace,
+    Clock, CommitPolicy, Deadline, DocumentNotification, DocumentUri, EditorRequestId, Error,
+    InputEdit, Map, Micros, Outcome, Trace,
 };
 
 use crate::config::{Config, DebounceMs, Heuristics};
-use crate::dispatch::{Answer, Dispatched, Registry};
+use crate::dispatch::{Answer, Completed, Dispatched, Registry};
 use crate::documents::{Documents, Queried};
 use crate::files::FileListCache;
 use crate::pending::{PendingQueries, PendingQuery, Resolution};
@@ -150,11 +150,40 @@ struct Negotiated {
 /// A query the pool still holds.
 #[derive(Debug)]
 struct InFlight {
+    /// Which document it is parsing, so that a notification about that
+    /// document can find it. Nothing else `core` holds can: `PendingQueries`
+    /// is keyed by request id and the pool is a channel.
+    uri: DocumentUri,
     /// §5's deadline, which is only worth retaining now that a dispatch
     /// outlives the event that started it: `$/cancelRequest` signals it, and
     /// the worker learns to stop at its next poll (`shim.md` §7).
     deadline: Deadline,
     oracle: Oracle,
+    tree: TreeFate,
+}
+
+/// Whether the tree a worker is producing still describes a document `core`
+/// holds.
+///
+/// This is `core.md` §2's "text and tree can never disagree" across the window
+/// the pool opens. A `didChange` or a `didOpen` forgets the cached tree for its
+/// document, and while dispatch was in line that was the whole of the
+/// protection — the tree came back on the event that built the seed, so
+/// nothing could arrive in between. Now something can, and caching what the
+/// worker returns would put a tree of the old text back under the new
+/// document, where `TreeCache::seed` hands it to the next query as an
+/// incremental base with an empty edit log.
+///
+/// A version comparison does not close it, which is why this is a flag and not
+/// a number: §8.6 makes `didOpen` a *resync*, so the text behind a URI can be
+/// replaced at a version we have already seen. That is what an editor does
+/// after a revert.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+enum TreeFate {
+    /// Nothing has touched the document since the seed left `core`.
+    Cacheable,
+    /// It has, so the tree is correct for text nobody holds any more.
+    Superseded,
 }
 
 /// What the child has said about a query the pool has not answered yet.
@@ -470,7 +499,21 @@ impl Actor {
     /// modelling mistake is somewhere in `contentChanges`.
     fn forget_trees(&mut self, notification: DocumentNotification, params: &RawValue) {
         match serde_json::from_str::<NotifiedDocument>(params.get()) {
-            Ok(named) => self.trees.forget(&named.text_document.uri),
+            Ok(named) => {
+                self.trees.forget(&named.text_document.uri);
+                // The cache is not the only place a tree of this document can
+                // be: one is being parsed right now on every worker that has a
+                // query against it, and those arrive *after* this.
+                #[expect(
+                    clippy::iter_over_hash_type,
+                    reason = "every matching entry is marked and nothing is produced, so the order the map yields them in is not observable; the lint is about output that varies between runs"
+                )]
+                for in_flight in self.in_flight.values_mut() {
+                    if in_flight.uri == named.text_document.uri {
+                        in_flight.tree = TreeFate::Superseded;
+                    }
+                }
+            }
             // Nothing said which document changed, so there is none to forget
             // — and nothing to leak either: `Documents` distrusts every open
             // document on this message (§8.6's `Unattributable`), a distrusted
@@ -626,8 +669,10 @@ impl Actor {
         self.in_flight.insert(
             asked.editor_id.clone(),
             InFlight {
+                uri: asked.uri.clone(),
                 deadline: deadline.clone(),
                 oracle: Oracle::Awaited,
+                tree: TreeFate::Cacheable,
             },
         );
         let editor_id = asked.editor_id.clone();
@@ -668,26 +713,39 @@ impl Actor {
             started,
             elapsed,
         } = finished;
-        // Cached before anything else can decide the answer is unwanted: the
-        // parse was paid for either way, and a query that was cancelled is one
-        // the user is quite likely to ask again.
-        if let Some(parsed) = completed.parsed {
-            self.trees.insert(parsed);
-        }
+        let Completed { dispatched, parsed } = completed;
         let Some(held) = self.in_flight.remove(&asked.editor_id) else {
             // Cancelled while the pool had it. `shim.md` §7 says the shim must
             // not answer a cancelled request, and §7's row is not written
             // either: a cancelled query has no `agreement` because nobody was
             // ever going to answer it.
+            //
+            // The tree goes with it rather than being kept for the next query.
+            // The entry that was just not found is the only thing that knew
+            // whether the document had moved since the seed was built, so
+            // there is no longer any way to say this tree describes text
+            // `core` holds — and a cold miss is correct, just slower
+            // (`shim.md` §5).
             tracing::debug!("dropping an answer to a query that was cancelled");
             return;
         };
+        match (parsed, held.tree) {
+            // The parse was paid for whatever the query decided, and a query
+            // that abstained on its deadline is the one most likely to be
+            // asked again a moment later.
+            (Some(parsed), TreeFate::Cacheable) => self.trees.insert(parsed),
+            (Some(_), TreeFate::Superseded) => tracing::debug!(
+                uri = %asked.uri,
+                "dropping a tree of text the editor has replaced"
+            ),
+            (None, TreeFate::Cacheable | TreeFate::Superseded) => {}
+        }
         if let Some(negotiated) = &mut self.negotiated {
-            negotiated.files.observe(&completed.dispatched);
+            negotiated.files.observe(&dispatched);
         }
         self.settle(
             &asked,
-            completed.dispatched,
+            dispatched,
             micros(started.saturating_duration_since(asked.arrived)),
             micros(elapsed),
         );
