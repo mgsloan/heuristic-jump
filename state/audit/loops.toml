@@ -8,15 +8,20 @@ last_audited = "2026-08-05T00:26:46+00:00"
 
 [section."loops.md#1-current-state-and-what-it-forces"]
 state = "clean"
-last_audited = "2026-08-04T20:59:31+00:00"
+last_audited = "2026-08-05T01:11:28+00:00"
 
 [section."loops.md#2-two-loops-two-oracles"]
 state = "clean"
-last_audited = "2026-08-04T20:59:31+00:00"
+last_audited = "2026-08-05T01:11:28+00:00"
+
+  [[section."loops.md#2-two-loops-two-oracles".minor]]
+  claim = "conformance loop scope: vendor/, shared, driver, heuristic_jump, measure_*"
+  note = "there are two conformance loops; the second's scope is harness/**, design/loops.md and its own state, and design/ is absent from the row for both"
+  where = "state/phase.toml:283"
 
 [section."loops.md#3-where-the-work-comes-from"]
 state = "clean"
-last_audited = "2026-08-04T04:23:19+00:00"
+last_audited = "2026-08-05T01:11:28+00:00"
 
 [section."loops.md#the-audit-produces-the-queue"]
 state = "clean"
@@ -46,20 +51,27 @@ last_audited = "2026-08-05T00:26:46+00:00"
 
 [section."loops.md#4-the-iteration-contract"]
 state = "clean"
-last_audited = "2026-08-04T04:23:19+00:00"
+last_audited = "2026-08-05T01:11:28+00:00"
 
 [section."loops.md#campaigns-are-the-unit-of-fresh-context"]
-state = "clean"
-last_audited = "2026-08-04T04:23:19+00:00"
+state = "gaps"
+last_audited = "2026-08-05T01:11:28+00:00"
+
+  [[section."loops.md#campaigns-are-the-unit-of-fresh-context".gap]]
+  claim = "a campaign is one target, one hypothesis; for a conformance loop, one open gap or one unjudged section"
+  found = "the prompt permits several targets whose only shared property is reading \u2014 'the test for taking several is shared context, not interdependence \u2026 neither has to block the other' \u2014 and instructs the campaign to keep taking more before closing"
+  where = "harness/prompts/conformance.md:72"
+  found_at = "9ee58a01e8f5a0796d515795531b78fd74efd34f"
 
 [section."loops.md#campaigns-compare-notes-asymmetrically"]
-state = "clean"
-last_audited = "2026-08-04T20:59:31+00:00"
+state = "gaps"
+last_audited = "2026-08-05T01:11:28+00:00"
 
-  [[section."loops.md#campaigns-compare-notes-asymmetrically".minor]]
-  claim = "a digest of at most 512 words, rewritten at every campaign close"
-  note = "the cap is instruction-only; nothing counts the words, so a digest can drift past what the section calls the mechanism. A word count at close would make it exact."
-  where = "harness/prompts/conformance.md:136"
+  [[section."loops.md#campaigns-compare-notes-asymmetrically".gap]]
+  claim = "each loop maintains state/findings/<owner>.md, and every loop reads every other loop's digest in its volatile tail"
+  found = "campaigns rewrite state/findings/<worker>.md while other_loop_findings reads state/findings/<owner>.md and excludes the worker files, so a loop with workers publishes nothing across the loop boundary \u2014 state/findings/core.md is a stale digest while core-1.md is current"
+  where = "harness/hj:3305, harness/hj:3515, state/findings/core.md:1"
+  found_at = "9ee58a01e8f5a0796d515795531b78fd74efd34f"
 
 [section."loops.md#what-a-loop-remembers-about-itself"]
 state = "clean"
@@ -89,54 +101,54 @@ last_audited = "2026-08-04T23:50:43+00:00"
 
 [section."loops.md#6-spec-changes-what-the-loop-may-decide-alone"]
 state = "clean"
-last_audited = "2026-08-04T20:59:31+00:00"
+last_audited = "2026-08-05T01:11:28+00:00"
 
   [[section."loops.md#6-spec-changes-what-the-loop-may-decide-alone".minor]]
-  claim = "Fix, and append to state/spec-changelog.md"
-  note = "the harness allocates ids into and directs the loop at state/spec-changelog/<owner>.md; changelog_paths reads both, so nothing is lost, but the document names a path no loop now appends to."
-  where = "harness/hj:3498"
+  claim = "append to state/spec-changelog.md with the contradiction quoted and the resolution stated"
+  note = "entries go to state/spec-changelog/<worker>.md; the flat file the section names is legacy and readers glob both"
+  where = "harness/hj:3541, harness/hj:7801"
+
+  [[section."loops.md#6-spec-changes-what-the-loop-may-decide-alone".minor]]
+  claim = "Class A \u2014 the loop fixes it, records it, continues"
+  note = "the prompt's statement of the Class A test is a mangled sentence ('does not trade anything off?* document.'); the instruction survives in the lines after it"
+  where = "harness/prompts/conformance.md:185"
 
 [section."loops.md#7-progress-stall-and-the-ways-it-is-faked"]
 state = "gaps"
-last_audited = "2026-08-04T23:50:43+00:00"
+last_audited = "2026-08-05T01:11:28+00:00"
 
   [[section."loops.md#7-progress-stall-and-the-ways-it-is-faked".gap]]
-  claim = "progress is any of five forms, all computable from the repository"
-  found = "cmd_campaign_close computes four; the frontier-point term is absent, so a campaign whose only result is a non-dominated point scores as no progress and counts toward the stall threshold"
-  where = "harness/hj:4963"
-  found_at = "fa8ac4e8ca8578447ced914e8b2f39f0822ee5a2"
+  claim = "`harness/` is owned by nobody and denied to every loop; changes to it are Class B"
+  found = "HARNESS_PATHS is denied only to loops without `writes_harness`, which state/phase.toml sets for loop.harness, and no mechanism makes a harness/ edit Class B \u2014 the prompt's trigger list omits it. A permanent check is available: fail the gate on a commit touching harness/** with no `decision:` trailer naming a record"
+  where = "harness/hj:142, harness/hj:361, state/phase.toml:269, harness/prompts/conformance.md:214"
+  found_at = "9ee58a01e8f5a0796d515795531b78fd74efd34f"
 
-  [[section."loops.md#7-progress-stall-and-the-ways-it-is-faked".minor]]
-  claim = "harness/ is owned by nobody and denied to every loop; changes to it are Class B"
-  note = "HARNESS_PATHS grants harness/** to a loop declaring writes_harness; only four files stay denied. The invariant is held by the pinned gate instead, and \u00a718 grants the exception, but this row still reads as unqualified"
-  where = "harness/hj:125"
-
-  [[section."loops.md#7-progress-stall-and-the-ways-it-is-faked".minor]]
-  claim = "N is 3 for a conformance loop and 5 for a tuning loop"
-  note = "stall_n is a per-loop number defaulting to 3 with no notion of regime, so a tuning loop added without it silently gets the conformance threshold"
-  where = "harness/hj:316"
+  [[section."loops.md#7-progress-stall-and-the-ways-it-is-faked".gap]]
+  claim = "Delete or weaken tests: test count is a ratchet; test deletions are flagged regardless of count"
+  found = "neither holds for the harness loop: crate_paths returns only crates//vendor/ patterns so removed_tests_in scans nothing, and owned_members is empty so test_count is None and check_test_ratchet reports 'nothing to hold'. Counting selftest_cases() as that loop's test number would make it exact"
+  where = "harness/hj:2129, harness/hj:1637, harness/hj:2150"
+  found_at = "9ee58a01e8f5a0796d515795531b78fd74efd34f"
 
 [section."loops.md#8-sequencing-and-gates"]
 state = "clean"
-last_audited = "2026-08-04T20:59:31+00:00"
+last_audited = "2026-08-05T01:11:28+00:00"
 
 [section."loops.md#why-2a-and-2b-in-parallel-is-safe"]
 state = "clean"
 last_audited = "2026-08-05T00:26:46+00:00"
 
 [section."loops.md#9-the-inner-loop-is-a-replay-and-its-cost-is-measured"]
-state = "unjudged"
-last_audited = "2026-08-04T04:23:19+00:00"
+state = "clean"
+last_audited = "2026-08-05T01:11:28+00:00"
 
 [section."loops.md#there-is-no-replay-time-target-and-that-is-deliberate"]
-state = "gaps"
-last_audited = "2026-08-04T23:50:43+00:00"
+state = "clean"
+last_audited = "2026-08-05T01:11:28+00:00"
 
-  [[section."loops.md#there-is-no-replay-time-target-and-that-is-deliberate".gap]]
-  claim = "so it is measured instead \u2014 the harness records replay wall clock as an ordinary metric, per language, per commit, from the very first run"
-  found = "no harness code reads a replay result or writes a wall-clock field; the section's argument for having no target rests on a measurement that is never taken"
-  where = "harness/hj:2619"
-  found_at = "fa8ac4e8ca8578447ced914e8b2f39f0822ee5a2"
+  [[section."loops.md#there-is-no-replay-time-target-and-that-is-deliberate".minor]]
+  claim = "`measure replay` reports its own wall clock, and the harness records it as an ordinary metric"
+  note = "the number is emitted on the tracing stream rather than in `--format json`, so digest_surface cannot read it and depends on an out-of-band `record --replay-seconds`; a row recorded without that flag carries no wall clock"
+  where = "harness/hj:2855, crates/measure_core/src/measure_core.rs:142"
 
 [section."loops.md#determinism-is-a-precondition-not-a-description"]
 state = "unjudged"
@@ -158,13 +170,19 @@ last_audited = "2026-08-04T20:59:31+00:00"
 
 [section."loops.md#the-metrics-history"]
 state = "gaps"
-last_audited = "2026-08-04T23:50:43+00:00"
+last_audited = "2026-08-05T01:11:28+00:00"
 
   [[section."loops.md#the-metrics-history".gap]]
-  claim = "the row carries work counters, replay wall clock, per-stratum latency percentiles with the per-stage breakdown, and the deadline-abstention rate"
-  found = "cmd_record's row has none of these and no code path reads a measure result; it writes commit, ts, phase, loop, campaign, audit counts, loc, tests, tests_removed, provisional decisions and binary size"
-  where = "harness/hj:2627"
-  found_at = "fa8ac4e8ca8578447ced914e8b2f39f0822ee5a2"
+  claim = "the row carries work counters: bytes read, files parsed, nodes visited"
+  found = "replay_digest accumulates bytes_scanned and files_parsed only; the third counter has no field to come from (DECISION-harness-012)"
+  where = "harness/hj:6227"
+  found_at = "9ee58a01e8f5a0796d515795531b78fd74efd34f"
+
+  [[section."loops.md#the-metrics-history".gap]]
+  claim = "per-stratum result-count distribution"
+  found = "a single mean is recorded instead; the per-query counts stay in the records file"
+  where = "harness/hj:6274"
+  found_at = "9ee58a01e8f5a0796d515795531b78fd74efd34f"
 
 [section."loops.md#what-cannot-be-measured-in-isolation"]
 state = "gaps"
@@ -186,28 +204,21 @@ last_audited = "2026-08-04T20:59:31+00:00"
   where = "harness/hj:1651"
 
 [section."loops.md#the-frontier-and-why-it-stays-two-dimensional"]
-state = "gaps"
-last_audited = "2026-08-04T23:50:43+00:00"
+state = "clean"
+last_audited = "2026-08-05T01:11:28+00:00"
 
-  [[section."loops.md#the-frontier-and-why-it-stays-two-dimensional".gap]]
-  claim = "a commit is on the frontier if no other commit beats it on every axis \u2014 a real, computable object"
-  found = "nothing in harness/ computes a frontier: no hj subcommand, no tool, and the dashboard panel says there is nothing to plot; top-1 agreement, containment and result count are never read"
-  where = "harness/dashboard/serve:1404"
-  found_at = "fa8ac4e8ca8578447ced914e8b2f39f0822ee5a2"
+  [[section."loops.md#the-frontier-and-why-it-stays-two-dimensional".minor]]
+  claim = "the frontier is a phase 2a object, and phase 3 has no frontier of its own"
+  note = "FRONTIER_PHASES also admits 2b, and `hj frontier --phase 3` prints the no-frontier notice and then computes one anyway rather than returning"
+  where = "harness/hj:6408, harness/hj:6710"
 
 [section."loops.md#several-servers-do-not-mean-several-loops"]
 state = "unjudged"
 last_audited = "2026-08-04T23:50:43+00:00"
 
 [section."loops.md#selecting-a-version-at-a-phase-gate"]
-state = "gaps"
-last_audited = "2026-08-04T23:50:43+00:00"
-
-  [[section."loops.md#selecting-a-version-at-a-phase-gate".gap]]
-  claim = "compute the frontier over the phase's commits, evaluate those points on held-out, pick one"
-  found = "none of the three steps exists: no frontier computation, nothing writes state/heldout/<lang>.jsonl, and no selection command; hj heldout only renders a verdict from rows nobody produces"
-  where = "harness/hj:5851"
-  found_at = "fa8ac4e8ca8578447ced914e8b2f39f0822ee5a2"
+state = "clean"
+last_audited = "2026-08-05T01:11:28+00:00"
 
 [section."loops.md#going-back-is-not-a-reset"]
 state = "clean"
@@ -273,13 +284,13 @@ last_audited = "2026-08-04T20:59:31+00:00"
 
 [section."loops.md#branches-exist-for-one-campaign-at-a-time"]
 state = "gaps"
-last_audited = "2026-08-04T20:59:31+00:00"
+last_audited = "2026-08-05T01:11:28+00:00"
 
   [[section."loops.md#branches-exist-for-one-campaign-at-a-time".gap]]
   claim = "a rebase that turns the gate red is escalated as a blocked item rather than repaired locally"
-  found = "harness/loop:143 logs it as `hj intervene --kind merge-blocked`, but merge-blocked is in neither INTERVENTION_KINDS nor KINDS_IN_USE, so cmd_intervene dies on an unknown kind (harness/hj:6530) and the failure is swallowed by `|| true`. The block reaches only the worker's log file. state/interventions.jsonl carries five merge-blocked rows from before the vocabulary was closed. A selftest asserting every --kind passed to `hj intervene` under harness/ is in KNOWN_KINDS would make this exact."
-  where = "harness/hj:1073"
-  found_at = "ff5413873eb0d1e73acadb3902191591102caf3b"
+  found = "merge_back_locked rebases (or merges) and fast-forwards main without running the gate; only a non-mechanical conflict or a refused fast-forward reaches blocked(). Running the pinned gate between the rebase and the fast-forward would make this exact"
+  where = "harness/loop:271"
+  found_at = "9ee58a01e8f5a0796d515795531b78fd74efd34f"
 
 [section."loops.md#workers-one-loop-several-campaigns-at-once"]
 state = "gaps"
@@ -298,7 +309,7 @@ last_audited = "2026-08-05T00:26:46+00:00"
 
 [section."loops.md#14-what-runs-the-loops"]
 state = "clean"
-last_audited = "2026-08-04T04:23:19+00:00"
+last_audited = "2026-08-05T01:11:28+00:00"
 
 [section."loops.md#the-supervisor-is-a-reconciler-not-a-scheduler"]
 state = "gaps"
@@ -335,7 +346,7 @@ last_audited = "2026-08-05T00:26:46+00:00"
 
 [section."loops.md#15-cost-and-timing"]
 state = "clean"
-last_audited = "2026-08-04T04:23:19+00:00"
+last_audited = "2026-08-05T01:11:28+00:00"
 
 [section."loops.md#three-resources-not-one"]
 state = "clean"
@@ -351,12 +362,12 @@ last_audited = "2026-08-04T20:59:31+00:00"
 
 [section."loops.md#budgets-at-three-scopes"]
 state = "clean"
-last_audited = "2026-08-04T04:23:19+00:00"
+last_audited = "2026-08-05T01:11:28+00:00"
 
   [[section."loops.md#budgets-at-three-scopes".minor]]
-  claim = "per campaign, a token ceiling that closes it"
-  note = "the implemented per-campaign ceiling is dollars (--max-budget-usd), which the cost panel itself warns is not a bill; and state/phase.toml sets no [budget] table and no budget_usd, so all three scopes are machinery with nothing configured"
-  where = "harness/hj:186"
+  claim = "per campaign \u2014 a token ceiling that closes it, which is also what bounds context growth"
+  note = "the implemented ceiling is monetary (budget_usd passed as --max-budget-usd), a proxy that does not bound context directly"
+  where = "harness/hj:6086, harness/adapter:92"
 
 [section."loops.md#estimates-and-replacing-them-with-measurements"]
 state = "clean"
@@ -368,16 +379,16 @@ last_audited = "2026-08-05T00:26:46+00:00"
 
 [section."loops.md#16-the-operator-view"]
 state = "clean"
-last_audited = "2026-08-04T04:23:19+00:00"
+last_audited = "2026-08-05T01:11:28+00:00"
 
 [section."loops.md#a-single-generated-html-file-auto-refreshing"]
 state = "clean"
-last_audited = "2026-08-04T04:23:19+00:00"
+last_audited = "2026-08-05T01:11:28+00:00"
 
   [[section."loops.md#a-single-generated-html-file-auto-refreshing".minor]]
-  claim = "a static server over the dashboard directory plus a filesystem watch, with the page polling a version token"
-  note = "there is no watch and no static directory; version_token() stats every file under state/ on each two-second poll, which is O(files) per client per tick"
-  where = "harness/dashboard/serve:136"
+  claim = "a static server over the dashboard directory plus a filesystem watch, polling a version token"
+  note = "there is no watch \u2014 the token stats every file under state/ on each two-second poll \u2014 and the page is a multi-route dynamic server (/diff, /record, /transcript, /section) rather than a single generated file"
+  where = "harness/dashboard/serve:146"
 
 [section."loops.md#what-is-on-it"]
 state = "gaps"
@@ -428,19 +439,25 @@ last_audited = "2026-08-04T23:50:43+00:00"
 
 [section."loops.md#17-tooling-adopt-steal-reject"]
 state = "gaps"
-last_audited = "2026-08-04T04:23:19+00:00"
+last_audited = "2026-08-05T01:11:28+00:00"
 
   [[section."loops.md#17-tooling-adopt-steal-reject".gap]]
   claim = "Cost monitoring: Adopt ccusage, behind the adapter"
-  found = "ccusage is not used anywhere; the adapter parses the teed stream and argues against the dependency, which is a Reject where the table says Adopt"
-  where = "harness/adapter:222"
-  found_at = "9e070d8e36f6168ea60a85d1a8302e9281e97f18"
+  found = "ccusage is invoked nowhere; the adapter parses the teed stream and argues against the dependency, which is a Reject where the table says Adopt"
+  where = "harness/adapter:226"
+  found_at = "9ee58a01e8f5a0796d515795531b78fd74efd34f"
+
+  [[section."loops.md#17-tooling-adopt-steal-reject".gap]]
+  claim = "Metric table regression: Adopt insta for shape; gate checks direction"
+  found = "insta is in no manifest and no snapshot assertion exists anywhere; the table's shape is asserted with hand-computed expectations. Only the direction half is implemented"
+  where = "crates/measure_core/tests/pipeline.rs:414"
+  found_at = "9ee58a01e8f5a0796d515795531b78fd74efd34f"
 
   [[section."loops.md#17-tooling-adopt-steal-reject".gap]]
   claim = "Spec claim notation: Steal EARS, for phrasing auditable claims"
-  found = "EARS appears nowhere \u2014 not in the design documents' claim phrasing, not in the auditor prompt's claim format, not in any prompt"
+  found = "EARS appears nowhere \u2014 not in the auditor prompt's claim format, not in any prompt, not in the documents' claim phrasing"
   where = "harness/prompts/auditor.md:41"
-  found_at = "9e070d8e36f6168ea60a85d1a8302e9281e97f18"
+  found_at = "9ee58a01e8f5a0796d515795531b78fd74efd34f"
 
 [section."loops.md#the-largest-dependency-in-this-project-is-not-a-crate"]
 state = "gaps"
@@ -463,12 +480,7 @@ last_audited = "2026-08-04T23:50:43+00:00"
 
 [section."loops.md#18-scope-phases-1-and-15-first"]
 state = "clean"
-last_audited = "2026-08-04T04:23:19+00:00"
-
-  [[section."loops.md#18-scope-phases-1-and-15-first".minor]]
-  claim = "the initial implementation stops after phase 1.5 and the rest is a followup"
-  note = "harness/readme.md's 'What is not built' still lists worktree parallelism, which harness/loop and harness/workers implement and state/phase.toml enables"
-  where = "harness/readme.md:296"
+last_audited = "2026-08-05T01:11:28+00:00"
 
 [section."loops.md#what-the-initial-implementation-is"]
 state = "clean"
@@ -485,13 +497,13 @@ last_audited = "2026-08-05T00:26:46+00:00"
 
 [section."loops.md#what-is-deliberately-not-built-yet"]
 state = "gaps"
-last_audited = "2026-08-05T00:26:46+00:00"
+last_audited = "2026-08-05T01:11:28+00:00"
 
   [[section."loops.md#what-is-deliberately-not-built-yet".gap]]
-  claim = "the per-language link delta is deliberately not built yet, and it is the list rather than the argument that moves as things are built"
-  found = "link_deltas() performs the build-with-and-without measurement and cmd_link_delta reports per-language line items, failing only on the missing lang-<x> features \u2014 the same built-and-empty state the frontier was crossed off in. Checkable mechanically like check_denial_table: assert the items this paragraph names have no hj subcommand"
-  where = "harness/hj:1891"
-  found_at = "1907a2e4c604f0783913feeedc1d2a1dc038b3d2"
+  claim = "the per-language link delta is among the things deliberately not built yet"
+  found = "it is built: link_deltas() builds heuristic_jump with and without each lang-<x> feature and hj link-delta reports the per-language number"
+  where = "harness/hj:1914, harness/hj:3014"
+  found_at = "9ee58a01e8f5a0796d515795531b78fd74efd34f"
 
 [section."loops.md#the-conformance-loop-builds-the-followup"]
 state = "clean"
@@ -503,7 +515,7 @@ last_audited = "2026-08-05T00:26:46+00:00"
 
 [section."loops.md#19-how-this-goes-wrong"]
 state = "clean"
-last_audited = "2026-08-04T04:23:19+00:00"
+last_audited = "2026-08-05T01:11:28+00:00"
 
 [section."loops.md#decided"]
 state = "clean"
