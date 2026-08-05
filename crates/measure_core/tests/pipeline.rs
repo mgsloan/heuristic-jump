@@ -2565,6 +2565,68 @@ fn the_printed_table_and_the_json_report_are_one_table() {
     );
 }
 
+/// The same claim for the numbers that are *not* in a row.
+///
+/// `core-025` moved queries nothing classified out of the table and put them
+/// beside it, so they are now the one part of the report the reconciliation
+/// above cannot reach — it walks the nine strata rows, and these belong to
+/// none of them. A number that only one rendering carries, or carries
+/// differently, is exactly the drift that test exists to prevent: a gate reads
+/// the JSON and a person reads the text, and the whole argument for offering
+/// both formats is that they are one table.
+///
+/// It needs its own fixture because the handler has to produce the rows.
+/// `ReportingHandler` classifies everything, so the reconciliation above would
+/// be zero against zero — the shape that holds against two artifacts sharing
+/// nothing. `FailingHandler` returns `Err`, which after `core-025` has no
+/// `Outcome` and therefore no strata.
+#[test]
+fn the_two_renderings_agree_about_the_queries_that_left_the_table() {
+    let corpus = fixture("one_table_unclassified");
+    enumerate(&corpus);
+    write_truth(&corpus);
+
+    let printed = replay_report(&FailingHandler, &corpus, measure_core::Format::Table);
+    let report = replay_report(&FailingHandler, &corpus, measure_core::Format::Json);
+
+    let failed = unclassified(&report, "failed");
+    assert!(
+        failed > 0,
+        "the fixture produced no unclassified rows, so every comparison below is zero \
+         against zero\n{report}"
+    );
+
+    let line = printed
+        .lines()
+        .find(|line| line.starts_with("queries no stratum was assigned to:"))
+        .unwrap_or_else(|| {
+            panic!(
+                "the printed table does not mention the queries that left it, so a person \
+                 reading it sees a run of {failed} queries as a run of none\n{printed}"
+            )
+        });
+    let counts: Vec<u64> = line
+        .split(|character: char| !character.is_ascii_digit())
+        .filter(|piece| !piece.is_empty())
+        .map(|piece| piece.parse().expect("a printed count"))
+        .collect();
+
+    let expected = vec![
+        unclassified(&report, "committed") + failed + unclassified(&report, "shed"),
+        unclassified(&report, "abstained"),
+        failed,
+        unclassified(&report, "shed"),
+    ];
+    assert_eq!(
+        counts, expected,
+        "the printed line reads {counts:?} where the report carries {expected:?} as \
+         (total, abstained, failed, shed). Two renderings of one table that disagree mean \
+         a gate and a person are looking at different runs — and these are the rows \
+         core-025 moved, so a drift here reads as the ruling having landed cleanly\n\
+         {line}\n{report}"
+    );
+}
+
 /// §"both sides are sets" on what a table reports for a set: `contained` is
 /// "any of the shim's locations matches", the three values are **ordered** —
 /// "`match_top1` implies `match_contained`" — and containment "is reported only
