@@ -1,61 +1,69 @@
 # Findings — core, worker 2
 
-## Do these two first, one turn each
+## Do these three first, one turn each
 
 1. **`harness/gate core`** before writing. A red HEAD from a cross-branch race
    has happened (`core-002`) and it suspends green-or-revert.
-2. **`grep -rl '<your section>' state/decisions/`.** Settling a gap from
-   `gap-log.jsonl` is necessary, not sufficient — it came back "real" for both
-   of my gaps and both were dead. An **answered** record blocks a gap harder
-   than an open one: nothing is left to escalate.
+2. **Read your gap's claim against the section text spliced into your prompt.**
+   The splice is the *current* document, so a gap that quotes it is already
+   answered there. This caught one of my two gaps in zero turns.
+3. **`grep -rn '<gap-id>' state/` and `grep -rl '<section>' state/decisions/`.**
+   Absent id → the gap does not exist (my other one: section `clean`, no gap,
+   no minor). An **answered** decision blocks harder than an open one.
 
 ## Falsified — act on these directly
 
-* **`deps.md#14` cannot go clean this phase. Do not take it.** `core-023` is
-  answered *accepted A — adopt cargo-deny* and gives the work to a human.
-  Re-measured twice: `deny.toml: outside core's owned paths`;
-  `cargo deny: no such command`.
-* **`deps.md` is exhausted for this loop.** §14's only gap is the above; §2 and
-  §10 closed three campaigns ago; §5 and §6's minors closed this round. What
-  remains sits in `measure_core/src/corpus.rs` (§13) and
-  `measure_core.rs` (§9), plus §0's `tempfile` row, whose resolution is in
-  `clippy.toml` and denied to every loop.
+* **The audit's section state does not locate the work.** `#two-modes` was
+  `gaps` for a sentence already fixed; `#both-sides-are-sets` was **clean**
+  with two normative sentences nothing implemented. Clean ≠ checked.
+* **`deps.md#14` cannot go clean this phase.** `core-023` is answered
+  *accepted A*; `deny.toml` is outside every loop's paths and `cargo deny` is
+  not installed. Re-measured twice.
+* **`deps.md` is exhausted for this loop.** §2/§10 closed three campaigns ago;
+  §5/§6 minors closed; §0's `tempfile` row resolves in `clippy.toml`, denied.
 * **Do not follow an answered record's *Consequences* literally.** `core-021`
-  said "if A, the seam test is deleted". A's replacement cannot be built by a
-  loop, so deleting it trades a real check for a file nobody wrote.
-* **A gap the audit really saw can already be closed.** `7d21b547b7` was fixed
-  by `c9e5423` four hours after the run that opened it. The ritual answers "did
-  the audit see this file", not "has anyone fixed it since" — so also
-  `git log --oneline -8 -- <where-file>`, and read the subjects.
-* **An assertion whose negation fails the *build* is decoration.** I wrote one
-  (that `shared` re-exports `Language`/`Tree`/`InputEdit`) and removed it in
-  the same experiment: `driver/src/trees.rs` imports all three. Second hit
-  here. Plant before believing a test works.
+  said to delete the seam test; its replacement cannot be built by a loop.
+* **A gap the audit really saw can already be fixed** — check
+  `git log --oneline -8 -- <where-file>` and read the subjects.
+* **An assertion whose negation fails the *build* is decoration.** Third hit
+  across workers. Plant before believing a test works.
 
 ## Confirmed — candidates, test on your own evidence
 
-* **Once the gap list is exhausted, hunt for a value written twice where only
-  one copy breaks.** Three of eight commits: §14's file tree is a licence table
-  beside §5's; the toolchain pin sits in two files the build couples plus a
-  third it does not; the upstream sha appears twice in full, three times short.
-* **A comment must *name* its subject to count as an argument** — "some comment
-  nearby" is satisfied by `# -- misc ---`.
+* **Hunt for a metric the document *names* against the column printed under
+  that name.** The table printed the disjoint `MatchContained` counter under a
+  header reading `contained`; the section defines containment as *any* match
+  and says `match_top1` implies `match_contained`. 42.9% against 21.4% on one
+  fixture. Same shape as "a value written twice", with a header string as the
+  second copy.
+* **Plant each half separately; a plant can rewrite the design.** Planting
+  "one per answer" for a result count showed the fixture oracle returns one
+  location per row — so a count taken from the child's side reads 1.0 for a
+  handler returning two, hiding exactly the gaming the column exists to expose.
 * **Reconcile a wrong premise by appending, never by editing the Decision.**
-  `core-023` argues the resolved graph is what "no test can reach";
-  `cargo metadata --offline` reaches it. The conclusion survives, so I appended
-  a Reconciliation section. A loop that rewrites the ruling it was answered
-  with has un-answered itself.
+
+## Verified covered — do not re-walk
+
+`measure_core`: both my sections, sentence by sentence. Byte-identical tables
+across runs, frozen `lsp_latency_us`, the three subcommands and their flags,
+the provenance header, replay's absent deadline, the records/table
+reconciliation (now including the result count). The driver half of
+`#both-sides-are-sets` — mismatch-only divergence, rank preservation — is
+covered in `driver/tests/pending.rs`.
+
+## Open question for the next campaign
+
+`--format json` carries counters and no ratios, so a consumer computing
+containment as `match_contained / judged` repeats the misreading I just fixed
+in the text table. Coverage and precision are text-only too, so changing this
+is a decision about §7's report surface — closer to Class B than to a fix.
 
 ## Traps that cost a red gate
 
-* **Text scans read comments** — never quote a banned identifier in one, and
-  skip comment lines in any scan you write yourself.
-* **`driver` may not name `tracing_subscriber`, tests included.** Reuse
-  `tests/actor.rs`'s `Capturing`.
-* ENOSPC mid-campaign: the worktrees share a disk.
-  `rm -rf target/debug/incremental` freed 4.7G and cost nothing.
+Text scans read comments — skip comment lines. `driver` may not name
+`tracing_subscriber`, tests included. ENOSPC: `rm -rf target/debug/incremental`.
 
 ## Decisions
 
-`core-021`/`core-023` reconciled, untagged. `core-022` still provisional.
+`core-021`/`core-023` reconciled. `core-022` still provisional.
 `core-001`/`core-003`/`harness-008`/`harness-009` need a human.

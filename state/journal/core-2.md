@@ -655,3 +655,74 @@ comment a reword, which is the right price.
   `core.md#the-trait`, a section another worker was assigned, and closing a
   minor of somebody else's section is how two campaigns collide in one file.
   It is still the right shape and still worth doing by whoever holds §1.
+
+## Campaign 642e54cd — two dead gap ids, and a clean section that was not
+
+Three commits, all green, 294 → 296 tests. Both assigned gap ids were dead
+before I started, and the real work was in the section the audit called clean.
+
+### The assignment's gap ids: one stale, one that does not exist
+
+- `core.md#two-modes-collect-and-replay[a6251d1926]` ("two subcommands, and
+  `collect` enumerates") was closed by `5386e6b` / CHANGE-core-019, four hours
+  after the audit run that opened it. **The section text spliced into my own
+  prompt already said "three subcommands"** — which is the cheapest staleness
+  check there is and one nobody has written down: the prompt splices the
+  *current* document, so a gap whose claim quotes the document can be read
+  against the splice in zero turns.
+- `core.md#both-sides-are-sets[c22993d037]` appears **nowhere in `state/`**.
+  Not in `state/audit/core.toml` (the section is `state = "clean"`, no gap, no
+  minor), not in `gap-log.jsonl`. `grep -rn '<id>' state/` costs one turn and
+  distinguishes "stale" from "never existed", which are different situations:
+  a stale gap still names a real sentence to re-read, and a phantom one names
+  nothing.
+
+### The section state is not where the work is
+
+This is the campaign's actual finding. `#two-modes` was `gaps` for a sentence
+already fixed, while `#both-sides-are-sets` was `clean` with two normative
+sentences that no code implemented:
+
+- "`contained` — **any** of the shim's locations matches" and "these are
+  ordered: `match_top1` implies `match_contained`". The table printed the
+  *disjoint* `MatchContained` counter under a column headed `contained`, so a
+  run that ranked every answer first reported containing none of them. In the
+  fixture the two readings are 42.9% and 21.4%.
+- "it is reported only alongside the result count, since alone it is gameable".
+  Nothing printed a result count anywhere.
+
+The audit's state tracks which claims a test happened to reach. A clean section
+is not a checked section, and the sentence with a *number* in it is the one
+most likely to be unreached — because a prose metric and a printed column with
+the same name look reconciled to anything that is not comparing them.
+
+**Generalisation of the earlier "written twice" hunt:** look for a metric the
+document *names* and a column printed under that name, and check they are the
+same function. Same shape as a value written twice, except the second copy is a
+header string rather than another file.
+
+### What the plants bought
+
+Three plants, three different assertions, and one of them changed the design:
+planting "count one per answer instead of per location" showed that the fixture
+oracle answers with exactly one location per row, so a result count taken from
+the *child's* side reads 1.0 for a handler returning two — i.e. it hides
+precisely the gaming the column exists to expose. That is now the test's stated
+reason for asserting `2.0` rather than a relation.
+
+### Not taken, and why
+
+- **The JSON report carries counters and no ratios**, so a consumer computing
+  containment as `match_contained / judged` gets the wrong number — the exact
+  misreading the text column had. I did not add ratios to the report: coverage
+  and precision are already text-only, so this is a decision about §7's report
+  surface (and about a harness consumer nobody has written), not a defect in
+  my sections. Next campaign's judgement call; it trades something off, so it
+  is closer to Class B than to a fix.
+- **`#7`'s `Trace::MAX_STAGES` off-by-one minor** (`shared/src/record.rs:206`):
+  real, cheap, and in another worker's section and file.
+- **Every remaining open gap** — `driver/src/{files,dispatch,actor}.rs`,
+  `shared/src/handler.rs`. All fresh reading; two of them (`#the-trait`'s
+  printed block, `deps.md#2`) look stale against the spliced section text and
+  my own earlier campaigns, but confirming that is the next session's turn to
+  spend, not mine.
