@@ -550,3 +550,147 @@ block left `interpret-trailers --parse` printing one line, so `record` skipped
 past my commit to the previous loop commit and said "already recorded". Amended
 with the co-author line inside the same block. Every prior loop commit simply
 omits it.
+
+## Campaign b106a11d — the code had never followed a human design change
+
+Assigned `rope-modifications.md#textsummary-is-converted-too[22926927ef]` (live,
+opened by the latest audit row against the section it audited) and
+`core.md#the-trait[218a36571e]` (stale, and stale for the third round running).
+
+### The finding, and why the direction was not a judgement call
+
+§4 prints `chars: CharCount, // usize before and after`. §2 argues it at length:
+`CharCount` is "the width of the widest thing it has to hold rather than a
+preference", because `TextSummary.chars` accumulates across the whole rope, and
+a `u32` "would have silently capped a summary at 4G scalar values — which is an
+edit to the *arithmetic*, exactly what §3 says a hunk may never be".
+
+The code had `CharCount(pub u32)`.
+
+The temptation is to read this as a spec/code disagreement to be settled on the
+merits. It is not. `git log -S 'pub struct CharCount'` gives `b506a5b`
+(2026-08-02, the loop) and `git log -S 'is the one member of the family backed
+by'` gives **`1b9dd51`, Michael Sloan, 2026-08-04, "Design change: CharCount is
+usize"** — a human commit, two days later, that the code never followed. Two
+`git log -S` invocations settled the whole question, and they are worth running
+*before* weighing arguments, not after.
+
+### What made it invisible for three campaigns
+
+`vendor/README.md` recorded the narrowing as deliberate: "`TextSummary.chars`
+narrows from `usize` to `CharCount`'s `u32`, which is what §4's printed struct
+asks for and which bounds a summary to 4G scalar values — the bound `Point.row`
+already imposed."
+
+Both halves false. §4 asks for the opposite, and §2 answers the `Point.row`
+argument in the sentence immediately after making its own: "The bound
+`Point.row` happens to impose is not an argument for imposing another."
+
+Three campaigns (37a6d098, a9937015, 17f1b21a) took this section and none saw
+the repr, because the file that would have told them said it was settled.
+**`vendor/README.md` is a record, and a record that is wrong is worse than no
+record** — it is read *instead of* the thing it describes. Rewritten as a bug in
+the patch rather than a patch.
+
+And the mechanising test asserted the *rebutted* claim, message and all: "the
+line-shaped four are `u32`, which is the bound `Point.row` already imposed" —
+§2's losing argument, transcribed into an assertion. A test can encode the side
+the document argued against and look like coverage.
+
+### The mechanism the repr does not give you
+
+Narrowing `CharCount` back to `u32` is a compile error at eleven sites, so the
+compiler holds the repr. It does **not** hold the *accumulation*, which is what
+§2's argument is actually about. `a_summary_accumulates_scalar_values_across_
+the_whole_usize_range` sums two summaries rather than building a 4G rope — the
+same `AddAssign` the sum tree runs at every internal node. Planted by
+truncating `add_assign` through `u32`: `left: CharCount(4294967295)`.
+
+The straddle half is guarded on `usize::BITS > 32` rather than `cfg`'d. rope
+carries 32-bit code paths (`point.rs` has a `target_pointer_width = "32"` arm),
+and on such a target `usize`'s bound *is* `u32`'s, which is upstream's bound
+too — so the assertion degrades rather than becoming false.
+
+### Then: one hypothesis, four carriers
+
+Having found one false record I swept for others, and the sweep was the
+campaign's most productive half. *A claim stated in more than one place drifts,
+and nothing checks the copies.*
+
+1. `vendor/README.md`'s narrowing note (above).
+2. `#the-dimension-impls` said "`sum_tree` stays a pristine copy, and §9's claim
+   that it needs no patching survives". `vendor/README.md` lists three patches
+   to `sum_tree`, and `core.md#vendoring-the-zed-crates` had *already been
+   corrected* to say the opposite in bold. A cross-reference to a sentence its
+   target no longer contained. CHANGE-core-027.
+3. `core.md` summarised the sweep as replacing "the bare `u32`s in `Point`,
+   `PointUtf16`, and `TextSummary`" where `rope-modifications.md` says "the bare
+   integers" — false of `TextSummary`, whose `len` and `chars` are `usize`, and
+   against §2's argument for `CharCount`. CHANGE-core-028.
+4. `allowed-primitives.txt` is called empty by §6, by `vendor/README.md`, and by
+   its own header, and was bounded by none of them: the one consumer *forgives*
+   entries rather than counting them, so the enforcement §6 calls "the whole
+   conversion rests on" could be dismantled a line at a time silently.
+
+**The gate cannot see any of these.** Its link check verifies that an anchor
+*resolves*, which is a different thing from the cited document still making the
+claim. That is the gap this campaign's tests fill, and it is general.
+
+### Two traps, both paid for
+
+**A prose scan must strip per-line markdown, not just collapse whitespace.**
+The first version of `both_documents_describe_the_newtype_sweep_the_same_way`
+failed against the document it was quoting *from*, because
+`rope-modifications.md` states its headline claim in a **blockquote** and `>`
+survives `split_whitespace`. `unwrapped` now strips leading `>` runs per line.
+Anything scanning design prose should use it rather than `contains`.
+
+**Plants mask each other.** Three plants in one test: the truncation plant fired
+on the first assertion and the `timed` plant was never reached. A plant is only
+evidence for the assertion it actually reaches — revert and re-run one at a
+time when they share a test.
+
+### `allowed-primitives.txt` has a latent trap for its first real user
+
+`allowed_primitives()` keeps the whole line. §6 requires "every entry says which
+unit the primitive is", and an entry written with a *trailing* comment therefore
+never matches a function name — it forgives nothing while looking like it does.
+The comment has to be a `#` line *above* the entry, which is what the parser
+filters. Not fixed (speculative, and the file is empty); the emptiness assertion
+turns it into a loud failure instead of a silent one, and this note is the rest.
+
+### `core.md#the-trait`: assigned stale, third campaign running
+
+Closed by CHANGE-core-018 nine minutes after the audit run that opened it, then
+re-read in full by a519e98f. `crates/shared/tests/handler.rs` is *entirely*
+printed-block scans — names and arity, for a stated reason — so §1's types
+describe their own behaviour and nothing read any of it back:
+
+* `stage`'s bound. Nothing in the repository reports more than two stages, so no
+  test reached `MAX_STAGES` at all, and the source's claim that the *tail* goes
+  ("dropping the tail rather than the head keeps the prefix stable across runs")
+  had no mechanism. A head-dropping ring buffer satisfies the bound and destroys
+  the only thing §7 asks `stages` for.
+* `timed` accumulates; `pipeline.rs` calls it once, so `insert` would have
+  passed everywhere.
+* `Margin::new` rejects a NaN *and* an infinity, and the two halves of the guard
+  catch different ones — `>= 0.0` is already false for a NaN, so dropping
+  `is_finite` still rejects it and admits an infinity.
+
+**Deliberately not built**, so nobody rebuilds it: a test that `Trace` is *not
+allocated* until written to. It needs a counting `#[global_allocator]`,
+`GlobalAlloc` cannot be implemented without `unsafe`, and `CLAUDE.md` bans
+`unsafe` outright. The width assertion holds the *boxed* half; the other half is
+review, and the test says so rather than implying more.
+
+`Strata::refine` is already mechanised end-to-end — `pipeline.rs:543` asserts
+`stratum_prior: explicitly_imported` against `stratum_final: ambiguous_name` in
+the record. Do not go looking there.
+
+### One wrong turn worth recording
+
+I read `vendor/README.md`'s seven `_raw` names, grepped `fn [a-z_]*_raw`, found
+five, and briefly believed two were fictional. The character class excludes
+digits and `offset_utf16_to_offset_raw` contains `16`. **A grep that disagrees
+with a document is a claim about the grep first.** Cost two turns; would have
+cost a false changelog entry.
