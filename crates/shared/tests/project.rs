@@ -19,8 +19,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use shared::{
-    Clock, Deadline, Error, FileExtension, FileList, Generation, HandlerError, ProjectPath,
-    ProjectRoot, ProjectView, RelPath, ScanRequest, SearchOrigin, Stratum, TestClock,
+    ByteLen, Clock, Deadline, Error, FileExtension, FileList, Generation, HandlerError,
+    ProjectPath, ProjectRoot, ProjectView, RelPath, ScanRequest, SearchOrigin, Stratum, TestClock,
 };
 use tree_sitter::Language;
 
@@ -455,6 +455,63 @@ fn the_view_holds_no_cache_and_no_pool() {
          the `Sync` `&Query` that fan-out threads hold, so state added here is a \
          lock in a design that has none, and `rayon`'s absence from `shared` \
          (§9's deferred list) is the same answer's other half"
+    );
+}
+
+/// The other half of the test above, and it is a compile-time assertion wearing
+/// a runtime one.
+///
+/// `core.md` §1 has handlers fan out across candidate files, so the `&Query` —
+/// and the `&ProjectView` inside it — crosses threads, which is the whole
+/// premise of "a cache on it is a lock". Nothing in the workspace asks for that
+/// premise today: `scan` is the sequential loop, `shared` declares no `rayon`,
+/// and no handler spawns anything, so the compiler is never asked whether a
+/// `ProjectView` is `Sync`. A `RefCell` memo added to it would build, and every
+/// other test in this file would pass.
+///
+/// The field equality alone does not close that, because it is an equality
+/// somebody can update in the same diff that adds the field. Updating this one
+/// instead means making the memo `Sync`, at which point it is a primitive
+/// `deps.md` §13 refuses by name — so the two together leave no cheap way in.
+#[test]
+fn the_view_is_read_from_several_threads_at_once() {
+    let root = fixture("fanout");
+    let view = view(&root);
+    let origin = SearchOrigin::from_document(path(&view, &root, "src/lib.rs"));
+    let candidates = view.candidates(&[RUST], &origin);
+    let paths: Vec<&ProjectPath> = candidates.paths().collect();
+
+    let sequential: Vec<ByteLen> = paths
+        .iter()
+        .map(|path| view.read(path).expect("reading a candidate").len())
+        .collect();
+
+    let concurrent: Vec<ByteLen> = std::thread::scope(|scope| {
+        // A shared borrow rather than the value: `move` on the closures below
+        // is what puts them on other threads, and without this it would move
+        // the view into the first of them.
+        let view = &view;
+        let readers: Vec<_> = paths
+            .iter()
+            .map(|path| scope.spawn(move || view.read(path).map(|text| text.len())))
+            .collect();
+        readers
+            .into_iter()
+            .map(|reader| {
+                reader
+                    .join()
+                    .expect("a reader thread")
+                    .expect("reading a candidate from another thread")
+            })
+            .collect()
+    });
+
+    assert_eq!(
+        concurrent, sequential,
+        "one candidate read differently depending on which thread read it. \
+         `ProjectView` holds no per-query state that a read mutates \
+         (conformance-005), which is what makes the same view answerable by \
+         every fan-out thread at once"
     );
 }
 
