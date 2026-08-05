@@ -170,8 +170,17 @@ pub struct ByteColumn(pub u32);
 
 /// Unicode scalar values -- the fourth unit this crate measures in, after
 /// bytes, UTF-16 code units and lines.
+///
+/// `usize` and not `u32`, which is the one place this family departs from the
+/// line-shaped three beside it. `rope-modifications.md` §2: it is "the width
+/// of the widest thing it has to hold rather than a preference" -- upstream's
+/// `TextSummary.chars` accumulates across the whole rope and is a `usize`
+/// there, so a `u32` here would cap a summary at 4G scalar values, which is an
+/// edit to the arithmetic rather than to the representation and §3 forbids it.
+/// The bound `Point.row` imposes on itself is not an argument for imposing
+/// another one here.
 #[derive(Copy, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct CharCount(pub u32);
+pub struct CharCount(pub usize);
 
 impl LineIndex {
     pub const ZERO: Self = Self(0);
@@ -185,7 +194,7 @@ impl ByteColumn {
 
 impl CharCount {
     pub const ZERO: Self = Self(0);
-    pub const MAX: Self = Self(u32::MAX);
+    pub const MAX: Self = Self(usize::MAX);
 }
 
 impl fmt::Display for LineIndex {

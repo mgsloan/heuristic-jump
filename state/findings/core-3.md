@@ -2,63 +2,61 @@
 
 ## Falsified — act on these directly
 
-**`deps.md` §2 and §10 are finished.** §2's inbox depth, its single bounded
-channel, §10's nine arms, `main`'s return type, the foreign-error rule, and now
-the expiry conversion on *all three* of `classify`'s callers are all mechanised.
-§2's one remaining sentence — that `clippy.toml` no longer denies
-`crossbeam_channel::unbounded` — is **compiler-held**: `Cargo.toml:182` sets
-`disallowed_methods = "deny"` and `driver/src/driver.rs:66` calls `unbounded()`,
-so re-adding the entry fails the build. A test there would be strictly weaker.
-Measured, not assumed.
+**Two `git log -S` runs settle a spec/code disagreement before you weigh it.**
+`CharCount` was `usize` in `rope-modifications.md` and `u32` in the code. That
+reads like a judgement call and was not: the document was moved by **`1b9dd51`,
+a human commit, "Design change: CharCount is usize"**, two days *after* the code
+was written. Check who moved which side, and when. The code moves.
 
-**Stale assignments are now measured in minutes, not days.** `d50e2285d0` was
-closed eight minutes after the audit that opened it. The `git log -1` staleness
-check is still the right first turn; read the *time*, not the date.
+**A wrong record is worse than no record.** `vendor/README.md` called that
+narrowing deliberate and attributed it to §4 — which asks for the opposite —
+citing an argument §2 rebuts in its very next sentence. Three campaigns took the
+section and none saw the repr, because the file that would have told them said
+it was settled. Records get read *instead of* what they describe.
 
-**A five-line fixture cannot test a parse abandoned on the deadline.**
-`SnapshotSeed::realise` polls the deadline from tree-sitter's progress callback,
-which fires once per 100 parser operations, so `DOCUMENT` finishes inside one
-interval and observes no deadline. Planted: it fails on the hard cap instead.
-Any test of that route needs its own large document.
+**The gate cannot see a stale cross-reference.** It checks that an anchor
+*resolves*, not that the cited document still makes the claim. Four this
+campaign: a vendor record, a citation, a summary sentence, and an allowlist
+three documents call empty and none bounded.
 
-**`#![expect(clippy::panic)]` does not cover `panic_in_result_fn`.** A handler
-double's vacuity guard must return an `Err`, not panic.
+**A prose scan must strip per-line markdown, not just collapse whitespace.**
+`rope-modifications.md` states its headline claim in a **blockquote**; `>`
+survives `split_whitespace`, and my first scan failed against the document it
+was quoting *from*. `newtype_api.rs`'s `unwrapped` handles it — use it.
 
-**`Co-Authored-By` in its own paragraph unmakes every trailer.**
-`git interpret-trailers` reads only the last paragraph, so `hj record` walks
-past your commit and says "already recorded". Keep it inside the block.
+**Plants mask each other.** Three in one test: the first fired, the second
+assertion was never reached. Revert and re-run one at a time.
 
-## The most valuable thing here: `core-025` is accepted and unstarted
+**A grep that disagrees with a document is a claim about the grep first.**
+`fn [a-z_]*_raw` misses `offset_utf16_to_offset_raw`: the class excludes digits.
 
-It rules **C then B**: `ProjectView`'s expiry carries the strata out as a change
-to `shared::Error`, which empties the second route into `Classified::Nothing`;
-then `stratum_prior` becomes nullable in `shared::record`, `measure_core`'s
-`Table::row` and its replay. That arm does not get a better `Stratum` — it stops
-returning one. The record says `ExpiredStrata::Assigned`/`Unclassified`; the code
-says `Classified::By`/`Nothing`, renamed since.
+**`Trace`-not-allocated cannot be tested here.** It needs a counting
+`#[global_allocator]`; `GlobalAlloc` requires `unsafe`, which `CLAUDE.md` bans.
+The width assertion holds *boxed*; the rest is review. Do not rebuild this.
 
-`core-022` and `core-024` are closed as its duplicates. Until this campaign the
-only driver tag named `core-022` and none named `core-025`, so a grep for the
-open work found nothing. Now tagged at `dispatch.rs`'s `Classified::strata`.
-**This is a whole campaign** — `shared` and `measure_core`, not `driver`.
+**Do not re-take:** `core.md#the-trait` — assigned stale three campaigns running
+(CHANGE-core-018 closed it nine minutes after the audit opened it); the block
+agrees with the seam and its behaviour is now covered. `Strata::refine` is held
+end-to-end at `pipeline.rs:543`. `rope-modifications.md` should be clean.
 
 ## Confirmed — candidates, test on your own evidence
 
-* **Work the section, not the gap.** Both assigned gaps were closed; the defect
-  was one sentence further along, in a *comment* claiming coverage nothing
-  checked. Third campaign running that this produced the commit.
-* **A negative fixture is the test.** Three routes asserting one conversion line
-  each are worth little without the exact **zero** on `hard_cap`'s line beside
-  them.
-* Plant every assertion. Four plants, four correct failures.
-
-## Verified closed — do not re-take
-
-`deps.md` §2, §10, §8, §12, #fxhashmap, #14's profile;
-`rope-modifications.md#the-signatures`; licensing's `high-level.md` half.
+* **A mechanising test can encode the side the document argued *against*.** §4's
+  `MAX` assertion transcribed §2's losing argument — "the bound `Point.row`
+  already imposed" — into an assertion, and looked like coverage. Read a test's
+  *message* against the section, not only its subject.
+* **The compiler holds a repr; it does not hold the accumulation the repr is
+  for.** Sum two summaries instead of building a 4G rope — the same `AddAssign`
+  the sum tree runs at every internal node.
+* **A file of printed-block scans leaves behaviour uncovered.**
+  `shared/tests/handler.rs` compared names and arity, so `MAX_STAGES` was never
+  reached by any test in the repository.
+* Six plants, six correct failures. Still what pays.
 
 ## Blocked on a human
 
 `deny.toml` (`core-021`/`core-023`), `harness/measure` (`core-001`),
-`clippy.toml` thresholds (`core-003`). `core.md#4[d41389f7fe]` was REFUSED to me
-— another worker holds it.
+`clippy.toml` thresholds (`core-003`). **`core-025` is accepted and still
+unstarted** — a `shared` + `measure_core` campaign, tagged at `dispatch.rs`'s
+`Classified::strata`. It rules **C then B**: that arm stops returning a
+`Stratum` rather than getting a better one.

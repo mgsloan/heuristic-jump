@@ -138,3 +138,32 @@ The gap `d822e97954` stays open either way until then, so
 `deps.md#14-workspace-cargotoml-shape` cannot go clean this phase. That is a
 section the loop's number will not move, and the reason is here rather than in
 a campaign that looks stalled.
+
+## Reconciliation
+
+Campaign `340b4361-1c73-4b85-a5c8-0de27852ea8d` took the tagged sites, which is
+the normal way an answered record is retired. Both tags are off:
+
+* `the_permissive_surface_is_exactly_what_does_not_reach_similarity` — kept, as
+  the ruling says, and its comment now states why a `deny.toml` could not make
+  its claim rather than why it stands in for one.
+* `no_third_copyleft_input_reaches_the_dependency_graph` (`core-021`'s
+  provisional, closed here as a duplicate) — **kept**, against `core-021`'s own
+  "if the answer is A the seam test is deleted". Deleting it today removes the
+  only graph-level licence check in favour of a file nobody has written:
+  re-measured this campaign, `deny.toml` is still `outside core's owned paths`
+  and `cargo deny` is still `no such command`. It is deleted, or weighed against
+  `deny.toml`, when `deny.toml` lands.
+
+One premise of the ruling above turned out to be false, and it is recorded here
+rather than edited into the argument, because the conclusion does not depend on
+it. The Decision section reasons that `deny.toml` "is a claim about the resolved
+graph, which no test can reach". A test does reach it —
+`cargo metadata --format-version 1 --offline` carries `license` for every
+package in the graph and runs in about a tenth of a second with no network. What
+`cargo-deny` still buys over that is narrower than "the graph": proper SPDX
+expression parsing where ours splits on `OR` and looks for `GPL`, an exception
+list carrying a reason per entry, and advisories.
+
+The gap `d822e97954` stays open, which is what the ruling's last paragraph
+already says.

@@ -564,3 +564,86 @@ exactly as red. I committed, and said so in the commit body rather than letting
 a later reader infer a green gate from a commit that exists. If a future
 campaign finds this and disagrees, the measurement is the part to repeat; the
 judgement is the part to argue with.
+
+## 59da1668 — two answered decisions nobody came back for, and three claims about the prompt
+
+Target: `loops.md#levers-by-which-resource-they-move[397ddee206]` and
+`loops.md#mechanics-isolation-in-four-layers[bfb721b74c]`, extended with
+`#what-a-loop-remembers-about-itself` and
+`#rules-are-inlined-subject-matter-is-read`. Five commits, no reverts,
+`hj selftest` 104 → 115.
+
+### How the targets were picked
+
+Not from the audit's ranking this time. Both open gaps I took name a decision
+record whose `status:` is already `accepted` — the ruling says what the tree
+should look like and nobody applied it. **That is the cheapest work in the
+queue and it does not look like it from the gap list**, because the gap reads
+as an unsolved problem when the answer is already written down. Worth checking
+`state/decisions/` for answered-but-unreconciled records before ranking gaps
+by section-closeness.
+
+Six of the ten listed gaps were already closed — §12's held-out verdict, §11's
+tokei and binary size, §5, §7, `#branches-…`. One `grep` each. The audit lags
+by about a campaign and a half now.
+
+### Approaches considered and not taken
+
+* **Putting the prompt-body check in `selftest`.** It is where the other
+  file-scanning checks live (`every_kind_the_shell_logs_…`), and it is wrong
+  here. `selftest` runs for *every* loop, from the pinned `hj`, against
+  `HARNESS` — which resolves through `HJ_REPO` to that loop's own worktree. A
+  check on a file only one loop writes therefore fails in the tree of whoever
+  has not merged `main` since it changed. That is `harness-011` in a new
+  costume, and the fix is to scope the check to `config.writes_harness` and
+  put it in `check-metrics`, which takes a loop. The hermetic *logic* still
+  gets selftest cases against in-memory fixtures; only the live file read is
+  scoped. Same reasoning applies to `check_denial_table`, which reads
+  `design/loops.md` — a file every loop can write.
+* **Implementing the audit's proposed fix for `[bfb721b74c]`.** It says
+  "denied_paths adds `harness/prompts/{config.prompt}` … for a `writes_harness`
+  loop". That is option one of `harness-009`, and a human rejected it four
+  commits before this campaign opened. **An audit's `found:` line can propose a
+  fix that a decision record has already ruled against**; check the record
+  before taking the mechanical suggestion at face value.
+* **Editing `#rules-are-inlined…`'s "Both go in the volatile tail rather than
+  the stable prefix" sentence.** The rule files (`trailer-format.md`,
+  `decision-template.md`, the fragments) splice into the *body*, not the tail,
+  so on one reading the code contradicts it. On another, "Both" refers to the
+  two kinds of spliced subject matter in the bullet above, which are both in
+  the tail, and the code satisfies it. Left alone deliberately: the strict
+  reading's stated reason is caching, and moving stable rule files to the tail
+  would *shorten* the cacheable prefix rather than protect it — but this
+  campaign had already edited one section toward the code, and a second such
+  edit in an unjudged section nobody has flagged is exactly the shape the
+  changelog exists to make visible. Let the auditor judge it.
+* **Adopting `ccusage` (§17's remaining gap).** Not taken and not because of
+  effort: `ccusage` is not installed on this machine, so every line of the
+  parse would be written against a guessed output shape and could not be run.
+  That is the `cargo bloat` dead end from `78bbbbc4` exactly. If a future
+  campaign takes it, install the tool first or do not start.
+* **Gating the digest cap.** A campaign writes its digest at close, after its
+  last gate run, so a gate check fails the *next* campaign for its
+  predecessor's overrun and the trim gets made by whoever has the least
+  context for it. Reported in the prompt instead, above the digest itself.
+* **A new intervention kind for a `CLAUDE.md` edit.** §16's vocabulary is
+  closed on purpose — one event, one name — so `constitution-edited` would
+  have needed a §16 edit to justify it. Used `spec-edited-by-hand` with
+  `target: CLAUDE.md`, which is the kind §16 already has for normative text a
+  human changed outside the loop mechanism.
+
+### Things worth knowing about the machinery
+
+* **`campaign-open`'s stdout *is* the campaign id** — `harness/loop:439` does
+  `campaign="$("$hj" campaign-open …)"`. Anything new it says goes to stderr.
+* **`prompt-prefix`'s percentages are not comparable across campaigns.** The
+  rendered prompt has roughly doubled since `harness-001` measured 11.9%,
+  because the tail grows. Compare the absolute char offset.
+* **The template's `---` separator is unique in the *template* and not in the
+  rendered prompt** — the decision record's frontmatter arrives through
+  `{{decision_template}}`. That is what lets `prompt_body_problems` work
+  without rendering, and therefore without reading any repository state.
+* **Nothing measured the 512-word digest cap.** Three of five digests were
+  over it, the largest by 23%. An instructed number that nothing computes is a
+  number that drifts, which is the argument the whole document makes about
+  the loop applied to the loop's own instructions.
