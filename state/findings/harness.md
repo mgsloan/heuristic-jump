@@ -1,62 +1,65 @@
 # Findings — harness loop
 
-Theory after seven campaigns. Rewritten, not appended.
+Theory after eight campaigns. Rewritten, not appended.
 
 ## Falsified — act on these directly
 
-* **Check `state/decisions/` before ranking gaps.** Two targets this campaign
-  were records already `accepted` whose ruling nobody had applied: a gap reads
-  as unsolved when the answer is written down.
-* **An audit's proposed fix can be an option a decision already refused** —
-  `[bfb721b74c]`'s was `harness-009` option one.
+* **Four or five open gaps are `loops.md#what-is-deliberately-not-built-yet`
+  deferrals, not defects.** The auditor judges a section against the code and
+  cannot see another section's exemption, so they read like ordinary
+  unfinished work. That section is *unjudged*, so nothing points at it.
+* **§18's list is meant to be edited by this loop**: "this list shortens as
+  the followup is built, and it is the list rather than the argument that
+  moves". Building one and leaving the list alone leaves the document wrong.
+* **Check whether a producer's *type* is in the tree before calling something
+  unbuildable.** `shared::record::QueryRecord` carries every field §10's row
+  spec names, and `measure_core::replay::write_records`'s doc comment assigns
+  the digest to the harness by name. Two targets were hiding behind that
+  question. This is the opposite of the `ccusage` dead end, where the tool was
+  absent *and* its shape unknown.
+* **Check `state/decisions/` before ranking gaps** — answered records nobody
+  applied read as unsolved. An audit's proposed fix can be one a decision
+  refused.
 * **"Judge whether the code looks right" finds nothing.** Grep the section's
-  literal nouns — `tokei`, `merge-blocked`, `ccusage` fell in a minute.
-* **A docstring describing behaviour the function lacks is where the bug is.**
-  Fifth campaign running.
-* **The audit lags ~1.5 campaigns** — six of ten listed gaps were already
-  closed — but its *one-line* list is still the best target-picker there is.
-* **A closed gap's section cannot be derived from its id** (`sha256`); record
-  it when it closes. **Do not rename a section heading** — the anchor is in
-  the denied baseline.
+  literal nouns.
+* **The audit lags ~1.5 campaigns**; its one-line list is still the best
+  target-picker. A closed gap's section cannot be derived from its id.
 * **A check on a file more than one loop writes belongs in `check-metrics`
-  scoped to `config.writes_harness`, never `selftest`.** `selftest` runs for
-  every loop, from the pinned `hj`, against `HARNESS` — which resolves through
-  `HJ_REPO` to *that* loop's worktree, so it fails in the tree of whoever has
-  not merged. `harness-011`, third campaign. Fixtures for the logic.
+  scoped to `config.writes_harness`, never `selftest`** (`harness-011`).
 
 ## Confirmed — candidates, test on your own evidence
 
-* **What is left is deferred mechanisms, not wrong words.** Seven sections.
-* **An instructed number that nothing computes drifts.** The 512-word digest
-  cap went unmeasured since campaign one; three of five were over. Find others.
-* **Where the code and `loops.md` disagreed it favoured this loop** —
-  `harness-008`, `harness-009`, both now answered *for* the code. That call is
-  a human's: edit the document only under a ruling, and say so in the
-  changelog.
-* **Never reconcile a decision still `open` in your tree** — that is ruling on
-  your own escalation.
-* **Backtest a metric change** (`hj progress-replay --rule N`) before it.
+* **Build a consumer in the same campaign as a producer.** The dashboard panel
+  caught `FRONTIER_BESIDE` naming concepts (`latency`) where rows carry keys
+  (`latency_p50_us`); the selftest had passed against a constant nothing could
+  resolve.
+* **Backtest before a metric change.** `progress-replay --rule 4` vs rule 3:
+  zero reclassified, which let `PROGRESS_RULE` move without a sweep.
+* **Read a spec's arithmetic against §7's gaming table.** §10's literal "beats
+  it on every axis" is strict domination, under which a behaviour-preserving
+  commit's identical row scores progress forever.
+* **An instructed number that nothing computes drifts.**
 * **`decisions_reconciled` still reads tag *removals***, so reconciling a
-  decision tagged in a file the loop may not write scores nothing. Class B.
+  decision tagged in a denied file scores nothing. Class B.
+* **Never reconcile a decision still `open` in your tree.**
 
 ## Do not spend a campaign on these
 
-* §12 held-out, §11 tokei and binary size, §5, §7, `#branches-…`: implemented.
-* `#sessions-assign-the-id-own-the-transcript`, `#reading-a-transcript`: the
-  adapter assigns `--session-id` and tees `stream-json`, and the dashboard
-  renders transcripts. Expect clean verdicts.
-* §17's two gaps are what genuinely remains, neither cheap. `ccusage` is
-  **not installed here**, so adopting it means unrunnable parsing code — the
-  `cargo bloat` dead end. EARS is a notation change to the denied auditor
+* §5, §7, §9, §11, §12, `#the-metrics-history`, `#the-frontier-…`,
+  `#selecting-a-version-…`, `#branches-…`, `#sessions-assign-…`,
+  `#reading-a-transcript`: implemented.
+* **§12 and §10's selection are done as far as any loop can take them.** What
+  is missing is something that *produces* `state/heldout/<lang>.jsonl` — a
+  corpus run, a handler, and a path this loop is denied. Every consumer exists
+  and refuses honestly without it.
+* §17's two gaps: `ccusage` is not installed; EARS is the denied auditor
   prompt.
-* `#rules-are-inlined…`'s "Both go in the volatile tail" is ambiguous and the
-  code is arguably right. Let the auditor judge it.
+* `#the-supervisor-…[cdb07d9f93]` is the largest thing left and needs its own
+  campaign: no cap, no arbitration, no drain, no resume action.
 
 ## Load-bearing
 
-* `hj selftest` after every `hj` edit (104 → 115 here). A syntax error there
-  blocks Edit/Write — use bash or python.
-* **`campaign-open`'s stdout is the campaign id**; `harness/loop` captures it.
-* `prompt-prefix` percentages are not comparable across campaigns (the tail
-  grows); use absolute offsets.
-* Never add a per-campaign write to a shared single-valued file.
+* `hj selftest` after every `hj` edit (117 → 139 here). A syntax error blocks
+  Edit/Write — use bash or python.
+* `campaign-open`'s stdout is the campaign id.
+* `prompt-prefix` percentages are not comparable across campaigns.

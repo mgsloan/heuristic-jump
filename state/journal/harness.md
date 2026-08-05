@@ -647,3 +647,104 @@ by about a campaign and a half now.
   over it, the largest by 23%. An instructed number that nothing computes is a
   number that drifts, which is the argument the whole document makes about
   the loop applied to the loop's own instructions.
+
+## 68b83370 — the frontier, and what the deferral list was actually costing
+
+Target: `loops.md#the-frontier-and-why-it-stays-two-dimensional[6f1288d207]`,
+`#7-progress-stall-and-the-ways-it-is-faked[0adc11edaf]` and
+`#selecting-a-version-at-a-phase-gate[dce0f16d52]`, extended with
+`#the-metrics-history[3c8e5161b3]`,
+`#there-is-no-replay-time-target-and-that-is-deliberate[e515bd6fdf]` and
+`#what-is-deliberately-not-built-yet`. Seven commits, no reverts, `hj selftest`
+117 → 139.
+
+### How the targets were picked, and the thing that had been hiding them
+
+Not by section-closeness. All three opening gaps name mechanisms that
+`loops.md#what-is-deliberately-not-built-yet` **explicitly defers** — "the
+supervisor, the frontier, the evaluation half of held-out selection, the
+per-language link delta, and the tuning and optimisation prompts". So they
+were not defects anyone had missed. They were a deferral that the audit
+reports as gaps, because the auditor judges a section against the code and
+cannot see another section's exemption.
+
+**That is worth knowing before ranking gaps.** Four or five of the seventeen
+open gaps are on that list, and they read exactly like ordinary unfinished
+work. The section that explains them is one of the *unjudged* ones, so nothing
+in the prompt's gap list points at it.
+
+What ends the deferral is also in §18 and is easy to miss: "**This list
+shortens as the followup is built, and it is the list rather than the argument
+that moves** … [§18] points the conformance loop at this document precisely so
+that they cross it during phase 1.5." So the list is meant to be edited by this
+loop as it builds them, and a campaign that builds one and leaves the list
+alone has left the document wrong.
+
+### Approaches considered and not taken
+
+* **Implementing step 2 of the gate selection** — the held-out evaluation
+  itself. Not taken and not for effort: it is a corpus run against a handler
+  and a corpus that phase 1a does not have, and `measure_<lang>` is the core
+  loop's crate. `state/heldout/**` is in `DENIED_ALWAYS`, so this loop cannot
+  even write the rows it would produce. What is buildable is every *consumer*
+  of the file, and the refusal when it is absent — which is what `gate-select`
+  is. If a future campaign is tempted, the blocker is the corpus and not the
+  code.
+* **Reading §10's "no other commit beats it on every axis" literally.** Strict
+  domination keeps a point that ties on one axis and loses on the other, and
+  `record` writes a row per commit — so a commit that changes no behaviour
+  carries the previous commit's numbers exactly, is undominated under that
+  reading, and scores §7 progress. Every commit forever would score, and stall
+  detection would stop existing. `advances_frontier` therefore requires a
+  strict improvement on some axis against *every* existing point. The looser
+  reading is the one the section's words support and the one its own §7 gaming
+  table forbids; this is written down because the words will still be there
+  next time.
+* **Bumping `PROGRESS_RULE` without the backtest.** Did the backtest first:
+  `progress-replay --rule 4` against rule 3 over 55 campaigns differs on
+  nothing — same terms, same verdicts, same longest run without progress of 3.
+  It *cannot* differ before phase 2a, since no metrics row carries an axis, and
+  that is the whole argument for bumping the rule without sweeping the history.
+  It stops being true the moment a tuning loop records a row.
+* **Weighting an axis by `n`.** Wrong, and invisibly so. Coverage is counted on
+  the reference stratum and agreement on the settled one, so a query that
+  refined its stratum lands in two different rows; on the fixture, weighting
+  top-1 by `n` instead of by `judged` moves it from 0.89 to 0.11. The report
+  serialises the counters and not the ratios, so a consumer has to recompute
+  both and there is nowhere else to notice this.
+* **Naming the concepts in `FRONTIER_BESIDE`.** The first draft had `latency`
+  and `loc`. Every lookup then missed a row that spells it `latency_p50_us`,
+  and LOC is not per-stratum at all — it rides in the row's own `loc` field.
+  **The dashboard panel is what caught it**, which is the argument for building
+  a consumer in the same campaign as a producer: the selftest passed happily
+  against a constant nothing could resolve.
+
+### The find that made this cheap, and the rule it suggests
+
+`crates/shared/src/record.rs` defines `QueryRecord` with every field §10's row
+spec names — `bytes_scanned`, `files_parsed`, `stage_us`,
+`heuristic_latency_us`, `returned`, `stratum_prior`/`stratum_final` — and
+`measure_core::replay::write_records`'s doc comment says: "Digesting these into
+something readable is the harness's job, not `measure_core`'s: the same split
+that keeps this crate ignorant of `state/`."
+
+So the harness was *assigned* this work by the other loop's code, and the
+output shape was readable from the source rather than guessed. That is the
+exact difference from the `ccusage` dead end in `59da1668`: there the tool was
+absent and its output shape unknown, so every line would have been written
+against a guess. **Before declaring something unbuildable because its producer
+has not run, check whether the producer's type is in the tree.** Two of the six
+targets here were sitting behind that question.
+
+### Two things noticed and left alone
+
+* `measure_core::table::Row` computes `coverage()` and `precision()` in Rust,
+  with a comment saying a ratio is "computed here rather than by every consumer,
+  because a metric with two definitions is two metrics" — and then serialises
+  the counters and not the ratios, so `--format json` gives a consumer no
+  choice but to recompute them. `hj`'s copy of both formulas cites `table.rs`,
+  and the raw counters ride in the metrics row so a redefinition can be swept.
+  It is the core loop's file, so it is theirs to fix if they want to.
+* `panel_metrics` in `harness/dashboard/serve` computes `outstanding` and
+  `settled` and uses neither; `panel_sections` has the live copy. Left alone
+  rather than deleted mid-campaign in a file I was editing for another reason.
