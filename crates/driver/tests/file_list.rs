@@ -312,6 +312,150 @@ fn the_two_triggers_share_one_debounce_rather_than_one_each() {
     );
 }
 
+/// The state no test reached: a trigger that arrives *while a walk is out*.
+///
+/// `Refresh::InFlight` carries a `pending` slot and says why — "the walk
+/// started before the change, so it cannot have seen it" — and `install`
+/// returns to `Pending` rather than `Settled` when that slot is full. Nothing
+/// exercised either. Every other test in this file triggers, ticks, receives
+/// and installs in that order, so the walk is always out over a quiet window
+/// and the slot is always empty.
+///
+/// What it costs when it is wrong is a change that is invisible until
+/// something else happens to invalidate the list. Collapsing the slot — a
+/// two-state `Refresh`, or an `install` that always settles — passes every
+/// other assertion here, because the loss needs a write that lands inside the
+/// walk's own window to show up at all. In standalone there is no watcher to
+/// come along later and cover for it, and §4's on-demand trigger only fires
+/// on a query that *searched* for the missing thing, so a file created in
+/// that window stays unfindable for as long as the process lives.
+///
+/// The interleaving is deterministic rather than raced: `refresh` moves only
+/// in `install`, which this test calls, so the window is open from the tick
+/// that sends the walk until the line that installs it — however fast the
+/// scanner thread actually is.
+#[test]
+fn a_change_arriving_while_a_walk_is_out_is_not_lost_with_the_walk() {
+    let root = fixture("in_flight");
+    let clock = Arc::new(TestClock::new());
+    let mut cache = cache(&root, &clock);
+    drop(cache.list().expect("the first walk"));
+
+    cache.watched_files_changed();
+    clock.advance(DEBOUNCE.window());
+    cache.refresh_if_due();
+
+    // Inside the window. The walk that is out either has not reached this file
+    // or has already passed it, and neither is knowable from here — which is
+    // the whole reason the trigger is remembered rather than dropped.
+    fs::write(root.join("src/during.rs"), "fn delta() {}\n")
+        .expect("a file created while the walk is out");
+    cache.watched_files_changed();
+
+    let first = cache.rescans().recv_timeout(patience()).expect("the walk");
+    cache.install(first);
+
+    // The claim: installing a walk that was already stale when it landed
+    // leaves the list marked stale, so the next tick sends another.
+    clock.advance(DEBOUNCE.window());
+    cache.refresh_if_due();
+    let second = cache.rescans().recv_timeout(patience()).expect(
+        "a trigger that arrived while the walk was out was dropped with it, so \
+             nothing will rescan until something else invalidates the list",
+    );
+    cache.install(second);
+
+    assert!(
+        relative_paths(&cache.list().expect("the refreshed list"))
+            .contains(&"src/during.rs".to_owned()),
+        "the second rescan did not see a file created while the first was out, \
+         which is the case `Refresh::InFlight`'s pending slot exists for"
+    );
+
+    // And it settles: the remembered trigger is one rescan, not a standing
+    // order. Without this the pair above would pass against a cache that
+    // rescans forever.
+    clock.advance(DEBOUNCE.window());
+    cache.refresh_if_due();
+    assert!(
+        cache.rescans().recv_timeout(QUIET).is_err(),
+        "a third rescan went out with nothing left to invalidate the list, so \
+         the remembered trigger never clears and every walk schedules another"
+    );
+}
+
+/// §4 on what the watcher buys over the on-demand path: "It also catches
+/// **deletions before a query pays for one**, which is the whole of what it
+/// buys over the on-demand path: a rescan discovers files that appeared, and a
+/// stale entry for a file that was removed surfaces as a failed read first."
+///
+/// [`a_candidate_removed_after_the_walk_costs_one_failed_read_and_not_every_later_one`]
+/// is the other side — the on-demand path, learning about a deletion "the
+/// expensive way, one failed query later". This is the cheap way, and the two
+/// are the same paragraph's two halves: no query runs here at all, so nothing
+/// pays the failed read that the on-demand path is defined by.
+///
+/// Worth its own test rather than folded into the watcher test above because
+/// that one adds a file. An addition and a deletion are the same code path
+/// only if the rescan replaces the list wholesale, which is what
+/// `FileList::superseding` does and is exactly the assumption a future
+/// apply-the-delta optimisation would break — and §4 forbids that optimisation
+/// by name, on the grounds that `core` does O(1) work per event and one frame
+/// can carry thousands.
+#[test]
+fn the_watcher_catches_a_deletion_before_any_query_pays_for_one() {
+    let root = fixture("watched_deletion");
+    let clock = Arc::new(TestClock::new());
+    let mut cache = cache(&root, &clock);
+
+    let before = cache.list().expect("the first walk");
+    assert!(
+        relative_paths(&before).contains(&"src/util.rs".to_owned()),
+        "the fixture's candidate is not in the first walk, so its absence \
+         below would mean nothing"
+    );
+
+    fs::remove_file(root.join("src/util.rs")).expect("removing a candidate");
+    cache.watched_files_changed();
+
+    clock.advance(DEBOUNCE.window());
+    cache.refresh_if_due();
+    let rescan = cache.rescans().recv_timeout(patience()).expect("a rescan");
+    cache.install(rescan);
+
+    assert!(
+        !relative_paths(&cache.list().expect("the refreshed list"))
+            .contains(&"src/util.rs".to_owned()),
+        "the rescan kept an entry for a file the watcher had already reported \
+         gone, so the deletion still costs a failed read and the watcher buys \
+         nothing over the on-demand path"
+    );
+
+    // The half that makes it "before a query pays": the view built from the
+    // refreshed list never offers the removed file as a candidate, so the
+    // scan that would have failed on it succeeds instead.
+    let view = cache
+        .view(Deadline::none(), grammar())
+        .expect("the view a later query is dispatched against");
+    let outcome = scan_for_alpha(&view, &root).expect(
+        "a scan over the refreshed candidate set failed, which is the failed \
+         read the watcher was supposed to have made unnecessary",
+    );
+    assert_eq!(
+        outcome
+            .hits
+            .iter()
+            .map(|file| file
+                .path
+                .rel()
+                .as_path()
+                .to_string_lossy()
+                .replace('\\', "/"))
+            .collect::<Vec<String>>(),
+        vec!["src/lib.rs".to_owned()]
+    );
+}
+
 /// §4's proxy-mode invalidation is a routing row keyed by a method name, and
 /// the name is a `const` here with no caller: `shim.md` §3's router does not
 /// exist yet, and its own doc calls the string "the entire coupling between
