@@ -21,8 +21,8 @@ mod workers;
 
 pub use actor::{Actor, Event, INBOX_BACKED_UP, Outbound};
 pub use config::{
-    Config, DEFAULT_LOG_FILTER, DeadlineMs, DeadlineOverride, DebounceMs, Heuristics, LOG_PREFIX,
-    MaxInFlight, Mode, PrefixedWriter, ServerCommand,
+    Config, DEFAULT_LOG_FILTER, DeadlineMs, DeadlineOverride, DebounceMs, Heuristics, MaxInFlight,
+    Mode, ServerCommand,
 };
 pub use dispatch::{
     Answer, Classified, Completed, Dispatched, Parsed, Registry, Request, dispatch, hard_cap,

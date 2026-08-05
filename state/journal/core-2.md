@@ -861,3 +861,106 @@ was one turn and found a stale sentence three campaigns old.
 - **`similarity`'s four third-party crates.** Real, unbounded by anything, and
   deliberately unsettled by `deps.md` §0. Settling them is a decision, not a
   fix, and `crates/similarity/**` is outside every loop's write list.
+
+## Campaign b5c7bae2 — the section whose gap was stale had eight more claims in it
+
+Nine commits, all green, 342 → 350 tests. CHANGE-core-035 (Class A) and
+`core-027` (Class B, open). Assigned `core.md#the-dependency-graph[a7eaf1dfa1]`
+and `core.md#the-trait[70bb31391f]`; the first was already closed by my own
+previous campaign, the second was real and cost one commit. The other eight
+commits are claims nobody had named.
+
+### The one-turn staleness check, again, and it paid again
+
+`grep -n a7eaf1dfa1 state/audit/gap-log.jsonl` → find the run that *opened* it
+→ ask whether any later run's `sections_audited` names its section. The run at
+`00:43:32Z` opened it at commit `fe25ac72`; `82d2fe4` (my campaign `26e3bb3c`,
+CHANGE-core-029) closed it minutes later; the `01:40:56Z` run audited
+`#the-trait` but not `#the-dependency-graph`. Two greps, no reading. The
+counterpart is worth noticing too: `70bb31391f` was opened by a run whose
+commit `9755233` *contains* my §1 commits, so it was fresh and its `found:`
+was correct. **The same check tells you both things and it is the cheapest turn
+in a campaign.**
+
+### Plant everything. Six of nine commits came from a plant, not from reading
+
+The pattern that produced this campaign: read a claim in the source, write the
+test you think holds it, then *break the thing on purpose* and watch. Two of
+them were not weak tests but empty branches, and reading would never have said
+so:
+
+- **Nothing in the workspace had ever asked whether a `ProjectView` is `Sync`.**
+  A `RefCell` field compiled the library and every test binary. §1 and §2 argue
+  at length that a cache on the view "is a lock, in a design that has none" —
+  and the premise that makes that argument true (the `&Query` crosses threads)
+  was unenforced, because `scan` is sequential, `shared` declares no `rayon`,
+  and no handler fans out yet. The seam freezes a phase before `driver` exists;
+  a bound nothing checks is one that is gone by the time it matters.
+- **`FileText::Open` was reached by no test.** Every test in `project.rs` gets
+  its text from `read`, which returns `FileText::Disk` — one chunk, no
+  boundaries. The rope arm feeds tree-sitter through a per-chunk read callback,
+  and `.last()` instead of `.next()` in that callback produces a *tree*, not an
+  error: a mis-parse reaches a handler as an abstention in a class nobody looks
+  at. That branch is dead until the driver has a document map, which is exactly
+  why it is worth holding now — the campaign that wires the map up will read
+  the passing tests as evidence.
+
+### The mistake I nearly committed: a test whose stated reason was false
+
+`the_whole_query_crosses_threads_and_not_only_the_view`'s first doc comment
+said `CommitPolicy` was "held by nothing at all". Planting a `RefCell` in it
+failed `driver/src/workers.rs:238`, which spawns pool threads holding an
+`Arc<CommitPolicy>` — so the bound *is* in force, from one crate downstream and
+as a side effect of how the pool owns the value. The test is still right and
+the reason had to be rewritten. **Plant before writing the doc comment, not
+after: the plant tells you who else objects, and "nobody holds this" is the
+claim most likely to be wrong.**
+
+### Equality over `name: Type`, not over names
+
+`the_view_holds_no_cache_and_no_pool` compares `ProjectView`'s fields *with
+their types*. Names alone would call `files: Arc<Mutex<FileList>>` unchanged,
+which is CHANGE-core-032's mistake (`handler.rs` compared `AbstainReason`'s
+variant names and never its payloads) in a new place. `document.rs`'s
+equivalent scan bans primitives by name; that shape was unavailable here,
+because `classified` is an `AtomicU8` on purpose (`core-025`) and a blocklist
+admitting `Atomic` admits a memoised map too. **When the obvious blocklist has
+a legitimate exception, the equality is the shape that still works.**
+
+### A real defect, found by asking what an editor can send
+
+`FileList::enumerate` walks each root; nothing stops the roots overlapping, and
+opening a monorepo *and* one of its packages is ordinary in VS Code. Both walks
+find the inner root's files, and `(outer, "src/lib.rs")` and `(inner, "lib.rs")`
+are different `ProjectPath`s with different hashes — so `Set<ProjectPath>` does
+not deduplicate them. Three of five fixture files doubled.
+
+The cost is not the extra entry. `resolution.md` §1.3 makes exhaustiveness the
+source of the uniqueness signal, and a duplicated candidate is that defect from
+the other side: one definition returns as two hits in two apparent files, so a
+query that should commit abstains. `bytes_scanned` double-counts too.
+
+Escalated as `core-027` rather than fixed outright, because deduplicating means
+picking an owner and the owner decides which of §4's tiers the file lands in —
+`open-questions.md` question 8's territory. Question 8 is about *preference*
+between roots and does not reach this, but an answer to it would be written
+against whatever this decides. Provisional: innermost wins, which is the only
+option that leaves `root_of` (longest prefix) and `lookup` consistent with each
+other, and is one `continue` to revert.
+
+### Not taken, and why
+
+- **`whole_token_matches`'s multi-chunk join is untestable from outside.**
+  `scan` reads through `self.read()`, which always returns `Disk`, and the
+  helper is private — so the branch its own comment calls "the whole
+  difficulty" has no route. Do not go looking for one; it opens when the
+  driver's document map lands.
+- **`Confidence`'s `0.0..=1.0` constructor** is untested but belongs to
+  `core.md#vocabulary-types`, a different section. Note `Margin::new` beside it
+  checks only `>= 0.0` *deliberately* — its doc says so — so a grep that lands
+  on `Margin` looks like a contradiction in §1 and is not. I lost a turn to it.
+- **`FileList::superseding`** is covered in `driver/tests/file_list.rs`; do not
+  add a second test in `shared`.
+- **`read_dir` is already banned in `clippy.toml`**, with the one `#[expect]`
+  in `measure_core/src/corpus.rs` arguing itself. §1's "one implementation of
+  the scope rules" needs no scan; it has a lint.

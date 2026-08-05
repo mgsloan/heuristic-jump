@@ -1979,6 +1979,45 @@ fn no_member_declares_a_crate_section_13_rejects() {
             );
         }
     }
+
+    // The gix/git2 entry is the one on the list whose reason is a claim about
+    // *our* code rather than about a crate, and it was wrong: §13 said "we
+    // never need to talk to git" while `measure_core` was running `git
+    // rev-parse HEAD` and `git status --porcelain` to verify a corpus checkout
+    // (CHANGE-core-038). The rejection survives the correction, and what it now
+    // rests on is the scope — two commands, in the program that already spawns
+    // a language server, off any latency budget.
+    //
+    // So the scope is what is asserted. The shim's crates never invoke git:
+    // `ignore` reads `.gitignore` directly, which is §13's other clause and is
+    // the reason nothing on the query path needs to. A `Command::new("git")`
+    // reaching `driver` would put a subprocess inside a deadline and would make
+    // the case for a git *library* that §13 has twice now declined.
+    let mut invokes = Vec::new();
+    for member in &members {
+        let named = member.trim_start_matches("crates/");
+        if !member.starts_with("crates/") {
+            continue;
+        }
+        for (file, source) in sources_of(named) {
+            assert!(
+                !source.is_empty(),
+                "{file} is missing or empty, so the scan below would pass vacuously"
+            );
+            if source.contains("Command::new(\"git\")") {
+                invokes.push(named.to_owned());
+            }
+        }
+    }
+    invokes.sort();
+    invokes.dedup();
+    assert_eq!(
+        invokes,
+        vec!["measure_core".to_owned()],
+        "deps.md §13 rejects gix and git2 on the grounds that the only thing talking to git is \
+         measure_core's corpus verification. That is now false: a crate that shells out to git \
+         where the section says none does is the evidence for the library it declines"
+    );
 }
 
 /// `deps.md` §14's first two conventions, which are one mechanism:
@@ -3164,8 +3203,53 @@ fn our_log_lines_are_distinguishable_and_the_subscriber_is_installed_once() {
          a tool they did not ask to hear from"
     );
 
+    // §9 states the two defaults against each other — "`info` where the shim's
+    // is `warn`" — so the shim's alone is half of it. Read out of the source
+    // and not linked, because `core.md` §9's graph gives `driver` no edge to
+    // `measure_core` and this test is `driver`'s.
+    let measure_default = declared_string("measure_core", "DEFAULT_LOG_FILTER").unwrap_or_else(|| {
+        panic!(
+            "measure_core declares no `pub const DEFAULT_LOG_FILTER: &str`: deps.md §9 gives it \
+             a default of its own, and a default that is a literal inside a private function is \
+             one no test can compare against the shim's"
+        )
+    });
+    assert_eq!(
+        measure_default, "info",
+        "measure_core's default filter is `{measure_default}`. deps.md §9 makes it `info` so \
+         that core.md §7's report — the replay's own wall clock beside the per-query work \
+         counters — has somewhere to go; at `warn` the run emits it into nothing and the loss \
+         is silent"
+    );
+    assert_ne!(
+        measure_default,
+        driver::DEFAULT_LOG_FILTER,
+        "both processes default to `{measure_default}`. §9's two defaults differ on purpose and \
+         the difference carries the reason: the shim is quiet because its stderr is an editor \
+         panel, and a `measure` run's is not read that way"
+    );
+
+    // §9's premise for choosing `tracing` at all — "`rope` and `sum_tree`
+    // depend on it, so it is in the graph regardless" — is deliberately not
+    // asserted here. Both vendored crates `use tracing::instrument`, so
+    // dropping the declaration is a build failure rather than a silent drift,
+    // and an assertion that cannot fail without the build failing first is one
+    // that tells a future re-sync nothing it would not already be told.
+
+    for member in INSTALLS_THE_SUBSCRIBER {
+        let source = crate_source(member);
+        for literal in ["EnvFilter::new(\"", "EnvFilter::try_new(\""] {
+            assert!(
+                !source.contains(literal),
+                "{member} builds an EnvFilter from a string literal (`{literal}…`): §9's default \
+                 is a claim about a named value, and a literal beside the constant is the second \
+                 answer to how loud this binary is"
+            );
+        }
+    }
+
     let mut written = Vec::new();
-    let mut writer = driver::PrefixedWriter::new(&mut written);
+    let mut writer = shared::PrefixedWriter::new(&mut written);
     let event = "a warning\nwith a second line\n";
     assert_eq!(
         std::io::Write::write(&mut writer, event.as_bytes()).expect("a write to a Vec"),
@@ -3183,7 +3267,7 @@ fn our_log_lines_are_distinguishable_and_the_subscriber_is_installed_once() {
     );
     for line in lines {
         assert!(
-            line.starts_with(driver::LOG_PREFIX),
+            line.starts_with(shared::LOG_PREFIX),
             "the line {line:?} carries no prefix: deps.md §9 wants every line distinguishable \
              from the child's, and a continuation line is the one most easily read as the \
              child's"
@@ -3251,6 +3335,166 @@ fn our_log_lines_are_distinguishable_and_the_subscriber_is_installed_once() {
         "tracing-subscriber is declared as `{declared}` without env-filter: deps.md §9 names \
          it as one of the two features, and it is what --log is a string for"
     );
+
+    // The manifest's comment beside that entry is a second copy of §9's rule,
+    // and it went stale in the direction a second copy always does: it said
+    // `heuristic_jump` and nowhere else, for as long as `measure_core` had a
+    // subscriber. Nothing above catches it — every assertion so far reads the
+    // dependency tables, and a comment is not one.
+    //
+    // Only the forgiving direction, deliberately: the comment names `driver`
+    // and `shared` too, as the crates that emit through the facade and do not
+    // install, so "names no member outside the list" would fail on correct
+    // text. What is checkable is that adding an installer without saying so
+    // here does not pass.
+    let comment = comment_above(&workspace_file("Cargo.toml"), "tracing-subscriber");
+    assert!(
+        !comment.is_empty(),
+        "no comment above the tracing-subscriber entry, so the assertion below is vacuous"
+    );
+    for member in INSTALLS_THE_SUBSCRIBER {
+        assert!(
+            comment.contains(member),
+            "the workspace manifest's note on tracing-subscriber does not name {member}, which \
+             installs a subscriber: deps.md §9's rule is about which crates own a process, and a \
+             manifest comment that lists the wrong ones is the copy a reader reaches \
+             first\n{comment}"
+        );
+    }
+}
+
+/// The comment block immediately above a `[workspace.dependencies]` entry, as
+/// its lines joined. Empty if the entry has none, or is not there.
+fn comment_above(manifest: &str, entry: &str) -> String {
+    let mut block: Vec<&str> = Vec::new();
+    for line in manifest.lines() {
+        let line = line.trim();
+        if line.starts_with(entry) {
+            return block.join("\n");
+        }
+        if line.starts_with('#') {
+            block.push(line);
+        } else {
+            block.clear();
+        }
+    }
+    String::new()
+}
+
+/// The other half of `deps.md` §9's prefix rule, and the half that was missing:
+/// a prefix nothing is routed through is a prefix that is not applied.
+///
+/// The test above asserts that [`shared::PrefixedWriter`] prefixes what it is
+/// given; this asserts that each process that installs a subscriber gives it
+/// one. Two claims and two tests because they fail apart — until
+/// CHANGE-core-036 the adapter was correct and `measure_core` handed
+/// `tracing-subscriber` a bare `std::io::Stderr` instead, in the process that
+/// spawns a language server with `Stdio::inherit()` and so has exactly the
+/// interleaving §9's prefix exists for.
+///
+/// **Naming the type would not be enough**, which is why this reads the writer
+/// back out of the `MakeWriter` impl. `tracing-subscriber` has a blanket impl
+/// for `Fn() -> W`, so `with_writer(stderr_for_logging)` — what the defect
+/// actually looked like — compiles, in a crate that could name `PrefixedWriter`
+/// somewhere else entirely and pass a scan for the name.
+#[test]
+fn every_subscriber_we_install_writes_through_the_prefix() {
+    for member in INSTALLS_THE_SUBSCRIBER {
+        let source = crate_source(member);
+        let arguments = with_writer_arguments(&source);
+        assert!(
+            !arguments.is_empty(),
+            "{member} installs the subscriber and never calls with_writer, so the prefix check \
+             below is vacuous — either the default writer is in use, which is unprefixed, or \
+             this scan has stopped finding the call"
+        );
+        for argument in arguments {
+            let writer = make_writer_associated_type(&source, &argument).unwrap_or_else(|| {
+                panic!(
+                    "{member} passes `{argument}` to with_writer, and no MakeWriter impl for it \
+                     is in the crate: deps.md §9 wants every line prefixed, and the blanket impl \
+                     for `Fn() -> W` is exactly how a bare stderr gets there without one"
+                )
+            });
+            assert!(
+                writer.contains("PrefixedWriter"),
+                "{member} writes through `{argument}`, whose Writer is `{writer}` rather than a \
+                 PrefixedWriter: deps.md §9 requires the prefix of every line we emit, and both \
+                 processes forward a language server's stderr into the stream they log to"
+            );
+            // The destination and not just the wrapper, because §9 names it —
+            // "writing to **stderr**" — and getting it wrong is not untidy
+            // output: stdout is the JSON-RPC frame stream, so a subscriber
+            // pointed there corrupts the protocol rather than the log.
+            assert!(
+                writer.contains("Stderr"),
+                "{member} logs to `{writer}` rather than to stderr. deps.md §9 names stderr, and \
+                 clippy.toml's second group says why it is not a preference: stdout IS the \
+                 JSON-RPC wire, and a log line on it is a frame nobody can parse"
+            );
+        }
+    }
+}
+
+/// A crate's whole source, its files joined. Non-empty for a crate that
+/// exists, so a caller reading a claim out of it does not also have to assert
+/// the crate is there — every assertion over an empty string passes.
+fn crate_source(crate_name: &str) -> String {
+    let source = sources_of(crate_name)
+        .into_iter()
+        .map(|(_, text)| text)
+        .collect::<Vec<String>>()
+        .join("\n");
+    assert!(
+        !source.trim().is_empty(),
+        "crates/{crate_name} has no source, so every scan of it passes vacuously"
+    );
+    source
+}
+
+/// The text a crate declares `pub const <name>: &str = "…";` with.
+///
+/// Read rather than linked: the crates this asks about are ones `driver` may
+/// not depend on, which is the same reason every other scan here is a scan.
+fn declared_string(crate_name: &str, name: &str) -> Option<String> {
+    let marker = format!("pub const {name}: &str =");
+    crate_source(crate_name).lines().find_map(|line| {
+        let rest = line.trim().strip_prefix(&marker)?;
+        let opened = rest.find('"')? + 1;
+        let closed = rest.get(opened..)?.find('"')? + opened;
+        Some(rest.get(opened..closed)?.to_owned())
+    })
+}
+
+/// Every `.with_writer(X)` argument in a source, as the text of `X`.
+fn with_writer_arguments(source: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut rest = source;
+    while let Some(at) = rest.find("with_writer(") {
+        rest = &rest[at + "with_writer(".len()..];
+        if let Some(end) = rest.find(')') {
+            found.push(rest[..end].trim().to_owned());
+        }
+    }
+    found
+}
+
+/// The `type Writer = …` of the `MakeWriter` impl for `name`, if the source has
+/// one.
+///
+/// Tolerant of how the lifetime is spelled, because `MakeWriter<'_>` and
+/// `MakeWriter<'a>` are the same claim and a test whose first encounter with a
+/// legitimate refactor is being relaxed was never holding anything.
+fn make_writer_associated_type(source: &str, name: &str) -> Option<String> {
+    let header = format!("for {name}");
+    let at = source
+        .lines()
+        .position(|line| line.contains("MakeWriter") && line.contains(&header))?;
+    source.lines().skip(at).take(6).find_map(|line| {
+        line.trim()
+            .strip_prefix("type Writer =")
+            .map(|writer| writer.trim().trim_end_matches(';').to_owned())
+    })
 }
 
 /// `deps.md` §7, whose two claims are both about a manifest and neither about

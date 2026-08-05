@@ -35,6 +35,11 @@
 #       The same numbers for a session still running, which `cost` cannot
 #       give because it reads the terminal `result` event.
 #   transcript-path <owner> <campaign>
+#   prompt-path     <owner> <campaign>
+#       Where the rendered prompt is kept, beside the transcript. The stream
+#       does not echo it, so a transcript without it starts mid-conversation:
+#       `design/loops.md` §16 reads a turn as prompt, thinking, tool calls,
+#       results, text, and the first of those is only ever in this file.
 #   hook-path        (reads a PreToolUse payload on stdin)
 #   version          the CLI version, recorded per campaign
 #   resume-command <campaign>
@@ -70,6 +75,13 @@ transcript-path)
 	# unresolved form recorded a different string per worktree for one file.
 	root="${HJ_TRANSCRIPTS:-$(cd "$repo/.." && pwd)/heuristic-jump-transcripts}"
 	echo "$root/$owner/$campaign.jsonl"
+	;;
+
+prompt-path)
+	owner="${1:?owner}"
+	campaign="${2:?campaign}"
+	root="${HJ_TRANSCRIPTS:-$(cd "$repo/.." && pwd)/heuristic-jump-transcripts}"
+	echo "$root/$owner/$campaign.prompt.md"
 	;;
 
 resume-command)

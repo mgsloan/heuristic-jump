@@ -777,3 +777,116 @@ Every remaining gap sits in `actor.rs`, `dispatch.rs` or
 `shared/src/project.rs`, all reserved by the planner this round. I did not
 claim outside the assignment because there was nothing outside it that was
 both free and cheap.
+
+## Campaign b67cc6d7 — the gap was one copy of a rule that had three
+
+Assigned `deps.md#9-logging-and-tracing[05f24850e8]`. **Not stale** — first
+fresh assignment in three campaigns. The gap-log recipe still costs one turn
+and is still worth it: the row that opened the id was the newest audit run
+(01:40:56Z) and both named files were last touched two hours before it.
+
+Five commits, one revert. The generalisation, which is the part worth carrying:
+**§9 states each of its rules in three places — the section, the workspace
+manifest's comment beside `tracing-subscriber`, and each installer's own doc
+comment — and every defect this campaign found was in a copy nothing read
+back.** The audit saw one of the five.
+
+### The audit's proposed mechanism would not have held its own gap
+
+It said: "seam.rs already lists the crates that may install a subscriber;
+require each to name `driver::PrefixedWriter`." A name scan passes on a crate
+that mentions the type anywhere, and `tracing-subscriber` has a blanket
+`MakeWriter for Fn() -> W`, so `with_writer(stderr_for_logging)` — which is
+exactly what the defect was — compiles beside a `PrefixedWriter` used
+somewhere else. What holds it is reading the *writer* back out of the
+`MakeWriter` impl: `with_writer(X)` → find `impl … MakeWriter … for X` → its
+`type Writer` must be a `PrefixedWriter<…Stderr>`.
+
+The `Stderr` half is not decoration. The first version checked only the
+wrapper, so `PrefixedWriter<Stdout>` passed — a prefixed log line on the
+JSON-RPC frame stream.
+
+### The reverted experiment: a template crate may not have tests
+
+I wrote `crates/measure_rust/tests/log_stream.rs`, which ran the shipped
+binary over an empty corpus split and asserted three things no source scan can
+see: that the `info` default actually emitted §7's wall-clock line, that every
+stderr line carried the prefix, and that the `--format json` artifact did not.
+All three plants fired. It was a better test than the scan.
+
+It is dead anyway. `core.md` §9's template says a `measure_<lang>` crate has
+**No tests**, and `seam.rs::adding_a_language_costs_the_template_and_one_line`
+enforces it with a good reason — "a fixture directory beside the template is
+an invitation to fill it, and what it converts the oracle into is the thing a
+campaign optimises". `CARGO_BIN_EXE_measure-rust` exists only for the package
+declaring that binary, so there is nowhere else it can live. **Do not rebuild
+it.** If a future phase wants end-to-end coverage of a `measure` binary's
+streams, the template rule has to be revisited first, and that is a Class B
+question about `core.md` §9, not a test to sneak in.
+
+Useful along the way: `measure-rust replay --corpus <dir> --server <name>`
+succeeds against a split whose only content is an empty
+`<split>/rust/repos/` directory. No git, no fixture. That is the cheapest
+possible end-to-end invocation of the binary, if something ever needs one from
+a crate that is allowed to have tests.
+
+### A comment that satisfies its own check
+
+The manifest comment said the subscriber is installed in `heuristic_jump` "and
+nowhere else". I fixed it and added a seam assertion that it names every
+member of `INSTALLS_THE_SUBSCRIBER` — then planted `measure_core` out of the
+sentence and **the plant did not fire**, because my own second paragraph
+explaining the history also contained the word `measure_core`.
+
+Generalises: **a prose scan is satisfied by any occurrence in its window, so
+prose that discusses the rule masks prose that states it.** The comment now
+says to keep every installer's name in one place, and says why.
+
+### Two premises deliberately not asserted, so nobody spends a campaign on them
+
+* **`rope` and `sum_tree` depend on `tracing`** — §9's reason for choosing the
+  facade at all. Both `use tracing::instrument`, so removing the declaration
+  fails the *build*. An assertion that cannot fail before the build does tells
+  a re-sync nothing. (Their manifests carry
+  `[package.metadata.cargo-machete] ignored = ["tracing"]`, which is simply
+  wrong — the dependency is used. Upstream's, harmless, left alone.)
+* **"The JSONL metric records are not tracing output"** — this one I tried and
+  could not express. Every formulation false-fires on correct code: scanning
+  tracing-macro fields for `record` hits
+  `tracing::info!(wall_clock_us = …, queries = records.len(), "replayed")`,
+  which is the very line §7 requires; scanning whole lines hits
+  `tracing::error!(%source, "a query record would not serialize")`. Excluding
+  `.len()` is a patch on a patch. **This claim resists a mechanical check —
+  do not spend a campaign discovering that again.**
+
+### Scoping, again, and the rule that settles it
+
+`std::io::stderr()` has exactly two call sites, both feeding a prefixed
+writer, and it is tempting to assert that. I did not, and the reason is the
+test from campaign d9435dad: *who is the first person who will legitimately
+break this, and what will they do about it?* `shim.md` §2 forwards the
+child's stderr to ours **verbatim**, so whoever builds the transport acquires
+a raw stderr handle in `driver` and must not prefix what it writes. They would
+relax the assertion, which means it was never holding a claim.
+
+`Command::new("git")` in §13 passes the same test and so was written: nothing
+on the query path needs git, `ignore` reads `.gitignore` directly, and nobody
+building the shim will ever want a subprocess inside a deadline.
+
+### Traps paid for again
+
+* **A plant that breaks the build looks exactly like a plant that does not
+  fire** — hit twice. `pub fn` in `driver` trips `-D unreachable-pub`; a
+  commented-out `tracing.workspace = true` in `vendor/rope` breaks `rope`.
+  Both printed no `test result` line, which reads like nothing happened.
+  **Always tail the raw output before believing a plant.**
+* **A whole-file `str.replace` is not a plant.** Replacing `measure_core`
+  across `Cargo.toml` to check a comment also rewrote the workspace member
+  list and the path dependency. Anchor on a phrase unique to the sentence.
+* `cargo clippy -p <crate> --all-targets -- -D warnings` before the gate:
+  `allow-expect-in-tests` reaches only `#[test]` bodies, so a fixture builder
+  that is a free function needs its own `#![expect(clippy::expect_used, …)]`.
+  `pipeline.rs` documents this and I hit it anyway.
+* Writing `tracing_subscriber` in *prose* inside `crates/*/src` fails the
+  seam scan, which is a plain `contains`. The convention that keeps it quiet
+  is to spell the crate hyphenated outside code — `tracing-subscriber`.

@@ -15,10 +15,9 @@ use std::sync::Arc;
 
 use clap::{CommandFactory, Parser, error::ErrorKind};
 use driver::{
-    Config, DEFAULT_LOG_FILTER, DeadlineMs, DeadlineOverride, Heuristics, Mode, PrefixedWriter,
-    Registry, Tracing,
+    Config, DEFAULT_LOG_FILTER, DeadlineMs, DeadlineOverride, Heuristics, Mode, Registry, Tracing,
 };
-use shared::LanguageHandler;
+use shared::{LanguageHandler, PrefixedWriter};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::MakeWriter;
 
@@ -138,8 +137,10 @@ fn main() -> Result<(), shared::Error> {
 }
 
 /// `deps.md` §9's destination, wrapped in §9's prefix. The wrapper is
-/// `driver`'s so that it can be asserted on; installing the subscriber is this
-/// crate's, which is where §9 puts it and where `--log` is parsed.
+/// `shared`'s so that it can be asserted on and so that `measure_core` — the
+/// other crate §9 lets install a subscriber, and one with no edge to `driver` —
+/// reaches the same one; installing the subscriber is this crate's, which is
+/// where §9 puts it and where `--log` is parsed.
 struct PrefixedStderr;
 
 impl MakeWriter<'_> for PrefixedStderr {

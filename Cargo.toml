@@ -105,9 +105,15 @@ thiserror = "2.0"
 # four, because the parser is the half that keeps `winnow`.
 toml = { version = "1.1", default-features = false, features = ["parse", "serde"] }
 # `deps.md` §9: `env-filter` is what `--log` is a string for, and `fmt` is a
-# default feature. The subscriber is installed in `heuristic_jump` and nowhere
-# else — `driver` and `shared` emit through the `tracing` facade and have no
-# opinion about where it goes.
+# default feature. Two crates install the subscriber, because there are two
+# processes: `heuristic_jump` owns the shim's command line and `measure_core`
+# owns `measure-<lang>`'s. `driver` and `shared` emit through the `tracing`
+# facade and have no opinion about where it goes.
+#
+# The list is checked: this said one crate and nowhere else for as long as
+# there were two, so `driver/tests/seam.rs` now requires it to name each. Keep
+# every installer's name in one place here — a second mention elsewhere in the
+# block would satisfy the scan without the sentence being true.
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tree-sitter = "0.26"
 # The *grammar*, and the one dependency here that is not ours to pick:

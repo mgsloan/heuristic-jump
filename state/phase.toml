@@ -59,7 +59,7 @@ escalation_batch = 3
 # here, because this file is denied to every loop — which is the point of the
 # denial and also how it went stale.
 [loop.core]
-status = "running" # running | paused | blocked | done
+status = "paused" # running | paused | blocked | done
 prompt = "conformance.md"
 stall_n = 3        # campaigns without progress before the loop stops and asks
 # Sections per audit beyond the ones the last campaign touched. It is an

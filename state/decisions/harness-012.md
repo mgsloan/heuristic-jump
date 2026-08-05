@@ -1,6 +1,6 @@
 ---
 id: harness-012
-status: open
+status: accepted
 opened: 2026-08-05T01:05:00+00:00
 campaign: fb78b589-0b53-462a-b22d-f65de1c9a78f
 kind: class-b
@@ -67,7 +67,49 @@ adding I/O.
 
 ## Decision
 
-Undecided — waiting on a human.
+**accepted: B, with the deferral written down rather than the claim silently
+narrowed**, answered 2026-08-05 and logged as a `decision-answered`
+intervention, which is what makes it answered — `design/loops.md` §16 derives
+the status from the log rather than from this line.
+
+Two counters, and a sentence saying the third is deferred and what it was for.
+
+**Why not A now.** Its cost is not the field, it is the obligation: a counter
+every handler must remember to increment reads zero for the handler that
+forgets, and a zero here does not look like a missing measurement — it looks
+like a handler that did no work. That is worse than the absence, because the
+absence is legible. It also needs "a node" to become a vocabulary term, which
+is a seam decision, and the seam is frozen in 1a. And it would be taken before
+there is a second language handler to disagree about the count or a corpus to
+validate it against, which is `CLAUDE.md`'s own posture on instrumentation:
+nothing new until the harness shows the change is worth it and there is a
+benchmark.
+
+**Why not B as posed.** Deleting two words closes the gap and erases the reason
+with it. The record's own argument for the third counter is the strongest thing
+in this file — bytes and files measure what the search *reached*, nodes measure
+what it *did*, and a handler that reads the same bytes and walks each tree three
+times is invisible under two counters. Phase 3 is output-preserving, so that is
+precisely the regression shape it will face. A phase-3 campaign that finds this
+out for itself pays twice: once to discover the blind spot, once to rediscover
+the argument that was deleted.
+
+So `#what-cannot-be-measured-in-isolation` says two counters, and says that a
+*work* counter as distinct from a *reach* counter is wanted when there is a cost
+phase to need it, naming what it would cost to add — the handler obligation and
+the vocabulary term. The gap closes on the claim being true, which it now is,
+rather than on the claim being removed.
+
+**What this does not foreclose.** Counters are additive and the two that exist
+do not change meaning, so rows recorded now stay comparable across a later A,
+and A remains available at exactly the price it has today. Nothing here is spent.
+
+### What is left
+
+The harness loop's, and small: two sections lose the third counter and one gains
+the deferral sentence, and the tagged line in `harness/hj`'s `replay_digest` is
+reconciled — it already records the two that exist, which is why the provisional
+was the honest state rather than a placeholder.
 
 ## Provisional choice in force
 

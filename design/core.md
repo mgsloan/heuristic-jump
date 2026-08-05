@@ -386,13 +386,39 @@ Notes on the shape:
   stay literally true on the one path where it was nearly not
   ([section 2](#snapshots-are-o1-to-take-and-are-parsed-before-a-handler-sees-one)).
 *  **Handlers do their own disk reads, parses, and searches through
-  `ProjectView` **, so the driver can enforce the scope rules (workspace only,
-  gitignore respected), cache reads within a query, reuse the parse LRU from
-  [section 5](shim.md#5-document-state), and run the literal scan on the
-  bounded pool from
-  [section 10](shim.md#10-parallel-dispatch-and-resource-limits) rather than
-  on threads a handler spawned. `read`, `parse`, and `scan` are all on it;
-  `resolution.md` §3 has the full signature list.
+  `ProjectView` **, so the driver enforces the scope rules (workspace only,
+  gitignore respected) rather than every language author remembering them, and
+  so a search runs on the shim's threads rather than on threads a handler
+  spawned. `read`, `parse`, and `scan` are all on it; `resolution.md` §3 has
+  the full signature list.
+
+  **What the view does not do is cache or fan out, and both are settled rather
+  than pending.** `resolution.md` §3 routes reads through a per-query cache,
+  `parse` through the parse LRU of [section 5](shim.md#5-document-state), and
+  `scan` onto the bounded pool of
+  [section 10](shim.md#10-parallel-dispatch-and-resource-limits); none of the
+  three is what the code does, for one reason given twice. A `ProjectView` is
+  reached through the `Sync` `&Query` that fan-out threads hold, so a cache on
+  it is shared mutable state behind `&self` — a lock, in a design that has
+  none — which is what `conformance-005` was answered **no** on, for reads and
+  by the same argument for the LRU
+  ([section 8.4](#84-location-is-byte-based-and-this-fixes-a-real-inconsistency)
+  spends a paragraph on what that costs the conversion it made expensive). The
+  pool is refused by the other half of the same answer: `CLAUDE.md` withholds
+  caching, indexing and optimisation until the corpus harness shows the change
+  is worth it and there is a benchmark, and there is no corpus. So a repeat
+  read is a repeat syscall, a parse is a fresh parse, and `scan` is a
+  sequential loop — which is also why `rayon` is on
+  [section 9](#the-dependency-graph)'s list of dependencies chosen and not yet
+  declared rather than declared by `shared`.
+
+  The consequence is a field list rather than a sentence, and it is worth
+  stating as one because a cache is what a widely shared type attracts:
+  `ProjectView` holds the file list, the deadline, the grammar, and the prior
+  a handler published, and nothing else.
+  `crates/shared/tests/project.rs::the_view_holds_no_cache_and_no_pool` reads
+  those four out of the source with their types and fails on a fifth, so
+  reversing the ruling above takes a ruling rather than a diff.
 *  ** `ProjectPath` is unforgeable, and that is what makes the scope rule true
   rather than customary.** A handler cannot build one from a string —every
   path it holds came from `ProjectView::candidates` or `::lookup`, both of

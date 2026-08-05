@@ -182,12 +182,14 @@ wrong. Two classes:
 **Class A — fix it, record it, continue.** An internal contradiction, a
 section reference that does not resolve, a type name that changed, a false
 claim about a dependency's API, an example that does not compile. The test
-is: *is there a defensible answer that does not trade anything off?* document. **Ask for the id rather than picking one** —
+is: *is there a defensible answer that does not trade anything off?* If there
+is, apply it to the document, then record it.
+
+**Ask for the id rather than picking one** —
 `harness/hj allocate-id {{loop}} --kind change` prints the next free one and
 reserves it, because two workers choosing a number by reading the file both
 choose the same one. Then append to `{{changelog}}` — yours, not the loop's, so
-three workers appending at once do not conflict — in
-exactly this shape,
+three workers appending at once do not conflict — in exactly this shape,
 because a human is scheduled to read it and the dashboard finds entries by
 their id:
 
@@ -313,9 +315,9 @@ instructional body ends the cacheable prefix at the first place it appears
 and re-sends everything after it, uncached, on every campaign of every loop —
 measured at 11.9% of the core loop's prompt before they moved
 (`design/loops.md` §15, and `state/decisions/harness-001.md`, answered in
-favour of moving them). `hj prompt-prefix` reports the number and
-`check-metrics` fails if a per-campaign value reappears above, so please do
-not helpfully move them back.
+favour of moving them). `hj prompt-prefix` reports the number, and a
+per-campaign value that reappears above the line is checked for rather than
+trusted, so please do not helpfully move them back.
 
 ## Your campaigns so far
 
@@ -339,7 +341,9 @@ thin or wrong, fixing it is part of your own close.
 
 ## What the other loops have concluded
 
-Their digests, one per loop, rewritten at each of their campaign closes.
+Their digests — one per loop, or one per worker where a loop runs several,
+since a loop with workers keeps no loop-level file — rewritten at each of
+their campaign closes.
 `design/loops.md` section 13 shares these on purpose: the loops differ in
 mechanism and their problems rhyme, and prose creates neither write
 contention nor silent cross-loop regressions. **The two kinds of finding are

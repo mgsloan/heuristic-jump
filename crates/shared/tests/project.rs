@@ -19,12 +19,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use shared::{
-    Clock, Deadline, Error, FileExtension, FileList, Generation, HandlerError, ProjectPath,
-    ProjectRoot, ProjectView, RelPath, ScanRequest, SearchOrigin, Stratum, TestClock,
+    ByteLen, Clock, CommitPolicy, Deadline, DocumentUri, DocumentVersion, Error, FileExtension,
+    FileList, FileText, Generation, HandlerError, LanguageId, Offset, ProjectPath, ProjectRoot,
+    ProjectView, Query, RelPath, Rope, ScanRequest, SearchOrigin, ServerProfile, SnapshotSeed,
+    Stratum, TestClock,
 };
 use tree_sitter::Language;
 
 const RUST: FileExtension = FileExtension::new("rs");
+const RUST_ID: LanguageId = LanguageId::new("rust");
 
 /// The fixture, as (path, contents) relative to the single root. `notes.md` is
 /// the wrong extension and `vendored/copy.rs` is gitignored; both are files the
@@ -65,6 +68,94 @@ fn candidates_are_ordered_by_section_4s_tiers() {
         "resolution.md §4 orders candidates cheapest and most likely first, \
          and a handler that searches in file-list order searches a hash-set \
          order that is not the same twice"
+    );
+}
+
+/// `resolution.md` §4's tier 4 — other workspace roots — and the tie-break
+/// underneath it, neither of which the single-root test above can reach.
+///
+/// Every candidate in the second root ties on `(tier, proximity)`: tier 4
+/// because the root differs, proximity 0 because components across roots are
+/// not comparable. So their order is decided entirely by the two `then_with`
+/// arms `order` ends with, and those exist for a reason the file list itself
+/// cannot supply — the list is a hash set, and `resolution.md` §1.3 needs a
+/// replay to be byte-comparable against the run it replays. Sorting by tier
+/// alone leaves four files in whatever order the set iterated, which is stable
+/// enough to pass a test written against one enumeration and not stable enough
+/// to compare two runs.
+///
+/// Two enumerations are compared here for exactly that reason: one is the
+/// assertion a non-total order can satisfy by luck.
+#[test]
+fn candidates_from_another_root_come_last_and_in_a_fixed_order() {
+    let near = fixture("multi_near");
+    let far = fixture("multi_far");
+    let roots = [near.clone(), far];
+    let view = ProjectView::new(
+        Arc::new(FileList::enumerate(&roots).expect("enumerating two roots")),
+        Deadline::none(),
+        grammar(),
+    );
+    let origin = SearchOrigin::from_document(path(&view, &near, "src/lib.rs"));
+
+    let ordered: Vec<String> = view
+        .candidates(&[RUST], &origin)
+        .paths()
+        .map(|path| {
+            let root = if path.root().path() == near.as_path() {
+                "near"
+            } else {
+                "far"
+            };
+            format!("{root}|{}", rel_of(path))
+        })
+        .collect();
+
+    assert_eq!(
+        ordered,
+        [
+            "near|src/lib.rs",
+            "near|src/util.rs",
+            "near|src/deep/inner.rs",
+            "near|other/far.rs",
+            // Tier 4, and every one of them tied on proximity, so this
+            // sequence is the final tie-break and nothing else.
+            "far|other/far.rs",
+            "far|src/deep/inner.rs",
+            "far|src/lib.rs",
+            "far|src/util.rs",
+        ],
+        "resolution.md §4's tier 4 is the other workspace roots, searched after \
+         everything in the requesting document's own. open-questions.md \
+         question 8 may yet change which root is preferred; what may not change \
+         without noticing is that the order is a total one"
+    );
+
+    let again = ProjectView::new(
+        Arc::new(FileList::enumerate(&roots).expect("enumerating two roots again")),
+        Deadline::none(),
+        grammar(),
+    );
+    let repeated: Vec<String> = again
+        .candidates(
+            &[RUST],
+            &SearchOrigin::from_document(path(&again, &near, "src/lib.rs")),
+        )
+        .paths()
+        .map(|path| {
+            let root = if path.root().path() == near.as_path() {
+                "near"
+            } else {
+                "far"
+            };
+            format!("{root}|{}", rel_of(path))
+        })
+        .collect();
+    assert_eq!(
+        ordered, repeated,
+        "two enumerations of the same two roots produced different candidate \
+         orders, so a replay is comparing its own hash-set iteration against \
+         the recorded run's"
     );
 }
 
@@ -189,6 +280,17 @@ fn a_scan_reads_every_candidate_and_counts_what_it_read() {
     let origin = SearchOrigin::from_document(path(&view, &root, "src/lib.rs"));
     let candidates = view.candidates(&[RUST], &origin);
     let expected_files = candidates.count();
+    // Every candidate, not just the ones that will match: the counter's claim
+    // is about what the scan read, and the fixture's two hitless files are the
+    // only ones that discriminate.
+    let expected_bytes: u64 = candidates
+        .paths()
+        .map(|path| {
+            fs::metadata(path.to_absolute())
+                .expect("a candidate the walker returned")
+                .len()
+        })
+        .sum();
     let request = ScanRequest::new("alpha", &candidates).expect("an identifier literal");
 
     let outcome = view.scan(&request).expect("an unbounded scan");
@@ -199,10 +301,15 @@ fn a_scan_reads_every_candidate_and_counts_what_it_read() {
          what says so in the trace record — a scan that stopped early and \
          reported a full count is the one failure the record could not show"
     );
-    assert!(
-        outcome.bytes_scanned.0 > 0,
-        "bytes_scanned is bytes actually read (conformance-005), so a scan \
-         that read four files cannot report zero"
+    assert_eq!(
+        outcome.bytes_scanned,
+        ByteLen(usize::try_from(expected_bytes).expect("a fixture this side of 4GB")),
+        "bytes_scanned is bytes *actually read* (conformance-005), which is an \
+         equality and not a lower bound: it is the deterministic \
+         machine-independent proxy core.md §7 compares runs on, so a count that \
+         skipped the files with no hits — or one deduplicated across a re-read \
+         — under-predicts latency in the direction that makes a regression look \
+         like an improvement"
     );
     assert_eq!(
         outcome.hits.len(),
@@ -411,6 +518,524 @@ fn a_second_parse_of_the_same_path_is_a_fresh_parse() {
          here: ProjectView is reached through the Sync &Query several fan-out \
          threads hold, so a cache on it is a lock in a design that has none"
     );
+}
+
+/// The open-document half of `parse`, which no test reached.
+///
+/// Every other test here gets its text from `read`, and `read` returns
+/// `FileText::Disk` — one `&str`, one chunk, no boundaries. The `Open` arm is a
+/// rope, and `parse` feeds it to tree-sitter through a read callback that hands
+/// back one chunk at a time; `resolution.md` §3 asks for exactly that, so a
+/// large open file is not flattened to a `String` to answer one query. `scan`'s
+/// helper says of the same split that "a match spanning two chunks is the whole
+/// difficulty, and getting it wrong drops definitions silently on exactly the
+/// files large enough to have several chunks".
+///
+/// Silently is the operative word, and it is why the assertion is on the child
+/// count rather than on the root node: a callback that returned the wrong slice
+/// still produces a tree, and `core.md` §1 has an unparseable file fail at
+/// dispatch — but a *mis*-parsed one abstains per query, in a class nobody
+/// looks at, on documents the user is actively editing.
+///
+/// `core.md` §4 says the driver's document map does not exist yet, so nothing
+/// in the shipping path builds an `Open` today. That is the reason to hold it
+/// now rather than a reason not to: the branch is written, and the campaign
+/// that wires the map up will read the tests it passes as evidence.
+#[test]
+fn an_open_document_is_parsed_across_its_chunk_boundaries() {
+    let root = fixture("chunks");
+    let view = view(&root);
+    let document = path(&view, &root, "src/lib.rs");
+
+    let functions = 400;
+    let text: String = (0..functions)
+        .map(|index| {
+            format!("fn generated_{index}(argument: u32) -> u32 {{ argument + {index} }}\n")
+        })
+        .collect();
+    let rope = Rope::from(text.as_str());
+    assert!(
+        rope.chunks().count() > 1,
+        "the rope fits in one chunk, so this test is the Disk case with extra \
+         steps and would pass against a callback that ignored the offset"
+    );
+
+    let tree = view
+        .parse(&document, &FileText::Open(rope))
+        .expect("a tree for an open document");
+
+    assert!(
+        !tree.root_node().has_error(),
+        "the tree of a well-formed open document has an error node, so the \
+         read callback handed the parser bytes from the wrong offset"
+    );
+    assert_eq!(
+        tree.root_node().named_child_count(),
+        functions,
+        "the parse saw a different number of items than the document has. A \
+         callback that returns a chunk starting anywhere but `offset` loses or \
+         repeats bytes at every boundary, which is a mis-parse rather than a \
+         failure — so it would reach a handler as an abstention and never as \
+         an error"
+    );
+    assert_eq!(
+        tree.root_node().end_byte(),
+        text.len(),
+        "the tree does not span the text, so a byte range from the scan cannot \
+         be read against it"
+    );
+}
+
+/// `core.md` §1 rests the scope rule on a `ProjectPath` a handler cannot build.
+/// `RelPath` is the half it *can* build — `new` is public and takes any path —
+/// so the escape check is what stands between a handler and
+/// `lookup(root_of(uri), "../../.cargo/registry/...")`. `resolution.md` §3
+/// puts it at construction "so the escape check happens once here rather than
+/// at every join", which makes this the one site where getting it wrong is
+/// invisible everywhere else.
+#[test]
+fn a_relative_path_that_could_escape_its_root_is_refused() {
+    for escape in [
+        "..",
+        "../outside.rs",
+        "src/../../outside.rs",
+        "/etc/passwd",
+        "",
+    ] {
+        assert!(
+            RelPath::new(Path::new(escape)).is_none(),
+            "{escape:?} was accepted as a path below a root. Every component \
+             has to be a normal one, because the check is made here once and \
+             nowhere else — a `..` that survives construction is joined onto a \
+             root without anything looking at it again"
+        );
+    }
+    assert!(RelPath::new(Path::new("src/lib.rs")).is_some());
+}
+
+/// `core.md` §4's file list over the one shape an editor can send and nothing
+/// here had: two workspace folders where one contains the other.
+///
+/// Both walks find the inner root's files, and they land in the set as two
+/// different `ProjectPath`s — same file, different `(root, rel)` — so nothing
+/// deduplicates them. The cost is not the extra entry: `scan` reads the file
+/// twice, `bytes_scanned` counts it twice, and one definition comes back as two
+/// hits in two files, which is precisely what `resolution.md` §1.3 reads as an
+/// ambiguity. A query that should have committed "the only definition of this
+/// name" abstains instead, on a workspace layout the user is entitled to.
+///
+/// `DECISION-core-027` (open) has the innermost root keep it, because `root_of`
+/// already resolves a document to the innermost root — a list that disagreed
+/// would make `lookup(root_of(uri), rel)` miss. What it trades is the tier a
+/// file lands in for a document elsewhere in the outer root, which is
+/// `open-questions.md` question 8's territory.
+#[test]
+fn a_file_inside_two_roots_is_one_candidate() {
+    let outer = fixture("nested");
+    let inner = outer.join("src");
+    let files = Arc::new(
+        FileList::enumerate(&[outer.clone(), inner.clone()]).expect("enumerating two roots"),
+    );
+    let view = ProjectView::new(Arc::clone(&files), Deadline::none(), grammar());
+
+    let mut absolute: Vec<PathBuf> = files.paths().map(ProjectPath::to_absolute).collect();
+    absolute.sort();
+    let mut unique = absolute.clone();
+    unique.dedup();
+    assert_eq!(
+        absolute, unique,
+        "a file inside both roots was enumerated once per root. The duplicate \
+         is a second `ProjectPath` for one file, so the scan reads it twice and \
+         reports one definition as two"
+    );
+
+    let document = path(&view, &inner, "lib.rs");
+    assert!(
+        view.lookup(
+            &ProjectRoot::new(&outer),
+            &RelPath::new(Path::new("src/lib.rs")).expect("a relative path")
+        )
+        .is_none(),
+        "the outer root still owns a file the inner root contains. `root_of` \
+         resolves that document to the inner root, so this is the entry a \
+         handler's own `lookup(root_of(uri), rel)` would fail to find"
+    );
+
+    let origin = SearchOrigin::from_document(document);
+    let candidates = view.candidates(&[RUST], &origin);
+    let request = ScanRequest::new("alpha", &candidates).expect("an identifier literal");
+    let outcome = view.scan(&request).expect("an unbounded scan");
+
+    assert_eq!(
+        outcome.files_scanned,
+        candidates.count(),
+        "the scan read a different number of files than it was given"
+    );
+    assert_eq!(
+        outcome
+            .hits
+            .iter()
+            .map(|file| file.hits.len())
+            .sum::<usize>(),
+        3,
+        "the fixture holds `alpha` as a whole token twice in src/lib.rs and \
+         once in other/far.rs. Any more than three means one file was scanned \
+         under two roots, and the uniqueness signal stages 4 and 5 rank on has \
+         been counted twice"
+    );
+}
+
+/// `core.md` §2: "handlers fan out across candidate files, so `&Query` — and
+/// therefore `&DocumentSnapshot` — crosses threads and must be `Sync`." That
+/// premise is what every refusal in this file is argued from, and the view is
+/// only one of the six references a `Query` is.
+///
+/// The other five are held from the wrong side. Planting a `RefCell` in
+/// `CommitPolicy` fails `driver/src/workers.rs:238`, which spawns pool threads
+/// holding an `Arc<CommitPolicy>` — so the bound in force is a consequence of
+/// how `driver` happens to own the value, not of the seam requiring it, and it
+/// goes away the day a policy is built per query instead of shared. `shared`
+/// itself asked nothing: the plant that added a `RefCell` field to
+/// `ProjectView` built the library and every other test binary in this crate.
+/// That matters more than it sounds, because under `phases.md` the seam is
+/// frozen a whole phase before `driver` exists to hold anything, and
+/// `CommitPolicy` is the one due to grow — §1 has it acquiring a per-stratum
+/// floor once a corpus exists, and a floor is a table, and a table on the query
+/// path is where memoisation looks free.
+#[test]
+fn the_whole_query_crosses_threads_and_not_only_the_view() {
+    let root = fixture("query_fanout");
+    let view = view(&root);
+    let deadline = Deadline::none();
+    let document = SnapshotSeed::fresh(
+        DocumentUri::from_file_path(&root.join("src/lib.rs")).expect("a file URI"),
+        Rope::from(FILES[0].1),
+        DocumentVersion(1),
+        RUST_ID,
+        grammar(),
+    )
+    .realise(&deadline)
+    .expect("parsing the fixture document");
+    let server = ServerProfile::standalone();
+    let policy = CommitPolicy::permissive();
+    let query = Query {
+        doc: &document,
+        position: Offset(3),
+        project: &view,
+        deadline: &deadline,
+        server: &server,
+        policy: &policy,
+    };
+
+    let observed: Vec<usize> = std::thread::scope(|scope| {
+        let query = &query;
+        let readers: Vec<_> = (0..4)
+            .map(|_| {
+                scope.spawn(move || {
+                    query.doc.tree().root_node().named_child_count()
+                        + query.project.roots().len()
+                        + usize::from(!query.deadline.expired())
+                        + usize::from(query.server.id().is_none())
+                })
+            })
+            .collect();
+        readers
+            .into_iter()
+            .map(|reader| reader.join().expect("a fan-out thread"))
+            .collect()
+    });
+
+    assert!(
+        observed.iter().all(|count| *count == observed[0]) && observed[0] > 2,
+        "four threads reading one `Query` saw {observed:?}. Every field a \
+         handler reads has to answer the same way on every thread, because \
+         core.md §2 makes the snapshot immune to concurrent edits by having \
+         nothing to contend on rather than by locking"
+    );
+}
+
+/// `core.md` §1 maps exactly one error class back to a decision — the deadline
+/// — because an expiry is the one latency-shaped abstention `high-level.md`
+/// allows, and everything else that fails is recorded as a failure. `read` is
+/// where the view raises it, and `parse` deliberately does not: its return type
+/// is `Option`, so an expiry there would be the same value as an unparseable
+/// file, and §1's whole argument is that those two must not become one row.
+///
+/// Nothing held that. `document.rs` has the equivalent test for
+/// `SnapshotSeed::realise`, which is the *document* parse and does check the
+/// deadline — so the file that looks like coverage for this is coverage for the
+/// other one, and a deadline check added to `parse` would pass every test in the
+/// repository while reporting expiries on large repositories as broken grammars.
+#[test]
+fn a_parse_past_its_deadline_returns_a_tree_rather_than_an_ambiguous_none() {
+    let root = fixture("parse_deadline");
+    let document = path(&view(&root), &root, "src/lib.rs");
+    // Read before expiry, because `read` is the method that refuses: the point
+    // here is what `parse` does with text a handler already holds.
+    let text = view(&root).read(&document).expect("reading a candidate");
+
+    let clock = Arc::new(TestClock::new());
+    let arrived_at = clock.now();
+    let expired = Deadline::new(
+        Arc::clone(&clock) as Arc<dyn Clock>,
+        arrived_at,
+        Duration::ZERO,
+    );
+    clock.advance(Duration::from_millis(1));
+    let stopped = ProjectView::new(Arc::new(file_list(&root)), expired, grammar());
+    // Without this the assertion below passes against a view whose deadline
+    // never expired, which is the way this test would otherwise be vacuous.
+    assert!(
+        matches!(
+            stopped.read(&document),
+            Err(Error::Handler(HandlerError::DeadlineExpired { .. }))
+        ),
+        "this view's deadline has not expired, so what `parse` does with one \
+         is not what is being observed"
+    );
+
+    assert_eq!(
+        stopped
+            .parse(&document, &text)
+            .map(|tree| tree.root_node().kind()),
+        Some("source_file"),
+        "`parse` returned `None` past the deadline. `None` already means \
+         unparseable, and core.md §1 maps only the deadline back to an \
+         abstention — so an expiry spelled this way is recorded as a parse \
+         failure, which puts \"this repository has a file too large to parse in \
+         40ms\" and \"this grammar is broken\" in one row of the metrics table. \
+         The expiry belongs in the next `read`, where it has an `Err` to go in"
+    );
+}
+
+/// `core.md` §1's bullet on `ProjectView`, as CHANGE-core-035 corrected it:
+/// the view caches nothing and fans out onto nothing, and both are rulings
+/// rather than omissions — `conformance-005` answered **no** to a cache reached
+/// through the `Sync` `&Query`, and `CLAUDE.md` withholds the pool until a
+/// corpus and a benchmark exist.
+///
+/// The behavioural tests above discriminate against a cache that changes an
+/// answer, which is the cache somebody adds deliberately. This is for the one
+/// that arrives with a plausible reason and no visible effect — a memoised
+/// root, a small map of paths already read — on a type every handler holds and
+/// where memoisation therefore looks free. `document.rs`'s equivalent scan
+/// bans a list of primitives by name; that shape is unavailable here, because
+/// `classified` is an `AtomicU8` on purpose (`core-025`, option C) and a
+/// blocklist that admits `Atomic` admits the memoisation too.
+///
+/// So it is an equality, and over `name: Type` rather than names alone: the
+/// likelier hole is not a fifth field but one of these four changing type, and
+/// a scan reading names would call `files: Arc<Mutex<FileList>>` unchanged.
+/// That is the mistake CHANGE-core-032 found in `handler.rs`'s variant
+/// comparison, which compared `AbstainReason`'s variant names and never its
+/// payloads.
+#[test]
+fn the_view_holds_no_cache_and_no_pool() {
+    assert_eq!(
+        fields(&source(), "pub struct ProjectView {"),
+        [
+            // The walk, shared by every query in the same generation.
+            "files: Arc<FileList>",
+            // Per query, which is what lets `read` check it without a
+            // deadline argument on every method.
+            "deadline: Deadline",
+            // `conformance-012` (answered): the one language a query can be for.
+            "grammar: Language",
+            // `core-025` (accepted, option C): the prior an expiry carries out.
+            "classified: AtomicU8",
+        ],
+        "`ProjectView`'s fields are not the four `core.md` §1 names. A fifth, or \
+         one of these four acquiring a map or a pool, is `conformance-005` \
+         reversed by a diff rather than by a ruling: the view is reached through \
+         the `Sync` `&Query` that fan-out threads hold, so state added here is a \
+         lock in a design that has none, and `rayon`'s absence from `shared` \
+         (§9's deferred list) is the same answer's other half"
+    );
+}
+
+/// The other half of the test above, and it is a compile-time assertion wearing
+/// a runtime one.
+///
+/// `core.md` §1 has handlers fan out across candidate files, so the `&Query` —
+/// and the `&ProjectView` inside it — crosses threads, which is the whole
+/// premise of "a cache on it is a lock". Nothing in the workspace asks for that
+/// premise today: `scan` is the sequential loop, `shared` declares no `rayon`,
+/// and no handler spawns anything, so the compiler is never asked whether a
+/// `ProjectView` is `Sync`. A `RefCell` memo added to it would build, and every
+/// other test in this file would pass.
+///
+/// The field equality alone does not close that, because it is an equality
+/// somebody can update in the same diff that adds the field. Updating this one
+/// instead means making the memo `Sync`, at which point it is a primitive
+/// `deps.md` §13 refuses by name — so the two together leave no cheap way in.
+#[test]
+fn the_view_is_read_from_several_threads_at_once() {
+    let root = fixture("fanout");
+    let view = view(&root);
+    let origin = SearchOrigin::from_document(path(&view, &root, "src/lib.rs"));
+    let candidates = view.candidates(&[RUST], &origin);
+    let paths: Vec<&ProjectPath> = candidates.paths().collect();
+
+    let sequential: Vec<ByteLen> = paths
+        .iter()
+        .map(|path| view.read(path).expect("reading a candidate").len())
+        .collect();
+
+    let concurrent: Vec<ByteLen> = std::thread::scope(|scope| {
+        // A shared borrow rather than the value: `move` on the closures below
+        // is what puts them on other threads, and without this it would move
+        // the view into the first of them.
+        let view = &view;
+        let readers: Vec<_> = paths
+            .iter()
+            .map(|path| scope.spawn(move || view.read(path).map(|text| text.len())))
+            .collect();
+        readers
+            .into_iter()
+            .map(|reader| {
+                reader
+                    .join()
+                    .expect("a reader thread")
+                    .expect("reading a candidate from another thread")
+            })
+            .collect()
+    });
+
+    assert_eq!(
+        concurrent, sequential,
+        "one candidate read differently depending on which thread read it. \
+         `ProjectView` holds no per-query state that a read mutates \
+         (conformance-005), which is what makes the same view answerable by \
+         every fan-out thread at once"
+    );
+}
+
+/// `core.md` §1: "a handler cannot build a `ProjectPath` from a string — every
+/// path it holds came from `ProjectView::candidates` or `::lookup`, both of
+/// which consult the `ignore`-crate file list", and that is "what makes the
+/// scope rule true rather than customary".
+///
+/// The unforgeability half is the compiler's: the field and the constructor are
+/// private. The *two routes* half is not, and it is the one carrying the claim,
+/// because `FileList::paths` is `pub` and hands back every path in the project
+/// — it has to be, since `measure_core` enumerates corpus positions through it
+/// (`measure_core.rs:231`). What keeps it away from a handler is only that
+/// nothing in this impl returns a `&FileList`, which is a property of a list
+/// that has never been written down.
+///
+/// So the surface is the fixture, return types included. A method added here is
+/// a widening of the seam every language crate is written against; one handing
+/// back the file list, or paths in any order but `candidates`', would also cost
+/// `resolution.md` §1.3 the determinism replay compares against — quietly, and
+/// with every test in this file still passing.
+#[test]
+fn the_views_public_surface_is_what_a_query_gives_a_handler() {
+    assert_eq!(
+        public_functions(&source(), "impl ProjectView {"),
+        [
+            "new -> Self",
+            // `core-025` (accepted, option C): write-only, for an expiry.
+            "classified -> ()",
+            "roots -> &[ProjectRoot]",
+            "root_of -> Option<&ProjectRoot>",
+            // The two §1 names. Both mint a `ProjectPath` only for a path the
+            // `ignore` walker returned.
+            "lookup -> Option<ProjectPath>",
+            "candidates -> CandidateFiles<'_>",
+            "read -> Result<FileText, Error>",
+            "parse -> Option<Tree>",
+            "scan -> Result<ScanOutcome, Error>",
+        ],
+        "`ProjectView`'s public surface is not the one core.md §1 describes. \
+         This is everything a handler can do with the world outside its own \
+         document, so an addition is a change to the frozen seam — and one \
+         returning a `&FileList` or a bare path set is the scope rule turning \
+         back into a convention every language author has to remember"
+    );
+}
+
+/// Public functions of an `impl` block, as `name -> ReturnType`, in order.
+/// Whitespace-collapsed first, because a signature that spans four lines and one
+/// that fits on one are the same signature.
+fn public_functions(text: &str, header: &str) -> Vec<String> {
+    let mut signatures = Vec::new();
+    for declaration in impl_body(text, header).split("pub fn ").skip(1) {
+        let signature = declaration
+            .split_once('{')
+            .map_or(declaration, |(before, _)| before);
+        let name = signature
+            .split_once('(')
+            .map_or(signature, |(name, _)| name)
+            .trim();
+        let returns = signature
+            .rsplit_once("->")
+            .map_or("()", |(_, returns)| returns.trim());
+        signatures.push(format!("{name} -> {returns}"));
+    }
+    signatures
+}
+
+/// An `impl` block's body with its comment lines dropped and its whitespace
+/// collapsed. The comments go first for the reason `document.rs`'s scan gives:
+/// they are where the absent things are named, and `parse`'s says "No LRU" in
+/// as many words.
+fn impl_body(text: &str, header: &str) -> String {
+    let start = text
+        .find(header)
+        .map(|at| at + header.len())
+        .unwrap_or_else(|| panic!("`{header}` is not declared in the source this scan reads"));
+    let mut depth = 1usize;
+    let mut kept = String::new();
+    for line in text[start..].lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("//") {
+            kept.push_str(trimmed);
+            kept.push(' ');
+        }
+        depth += trimmed.matches('{').count();
+        depth = depth.saturating_sub(trimmed.matches('}').count());
+        if depth == 0 {
+            break;
+        }
+    }
+    kept
+}
+
+/// The fields of a declaration, as `name: Type`, in order. Scanning rather than
+/// parsing, for the reason `handler.rs` gives: the source is rustfmt's output,
+/// so a field is a line and its type is what follows the first colon.
+fn fields(text: &str, header: &str) -> Vec<String> {
+    let start = text
+        .find(header)
+        .map(|at| at + header.len())
+        .unwrap_or_else(|| panic!("`{header}` is not declared in the source this scan reads"));
+    let mut declared = Vec::new();
+    for line in text[start..].lines() {
+        let trimmed = line.trim();
+        if trimmed == "}" {
+            break;
+        }
+        // The doc comments on these fields name `conformance-012` and a lock,
+        // and a scan that read prose would report the reason a thing is absent
+        // as the thing.
+        if trimmed.starts_with("//") || trimmed.starts_with("#[") || trimmed.is_empty() {
+            continue;
+        }
+        let Some((name, kind)) = trimmed.trim_end_matches(',').split_once(':') else {
+            continue;
+        };
+        declared.push(format!(
+            "{}: {}",
+            name.trim().trim_start_matches("pub "),
+            kind.trim()
+        ));
+    }
+    declared
+}
+
+fn source() -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/project.rs");
+    fs::read_to_string(&path).expect("the view this section describes")
 }
 
 fn view(root: &Path) -> ProjectView {
