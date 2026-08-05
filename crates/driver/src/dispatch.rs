@@ -93,9 +93,13 @@ impl Registry {
     /// An incoming LSP `languageId` is a string until this returns. A language
     /// nothing handles fails to resolve at the boundary rather than travelling
     /// inward as a string that matches nothing.
-    pub fn for_language_id(&self, language_id: &str) -> Option<&dyn LanguageHandler> {
+    ///
+    /// The `Arc` is kept rather than dereferenced away because a dispatch
+    /// outlives the event that started it (`shim.md` §10): a worker holding a
+    /// borrow of the registry would be a worker holding a borrow of `core`.
+    pub fn for_language_id(&self, language_id: &str) -> Option<&Arc<dyn LanguageHandler>> {
         let index = *self.by_language_id.get(language_id)?;
-        self.handlers.get(index).map(Arc::as_ref)
+        self.handlers.get(index)
     }
 
     /// The same resolution, interning rather than dispatching: an incoming

@@ -111,6 +111,26 @@ pub enum ConfigError {
     /// graph of every crate that names an error.
     #[error("{path} is not a server manifest: {reason}")]
     ManifestMalformed { path: PathBuf, reason: Box<str> },
+    /// `shim.md` §10's dispatch pool could not be spawned.
+    ///
+    /// Fatal at startup and never lazy, for the reason `core.md` §8.4 gives:
+    /// answering a query on `core`'s thread reads the filesystem there, which
+    /// §2 forbids outright — so a shim with no pool has no path it is allowed
+    /// to run a handler on, and falling back to one would be the failure the
+    /// pool exists to prevent, taken deliberately.
+    ///
+    /// `Config` and not `Handler` for the same reason as the variant below:
+    /// nothing about a query has happened yet.
+    /// `threads` is §10's sizing rather than the index that failed, because
+    /// what a reader needs to know is what was asked for: a machine that
+    /// refuses the twenty-eighth thread of thirty is a different report from
+    /// one that refuses the first of one.
+    #[error("spawning a dispatch pool of {threads}")]
+    PoolUnavailable {
+        threads: usize,
+        #[source]
+        source: io::Error,
+    },
     /// A `measure_<lang>` binary whose handler declares no `languageId`.
     ///
     /// `core.md` §7 makes the binary per-language and the language the

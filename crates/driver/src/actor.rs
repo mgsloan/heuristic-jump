@@ -26,12 +26,21 @@
 //! * **§6's pending-query record and the mismatch-only report.** Both are
 //!   `pending.rs`'s, and this is where they are reached from.
 //! * **§7's record.** One per query, emitted once both answers are known.
+//!
+//! **A query is two events here and not one.** [`Actor::requested`] builds a
+//! `SnapshotSeed` and hands it to `workers.rs`; [`Actor::finished`] is where
+//! the answer comes back. That split is `core.md` §2's — "`core` builds seeds
+//! and never realises one" — and everything awkward in this file follows from
+//! it: [`InFlight`] exists because a dispatch now outlives the event that
+//! started it, so the child's response can arrive first, a `$/cancelRequest`
+//! has a running handler to signal, and [`Actor::run`] has work to drain when
+//! the wire closes.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, select};
+use crossbeam_channel::{Receiver, RecvError, Sender, select};
 use serde_json::value::RawValue;
 use shared::proto::{
     DefinitionParams, DefinitionResult, NotifiedDocument, PositionEncoding, ShowMessageParams,
@@ -39,17 +48,18 @@ use shared::proto::{
 };
 use shared::record::{Answered, ChildAnswer, QueryContext, QueryRecord, definition_labels, micros};
 use shared::{
-    Clock, CommitPolicy, Deadline, DocumentNotification, EditorRequestId, Error, InputEdit, Micros,
-    Outcome, Trace,
+    Clock, CommitPolicy, Deadline, DocumentNotification, EditorRequestId, Error, InputEdit, Map,
+    Micros, Outcome, Trace,
 };
 
 use crate::config::{Config, DebounceMs, Heuristics};
-use crate::dispatch::{Answer, Completed, Dispatched, Registry, Request, dispatch};
+use crate::dispatch::{Answer, Dispatched, Registry};
 use crate::documents::{Documents, Queried};
 use crate::files::FileListCache;
 use crate::pending::{PendingQueries, PendingQuery, Resolution};
 use crate::trace::Traces;
 use crate::trees::{OpenDocument, TreeCache};
+use crate::workers::{Asked, Dispatchable, Finished, Job, Workers};
 
 /// What reaches `core` from the outside. `shim.md` §3's router produces these;
 /// today only a test does.
@@ -137,17 +147,64 @@ struct Negotiated {
     encoding: PositionEncoding,
 }
 
+/// A query the pool still holds.
+#[derive(Debug)]
+struct InFlight {
+    /// §5's deadline, which is only worth retaining now that a dispatch
+    /// outlives the event that started it: `$/cancelRequest` signals it, and
+    /// the worker learns to stop at its next poll (`shim.md` §7).
+    deadline: Deadline,
+    oracle: Oracle,
+}
+
+/// What the child has said about a query the pool has not answered yet.
+///
+/// `core` needs the distinction because dispatch now outlives the event that
+/// started it, so the child's response can arrive **first** — which
+/// `trace.rs`'s "the shim answers first and the child answers later" was
+/// written before there was a pool to make untrue. Resolving on the child's
+/// arrival then would compare its answer against one the handler has not
+/// produced, record the query as one the shim declined, and leave §7's row
+/// waiting for an oracle that has already been and gone.
+#[derive(Debug)]
+enum Oracle {
+    /// Nothing yet, which is the ordinary case: the child is a process away
+    /// and the worker is a thread.
+    Awaited,
+    /// The child beat the worker home, so its answer is held until there is
+    /// something of ours to compare it with.
+    Answered {
+        result: DefinitionResult,
+        latency: Micros,
+    },
+}
+
+/// Whether [`Actor::run`]'s loop has anything left to do.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+enum Running {
+    Continue,
+    Stopped,
+}
+
 /// `shim.md` §2's single-threaded actor.
 #[derive(Debug)]
 pub struct Actor {
     registry: Registry,
-    config: Config,
+    /// Shared by refcount because every dispatched job holds one: a worker
+    /// reads §1's `ServerProfile` off it, and the pool outlives the call that
+    /// built the job.
+    config: Arc<Config>,
     clock: Arc<dyn Clock>,
     documents: Documents,
     trees: TreeCache,
     pending: PendingQueries,
     traces: Traces,
-    policy: CommitPolicy,
+    policy: Arc<CommitPolicy>,
+    workers: Workers,
+    /// Queries the pool has and `core` has not heard back about, which is what
+    /// makes the drain in [`Actor::run`] terminate and what tells
+    /// [`Actor::child_answered`] whether it is the second answer or the first.
+    in_flight: Map<EditorRequestId, InFlight>,
     negotiated: Option<Negotiated>,
     debounce: DebounceMs,
     /// Always empty, and it is a field rather than a literal so that the day it
@@ -175,9 +232,10 @@ impl Actor {
         outgoing: Sender<Outbound>,
     ) -> Result<Self, Error> {
         let traces = Traces::resolve(config.tracing())?;
+        let workers = Workers::spawn(config.mode())?;
         Ok(Self {
             registry,
-            config,
+            config: Arc::new(config),
             clock,
             documents: Documents::new(),
             trees: TreeCache::default(),
@@ -186,7 +244,9 @@ impl Actor {
             // `resolution.md` §7.1's permissive posture: nothing is gated on
             // confidence in v1, and the floor a `CommitPolicy` would carry is
             // what the corpus exists to derive.
-            policy: CommitPolicy::permissive(),
+            policy: Arc::new(CommitPolicy::permissive()),
+            workers,
+            in_flight: Map::default(),
             negotiated: None,
             debounce: DebounceMs::RESCAN,
             edits: Arc::new(Vec::new()),
@@ -209,9 +269,16 @@ impl Actor {
                 .negotiated
                 .as_ref()
                 .map(|negotiated| negotiated.files.rescans().clone());
+            // Cloned for the same reason and at the same price: the arm needs
+            // a borrow that ends before `answered` takes `&mut self`.
+            let answers = self.workers.finished().clone();
             let arrived = match &rescans {
                 Some(rescans) => select! {
                     recv(events) -> event => event.ok(),
+                    recv(&answers) -> finished => match self.returned(finished) {
+                        Running::Continue => continue,
+                        Running::Stopped => return Ok(()),
+                    },
                     recv(rescans) -> rescan => {
                         match (rescan, &mut self.negotiated) {
                             (Ok(rescan), Some(negotiated)) => negotiated.files.install(rescan),
@@ -225,19 +292,29 @@ impl Actor {
                         continue;
                     }
                 },
-                None => match events.recv_timeout(self.debounce.window()) {
-                    Ok(event) => Some(event),
-                    Err(RecvTimeoutError::Timeout) => continue,
-                    Err(RecvTimeoutError::Disconnected) => None,
+                // No rescan channel because there is no root yet, and so
+                // nothing for the timer arm to do either — `tick` is
+                // `FileListCache`'s and there is no file list. It is still a
+                // `select!` and not a `recv_timeout`, because the pool can
+                // answer a query that was dispatched before a second
+                // negotiation replaced the root.
+                None => select! {
+                    recv(events) -> event => event.ok(),
+                    recv(&answers) -> finished => match self.returned(finished) {
+                        Running::Continue => continue,
+                        Running::Stopped => return Ok(()),
+                    },
+                    default(self.debounce.window()) => continue,
                 },
             };
             let Some(event) = arrived else {
                 tracing::debug!(
                     pending = self.pending.len(),
                     traced = self.traces.outstanding(),
+                    dispatched = self.in_flight.len(),
                     "the event channel closed"
                 );
-                return Ok(());
+                return self.drain(&answers);
             };
             // `deps.md` §2: the inbox is unbounded because a bounded one would
             // deadlock the transport rather than apply backpressure, so memory
@@ -259,6 +336,14 @@ impl Actor {
             }
             self.handle(event)?;
         }
+    }
+
+    /// Where the pool's answers arrive, for the same reason
+    /// [`FileListCache::rescans`] is reachable: `run` selects on it, and a test
+    /// that drives [`Actor::handle`] without the loop has to take the other
+    /// half of a query from somewhere.
+    pub fn dispatches(&self) -> &Receiver<Finished> {
+        self.workers.finished()
     }
 
     /// One event. Separate from the loop so that a test can drive the state
@@ -350,16 +435,20 @@ impl Actor {
                 self.documents.changed(params, encoding)
             }
             DocumentNotification::DidSave => {
-                // The half that needs a worker's read is not wired: there is no
-                // worker pool, and reading the file on this thread is the one
-                // thing `shim.md` §2 forbids `core` outright. The free half —
-                // a `didSave` that carried the text — is settled inside.
+                // The half that needs a read is not wired. There is a pool
+                // now, but a `Job` *is* a query — a handler, a seed, a
+                // position and an answer — and a checksum read is a second
+                // kind of job with a second kind of reply, which nothing
+                // builds. What has not changed is why it cannot happen here:
+                // reading the file on this thread is the one thing `shim.md`
+                // §2 forbids `core` outright. The free half — a `didSave` that
+                // carried the text — is settled inside.
                 match self.documents.saved(params) {
                     crate::documents::Saved::Checked(synced) => synced,
                     crate::documents::Saved::NeedsRead(check) => {
                         tracing::debug!(
                             uri = %check.uri(),
-                            "a didSave checksum needs a read, and there is no worker to do it"
+                            "a didSave checksum needs a read, and the pool takes queries only"
                         );
                         return;
                     }
@@ -489,64 +578,148 @@ impl Actor {
             tracing::debug!(%uri, "no handler for a document the map is tracking");
             return Ok(());
         };
-        let language = document.language_id();
+        let handler = Arc::clone(handler);
         let grammar = handler.grammar();
+        let asked = Asked {
+            editor_id,
+            uri,
+            position,
+            language: document.language_id(),
+            arrived,
+        };
         let seed = self
             .trees
             .seed(&OpenDocument::new(document, grammar, &self.edits));
 
-        let started = self.clock.now();
-        let completed = negotiated
-            .files
-            .view(deadline.clone(), handler.grammar())
-            .map(|project| {
-                dispatch(
-                    handler,
-                    Request {
-                        seed,
-                        position,
-                        project: &project,
-                        deadline: &deadline,
-                        server: self.config.server(),
-                        policy: &self.policy,
-                    },
-                    negotiated.encoding,
-                )
-            });
-        let elapsed = self.clock.now().saturating_duration_since(started);
-
-        let dispatched = match completed {
-            Ok(Completed { dispatched, parsed }) => {
-                // The parse is cached whatever the query decided: it was paid
-                // for either way, and a query that abstained on its deadline is
-                // the one most likely to be asked again a moment later.
-                if let Some(parsed) = parsed {
-                    self.trees.insert(parsed);
-                }
-                negotiated.files.observe(&dispatched);
-                dispatched
-            }
+        let encoding = negotiated.encoding;
+        // The one walk that happens on this thread, and §4's rather than §2's:
+        // the list is built lazily on first need and handed back by refcount
+        // every time after (`files.rs`). What §2 keeps off this thread is the
+        // per-query work below, which is unbounded where this is once.
+        let project = match negotiated.files.view(deadline.clone(), handler.grammar()) {
+            Ok(project) => project,
             // The file list could not be walked. It is the driver's failure
             // rather than the handler's, and §7 has one column for both: the
             // record says `failed` and names the class, because a stratum with
             // no coverage because the walk failed and one with no coverage
             // because resolution is hard must not be the same row.
-            Err(error) => Dispatched::Failed(error),
+            //
+            // Nothing is dispatched, so this is the one answer `core` produces
+            // itself — and it can, because a failure carries no locations and
+            // so needs neither a parse nor §8.4's read.
+            Err(error) => {
+                let started = self.clock.now();
+                self.settle(
+                    &asked,
+                    Dispatched::Failed(error),
+                    micros(started.saturating_duration_since(arrived)),
+                    Micros(0),
+                );
+                return Ok(());
+            }
         };
 
-        let answered = self.answer(&editor_id, dispatched);
+        // Step 2's end and the whole of §2's split: what leaves this thread is
+        // a `SnapshotSeed` — three refcount bumps and a struct move — and what
+        // happens on the other side is the parse, the handler and §8.4's
+        // conversion, none of which `core` is allowed to do.
+        self.in_flight.insert(
+            asked.editor_id.clone(),
+            InFlight {
+                deadline: deadline.clone(),
+                oracle: Oracle::Awaited,
+            },
+        );
+        let editor_id = asked.editor_id.clone();
+        let dispatchable = self.workers.dispatch(Job::new(
+            handler,
+            seed,
+            project,
+            deadline,
+            Arc::clone(&self.config),
+            Arc::clone(&self.policy),
+            Arc::clone(&self.clock),
+            encoding,
+            asked,
+        ));
+        if dispatchable == Dispatchable::Refused {
+            // Logged inside `dispatch`. The records die with the query rather
+            // than outliving it: nothing is going to answer, so a pending entry
+            // would wait for a child response that resolves against nothing and
+            // a trace row would wait forever.
+            self.in_flight.remove(&editor_id);
+            self.pending.cancelled(&editor_id);
+            self.traces.dropped(&editor_id);
+        }
+        Ok(())
+    }
+
+    /// A query the pool has finished with: §2's `Parsed` goes into the cache,
+    /// §4's evidence goes to the file list, and the answer goes where
+    /// [`Actor::settle`] takes it.
+    ///
+    /// It is `pub` for the reason [`Actor::handle`] is: a test drives the state
+    /// machine without the loop, and this is the half of a query that the loop
+    /// — rather than the transport — delivers.
+    pub fn finished(&mut self, finished: Finished) {
+        let Finished {
+            asked,
+            completed,
+            started,
+            elapsed,
+        } = finished;
+        // Cached before anything else can decide the answer is unwanted: the
+        // parse was paid for either way, and a query that was cancelled is one
+        // the user is quite likely to ask again.
+        if let Some(parsed) = completed.parsed {
+            self.trees.insert(parsed);
+        }
+        let Some(held) = self.in_flight.remove(&asked.editor_id) else {
+            // Cancelled while the pool had it. `shim.md` §7 says the shim must
+            // not answer a cancelled request, and §7's row is not written
+            // either: a cancelled query has no `agreement` because nobody was
+            // ever going to answer it.
+            tracing::debug!("dropping an answer to a query that was cancelled");
+            return;
+        };
+        if let Some(negotiated) = &mut self.negotiated {
+            negotiated.files.observe(&completed.dispatched);
+        }
+        self.settle(
+            &asked,
+            completed.dispatched,
+            micros(started.saturating_duration_since(asked.arrived)),
+            micros(elapsed),
+        );
+        match held.oracle {
+            // The child answered while the worker was still running, so this is
+            // the moment both answers are known — which is when §7 says the row
+            // is written and §6 says the comparison happens.
+            Oracle::Answered { result, latency } => {
+                self.child_answered(&asked.editor_id, &result, latency);
+            }
+            Oracle::Awaited => {}
+        }
+    }
+
+    /// Steps 3 and 4's bookkeeping, from whichever side produced the answer:
+    /// the editor hears about a commit, and §7's record is assembled and handed
+    /// to `Traces` — completed in standalone, and waiting for the oracle when
+    /// proxying.
+    fn settle(&mut self, asked: &Asked, dispatched: Dispatched, queued: Micros, elapsed: Micros) {
+        let answered = self.answer(&asked.editor_id, dispatched);
         let record = QueryRecord::new(
             &QueryContext {
-                uri: &uri,
-                position,
-                language,
+                uri: &asked.uri,
+                position: asked.position,
+                language: asked.language,
                 mode: self.config.mode().recorded(),
                 // `shim.md` §6's health model is not built, so there is no
                 // value to report. `null` is what §7 gives standalone for the
                 // same reason: there is no server whose health this is.
                 server_health: None,
-                queued: micros(started.saturating_duration_since(arrived)),
-                elapsed: micros(elapsed),
+                queued,
+                elapsed,
             },
             answered,
         );
@@ -554,9 +727,10 @@ impl Actor {
             // No oracle is coming, so the row is complete (§7: in standalone
             // the four oracle columns are all null).
             shared::record::Mode::Standalone => self.traces.finished(record),
-            shared::record::Mode::Proxy => self.traces.awaiting_child(editor_id, record),
+            shared::record::Mode::Proxy => {
+                self.traces.awaiting_child(asked.editor_id.clone(), record)
+            }
         }
-        Ok(())
     }
 
     /// Step 3: the answer reaches the editor, and the pending record learns
@@ -622,6 +796,24 @@ impl Actor {
         result: &DefinitionResult,
         latency: Micros,
     ) {
+        if let Some(in_flight) = self.in_flight.get_mut(editor_id) {
+            // The pool still has this query, so there is no answer of ours to
+            // compare and no §7 row to complete. Held rather than resolved:
+            // resolving here would classify the child's answer against a shim
+            // that has not spoken, which §6 says nothing about and which the
+            // record would spell as a query the shim declined.
+            //
+            // The newer answer wins if the child somehow answers twice under
+            // one id, for the same reason `PendingQueries::record` keeps the
+            // newer request: the older one describes a state nothing else
+            // still holds.
+            tracing::trace!("the child answered while the pool still had the query");
+            in_flight.oracle = Oracle::Answered {
+                result: result.clone(),
+                latency,
+            };
+            return;
+        }
         let Some(resolved) = self.pending.child_answered(editor_id, result) else {
             tracing::trace!("a child response for a query nothing is pending on");
             self.traces.dropped(editor_id);
@@ -648,17 +840,23 @@ impl Actor {
     /// shim must not answer a cancelled request, which is what dropping the
     /// pending record buys: a handler that returns afterwards finds no id.
     ///
-    /// **What it does not do is signal `Deadline::cancel`**, which `shim.md`
-    /// §7 asks for beside the drop. It cannot, and the reason is worth writing
-    /// down rather than rediscovering: dispatch is in-line on this thread, so
-    /// a cancel is only ever handled *between* queries and there is no handler
-    /// running to signal. `Deadline` is cancellable already and `core` would
-    /// have to hold one per pending query to use it — state with no reader
-    /// until `shim.md` §10's worker pool makes a dispatch outlive the event
-    /// that started it. That is the campaign that closes it; a cancellation
-    /// token wired up now would be unreachable code with a test that cannot
-    /// fail.
+    /// **It also signals `Deadline::cancel`**, which `shim.md` §7 asks for
+    /// beside the drop and which was unreachable while dispatch was in line on
+    /// this thread: a cancel was then only ever handled *between* queries, so
+    /// there was never a handler running to signal. Now that a query outlives
+    /// the event that started it there is, and the flag is what stops a worker
+    /// spending the rest of a budget on an answer that will be discarded —
+    /// `Deadline::expired` reads it beside the clock, so a handler polling
+    /// cooperatively needs to know nothing about cancellation.
+    ///
+    /// The entry is removed rather than left for the worker to find, which is
+    /// what makes `finished` able to tell a cancelled query from an answered
+    /// one: it writes no row, because a cancelled query has no `agreement` and
+    /// nobody was ever going to answer it.
     fn cancelled(&mut self, editor_id: &EditorRequestId) {
+        if let Some(in_flight) = self.in_flight.remove(editor_id) {
+            in_flight.deadline.cancel();
+        }
         match self.pending.cancelled(editor_id) {
             Some(_) => tracing::debug!("a pending query was cancelled"),
             // Harmless and explicitly not an error: `shim.md` §7 says the shim
@@ -666,6 +864,61 @@ impl Actor {
             None => tracing::trace!("a cancel for a query nothing is pending on"),
         }
         self.traces.dropped(editor_id);
+    }
+
+    /// One answer from the pool, and what the loop does next.
+    ///
+    /// `Err` is every worker gone, which needs all of them to have panicked —
+    /// they hold their channels for as long as this actor does. The loop ends
+    /// rather than continuing, because a `select!` arm on a disconnected
+    /// channel is ready forever and there is nothing left that can answer a
+    /// query. Degrading to `--proxy-only` instead (§11's permanent degraded
+    /// mode) means a loop with the arm removed, which `select!` cannot express
+    /// without the `Select` builder; it belongs with §10's other limits.
+    fn returned(&mut self, finished: Result<Finished, RecvError>) -> Running {
+        match finished {
+            Ok(finished) => {
+                self.finished(finished);
+                Running::Continue
+            }
+            Err(RecvError) => {
+                tracing::error!(
+                    dispatched = self.in_flight.len(),
+                    "every dispatch worker is gone; no query can be answered"
+                );
+                Running::Stopped
+            }
+        }
+    }
+
+    /// What the loop does after the wire closes: the pool may still hold
+    /// queries, and §7's record for one of them is written when the worker
+    /// comes back rather than when the request arrived.
+    ///
+    /// Nothing here can reach the editor — it is the editor that went away —
+    /// so what the drain is for is the trace. A corpus run's rows are the whole
+    /// output of the run, and the queries still outstanding when the wire
+    /// closes are the slow ones, which are exactly the rows §7 is read for.
+    ///
+    /// The timeout is per answer rather than for the drain as a whole, so it
+    /// fires only when the pool has gone silent for a whole budget with work
+    /// outstanding. Every query is bounded by that budget, so silence for
+    /// longer means a handler that is not polling its deadline — and waiting
+    /// on it indefinitely would hang the process on exit.
+    fn drain(&mut self, answers: &Receiver<Finished>) -> Result<(), Error> {
+        while !self.in_flight.is_empty() {
+            match answers.recv_timeout(self.config.deadline().budget()) {
+                Ok(finished) => self.finished(finished),
+                Err(_) => {
+                    tracing::warn!(
+                        dispatched = self.in_flight.len(),
+                        "the pool did not answer every query before the shim exited"
+                    );
+                    return Ok(());
+                }
+            }
+        }
+        Ok(())
     }
 
     /// `core.md` §4's debounce, one tick of it. O(1), and it never walks.

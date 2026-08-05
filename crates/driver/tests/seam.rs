@@ -3441,6 +3441,89 @@ fn vendored_sources(crate_name: &str) -> Vec<String> {
     sources
 }
 
+/// `core.md` §2: "`core` builds seeds and never realises one; that is what
+/// keeps it free of parsing", and §8.4: "the conversion happens in the worker,
+/// not in `core`".
+///
+/// `tests/actor.rs` asserts the thread a handler is called on, which is what a
+/// run can show. This is the half that keeps that from being an accident of
+/// wiring. `dispatch` is one function doing three things — it realises the
+/// seed, calls the handler, and encodes the answer against a file it reads —
+/// so the thread a handler runs on is also the thread that parsed and the
+/// thread that read. A second caller in `driver` would be a second answer to
+/// the question of which thread that is, and the file where somebody would
+/// write one is `actor.rs`, because all the state a query needs is already in
+/// hand there.
+///
+/// `realise` is scanned separately rather than left to follow, because it is
+/// the narrower claim and the one with a tempting shortcut: `core` holds the
+/// `SnapshotSeed` and could parse it to answer any question about the document
+/// — §8.6's checksum, a token-span check — without ever calling a handler.
+#[test]
+fn only_the_pool_realises_a_seed_or_calls_the_dispatch_wrapper() {
+    let sources = sources_of("driver");
+    assert!(
+        sources.iter().any(|(file, _)| file.ends_with("workers.rs")),
+        "no crates/driver/src/workers.rs among {:?}, so this scan is looking at the wrong \
+         files and would pass against a driver with no pool at all",
+        sources.iter().map(|(file, _)| file).collect::<Vec<_>>()
+    );
+
+    let mut dispatching = Vec::new();
+    let mut realising = Vec::new();
+    for (file, text) in &sources {
+        for line in text.lines() {
+            let code = line.trim_start();
+            // A file that explains in prose why it does not dispatch must not
+            // be what fails this — `workers.rs` quotes §2 at length, and
+            // `actor.rs` says in as many words what it hands over instead.
+            if code.starts_with("//") {
+                continue;
+            }
+            if calls(code, "dispatch") {
+                dispatching.push(file.clone());
+            }
+            if code.contains(".realise(") {
+                realising.push(file.clone());
+            }
+        }
+    }
+
+    assert_eq!(
+        dispatching,
+        vec!["crates/driver/src/workers.rs".to_owned()],
+        "the dispatch wrapper is called from somewhere other than the pool, or from the pool \
+         twice. It parses, calls the handler and reads the target file for §8.4's conversion, \
+         so whichever thread calls it does all three — and `core` may do none of them"
+    );
+    assert_eq!(
+        realising,
+        vec!["crates/driver/src/dispatch.rs".to_owned()],
+        "a `SnapshotSeed` is realised outside the dispatch wrapper. §2 splits the snapshot in \
+         two so that `core` does three refcount bumps and a worker does the parse; a second \
+         `realise` is a parse on whichever thread reached it"
+    );
+}
+
+/// Whether a line calls the free function `name`, rather than mentioning it.
+///
+/// The distinction is not pedantry here: `Workers::dispatch` is a method with
+/// the same name as the function it hands work to, so `self.workers.dispatch(`
+/// and `dispatch(` are different claims that differ by one character. A
+/// receiver dot or a preceding identifier character means the name is qualified
+/// or is somebody else's, and `fn dispatch(` is the definition rather than a
+/// call.
+fn calls(code: &str, name: &str) -> bool {
+    let called = format!("{name}(");
+    code.match_indices(&called).any(|(at, _)| {
+        let before = code[..at].chars().next_back();
+        let qualified = before.is_some_and(|character| {
+            character == '.' || character == '_' || character.is_alphanumeric()
+        });
+        !qualified && !code[..at].ends_with("fn ")
+    })
+}
+
 fn workspace_file(relative: &str) -> String {
     std::fs::read_to_string(workspace_path(relative)).unwrap_or_default()
 }
