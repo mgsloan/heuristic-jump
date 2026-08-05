@@ -50,6 +50,40 @@ impl DeadlineMs {
     }
 }
 
+/// `shim.md` §10's "max in-flight heuristic queries (start at 4). Beyond that,
+/// new queries abstain immediately rather than queueing."
+///
+/// A count and not a duration, so it is a newtype of its own rather than a
+/// third [`DeadlineMs`]-shaped one. What it bounds is *concurrent* queries and
+/// not the pool: the pool's size is what stops the shim competing with the
+/// proper LSP for CPU, and this is what stops a burst of speculative requests
+/// each holding a snapshot, a deadline and a `ProjectView` for as long as the
+/// slowest one takes.
+///
+/// §10's own reasoning for shedding rather than queueing: "queueing cannot help
+/// under a wall-clock deadline; it only guarantees the queued queries blow it."
+/// `core-026` is what made that expressible — a query refused before it runs
+/// has a disposition of its own and does not have to borrow the handler's
+/// vocabulary to be recorded.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct MaxInFlight(usize);
+
+impl MaxInFlight {
+    /// §10's number, and its word: *start* at 4. It is a starting point rather
+    /// than a measurement, and the thing that would move it now exists — §7's
+    /// record carries `decision: "shed"` with which limit fired, so the rate is
+    /// a number a corpus run reports rather than a guess nobody can check.
+    pub const DEFAULT: Self = Self(4);
+
+    pub const fn new(queries: usize) -> Self {
+        Self(queries)
+    }
+
+    pub const fn get(self) -> usize {
+        self.0
+    }
+}
+
 /// How long a stale mark waits before the rescan actually goes out
 /// (`core.md` §4). The second of the three durations [`DeadlineMs`] names, and
 /// not interchangeable with it: this one bounds *wasted work*, where the
@@ -324,6 +358,13 @@ impl Config {
 
     pub fn deadline(&self) -> DeadlineMs {
         self.deadline
+    }
+
+    /// `shim.md` §10's in-flight cap. Not a flag: §10 says "start at 4" and
+    /// gives no reason for an operator to move it, where the deadline has a
+    /// `--deadline` because §14.6 makes the budget a per-mode trade.
+    pub fn max_in_flight(&self) -> MaxInFlight {
+        MaxInFlight::DEFAULT
     }
 
     /// What every `Query` this process dispatches carries (`core.md` §1).

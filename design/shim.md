@@ -1231,8 +1231,15 @@ be cargo-culting.
 Additional limits:
 
 * **Max in-flight heuristic queries** (start at 4). Beyond that, new queries
-  abstain immediately rather than queueing. Queueing cannot help under a
+  are **shed** immediately rather than queueing. Queueing cannot help under a
   wall-clock deadline; it only guarantees the queued queries blow it.
+
+  *Shed* and not *abstain*, which is what this said before `core-026` was
+  answered. An abstention is a handler declining, and both of these limits
+  refuse the query before any handler runs — so what is recorded is
+  `core.md` §7's fourth `decision`, with which limit fired in `stages`. The
+  distinction is what makes the coverage lost to load a number rather than a
+  third meaning in the abstention-reason column.
 * **The deadline is the only bound on a single query's work.** There is no
   per-query byte or file budget: a search reads every candidate file
   (`resolution.md` §1.3). That is a deliberate trade — it buys a global
@@ -1244,7 +1251,16 @@ Additional limits:
   is a phase 3 finding rather than something a budget should have hidden.
 * **No heuristic work while `core` is behind.** If the event queue is backed
   up, forwarding and state transitions take priority. The prime invariant
-  again.
+  again. Shed like the cap above, and distinguishable from it in the record,
+  because they are different findings.
+
+  *Backed up* is not *non-empty*, and the difference is not pedantry: an
+  editor's own traffic arrives in batches — a `didOpen` and a request in one
+  read — so treating any waiting event as a backlog sheds ordinary sessions.
+  The threshold is a starting point in the same sense the cap's 4 is, and it is
+  now a checkable one: the shed rate is a column, so what this rule costs in
+  coverage is something a corpus run reports rather than something argued
+  about.
 
 ## 11. Failure handling
 

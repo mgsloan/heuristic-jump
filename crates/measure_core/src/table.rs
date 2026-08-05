@@ -50,6 +50,54 @@ pub(crate) struct Table {
     /// Positions whose truth row was `error` or `timeout`. Reported beside the
     /// table as a quality signal about the corpus, never folded into it.
     pub(crate) uncollected: u64,
+    /// Queries §7's record carries no stratum for — `core-025`, option B.
+    ///
+    /// Beside the table rather than as a tenth row, for the reason
+    /// `uncollected` is beside it: the rows are `high-level.md`'s stratification
+    /// and a query nothing classified belongs to none of them. A tenth row would
+    /// read as a kind of reference, which is exactly what option B rejected
+    /// option A for.
+    ///
+    /// Counted rather than dropped, though, because these queries *happened*.
+    /// Before `core-025` they were filed under `Stratum::Unimplemented` and so
+    /// were at least visible; letting them fall out of the table entirely would
+    /// trade a wrong number for a missing one, and `high-level.md` asks that
+    /// coverage lost be visible as such.
+    unclassified: Unclassified,
+}
+
+/// Queries with no stratum, split by what they decided.
+///
+/// One counter would merge the two things that produce them — a parse abandoned
+/// on the deadline, and a handler that returned `Err` — and `core.md` §7 spends
+/// a paragraph refusing exactly that merge: "a stratum with no coverage because
+/// resolution is hard and a stratum with no coverage because the handler is
+/// panicking are the same row". Losing the stratum is not a reason to lose the
+/// decision too.
+///
+/// `committed` should stay zero forever: a commit carries an `Outcome` and an
+/// `Outcome` carries a `Strata`. It is counted rather than asserted because a
+/// nonzero value means the seam changed underneath this, which is worth seeing
+/// in a report rather than discovering as a panic in a corpus run.
+#[derive(Debug, Default, Serialize)]
+pub(crate) struct Unclassified {
+    committed: u64,
+    abstained: u64,
+    failed: u64,
+    /// `shim.md` §10 refusing to run the query — `core-026`, option D.
+    ///
+    /// Here rather than in a row for the strongest form of the reason the rest
+    /// of this struct is: a shed query was never *attempted*, so it has no
+    /// stratum in the way nothing about it is known. `high-level.md` asks that
+    /// coverage lost to load be visible as such, and this is the number that
+    /// makes it so.
+    shed: u64,
+}
+
+impl Unclassified {
+    fn total(&self) -> u64 {
+        self.committed + self.abstained + self.failed + self.shed
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -147,6 +195,7 @@ impl Table {
                 })
                 .collect(),
             uncollected: 0,
+            unclassified: Unclassified::default(),
         }
     }
 
@@ -164,13 +213,41 @@ impl Table {
     /// (§6), so there is no `Agreement` to hand over rather than one to ignore.
     /// That is also what keeps this table and the per-query record from holding
     /// different verdicts for the same row — they are given the same option.
-    pub(crate) fn observe(&mut self, strata: Strata, decision: Decision, judged: Option<Judged>) {
+    ///
+    /// `strata` is an `Option` because `core-025` (option B) made it one in the
+    /// record: a query nothing classified has no prior, and no row here is the
+    /// honest place for it. It is counted in [`Table::unclassified`] instead of
+    /// being dropped.
+    pub(crate) fn observe(
+        &mut self,
+        strata: Option<Strata>,
+        decision: Decision,
+        judged: Option<Judged>,
+    ) {
+        let Some(strata) = strata else {
+            match decision {
+                Decision::Committed => self.unclassified.committed += 1,
+                Decision::Abstained => self.unclassified.abstained += 1,
+                Decision::Failed => self.unclassified.failed += 1,
+                Decision::Shed => self.unclassified.shed += 1,
+            }
+            // `judged` is dropped with it, and can only be `None` here: a
+            // verdict is minted for a commit, and a commit carries the `Outcome`
+            // the strata are on. There is no row to put one in either way.
+            return;
+        };
         if let Some(row) = self.row(strata.prior()) {
             row.queries += 1;
             match decision {
                 Decision::Committed => row.committed += 1,
                 Decision::Abstained => row.abstained += 1,
                 Decision::Failed => row.failed += 1,
+                // Taken by the branch above and unreachable here: a shed query
+                // was never run, so nothing classified it and it arrives with
+                // no strata. There is no `shed` column because a shed query
+                // belongs to no stratum, ever — giving the rows one would be
+                // making room for a state that cannot occur.
+                Decision::Shed => {}
             }
         }
 
@@ -210,7 +287,13 @@ impl Table {
         }
         // Nothing was measured is not evidence of a replaced template, and a
         // gate that read it as one would pass every empty corpus.
-        if self.rows.iter().all(|row| row.queries == 0) {
+        //
+        // The unclassified count is part of "nothing" since `core-025`: a run
+        // whose every query failed puts no row in the table at all, and reading
+        // that as an empty corpus would report `nothing measured` for a handler
+        // that ran against every position and broke on all of them. The corpus
+        // was measured; what it produced was strata-less.
+        if self.rows.iter().all(|row| row.queries == 0) && self.unclassified.total() == 0 {
             return TemplateState::NothingMeasured;
         }
         TemplateState::Replaced
@@ -227,6 +310,7 @@ impl Table {
             Format::Json => serde_json::to_string_pretty(&Report {
                 strata: &self.rows,
                 uncollected: self.uncollected,
+                unclassified: &self.unclassified,
                 template: self.template(),
             })
             .map_err(|source| {
@@ -278,6 +362,14 @@ impl Table {
             "positions the oracle never answered: {}",
             self.uncollected
         );
+        let _ = writeln!(
+            text,
+            "queries no stratum was assigned to: {} ({} abstained, {} failed, {} shed)",
+            self.unclassified.total(),
+            self.unclassified.abstained,
+            self.unclassified.failed,
+            self.unclassified.shed
+        );
         let _ = writeln!(text, "template handler: {}", self.template().as_str());
         text
     }
@@ -309,6 +401,7 @@ impl TemplateState {
 struct Report<'a> {
     strata: &'a [Row],
     uncollected: u64,
+    unclassified: &'a Unclassified,
     template: TemplateState,
 }
 

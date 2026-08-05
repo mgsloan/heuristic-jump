@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use shared::{
     Clock, Deadline, Error, FileExtension, FileList, Generation, HandlerError, ProjectPath,
-    ProjectRoot, ProjectView, RelPath, ScanRequest, SearchOrigin, TestClock,
+    ProjectRoot, ProjectView, RelPath, ScanRequest, SearchOrigin, Stratum, TestClock,
 };
 use tree_sitter::Language;
 
@@ -231,13 +231,62 @@ fn a_scan_past_its_deadline_reports_nothing_rather_than_less() {
     let stopped = ProjectView::new(Arc::new(file_list(&root)), expired, grammar());
 
     match stopped.scan(&request) {
-        Err(Error::Handler(HandlerError::DeadlineExpired)) => {}
+        Err(Error::Handler(HandlerError::DeadlineExpired { classified: None })) => {}
         other => panic!(
             "an expired deadline produced {other:?}. resolution.md §4 has no \
              partial-scan outcome to report, because a partial scan cannot \
              tell the only definition of a name from the first of eleven — so \
              the expiry has nowhere to go but the Err"
         ),
+    }
+}
+
+/// `core-025` (accepted, option C): "`ProjectView`'s expiry carries the strata
+/// the handler had, as a change to `Error`".
+///
+/// The case the record says will dominate in the field. `resolution.md` §8
+/// assigns the prior from the reference *before* the search, and the search is
+/// where the I/O is — so a handler that knew its stratum and then `?`-propagated
+/// an expired read is the common shape, and the seam's `Result<Outcome, Error>`
+/// gives that `Err` no outcome to carry the class out on. Without this the query
+/// lands in `core.md` §7's coverage denominator under a class nobody asked
+/// about, which is `core-017`'s defect one layer down and behind the seam.
+///
+/// Both halves are asserted, because either alone passes on a mistake: an
+/// expiry that carries a stratum nothing published would be a synthesised
+/// answer, and one that drops a published stratum is the defect itself.
+#[test]
+fn an_expired_read_carries_out_the_prior_the_handler_published() {
+    let root = fixture("classified_expiry");
+    let candidate = path(&view(&root), &root, "src/lib.rs");
+
+    for published in [None, Some(Stratum::ExplicitImport)] {
+        let clock = Arc::new(TestClock::new());
+        let arrived_at = clock.now();
+        let expired = Deadline::new(
+            Arc::clone(&clock) as Arc<dyn Clock>,
+            arrived_at,
+            Duration::ZERO,
+        );
+        clock.advance(Duration::from_millis(1));
+        let stopped = ProjectView::new(Arc::new(file_list(&root)), expired, grammar());
+        if let Some(prior) = published {
+            stopped.classified(prior);
+        }
+
+        match stopped.read(&candidate) {
+            Err(Error::Handler(HandlerError::DeadlineExpired { classified })) => assert_eq!(
+                classified, published,
+                "a read refused on the deadline reported {classified:?} for a handler that \
+                 published {published:?}. core-025 is accepted on option C precisely so this \
+                 survives: core.md §7 reports coverage on stratum_prior, and an expiry that \
+                 loses it moves the query into a row it was never asked about"
+            ),
+            other => panic!(
+                "a read past its deadline produced {other:?} rather than the one error class \
+                 core.md §1 maps back to an abstention"
+            ),
+        }
     }
 }
 

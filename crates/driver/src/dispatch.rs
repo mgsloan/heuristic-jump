@@ -13,11 +13,11 @@ use std::path::Path;
 use std::sync::Arc;
 
 use shared::proto::{PositionEncoding, WireLocation, WirePosition, WireRange};
+use shared::record::ShedReason;
 use shared::{
     ByteLen, CommitPolicy, Deadline, DocumentSnapshot, DocumentUri, DocumentVersion, EncodingError,
     Error, FileText, HandlerError, LanguageHandler, LanguageId, Map, Offset, Outcome, ProjectError,
-    ProjectPath, ProjectView, Query, RelPath, Rope, ServerProfile, SnapshotSeed, Strata, Stratum,
-    Tree,
+    ProjectPath, ProjectView, Query, RelPath, Rope, ServerProfile, SnapshotSeed, Strata, Tree,
 };
 
 /// The handler set, resolved once at startup. `heuristic_jump` is the one
@@ -143,6 +143,13 @@ pub enum Dispatched {
     /// abstention, with `AbstainReason::Deadline`.
     DeadlineExpired(Classified),
     Failed(Error),
+    /// `shim.md` §10 refused to run the query at all — `core-026`, option D.
+    ///
+    /// Here rather than beside the other two despite never passing through
+    /// [`dispatch`]: this enum is what a query's ending is from `core`'s side,
+    /// and `core` is where both limits are applied. There is no [`Classified`]
+    /// on it because nothing ran, and no [`Error`] because nothing failed.
+    Shed(ShedReason),
 }
 
 /// What had classified a query at the moment the deadline took its answer
@@ -169,34 +176,28 @@ pub enum Classified {
 }
 
 impl Classified {
-    /// What §7's two stratum columns are written from.
-    pub fn strata(self) -> Strata {
+    /// What §7's two stratum columns are written from, and `None` where there
+    /// is nothing to write them from.
+    pub fn strata(self) -> Option<Strata> {
         match self {
-            Classified::By(strata) => strata,
-            // The prior exists — `core-017` says so, and says the reference and
-            // the query are all its rule needs — but the rule is
-            // `resolution.md` §8's and is per-language by construction, so
-            // nothing here can evaluate it without the handler that owns it.
-            // Filed under the template's stratum for want of anywhere honest to
-            // put it, which is the same place `Answered::of` files a handler
-            // that returned `Err`.
+            Classified::By(strata) => Some(strata),
+            // `core-025`, both halves of it, and this arm is where the second
+            // lands. C emptied the route that used to dominate — a read that
+            // expired inside a handler which had already assigned a prior now
+            // carries it out on the `Error`, so it arrives as `By` — and what
+            // is left here is the parse abandoned before any handler ran, where
+            // there genuinely is no prior to have.
             //
-            // `core-025` is accepted and this is its site. It rules **C then
-            // B**: `ProjectView`'s expiry carries out the strata the handler
-            // had, as a change to `Error` — which empties the second of the two
-            // routes into `Nothing` above, leaving only the abandoned parse —
-            // and `stratum_prior` then becomes nullable for that residue,
-            // because "nothing ever looked at this reference" is the absence of
-            // a measurement rather than a kind of reference. So this arm does
-            // not get a better `Stratum`; it stops returning one.
-            //
-            // Tagged for `core-025` and not for `core-022`, which asked the same
-            // question from the driver's side and is closed as its duplicate:
-            // the ruling, and the work it leaves, are only in `core-025`, and a
-            // tag naming the closed record is one a search for the open work
-            // does not find.
-            // DECISION-core-025: provisional
-            Classified::Nothing => Strata::from_reference(Stratum::Unimplemented),
+            // B is why this returns nothing rather than a better `Stratum`. The
+            // prior's *rule* exists — `core-017` says the reference and the
+            // query are all it needs — but the rule is `resolution.md` §8's and
+            // is per-language by construction, so nothing here can evaluate it
+            // without the handler that owns it. "Nothing ever looked at this
+            // reference" is the absence of a measurement rather than a kind of
+            // reference, and the value it used to take was the *template's*
+            // stratum, which `core.md` §9 makes self-identifying: an abandoned
+            // parse read as an unreplaced `lang_*` crate.
+            Classified::Nothing => None,
         }
     }
 }
@@ -220,9 +221,13 @@ impl Dispatched {
             }
             Dispatched::Decided(answer) => Dispatched::Decided(answer),
             // A failure is not an abstention and carries no stratum: §7 records
-            // it as `failed`, and `Answered::of` files it under the same
-            // placeholder for the same reason.
+            // it as `failed`, and `Answered::of` reports no strata for it for
+            // the same reason — the pair is on the `Outcome` the error is
+            // instead of.
             Dispatched::Failed(error) => Dispatched::Failed(error),
+            // Unreachable: a shed query never reaches `dispatch`, so nothing
+            // downstream of a handler can be attaching a classification to one.
+            Dispatched::Shed(reason) => Dispatched::Shed(reason),
         }
     }
 }
@@ -496,6 +501,10 @@ pub fn hard_cap(deadline: &Deadline, dispatched: Dispatched) -> Dispatched {
         }
         Dispatched::DeadlineExpired(classified) => Dispatched::DeadlineExpired(classified),
         Dispatched::Failed(error) => Dispatched::Failed(error),
+        // Nothing was dispatched, so there is no answer for the cap to drop and
+        // no lateness to report: the query was refused before its budget was
+        // ever spent on it.
+        Dispatched::Shed(reason) => Dispatched::Shed(reason),
     }
 }
 
@@ -548,7 +557,7 @@ fn classify(error: Error) -> Dispatched {
     // that a new sub-enum has to be classified here instead of falling into
     // `Failed` by default.
     match &error {
-        Error::Handler(HandlerError::DeadlineExpired) => {
+        Error::Handler(HandlerError::DeadlineExpired { classified }) => {
             // `deps.md` §10: "Some `driver` code will convert an `Error` into
             // an abstention; that conversion is explicit and logged." This is
             // that code, and this is the log. It is the *only* site where an
@@ -569,7 +578,16 @@ fn classify(error: Error) -> Dispatched {
             // is what §5's budget is *for*, so it is normal operation and not a
             // fault. The rate is §7's to report; this is for reading one query.
             tracing::debug!(%error, "converting an expiry into an abstention");
-            Dispatched::DeadlineExpired(Classified::Nothing)
+            // `core-025`, option C: the expiry carries the prior the handler
+            // published before it started the I/O, so the commonest shape in the
+            // field — classified from the reference, then `?` out of an expired
+            // read — keeps the class §7's coverage denominator groups it by.
+            // What is left arriving here with nothing is the parse abandoned
+            // before any handler ran, which is the residue option B is for.
+            Dispatched::DeadlineExpired(match classified {
+                Some(prior) => Classified::By(Strata::from_reference(*prior)),
+                None => Classified::Nothing,
+            })
         }
         // `Encoding` is a *failure*, and it is the wrapper's own rather than a
         // handler's: encoding stops at the dispatch wrapper and never crosses

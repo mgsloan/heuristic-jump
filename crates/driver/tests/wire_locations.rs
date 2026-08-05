@@ -225,7 +225,8 @@ fn a_location_the_file_list_does_not_know_is_a_failure_and_not_an_answer() {
         Dispatched::Failed(Error::Project(ProjectError::Unresolvable { uri: _ })) => {}
         other @ (Dispatched::Failed(_)
         | Dispatched::Decided(_)
-        | Dispatched::DeadlineExpired(_)) => {
+        | Dispatched::DeadlineExpired(_)
+        | Dispatched::Shed(_)) => {
             panic!(
                 "a location naming a file outside the project became {other:?}, where \
                  core.md §8.4's conversion has no text to encode against"
@@ -291,7 +292,8 @@ fn a_target_file_that_moved_under_the_query_is_refused_rather_than_encoded() {
         }
         other @ (Dispatched::Failed(_)
         | Dispatched::Decided(_)
-        | Dispatched::DeadlineExpired(_)) => {
+        | Dispatched::DeadlineExpired(_)
+        | Dispatched::Shed(_)) => {
             panic!(
                 "a target file that moved between the handler's read and the conversion's \
                  became {other:?}, where the carried row disagrees with the text it was \
@@ -426,7 +428,7 @@ fn decided(
 
     match dispatch(handler, request, encoding).dispatched {
         Dispatched::Decided(answer) => answer,
-        other @ (Dispatched::DeadlineExpired(_) | Dispatched::Failed(_)) => {
+        other @ (Dispatched::DeadlineExpired(_) | Dispatched::Failed(_) | Dispatched::Shed(_)) => {
             panic!("the query did not decide: {other:?}")
         }
     }

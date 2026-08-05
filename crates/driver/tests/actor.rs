@@ -31,7 +31,7 @@ use std::time::Duration;
 use crossbeam_channel::Receiver;
 use driver::{
     Actor, Config, DeadlineMs, DeadlineOverride, DebounceMs, Event, FileListCache, Finished,
-    Heuristics, Mode, Outbound, Registry, Tracing,
+    Heuristics, INBOX_BACKED_UP, MaxInFlight, Mode, Outbound, Registry, Tracing,
 };
 use serde_json::value::RawValue;
 use shared::proto::{DefinitionResult, PositionEncoding, WireLocation, WirePosition, WireRange};
@@ -365,6 +365,269 @@ fn a_conversion_that_expires_keeps_the_stratum_too() {
         "the classification a handler had already made was lost because the query ended \
          downstream of it rather than at the cap, which is the same query counted under the \
          template's stratum by a different route: {row}"
+    );
+}
+
+/// The third route into a lost stratum, and the one `core-025` says will
+/// dominate in the field: the handler classified the reference, started a read,
+/// and the read refused on the deadline — so the query ends as `Err` with the
+/// class on an `Outcome` that was never built.
+///
+/// The two tests above cover the routes that end *downstream* of a handler that
+/// returned. This one ends inside it, which is where `resolution.md` §8 puts the
+/// I/O: the prior is assigned from the reference before the search, and the
+/// search is where the expiries are. `core-025` is accepted on option C for
+/// exactly this shape, and without it the commonest expiry under load lands in
+/// §7's coverage denominator under a class nobody asked about.
+///
+/// Asserted end to end rather than at `ProjectView`, because the claim is about
+/// what §7's record says: `shared/tests/project.rs` holds the error carrying the
+/// prior, and this holds the driver still writing it into the column.
+#[test]
+fn a_read_that_expires_inside_the_handler_keeps_the_stratum_it_published() {
+    let fixture = Fixture::new("actor_classified_expiry", Proxying::No);
+    let mut actor = fixture.actor(Arc::new(Propagating {
+        clock: Arc::clone(&fixture.clock),
+        classify_as: Some(Stratum::ExplicitImport),
+    }));
+
+    fixture.open(&mut actor);
+    fixture.request(&mut actor, 1);
+
+    let rows = fixture.rows();
+    let [row] = rows.as_slice() else {
+        panic!("{} rows for one expired query", rows.len());
+    };
+    assert_eq!(
+        field(row, "decision"),
+        "\"abstained\"",
+        "an expiry propagated with `?` was recorded as something other than an abstention, so \
+         the assertion below is not about the stratum: {row}"
+    );
+    assert_eq!(
+        field(row, "stratum_prior"),
+        "\"explicitly_imported\"",
+        "the prior the handler published before its read was lost when the read refused on \
+         the deadline. That is core-017's defect one layer down and behind the seam, and it \
+         is what core-025's option C is accepted to fix: {row}"
+    );
+}
+
+/// The residue, and the other half of `core-025`: an expiry that really had no
+/// prior writes `null` rather than the template's stratum.
+///
+/// Option C empties the common route into this state and option B says what is
+/// left should say. What is left is a query nothing looked at — a parse
+/// abandoned before any handler ran, or a handler that expired before assigning
+/// a class — and the value it used to take was `Stratum::Unimplemented`, which
+/// `core.md` §9 makes self-identifying: "its presence in a metrics table means
+/// the template has not been replaced". So a real handler missing its deadline
+/// reported an unreplaced `lang_*` crate, and under load a real handler produces
+/// exactly this row.
+///
+/// Both columns, because the absence is an absence of *classification*: a
+/// `stratum_final` of `unimplemented` beside a null prior is the same guess in
+/// the column precision is computed on.
+#[test]
+fn an_expiry_nothing_classified_records_no_stratum_at_all() {
+    let fixture = Fixture::new("actor_unclassified_expiry", Proxying::No);
+    let mut actor = fixture.actor(Arc::new(Propagating {
+        clock: Arc::clone(&fixture.clock),
+        classify_as: None,
+    }));
+
+    fixture.open(&mut actor);
+    fixture.request(&mut actor, 1);
+
+    let rows = fixture.rows();
+    let [row] = rows.as_slice() else {
+        panic!("{} rows for one expired query", rows.len());
+    };
+    assert_eq!(
+        field(row, "decision"),
+        "\"abstained\"",
+        "an expiry was recorded as something other than an abstention, so the assertions \
+         below are not about the stratum: {row}"
+    );
+    for column in ["stratum_prior", "stratum_final"] {
+        assert_eq!(
+            field(row, column),
+            "null",
+            "{column} names a stratum for a query nothing classified. Any name here is a \
+             guess, and the one this used to guess was the template's — which core.md §9 \
+             makes a gate check, so a slow handler counterfeited an unreplaced language \
+             crate (core-025, option B): {row}"
+        );
+    }
+}
+
+/// `shim.md` §10's first additional limit: "**max in-flight heuristic queries**
+/// (start at 4). Beyond that, new queries abstain immediately rather than
+/// queueing. Queueing cannot help under a wall-clock deadline; it only
+/// guarantees the queued queries blow it."
+///
+/// It could not be built until `core-026` was answered, because a refusal had
+/// nothing to say: `AbstainReason` is the *handler's* vocabulary and a shed
+/// query is not the handler's event. Option D gives it a disposition of its own,
+/// and this is the limit that ruling was raised to unblock.
+///
+/// Four queries are dispatched and none is drained — `in_flight` shrinks in
+/// `Actor::finished`, which only the loop calls — so the fifth meets a full
+/// cap. The handler is a fast one deliberately: a blocking double would make
+/// this a test about the pool's width, and the cap is about how many queries
+/// `core` is holding, which is a different number.
+#[test]
+fn a_query_past_the_in_flight_cap_is_shed_rather_than_queued() {
+    let fixture = Fixture::new("actor_in_flight_cap", Proxying::No);
+    let target = fixture.definition_in("src/lib.rs");
+    let mut actor = fixture.actor(Arc::new(Committing {
+        locations: vec![target],
+    }));
+    fixture.open(&mut actor);
+
+    let cap = MaxInFlight::DEFAULT.get();
+    for id in 0..=cap {
+        actor
+            .handle(fixture.definition(i64::try_from(id).expect("a small request id")))
+            .expect("a definition request");
+    }
+
+    let rows = fixture.rows();
+    let [row] = rows.as_slice() else {
+        panic!(
+            "{} rows for {} queries, where only the one past the cap has finished — the \
+             others are still in the pool and §7's row is written when a query ends",
+            rows.len(),
+            cap + 1
+        );
+    };
+    assert_eq!(
+        field(row, "decision"),
+        "\"shed\"",
+        "a query the cap refused was recorded as something a handler decided. core-026 \
+         rules that it says nothing at all — it was never attempted — and recording it as \
+         an abstention or a failure is the two readings that ruling rejected: {row}"
+    );
+    assert_eq!(
+        field(row, "stages"),
+        "[\"shed:in_flight\"]",
+        "the record does not say which of §10's two limits fired. They are different \
+         findings — this process answering as many at once as it will, against core being \
+         behind on traffic it must forward first — and one shed rate would merge them: \
+         {row}"
+    );
+    assert_eq!(
+        field(row, "stratum_prior"),
+        "null",
+        "a query that was never attempted reported a stratum: {row}"
+    );
+}
+
+/// §10's second additional limit: "**no heuristic work while `core` is
+/// behind.** If the event queue is backed up, forwarding and state transitions
+/// take priority. The prime invariant again."
+///
+/// Driven through `run` rather than `handle`, because the inbox is only visible
+/// from inside the loop — which is also the honest shape: being behind is a
+/// property of what feeds `core`, and a test that drives the state machine
+/// directly has nothing feeding it.
+///
+/// The depth is what is *still waiting* after the request is taken, so the
+/// filler events go behind it. `WatchedFilesChanged` is the cheapest event that
+/// carries no payload to get wrong.
+#[test]
+fn a_query_arriving_while_core_is_behind_is_shed() {
+    let fixture = Fixture::new("actor_core_behind", Proxying::No);
+    let target = fixture.definition_in("src/lib.rs");
+    let actor = fixture.actor(Arc::new(Committing {
+        locations: vec![target],
+    }));
+
+    let (events, incoming) = crossbeam_channel::unbounded();
+    for event in fixture.session(1) {
+        events.send(event).expect("a queued event");
+    }
+    for _ in 0..INBOX_BACKED_UP {
+        events
+            .send(Event::WatchedFilesChanged)
+            .expect("a queued event");
+    }
+    drop(events);
+
+    actor.run(&incoming).expect("the actor loop");
+
+    let rows = fixture.rows();
+    let [row] = rows.as_slice() else {
+        panic!("{} rows for one query, where one arrived", rows.len());
+    };
+    assert_eq!(
+        field(row, "decision"),
+        "\"shed\"",
+        "a query that arrived with a backed-up inbox was answered anyway. §10 calls this \
+         the prime invariant: forwarding and state transitions come first, and heuristic \
+         work is what gives way: {row}"
+    );
+    assert_eq!(
+        field(row, "stages"),
+        "[\"shed:core_behind\"]",
+        "the record does not say which limit fired, so the shed rate cannot be attributed \
+         to the rule that caused it: {row}"
+    );
+}
+
+/// The other side of the rule above, and the one that stops it being a shim
+/// that answers nothing. An ordinary session arrives as a batch — an editor
+/// sends `didOpen` and the definition request together, and a reader thread
+/// takes what is there — so "any waiting event" cannot be what §10 means by
+/// backed up.
+///
+/// This is not a hypothetical: the literal reading was implemented first, and
+/// `the_loop_drains_its_channel_and_ends_when_the_wire_closes` failed on it,
+/// with a depth of one.
+///
+/// **The batch size here is a literal and not `INBOX_BACKED_UP - 1`**, which it
+/// was in the first draft of this test. Sized from the constant it is a test
+/// that moves with the thing it is watching: lowering `INBOX_BACKED_UP` to 1
+/// shrinks the batch to nothing and the test goes on passing. That is the same
+/// shape as a tripwire that plants the value it is looking for, and it was
+/// caught here by planting the literal reading and seeing a *different* test
+/// fail. Two events waiting is an editor that sent a `didChange` and a
+/// `didSave` behind its request, which is ordinary rather than a backlog, and
+/// this test says so whatever the constant becomes.
+#[test]
+fn an_ordinary_batch_of_events_is_not_a_backlog() {
+    const ORDINARY_BATCH: usize = 2;
+
+    let fixture = Fixture::new("actor_batch_not_backlog", Proxying::No);
+    let target = fixture.definition_in("src/lib.rs");
+    let actor = fixture.actor(Arc::new(Committing {
+        locations: vec![target],
+    }));
+
+    let (events, incoming) = crossbeam_channel::unbounded();
+    for event in fixture.session(1) {
+        events.send(event).expect("a queued event");
+    }
+    for _ in 0..ORDINARY_BATCH {
+        events
+            .send(Event::WatchedFilesChanged)
+            .expect("a queued event");
+    }
+    drop(events);
+
+    actor.run(&incoming).expect("the actor loop");
+
+    let rows = fixture.rows();
+    let [row] = rows.as_slice() else {
+        panic!("{} rows for one query, where one arrived", rows.len());
+    };
+    assert_eq!(
+        field(row, "decision"),
+        "\"committed\"",
+        "a query was shed with {ORDINARY_BATCH} events waiting behind it. A batch that \
+         size is what an editor sends, not a backlog, and shedding it spends the coverage \
+         §10's rule is supposed to be protecting the forwarding path with — so \
+         INBOX_BACKED_UP is too low rather than this fixture being unlucky: {row}"
     );
 }
 
@@ -1256,6 +1519,7 @@ fn propagated_from_a_read(name: &str) -> Vec<String> {
     let fixture = Fixture::new(name, Proxying::No);
     let mut actor = fixture.actor(Arc::new(Propagating {
         clock: Arc::clone(&fixture.clock),
+        classify_as: None,
     }));
 
     let (logged, lines) = crossbeam_channel::unbounded();
@@ -1909,6 +2173,11 @@ impl LanguageHandler for Slow {
 /// assigned a stratum", and it is the route with no fixture until now.
 struct Propagating {
     clock: Arc<TestClock>,
+    /// What it publishes through `ProjectView::classified` before the read, or
+    /// nothing. Both routes exist and are different findings: `core-025`'s
+    /// option C empties the first into `Classified::By`, and what stays in
+    /// `Classified::Nothing` is a handler that really had assigned no class.
+    classify_as: Option<Stratum>,
 }
 
 impl LanguageHandler for Propagating {
@@ -1935,6 +2204,12 @@ impl LanguageHandler for Propagating {
             .project
             .lookup(root, &rel)
             .expect("src/target.rs is in the fixture file list");
+        // `resolution.md` §8 assigns the prior from the reference before the
+        // search. A real handler has it here, which is what makes `core-025`'s
+        // option C reach the common case rather than a corner of it.
+        if let Some(prior) = self.classify_as {
+            query.project.classified(prior);
+        }
         // `ProjectView` checks the deadline before starting the I/O, so this is
         // the refusal and not a short read. Propagated rather than matched on:
         // a handler that inspected the class here would be doing the driver's

@@ -4,7 +4,7 @@
 
 [section."core.md#1-handler-interface"]
 state = "clean"
-last_audited = "2026-08-04T21:12:07+00:00"
+last_audited = "2026-08-05T01:40:56+00:00"
 
 [section."core.md#vocabulary-types"]
 state = "clean"
@@ -17,23 +17,18 @@ last_audited = "2026-08-04T23:43:10+00:00"
 
 [section."core.md#the-trait"]
 state = "gaps"
-last_audited = "2026-08-04T20:33:33+00:00"
+last_audited = "2026-08-05T01:40:56+00:00"
 
   [[section."core.md#the-trait".gap]]
-  claim = "Outcome's arms carry `stratum: Stratum` and `CommitPolicy::decide(&self, stratum, confidence, locations)` takes three arguments"
-  found = "both arms carry `strata: Strata` plus a fourth member `trace: Trace`, and `decide` takes four arguments; \u00a77 requires the two-field stratum, so the printed block is stale and no CHANGE- record covers this anchor"
-  where = "crates/shared/src/handler.rs:120"
-  found_at = "187307eeed4c196ebb471f4a3e8d46f60e18a53a"
+  claim = "handlers read, parse and search through ProjectView so the driver can cache reads within a query, reuse the parse LRU, and run the literal scan on the bounded pool"
+  found = "ProjectView has no read cache, `parse` builds a fresh Parser per call and documents that there is no LRU to reach, and `scan` is a sequential loop with no pool \u2014 all correct per conformance-005/012 and CLAUDE.md, so the fix is the tense fix \u00a79 already took in CHANGE-core-029. A check that ProjectView holds no cache or pool field would hold it mechanically"
+  where = "crates/shared/src/project.rs:591"
+  found_at = "975523384418d70ab58801dd65e363bfcd28000d"
 
   [[section."core.md#the-trait".minor]]
-  claim = "`pub struct ServerProfile { pub id: Option<ServerId> }`"
-  note = "the field is private with three constructors and an `id()` accessor \u2014 a strengthening, but a second unrecorded divergence from the same printed block"
-  where = "crates/shared/src/handler.rs:73"
-
-  [[section."core.md#the-trait".minor]]
-  claim = "handlers never construct `Outcome::Committed`; the policy is the only way to build an Outcome"
-  note = "held only by the single handler abstaining; `Outcome::Committed` is a public variant with public fields, so a `lang_*` crate can build one. The seam's existing wire-vocabulary source scan is the shape a mechanical check would take"
-  where = "crates/shared/src/handler.rs:120"
+  claim = "ProjectPath has a private field and constructor: only ProjectView mints one"
+  note = "the type's own doc says only `FileList` mints one, and both do \u2014 `ProjectView::lookup` builds a probe through the same private `new`"
+  where = "crates/shared/src/project.rs:77"
 
 [section."core.md#2-document-snapshots"]
 state = "clean"
@@ -66,17 +61,16 @@ last_audited = "2026-08-04T23:43:10+00:00"
 
 [section."core.md#3-position-encoding"]
 state = "clean"
-last_audited = "2026-08-04T21:12:07+00:00"
+last_audited = "2026-08-05T01:40:56+00:00"
 
 [section."core.md#4-project-file-enumeration"]
-state = "gaps"
-last_audited = "2026-08-04T21:12:07+00:00"
+state = "clean"
+last_audited = "2026-08-05T01:40:56+00:00"
 
-  [[section."core.md#4-project-file-enumeration".gap]]
-  claim = "the editor's watcher is opportunistic and nothing depends on it; the on-demand NoCandidates rescan is the backstop that always works, and a stale entry for a removed file only ever surfaces as a failed read"
-  found = "a removed candidate fails the whole scan (project.rs:586 propagates ProjectError::Read), dispatch classifies Error::Project as Dispatched::Failed (dispatch.rs:557), and FileListCache::observe ignores Failed as 'evidence about the handler' (files.rs:179) \u2014 so the list is never marked stale, no rescan is scheduled, and every later query over that candidate set fails the same way until a watcher event only proxy mode can produce. A fixture test that deletes a file after FileList::enumerate and asserts an abstention or a stale mark rather than a permanent Err would make this claim mechanical; driver/tests/file_list.rs has no read-failure case."
-  where = "crates/driver/src/files.rs:179"
-  found_at = "41ebe25a3140dc47bbdaeb9f71bef44f98402948"
+  [[section."core.md#4-project-file-enumeration".minor]]
+  claim = "the file list is built lazily and refreshed in the background, driven by core's timer"
+  note = "the module header still says the `core` loop that would drive `refresh_if_due` does not exist; `Actor::tick`, `Actor::answered` and the `select!` arm all drive it now"
+  where = "crates/driver/src/files.rs:19"
 
 [section."core.md#5-deadlines-and-abstention"]
 state = "clean"
@@ -84,7 +78,7 @@ last_audited = "2026-08-05T00:43:32+00:00"
 
 [section."core.md#6-the-agreement-predicate"]
 state = "clean"
-last_audited = "2026-08-04T21:12:07+00:00"
+last_audited = "2026-08-05T01:40:56+00:00"
 
 [section."core.md#both-sides-are-sets"]
 state = "clean"
@@ -92,12 +86,7 @@ last_audited = "2026-08-05T00:43:32+00:00"
 
 [section."core.md#7-observability-and-the-corpus-scan"]
 state = "clean"
-last_audited = "2026-08-04T20:33:33+00:00"
-
-  [[section."core.md#7-observability-and-the-corpus-scan".minor]]
-  claim = "`stages` is bounded \u2014 a small fixed maximum number of short labels, truncated rather than grown"
-  note = "the abstention label is appended after `Trace::MAX_STAGES` truncation, so an abstaining query emits up to 33 labels where the named bound is 32"
-  where = "crates/shared/src/record.rs:206"
+last_audited = "2026-08-05T01:40:56+00:00"
 
 [section."core.md#the-corpus-scan-is-a-separate-program"]
 state = "clean"
@@ -139,7 +128,7 @@ last_audited = "2026-08-04T23:43:10+00:00"
 
 [section."core.md#8-protocol-types"]
 state = "clean"
-last_audited = "2026-08-04T20:33:33+00:00"
+last_audited = "2026-08-05T01:40:56+00:00"
 
 [section."core.md#81-why-not-lsp-types"]
 state = "clean"

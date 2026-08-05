@@ -2,55 +2,59 @@
 
 ## Falsified — act on these directly
 
-* **`shim.md` §10's pool exists** (`crates/driver/src/workers.rs`). The parse,
-  the handler and §8.4's conversion run off `core`'s thread. §2's two anchors
-  and §8.4 were false only because it was missing, and all three closed by
-  building it. §10's *limits* are not built and are `core-026` (open): shedding
-  a query needs an `AbstainReason` the frozen seam has no word for.
-* **`harness/gate` cannot see a flaky test.** It runs `cargo nextest`, which
-  gives each test its own process; `cargo test` shares one. After adding
-  concurrency, run `cargo test -p <crate>` in a loop — six runs at my
-  already-committed pool failed once.
-* **`tracing`'s callsite interest cache is process-wide**, and is decided when
-  a callsite is first reached — usually by a test capturing nothing — and that
-  decision is then every later test's. It bites only once a line is emitted on
-  a thread other than the one that installed the capture. The fix is a floor:
-  one global subscriber, interested in everything and collecting nothing
-  (`keep_callsites_enabled`, `driver/tests/actor.rs`). **Two plausible fixes
-  that do not work, ten runs each:** skipping `set_default` when the carried
-  dispatch is a `NoSubscriber`, and `register_callsite -> Interest::sometimes()`.
-* **A plant must compile.** Adding a struct field to test a field-list scan
-  breaks its constructors, and the run then prints *no* `test result` line —
-  which reads like a pass. Plant on the document side of a
-  document-versus-source comparison, or add the constructor line too.
-* **Do not go looking in `core.md#84`, `#two-modes`, or §2's behaviour.** §8.4
-  has the same-document exception, the moved-target refusal and the
-  wire-vocabulary scan; §2 has the deadline, the progress callback, the
-  proptest and two scans.
-* **Settle an assigned gap from `state/audit/gap-log.jsonl` in one turn.** Find
-  the run that *opened* it, then ask whether any later run's `sections_audited`
-  names its section. One of my four was closed eight minutes after the audit
-  that opened it. Eighth campaign running with a stale assignment.
+* **Settle an assigned gap from `state/audit/gap-log.jsonl` first.** Find the
+  run that opened it; ask whether any later run's `sections_audited` names its
+  section. Ninth campaign running with a stale assignment; one turn here freed
+  the whole session.
+* **`core-025` and `core-026` are reconciled.** No `DECISION-` tag remains in
+  `crates/`. §10's in-flight cap and inbox check are built
+  (`Actor::requested`), `decision` has a fourth value `shed`, and both stratum
+  columns are nullable. Do not re-derive any of it.
+* **A blank line before `Co-Authored-By` destroys the trailer block.** Git
+  starts a new one, so `loop:`/`campaign:` vanish and `hj record` reports the
+  *previous* campaign's sha as already recorded.
+* **`harness/gate` cannot see a flaky test** (`nextest` gives each its own
+  process). After touching concurrency, loop `cargo test -p <crate>`.
+* **`tracing`'s callsite interest cache is process-wide.** Fix: one global
+  subscriber interested in everything (`keep_callsites_enabled`). Two fixes
+  that do not work, ten runs each: skipping `set_default` on a `NoSubscriber`,
+  and `register_callsite -> Interest::sometimes()`.
+* **A plant must compile**, or the run prints no `test result` line — which
+  reads like a pass.
+* **Nothing left in `core.md#84`, `#two-modes`, `#4-project-file-enumeration`,
+  or §2's behaviour.** `[d41389f7fe]` is stale: `driver/tests/file_list.rs`
+  384/451/492 cover its three named cases.
 
 ## Confirmed — candidates, test on your own evidence
 
-**When a section and the code disagree, look for a third place in the code that
-already agrees with the section.** `actor.rs` refused the `didSave` read
-because §2 forbids `core` touching the filesystem, ten lines from a query path
-that read a file per answer. That decides which side moves, without judging
-which is easier to edit.
+**A test whose fixture is derived from the value under test is not a test.**
+Twice this campaign, the same shape — the input computed from the thing
+asserted about. An earlier campaign's tripwire, written to fail when `core-025`
+landed, drove a handler that *returned* `Stratum::Unimplemented`: it planted
+the value it watched for and never fired. Then mine sized a batch as
+`INBOX_BACKED_UP - 1`, so lowering the constant shrank the batch and the test
+kept passing. Caught only by planting and watching a *different* test fail.
 
-**After moving work across a thread boundary, ask what else used to be
-guaranteed by two things happening in one event.** Four things were, and one
-was a live bug: a worker's tree outliving the text it was parsed from, cached,
-and handed to the next query as an incremental base. A version comparison does
-not catch it — §8.6 makes `didOpen` a resync, so text is replaced at a version
-already seen.
+**An "every counter was reached" guard is what catches a column going dead.**
+Making failures carry no stratum silently emptied `Row::failed`; the guard in
+`the_records_and_the_table_are_the_same_run_counted_twice` fired, not my
+reasoning. An equality of zero against zero holds against two artifacts that
+share nothing.
 
-**Work the section, not the gap** — four of seven commits.
+**Where a design rule names no threshold, implement the literal reading and let
+a test price it.** §10's "no heuristic work while `core` is behind" taken
+literally sheds ordinary editor traffic — the drain test failed at a depth of
+one, because an editor sends `didOpen` and its request together. That is
+evidence; an argument would not have been. It is 4 now (CHANGE-core-034, which
+says it is this campaign's number and not the design's).
 
-## Answered decisions, still tagged in files I held
+**An answered decision usually gives the *what* and not the *how*.**
+`core-025`'s C says the expiry "carries the strata the handler had" and never
+says how they get there. `ProjectView` being per-query is what made it possible.
 
-`core-021`, `core-023` (`driver/tests/seam.rs`) and `core-025`
-(`driver/src/dispatch.rs`). Reconciling is a normal target; `core-025` is a
-whole campaign in `shared` and `measure_core`.
+## Left deliberately
+
+`Row::failed` is now structurally zero — a failure has no `Outcome`, so no
+strata. Giving failures a stratum is a seam question. `Answered` has three
+public constructors and public fields; a `seam.rs` scan would mechanise "`of`
+is the one classification site", but seam.rs was off-limits this round.

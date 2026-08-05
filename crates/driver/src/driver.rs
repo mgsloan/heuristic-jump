@@ -19,10 +19,10 @@ mod trace;
 mod trees;
 mod workers;
 
-pub use actor::{Actor, Event, Outbound};
+pub use actor::{Actor, Event, INBOX_BACKED_UP, Outbound};
 pub use config::{
     Config, DEFAULT_LOG_FILTER, DeadlineMs, DeadlineOverride, DebounceMs, Heuristics, LOG_PREFIX,
-    Mode, PrefixedWriter, ServerCommand,
+    MaxInFlight, Mode, PrefixedWriter, ServerCommand,
 };
 pub use dispatch::{
     Answer, Classified, Completed, Dispatched, Parsed, Registry, Request, dispatch, hard_cap,

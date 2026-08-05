@@ -264,7 +264,7 @@ permission_mode = "bypassPermissions"
 # read from the tree being checked rather than from the harness — editing them
 # *would* change how this loop is scored.
 [loop.harness]
-status = "running" # running | paused | blocked | done
+status = "paused" # running | paused | blocked | done
 prompt = "conformance.md"
 writes_harness = true
 worktree = "../heuristic-jump-harness"

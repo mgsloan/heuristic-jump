@@ -43,17 +43,11 @@ last_audited = "2026-08-04T21:12:07+00:00"
 
 [section."rope-modifications.md#the-signatures"]
 state = "clean"
-last_audited = "2026-08-04T20:33:33+00:00"
+last_audited = "2026-08-05T01:40:56+00:00"
 
 [section."rope-modifications.md#textsummary-is-converted-too"]
-state = "gaps"
-last_audited = "2026-08-04T23:43:10+00:00"
-
-  [[section."rope-modifications.md#textsummary-is-converted-too".gap]]
-  claim = "TextSummary.chars becomes CharCount, `usize` before and after"
-  found = "CharCount is a u32 newtype, so chars narrows from upstream's usize and all accumulation is u32 \u2014 recorded in vendor/README.md as deliberate and attributed to \u00a74, which contradicts this section"
-  where = "vendor/rope/src/point.rs:174"
-  found_at = "4266031455e91fde2c3f8d08f91909260ab9a81f"
+state = "clean"
+last_audited = "2026-08-05T01:40:56+00:00"
 
 [section."rope-modifications.md#the-dimension-impls"]
 state = "clean"
@@ -74,7 +68,7 @@ last_audited = "2026-08-04T21:12:07+00:00"
 
 [section."rope-modifications.md#5-what-deliberately-does-not-change"]
 state = "clean"
-last_audited = "2026-08-04T20:33:33+00:00"
+last_audited = "2026-08-05T01:40:56+00:00"
 
 [section."rope-modifications.md#lineindex-is-ropes-and-shared-re-exports-it"]
 state = "clean"
@@ -82,15 +76,15 @@ last_audited = "2026-08-04T21:12:07+00:00"
 
 [section."rope-modifications.md#6-consequences-for-re-syncing"]
 state = "clean"
-last_audited = "2026-08-04T20:33:33+00:00"
+last_audited = "2026-08-05T01:40:56+00:00"
 
 [section."rope-modifications.md#7-testing"]
 state = "clean"
-last_audited = "2026-08-04T20:33:33+00:00"
+last_audited = "2026-08-05T01:40:56+00:00"
 
 [section."rope-modifications.md#all-of-upstreams-tests-are-kept"]
 state = "clean"
-last_audited = "2026-08-04T20:33:33+00:00"
+last_audited = "2026-08-05T01:40:56+00:00"
 
 [section."rope-modifications.md#consequences-for-the-dependency-plan"]
 state = "clean"
@@ -98,8 +92,13 @@ last_audited = "2026-08-04T21:12:07+00:00"
 
 [section."rope-modifications.md#beyond-upstreams-tests"]
 state = "clean"
-last_audited = "2026-08-04T20:33:33+00:00"
+last_audited = "2026-08-05T01:40:56+00:00"
+
+  [[section."rope-modifications.md#beyond-upstreams-tests".minor]]
+  claim = "round-trip property tests over the four units on random text with astral-plane characters"
+  note = "implemented as a fixed 64-seed StdRng loop rather than proptest; rope takes no proptest dev-dependency, so there is no shrinking and no regression file"
+  where = "vendor/rope/tests/newtype_api.rs:744"
 
 [section."rope-modifications.md#8-decided-and-what-remains"]
 state = "clean"
-last_audited = "2026-08-04T20:33:33+00:00"
+last_audited = "2026-08-05T01:40:56+00:00"

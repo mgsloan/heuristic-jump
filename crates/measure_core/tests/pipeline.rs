@@ -421,70 +421,61 @@ fn the_unimplemented_stratum_identifies_the_template_and_not_a_broken_handler() 
     }
 }
 
-/// The counter above, read from the other side: what it costs that
-/// `Stratum::Unimplemented` is also where the driver files a query **nothing
-/// classified**.
+/// The counter above, read from the other side: where a query **nothing
+/// classified** goes now that it is not filed under the template's stratum.
 ///
-/// `core-022` is open on that, and this is its consequence made executable
-/// rather than described. The driver's provisional choice writes exactly this
-/// row — an `AbstainReason::Deadline` under the template's stratum — whenever a
-/// parse is abandoned on the deadline or a read expires before the handler
-/// assigned a class, and the table cannot tell it from an unreplaced template.
-/// Under load a real handler produces it.
+/// This replaces a test that asserted the opposite and was written to fail when
+/// `core-022`/`core-025` was answered. It never would have. It drove a handler
+/// that *returned* `Strata::from_reference(Stratum::Unimplemented)`, which is a
+/// handler claiming the template's stratum — correctly read as `unreplaced`
+/// then and now — rather than the driver synthesising one. A tripwire that
+/// plants the value it is watching for is not a tripwire, and this is the third
+/// time that shape has cost a campaign here.
 ///
-/// **This asserts the provisional, and is meant to fail when core-022 is
-/// answered.** Whichever way the answer goes — a seam method that supplies the
-/// prior, a nullable `stratum_prior`, or a narrower template check — this row
-/// stops reading `unreplaced`, and the test that has to change is the one
-/// holding the reason it changed.
+/// What `core-025`'s option B actually changed is reachable from a replay by
+/// one route: a handler that returns `Err` has no `Outcome` and therefore no
+/// strata, so its `stratum_prior` is now `null` instead of the template's. Three
+/// claims, because any two of them pass on a mistake — a run that measured
+/// nothing has an empty `unimplemented` row too, and a run whose rows all went
+/// missing has a `replaced` template.
 #[test]
-fn the_template_check_reads_an_abstention_no_handler_classified() {
-    let corpus = fixture("unclassified_deadline");
+fn a_query_no_handler_classified_is_not_the_templates_row() {
+    let corpus = fixture("unclassified_prior");
     enumerate(&corpus);
     write_truth(&corpus);
 
-    let report = measure_core::replay_table(
-        &UnclassifiedHandler,
-        &shared::SystemClock,
-        &replay_arguments(&corpus, measure_core::Format::Json),
-    )
-    .expect("replay");
+    let records = corpus.scratch.join("records.jsonl");
+    replay_with(&FailingHandler, &corpus, Some(&records));
+    let report = replay_report(&FailingHandler, &corpus, measure_core::Format::Json);
+    let text = fs::read_to_string(&records).expect("replay wrote the records file");
 
+    let failures = tally(&text, |line| decision_of(line) == "failed");
     assert!(
-        report.contains("\"template\": \"unreplaced\""),
-        "core-022's provisional stopped reaching the table, which is the answer landing \
-         rather than a test going stale: read the decision record before changing this \
-         assertion.\n{report}"
+        failures > 0,
+        "the fixture produced no failed row, so every assertion below holds against a \
+         replay that did nothing\n{text}"
     );
-}
-
-/// A handler that is not the template and reports the template's stratum,
-/// because its query ran out of time before anything classified it. See
-/// [`the_template_check_reads_an_abstention_no_handler_classified`].
-struct UnclassifiedHandler;
-
-impl LanguageHandler for UnclassifiedHandler {
-    fn language_ids(&self) -> &'static [LanguageId] {
-        const IDS: &[LanguageId] = &[LanguageId::new("rust")];
-        IDS
-    }
-
-    fn file_extensions(&self) -> &'static [FileExtension] {
-        const EXTENSIONS: &[FileExtension] = &[FileExtension::new("rs")];
-        EXTENSIONS
-    }
-
-    fn grammar(&self) -> Language {
-        tree_sitter_rust::LANGUAGE.into()
-    }
-
-    fn goto_definition(&self, _query: &Query<'_>) -> Result<Outcome, Error> {
-        Ok(Outcome::Abstain {
-            reason: AbstainReason::Deadline,
-            strata: Strata::from_reference(Stratum::Unimplemented),
-            trace: Trace::new(),
-        })
-    }
+    assert_eq!(
+        tally(&text, |line| prior_of(line).is_empty()),
+        failures,
+        "a handler that returned Err reported a stratum. There is no Outcome for one to \
+         be on, and the value it used to take was Stratum::Unimplemented — which core.md \
+         §9 makes self-identifying, so a broken handler counterfeited an unreplaced \
+         language template (core-025, option B)\n{text}"
+    );
+    assert_eq!(
+        reported(&report, "unimplemented", "queries"),
+        0,
+        "the template's row absorbed queries no handler classified, which is the \
+         counterfeit this ruling removes\n{report}"
+    );
+    assert_eq!(
+        unclassified(&report, "failed"),
+        failures,
+        "the rows that left the table did not arrive beside it. high-level.md asks that \
+         coverage lost be visible as such, and a query that vanishes from the report \
+         entirely is worse than one under the wrong heading\n{report}"
+    );
 }
 
 #[test]
@@ -642,6 +633,73 @@ fn the_mask_is_not_the_whole_record() {
              exists to find\n{first}"
         );
     }
+}
+
+/// The determinism claim below, held against the one disposition that would
+/// break it by construction rather than by accident.
+///
+/// `core-026` gave `shim.md` §10's load shedding a `decision` of its own, and a
+/// shed query is the only ending in §7's record that depends on **how busy the
+/// machine was**: the in-flight cap and the inbox check both read state that
+/// varies with scheduling. A replay that could produce one would have a table
+/// that moves with background load, which is precisely what "same corpus, same
+/// commit, same table, byte for byte" rules out — and it would move *coverage*
+/// and not just latency, so the number a tuning campaign acts on would depend
+/// on what else was running.
+///
+/// Nothing in `measure_core` sheds today, and the point is to keep that true
+/// for a reason rather than by nobody having thought of it: the driver's two
+/// limits exist because a shim shares a machine with the language server it is
+/// racing, and a corpus run races nothing. `Deadline::none()` is the same
+/// argument already made for the deadline (§7: "replay enforces no deadline at
+/// all"), and this is its other half.
+///
+/// A scan over the crate rather than an assertion on one report, because a
+/// report only says this corpus did not shed, where the claim is that none can.
+///
+/// **Construction and not mention.** `Table::observe` matches on `Decision` and
+/// must have an arm for every value, `shed` included — that is the exhaustive
+/// match `CLAUDE.md` asks for, and counting it here would make the scan fire on
+/// the code that reads a record correctly. A pattern is told from a value by
+/// what follows it: an arm is `Decision::Shed =>` or `Decision::Shed |`, and
+/// anything else with that name in it is building one. `Answered::shed` is
+/// unconditional, since it is a constructor and cannot appear in a pattern.
+#[test]
+fn a_replay_has_no_route_to_shedding_a_query() {
+    let sources = files_under(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"));
+    assert!(
+        !sources.is_empty(),
+        "no source files were scanned, so the assertion below holds against nothing"
+    );
+
+    let mut offending: Vec<String> = Vec::new();
+    for name in &sources {
+        let text = fs::read_to_string(measure_core_source(name)).expect("a source file");
+        for (number, line) in text.lines().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            let constructs = code.contains("Answered::shed")
+                || code.match_indices("Decision::Shed").any(|(at, name)| {
+                    let after = code[at + name.len()..].trim_start();
+                    !after.starts_with("=>") && !after.starts_with('|')
+                });
+            if constructs {
+                offending.push(format!("{name}:{}: {code}", number + 1));
+            }
+        }
+    }
+
+    assert!(
+        offending.is_empty(),
+        "measure_core can produce a shed query, and a shed query is the one ending in \
+         §7's record that depends on machine load. core.md §7 makes `replay` deterministic \
+         — same corpus, same commit, same table byte for byte — and shedding would move \
+         coverage with whatever else was running, which is the same defect a wall-clock \
+         deadline in replay would be and is refused for the same reason.\n{}",
+        offending.join("\n")
+    );
 }
 
 /// The sibling of the test above, and the one §7's command line actually
@@ -2312,6 +2370,49 @@ fn the_records_and_the_table_are_the_same_run_counted_twice() {
                 *exercised.entry(field).or_default() += counted;
             }
         }
+
+        // The tenth bucket, which is not a stratum and is not allowed to be
+        // one. `core-025` (option B) made `stratum_prior` nullable, so a query
+        // nothing classified belongs to no row above — and the only way for the
+        // records and the table to still be two accounts of one run is to
+        // reconcile the rows that fell out of every row.
+        //
+        // It is also where `failed` is now exercised at all: a failure has no
+        // outcome, so it has no strata, so `stratum/failed` is structurally zero
+        // and the guard below would be asserting something impossible.
+        for (field, counted) in [
+            (
+                "committed",
+                tally(&text, |line| {
+                    prior_of(line).is_empty() && decision_of(line) == "committed"
+                }),
+            ),
+            (
+                "abstained",
+                tally(&text, |line| {
+                    prior_of(line).is_empty() && decision_of(line) == "abstained"
+                }),
+            ),
+            (
+                "failed",
+                tally(&text, |line| {
+                    prior_of(line).is_empty() && decision_of(line) == "failed"
+                }),
+            ),
+        ] {
+            assert_eq!(
+                counted,
+                unclassified(&report, field),
+                "the records file counts {counted} unclassified/{field} and the table \
+                 reports {}. A query with no stratum is still a query that happened, and \
+                 the two artifacts disagreeing about how many there were is the same \
+                 defect as disagreeing inside a row — with the extra sting that these are \
+                 the rows core-025 moved, so a drift here reads as the ruling having \
+                 landed cleanly\n{text}",
+                unclassified(&report, field)
+            );
+            *exercised.entry(field).or_default() += counted;
+        }
     }
 
     for (field, total) in &exercised {
@@ -2461,6 +2562,68 @@ fn the_printed_table_and_the_json_report_are_one_table() {
         STRATUM_NAMES.len(),
         "the printed table has {rows} of the nine strata, so the reconciliation \
          above skipped rows the JSON carries\n{printed}"
+    );
+}
+
+/// The same claim for the numbers that are *not* in a row.
+///
+/// `core-025` moved queries nothing classified out of the table and put them
+/// beside it, so they are now the one part of the report the reconciliation
+/// above cannot reach — it walks the nine strata rows, and these belong to
+/// none of them. A number that only one rendering carries, or carries
+/// differently, is exactly the drift that test exists to prevent: a gate reads
+/// the JSON and a person reads the text, and the whole argument for offering
+/// both formats is that they are one table.
+///
+/// It needs its own fixture because the handler has to produce the rows.
+/// `ReportingHandler` classifies everything, so the reconciliation above would
+/// be zero against zero — the shape that holds against two artifacts sharing
+/// nothing. `FailingHandler` returns `Err`, which after `core-025` has no
+/// `Outcome` and therefore no strata.
+#[test]
+fn the_two_renderings_agree_about_the_queries_that_left_the_table() {
+    let corpus = fixture("one_table_unclassified");
+    enumerate(&corpus);
+    write_truth(&corpus);
+
+    let printed = replay_report(&FailingHandler, &corpus, measure_core::Format::Table);
+    let report = replay_report(&FailingHandler, &corpus, measure_core::Format::Json);
+
+    let failed = unclassified(&report, "failed");
+    assert!(
+        failed > 0,
+        "the fixture produced no unclassified rows, so every comparison below is zero \
+         against zero\n{report}"
+    );
+
+    let line = printed
+        .lines()
+        .find(|line| line.starts_with("queries no stratum was assigned to:"))
+        .unwrap_or_else(|| {
+            panic!(
+                "the printed table does not mention the queries that left it, so a person \
+                 reading it sees a run of {failed} queries as a run of none\n{printed}"
+            )
+        });
+    let counts: Vec<u64> = line
+        .split(|character: char| !character.is_ascii_digit())
+        .filter(|piece| !piece.is_empty())
+        .map(|piece| piece.parse().expect("a printed count"))
+        .collect();
+
+    let expected = vec![
+        unclassified(&report, "committed") + failed + unclassified(&report, "shed"),
+        unclassified(&report, "abstained"),
+        failed,
+        unclassified(&report, "shed"),
+    ];
+    assert_eq!(
+        counts, expected,
+        "the printed line reads {counts:?} where the report carries {expected:?} as \
+         (total, abstained, failed, shed). Two renderings of one table that disagree mean \
+         a gate and a person are looking at different runs — and these are the rows \
+         core-025 moved, so a drift here reads as the ruling having landed cleanly\n\
+         {line}\n{report}"
     );
 }
 
@@ -3473,6 +3636,26 @@ fn reported(report: &str, stratum: &str, field: &str) -> u64 {
         .collect::<String>()
         .parse()
         .unwrap_or_else(|error| panic!("{stratum}/{field} is not a count: {error}\n{row}"))
+}
+
+/// One counter out of the report's `unclassified` object, which is beside the
+/// table rather than in it — `core-025`, option B.
+fn unclassified(report: &str, field: &str) -> u64 {
+    let object = report
+        .find("\"unclassified\": {")
+        .map(|at| &report[at..])
+        .unwrap_or_else(|| panic!("the report has no unclassified bucket:\n{report}"));
+    let marker = format!("\"{field}\": ");
+    let at = object
+        .find(&marker)
+        .unwrap_or_else(|| panic!("the unclassified bucket has no {field}:\n{object}"))
+        + marker.len();
+    object[at..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .unwrap_or_else(|error| panic!("unclassified/{field} is not a count: {error}"))
 }
 
 fn between<'a>(line: &'a str, open: &str, close: &str) -> &'a str {

@@ -19,19 +19,19 @@
 //! thread is the one thing `shim.md` §2 forbids `core` outright" — while the
 //! query path did a read per returned location on the same thread.
 //!
-//! **What is here is the pool and its sizing. §10's additional limits are
-//! not**, and the distinction matters to whoever picks this up: the in-flight
-//! cap ("start at 4 ... beyond that, new queries abstain immediately rather
-//! than queueing") and the shed-load rule ("no heuristic work while `core` is
-//! behind") are both refusals to run a query, and there is no
-//! [`shared::AbstainReason`] for a query that was refused. Adding one is a
-//! change to the frozen seam, so the cap arrives with that decision and not
-//! before. Until then the work channel queues, which is what §10 says a pool
-//! does before its limits are applied — and is strictly less blocking than the
-//! in-line dispatch it replaces, where a slow query stopped `core` from
-//! forwarding anything at all.
+//! **What is here is the pool and its sizing. §10's two additional limits are
+//! applied before a job ever reaches this module** — the in-flight cap and the
+//! shed-load rule are both refusals to *start* a query, and `core` is what
+//! knows how many are in flight and how far behind its inbox it is, so both
+//! live in [`crate::Actor::requested`].
 //!
-//! DECISION-core-026: provisional
+//! They were unbuildable until `core-026` was answered, and the obstacle was
+//! vocabulary rather than effort: a refusal had nothing to say. There is no
+//! [`shared::AbstainReason`] for a query nobody attempted, and adding one would
+//! have put a variant no handler can ever return on the frozen seam. Option D
+//! gives the refusal a disposition of its own instead — `core.md` §7's fourth
+//! `decision` — so a shed query is recorded at the level where "it says
+//! nothing" is true.
 
 use std::sync::Arc;
 use std::thread::{Builder, JoinHandle, available_parallelism};

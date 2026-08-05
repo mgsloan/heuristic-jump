@@ -869,3 +869,140 @@ that test ever flakes this is the first thing to try.
   `tests/handler.rs`'s block scanner. `handler.rs` stays the original.
 * `Registry::for_language_id` now returns `&Arc<dyn LanguageHandler>`: a worker
   holding a borrow of the registry is a worker holding a borrow of `core`.
+
+## Campaign 32a9eaee — two answered decisions, and the limits they were blocking
+
+Assignment was three gaps, all stale, settled in one turn. Claimed
+`core.md#7-observability-and-the-corpus-scan` instead and reconciled `core-025`
+and `core-026`. Six commits, +9 tests, three spec changes, nothing reverted.
+
+### The assignment was last round's, and one command said so
+
+All three assigned gaps opened at `2026-08-04T23:43:10` against commit
+`4266031`. Campaign `2f7fcfdd` — mine — started 79 seconds later and closed all
+three by building the worker pool. The audit that produced *this* round's
+assignment ran an hour later and re-judged eleven other `core.md` sections,
+none of them these. So the rows were carried forward unjudged, not re-found.
+
+`tail -3 state/audit/gap-log.jsonl` and look at `sections_audited`. That is the
+whole check. Ninth campaign in a row to be handed work already done.
+
+### Why these two decisions had to be one campaign
+
+`core-026`'s answer says it outright — "it should be one campaign with
+`core-025` rather than two: both change §7's record and nothing else shares
+that reading" — and it was right in a way that is only visible from inside.
+`core-025`'s option B creates a bucket for queries with no stratum;
+`core-026`'s option D creates a disposition for queries that were never
+attempted, which have no stratum *because* nothing ran. D's rows land in B's
+bucket. Done separately, the second campaign would have had to invent a second
+home and then reconcile the two.
+
+### core-025 option C needed a mechanism the record does not name
+
+The ruling says "`ProjectView`'s expiry carries the strata the handler had, as
+a change to `Error`" and stops there. The strata have to *get* to `ProjectView`
+somehow, and the routes are not equivalent:
+
+* **A parameter on `read`/`scan`.** Rejected: `resolution.md` §3 prints those
+  signatures, every call site grows an `Option<Strata>`, and `CLAUDE.md` warns
+  about call sites that read `foo(None)`.
+* **A field on `Query`.** Rejected as a bigger seam change than the ruling
+  authorises.
+* **A publish method on `ProjectView`.** Taken. The view is instantiated per
+  query, which is what makes this work at all — a process-wide one would need
+  the value keyed by query.
+
+It is an `AtomicU8` holding `Stratum::index`, because `&Query` is `Sync` (fan-out)
+so a `Cell` is not available and a lock is banned. `Deadline` already carries an
+`Arc<AtomicBool>`, so this is the established shape rather than a new one.
+
+**The codec is where this can rot.** `index()` is an exhaustive match and cannot
+drift; `from_index` searches a literal array, so a variant given a number and
+left out of the array decodes to `None` and the published prior is dropped
+silently for one class of query. I wrote a doc comment claiming a test held
+this and then did not write the test — caught on re-reading, fixed in
+`2af3cb8`. The lesson is the one already in the digest from the other side: a
+docstring describing behaviour that does not exist is where the bug is, and I
+produced one.
+
+### The failed-column consequence of option B, which I nearly missed
+
+Making `Answered::of`'s `Err` arm carry no strata means a *failure* lands in no
+stratum row. `Row::failed` therefore became always-zero. I did not notice that
+by reasoning; `the_records_and_the_table_are_the_same_run_counted_twice` has a
+guard requiring every counter to be reached by at least one run, and it fired.
+That guard is worth copying: an equality of zero against zero holds against two
+artifacts that share nothing.
+
+Resolved by reconciling the unclassified bucket too and letting `failed` be
+exercised there. **Not** resolved by giving failures a stratum, which would
+need a handler to be able to report one with an `Err` — a seam question, and
+not this campaign's.
+
+### The tripwire that was not one, twice
+
+`the_template_check_reads_an_abstention_no_handler_classified` was written by an
+earlier campaign *specifically to fail when this ruling landed*, and it did not.
+It drove a handler that returned `Strata::from_reference(Stratum::Unimplemented)`
+— a handler claiming the template's stratum, correctly read as `unreplaced`
+before and after — rather than the driver synthesising one. It planted the value
+it was watching for.
+
+Then I did the same thing. `an_ordinary_batch_of_events_is_not_a_backlog` sized
+its batch as `INBOX_BACKED_UP - 1`, so lowering the constant to 1 shrank the
+batch to zero and the test kept passing. Caught only because I planted the
+literal reading and a *different* test failed. It is a literal 2 now.
+
+**A test whose fixture is derived from the value under test is not a test.** Both
+instances took the same form: the input was computed from the thing being
+asserted about.
+
+### §10's shed-load threshold: the literal reading is unusable
+
+"No heuristic work while `core` is behind. If the event queue is backed up..."
+— I implemented "any waiting event" first, on the grounds that inventing a
+number is worse than reading the document. `the_loop_drains_its_channel_and_ends_when_the_wire_closes`
+failed immediately, at a depth of **one**: an editor sends `didOpen` and the
+definition request together, so the child's answer is already queued when the
+request is handled. That is not a backlog, it is a session.
+
+It is 4 now — §10's own starting number for its other limit. Recorded in
+CHANGE-core-034 as this campaign's number and not the design's, because it
+decides how much coverage is given up under load. What makes it revisable
+rather than permanent is `core-026` itself: the shed rate is a column now, so a
+corpus run reports what the rule costs.
+
+### Approaches considered and dropped
+
+* **A tenth `unclassified` stratum row.** Rejected on `core-025`'s own ground
+  for rejecting option A: a row reads as a kind of reference. It goes beside the
+  table, where `uncollected` already sets the precedent.
+* **One `unclassified` counter instead of four.** Rejected: it would merge "the
+  parse ran out of time" with "the handler is broken", the merge §7 spends a
+  paragraph refusing. Split by `decision`.
+* **`Decision::Shed(ShedReason)` as a payload variant.** Rejected: the decision
+  column would acquire unbounded values and stop being groupable. Which limit
+  fired goes in `stages`, beside the abstention reason and for the same reason a
+  second column is not added for it.
+* **Attaching the published prior to `Dispatched::Failed` as well.** Would keep
+  `Row::failed` alive per-stratum and is arguably what §7 wants ("the
+  *per-stratum* table cannot tell a hard stratum from a broken handler"). Left
+  alone: it is beyond `core-025`, and `Answered::of` is called directly by
+  `measure_core` with a handler's `Result`, so it would need replay to read the
+  view's published prior too.
+* **`core.md#4-project-file-enumeration[d41389f7fe]`.** Claimed, then found
+  stale: `driver/tests/file_list.rs:384/451/492` already cover exactly the three
+  cases the gap says are missing. Cost one turn.
+
+### Two mechanical notes
+
+* **`git commit` with a blank line before `Co-Authored-By` destroys the whole
+  trailer block.** Git treats the blank line as starting a new one, so
+  `git log --format='%(trailers:only=true)'` returned only the co-author line
+  and `hj record` could not find the commit at all — it reported the *previous*
+  campaign's sha as "already recorded". Put `Co-Authored-By` directly after
+  `campaign:` with no blank line, which is what every earlier loop commit does.
+* `std::cmp::Ordering` is already imported in `project.rs`, so the atomic one
+  needs `Ordering as AtomicOrdering`. And a `replace_all` on `, Ordering::Relaxed)`
+  misses `load(Ordering::Relaxed)`, which has no leading comma.

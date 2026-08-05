@@ -399,7 +399,7 @@ fn answer(handler: &dyn LanguageHandler, view: &ProjectView, root: &Path) -> dri
 
     match dispatch(handler, request, PositionEncoding::Utf16).dispatched {
         Dispatched::Decided(answer) => answer,
-        other @ (Dispatched::DeadlineExpired(_) | Dispatched::Failed(_)) => {
+        other @ (Dispatched::DeadlineExpired(_) | Dispatched::Failed(_) | Dispatched::Shed(_)) => {
             panic!("the query did not decide: {other:?}")
         }
     }

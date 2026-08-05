@@ -365,7 +365,19 @@ Notes on the shape:
   declares its ids as consts; the driver resolves an incoming LSP `languageId`
   against the registry and gets `Option<LanguageId>`. Unknown languages fail
   to resolve at the boundary rather than travelling inward as a string that
-  matches nothing, and lookup becomes pointer comparison.
+  matches nothing.
+
+  **Comparison is `str` equality on the interned text, and must not be pointer
+  identity.** The registry resolves an incoming `languageId` against ids a
+  `lang_*` crate declared, and those two `"rust"`s are literals in different
+  crates: comparing addresses would have them differ, and the language would go
+  quietly unhandled — a failure with no error anywhere, since an unresolved id
+  is exactly what an unsupported language looks like. What interning buys is
+  therefore a cheap comparison over a short string with no allocation, not one
+  over an address. `crates/shared/tests/` has
+  `a_language_id_compares_by_text_and_not_by_address`, which leaks a
+  runtime-built `"rust"` so the compiler merging two equal literals cannot
+  answer the question for it.
 *  **Handlers get a snapshot, not a lock —literally, with no primitive in it
   at all.** `DocumentSnapshot` holds a cloned `Rope` and a `Tree`, both O(1)
   to clone, taken at dispatch —so a handler is immune to edits that arrive
@@ -460,6 +472,16 @@ Notes on the shape:
   another hat.
   A handler reads a field describing a behaviour; it does not ask which
   server it is talking to.
+
+  Like the commit funnel below, this is held by review rather than by the
+  types, and for once that is not obvious from the outside: `ServerId`'s field
+  is private and there is no public constructor from a string, which reads as
+  though an identity cannot be named at all. It can — `ServerId::KNOWN` is a
+  `pub const` of the whole matrix and `ServerId::from_name` is public, both so
+  that `measure_core` can resolve `--server` — so the mechanical check is the
+  same shape as the other one:
+  `crates/shared/tests/handler.rs::no_language_crate_asks_which_server_it_is_standing_in_for`
+  scans every `lang_*` source for the identity and for `ServerProfile::id`.
 
   **The identity is a private field behind a constructor per situation**,
   rather than a public `id: Option<ServerId>`. The absence has to be
@@ -1010,8 +1032,8 @@ LSP-latency value weighting. Everything from `stratum_prior` through
 resolution path produced the answer and what it cost; the driver classifies
 `agreement` and `severity`, since only it has both answers.
 
-**`decision` has three values, not two**: `committed`, `abstained`, and
-`failed`. The third is what the handler seam's `Result<Outcome, Error>`
+**`decision` has four values, not two**: `committed`, `abstained`, `failed`
+and `shed`. The third is what the handler seam's `Result<Outcome, Error>`
 ([section 1](#the-trait)) exists to make recordable. On the wire a failure is
 served as an abstention, because that is what is useful to a user; in the
 record it must not be one, or the per-stratum table cannot tell a hard
@@ -1019,6 +1041,37 @@ stratum from a broken handler. `failure` names the `Error` sub-enum that was
 converted — `"Parse"`, `"Project"`, `"Handler"` — and is `null` otherwise.
 The whole error is deliberately not carried: the class is what a metrics table
 can group on, and the detail is already in the log.
+
+**`shed` is the fourth and is the only one that is not the handler's.**
+[`shim.md` §10](shim.md#10-parallel-dispatch-and-resource-limits) gives the
+dispatch pool two limits beyond its size — a cap on queries in flight, and no
+heuristic work while `core` is behind on its inbox — and both are refusals to
+run the query at all. The other three all answer *what did the query say*, and
+a query that was never attempted says nothing.
+
+It is not an `AbstainReason`, and that is `core-026`, accepted on option D.
+`AbstainReason` is the *handler's* vocabulary — what the language said when it
+declined, which is why [section 1](#the-trait) can call four of its variants
+facts about the code and single out `Deadline` as the exception. A shed query
+is not the handler's event, and a sixth variant there would be one no handler
+can ever return, so every `lang_*` match would grow an arm for an unreachable
+case. Nor is it `failed`, which would make this column say a shim working
+exactly as designed was broken — the merge the paragraph above refuses.
+
+What it buys is a number. `high-level.md`'s posture is that blowing the budget
+must cost coverage and never correctness, and that is only auditable if the
+coverage lost *to load* is visible as such: a shed rate of its own, rather than
+a third meaning in a column `resolution.md` §8 built to separate "this class is
+hard" from "this handler is broken". Which limit fired goes in `stages`
+(`shed:in_flight`, `shed:core_behind`), beside the abstention reason and for
+the same reason a second column is not added for it — and the two are kept
+apart there because they are different findings, one saying this process is
+answering as many queries at once as it is willing to and the other that the
+prime invariant is under pressure.
+
+A shed query has no stratum, so its two stratum columns are `null` by the rule
+above. That is not a coincidence of two changes landing together: nothing
+classified it because nothing ran.
 
 **`position` is a byte offset**, like every other position inside the shim
 ([section 8](#8-protocol-types)). It is what `data-collection.md` records
@@ -1048,6 +1101,36 @@ precision is reported on `stratum_final` so an answer is judged against the
 class it turned out to be. One field cannot do both, and collapsing them
 makes `high-level.md`'s central table non-comparable across versions — the
 one property it needs.
+
+**Both stratum fields are nullable, and `null` is not a tenth stratum.** Some
+queries end with nothing having classified them: a parse abandoned on the
+deadline before any handler ran, and a handler that returned `Err`, which has
+no `Outcome` for a stratum to be on. `resolution.md` §8's rule for the prior is
+per-language by construction, so the driver cannot evaluate it without the
+handler that owns it — there is no value to write, and any name is a guess.
+
+The guess it used to make was `Stratum::Unimplemented`, which is the *language
+template's* stratum and is self-identifying on purpose
+([section 9](#adding-a-language)): its presence in a metrics table means the
+template has not been replaced. So a real handler that missed its deadline, or
+one that was thoroughly broken, reported an unreplaced language crate — and
+under load a real handler produces that row. `null` says the true thing in the
+place the absence actually lives, and it forces each consumer to decide what to
+do with it rather than letting it be grouped away silently. This is
+`core-025`, accepted on option B; option C is the other half, and narrows what
+reaches this state to the abandoned parse by having `ProjectView`'s expiry
+carry out the prior the handler had published
+(`resolution.md` §3's `classified`).
+
+A consumer that groups on either field therefore gains a bucket that is not a
+stratum. It belongs *beside* a per-stratum table rather than in it — a tenth
+row would read as a kind of reference, which is exactly what makes `null` the
+honest shape and not merely the convenient one — and it must be reported
+rather than dropped, because `high-level.md`'s posture is that blowing the
+budget costs coverage and never correctness, which is only auditable if the
+coverage lost is visible as such. Splitting it by `decision` is what keeps
+"the parse ran out of time" and "the handler is broken" from becoming one
+number, which is the merge this section spends a paragraph refusing above.
 
 **`margin` and `considered` are the features a floor would be set on.**
 Nothing reads them in v1. They are recorded because a threshold can only be
@@ -2184,9 +2267,9 @@ on any language crate.** Wiring happens in `heuristic_jump`.
               shared  <-- rope, tree-sitter, serde, serde_json, url,
              /  /  |  \      ignore, rayon, thiserror, rustc-hash, tracing
             /  /   |   \
-measure_core  /  similarity  driver  <-- crossbeam-channel, rayon,
-       |     /     |          |            rustc-hash, tracing
-       |     /     |          |
+measure_core  /  similarity  driver  <-- crossbeam-channel, lru, notify,
+       |     /     |          |            rayon, rustc-hash, serde_json,
+       |     /     |          |            tracing
        |    lang_* /          |
        |     /  \ /           |
        +--> measure_<lang>   heuristic_jump
@@ -2196,9 +2279,46 @@ measure_core  /  similarity  driver  <-- crossbeam-channel, rayon,
 the only crate that depends on both `measure_core` and a language, and it
 contains four lines.
 
+**Three of the crates named above are chosen and not yet declared, and this is
+the complete list of them.** `deps.md` §14 has each dependency arrive with its
+first user, so a crate this section names and no manifest declares is the
+intended state rather than a drift. But left implicit that rule forgives too
+much in the other direction — a dependency that *vanishes* from a manifest is
+indistinguishable from one that has not arrived yet — so the set is named here
+and `crates/driver/tests/seam.rs` reads it, which turns the difference between
+the two into an equality it can check:
+
+* `rayon` in `shared` — for `ProjectView::scan`. The fan-out onto a bounded
+  pool is the arrangement `resolution.md` §3 settles, and "executes on the pool
+  it is handed at construction" describes that arrangement rather than the code
+  as it stands: `ProjectView::new` takes no pool, and `scan` is a sequential
+  loop over candidates. Parallelising it is an optimisation, and `CLAUDE.md`
+  withholds those until the corpus harness shows the change is worth it and
+  there is a benchmark — so the dependency arrives with the benchmark, not
+  before it.
+* `rayon` in `driver` — the same fan-out, seen from the side that owns the pool
+  and hands it over.
+* `rustc-hash` in `driver` — `deps.md` §0 places it here, and every map
+  `driver` owns so far is small enough that nothing has reached for it.
+
 Every edge, and why:
 
-* **`shared` depends on nothing of ours.** The shared vocabulary: it holds
+* **`shared` depends on no crate of ours in `crates/`.** The vendored text
+  crates are not an exception to that and are not covered by it: `rope` is on
+  the list below and `shared` depends on it, and "ours" throughout this section
+  means the code in `crates/` rather than every workspace member. Keeping the
+  two apart is what `vendor/` is for — `deps.md` §14's tree separates them so
+  provenance and licensing stay obvious — and a `vendor/` crate is a dependency
+  like any other except for who wrote it. Where the distinction has teeth is
+  the other edges: `measure_core` "depends on `shared` and nothing else of
+  ours" is the same word used the same way, and
+  `crates/driver/tests/seam.rs::the_measurement_crates_have_the_edges_section_9_gives_them`
+  reads it strictly, quantifying over `vendor/` too — not because §9's sentence
+  demands it, but because the text vocabulary reaches `measure_core` through
+  `shared`'s re-export, so a direct `rope` edge there would be a divergence
+  worth failing on rather than a spelling of the same thing.
+
+  The shared vocabulary: it holds
   `LanguageHandler`, `Query`, `Outcome`, `Stratum`, `Deadline`,
   `DocumentSnapshot`, `ProjectView`, and `Error` — types every other
   crate needs to talk about, and almost no behaviour. It also holds `proto`, the
@@ -2207,14 +2327,16 @@ Every edge, and why:
   deserialization *produces* rather than what a conversion layer produces
   afterwards. Its own dependencies are `serde`, `serde_json`, `url`, `rope`,
   `tree-sitter`, `ignore` (for `ProjectView`'s walk), `rayon` (for
-  `ProjectView::scan`, which executes on the pool it is handed at
-  construction — `resolution.md` §3), `thiserror` (for `Error`'s derives),
+  `ProjectView::scan` — `resolution.md` §3, and the first of the three entries
+  above that are chosen and not yet declared), `thiserror` (for `Error`'s
+  derives),
   `rustc-hash`, and `tracing` — which is in the graph regardless, since `rope`
   and `sum_tree` depend on it and two logging facades would be silly
   (`deps.md` §9). This list is the authoritative one; §8.7 refers back to it
   rather than restating it, and
   `crates/driver/tests/seam.rs::shared_declares_only_the_dependencies_section_9_lists`
-  fails on a dependency that is not on it.
+  fails on a dependency that is not on it *and* on one that is on it, is not in
+  the deferred list above, and is missing from the manifest.
 
   ** `Error` is one enumerated type covering every failure in the system**,
   not an `anyhow` -style boxed `dyn Error`. It lives here rather than in

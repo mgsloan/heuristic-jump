@@ -187,6 +187,11 @@ impl FileListCache {
             // this became on the way out.
             Dispatched::DeadlineExpired(_) => return,
             Dispatched::Failed(error) => error.file_list_evidence(),
+            // Evidence about nothing, and for a stronger reason than the
+            // expiry above: no candidate was ever looked at, because no search
+            // was ever started. Rescanning on load would spend the I/O
+            // `shim.md` §10 shed the query to save.
+            Dispatched::Shed(_) => return,
         };
 
         match evidence {
