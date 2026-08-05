@@ -6294,6 +6294,166 @@ def cmd_heldout(args: argparse.Namespace) -> int:
     return 1 if widened else 0
 
 
+# --------------------------------------------------------------------------
+# Selecting a version at a phase gate. `design/loops.md` §10.
+#
+# "**HEAD is not automatically what proceeds.** At a gate:
+#
+#   1. Compute the frontier over the phase's commits. Usually a handful of
+#      points survive.
+#   2. Evaluate *those points only* on the held-out corpus.
+#   3. Pick one. Continue from it."
+#
+# Step 1 is the frontier above. Step 3 is here. **Step 2 is not, and cannot
+# be**: it is a corpus run, which is `measure_<lang>`'s and outside every path
+# this loop owns, against a corpus and a handler that phase 1a does not have.
+# What is here instead is the refusal — a candidate with no held-out row makes
+# the whole selection stop rather than being quietly dropped, because "the
+# held-out evaluation at step 2 is not a nicety here; it is what makes step 3
+# mean anything".
+#
+# That refusal is the load-bearing half. §10's own argument is that "selecting
+# on the tuning corpus alone would be model selection on the training set, and
+# the frontier makes that worse rather than better, because it explicitly
+# searches the whole history for the best-looking point". A selection command
+# that ranked whatever it happened to have evaluated would do exactly that, on
+# a smaller set, and read as though it had not.
+
+
+def heldout_score(row: dict) -> float | None:
+    """A candidate's held-out number, aggregated the way an axis is.
+
+    One number and not two: §12's row carries `{tuning, heldout}` per stratum,
+    and the axis §10 selects on is top-1 agreement — the one quality number
+    that "must not be improvable by answering more". Coverage is the frontier's
+    other axis, but it is a property of the candidate rather than of the split
+    and is already read from the metrics row at step 1.
+    """
+    return stratum_mean(row, "heldout")
+
+
+def gate_selection(
+    candidates: list[dict], evaluated: dict[str, dict]
+) -> tuple[dict | None, list[str]]:
+    """§10's step 3, and the refusal that makes it mean anything.
+
+    Returns the chosen candidate and the candidate commits step 2 has not
+    evaluated. Any unevaluated candidate refuses the whole selection rather
+    than being skipped: skipping would rank the remainder, and the remainder
+    was chosen by the tuning numbers alone.
+
+    Ties break on the earlier commit — `sorted` is stable and the candidates
+    arrive in record order — and deliberately not on a tuning number. Using
+    one would be a small dose of the thing step 2 exists to stop, and it would
+    be the invisible kind, since it only ever decides cases where held-out has
+    already said the candidates are the same.
+    """
+    missing = [
+        candidate.get("commit") or ""
+        for candidate in candidates
+        if heldout_score(evaluated.get(candidate.get("commit") or "") or {}) is None
+    ]
+    if missing or not candidates:
+        return None, missing
+    ranked = sorted(
+        candidates,
+        key=lambda candidate: -(heldout_score(evaluated[candidate["commit"]]) or 0.0),
+    )
+    return ranked[0], []
+
+
+def gate_verdict_rows(
+    evaluations: list[dict], candidates: list[dict], chosen: str
+) -> list[dict]:
+    """What §12's widening test compares at a gate: the previous gate's row,
+    then the chosen one.
+
+    Not the previous *row*. The other candidates of this gate sit between them
+    in the file, so the naive reading compares the selected version against a
+    sibling it was selected over — which reports a widening every time the
+    frontier had more than one point on it, on the gates where selection was
+    doing the most work.
+    """
+    contenders = {candidate.get("commit") for candidate in candidates}
+    earlier = [row for row in evaluations if row.get("commit") not in contenders]
+    current = [row for row in evaluations if row.get("commit") == chosen]
+    return earlier[-1:] + current[-1:]
+
+
+def cmd_gate_select(args: argparse.Namespace) -> int:
+    """The three steps, run at a gate by a person.
+
+    Exit 1 means no version was selected — either step 2 has not run on every
+    candidate, or the chosen one's held-out gap widened, which §12 says "needs
+    a human to look at the diff".
+
+    Nothing here prints a held-out number, for §12's fourth bullet: "the loop
+    is shown a verdict, not the numbers ... enough to know something went
+    wrong and where; not enough to hill-climb." The tuning axes *are* printed,
+    because `hj frontier` already shows them to anyone who asks and hiding
+    them would only make the choice unreadable.
+    """
+    phase, config = loop_config(args.loop)
+    wanted = args.phase or phase.phase
+    if not config.language:
+        die(
+            f"loop {args.loop} declares no language, so it has no held-out corpus to "
+            "select against (design/loops.md section 10)"
+        )
+    rows = [row for row in read_jsonl(metrics_path(config.owner)) if row.get("phase") == wanted]
+    candidates = frontier_points(rows)
+    print(
+        f"gate-select: {config.language}: step 1 — {len(candidates)} of {len(rows)} "
+        f"row(s) in phase {wanted} are on the frontier"
+    )
+    if not candidates:
+        print(
+            "gate-select: nothing to select between. No row of this phase carries both "
+            f"of {' and '.join(FRONTIER_AXES)}, so there is no frontier to evaluate.",
+            file=sys.stderr,
+        )
+        return 1
+    for candidate in candidates:
+        axes = candidate["frontier_axes"]
+        print(
+            f"  {(candidate.get('commit') or '')[:12]}  "
+            + "  ".join(f"{axis} {axes[axis]:.4f}" for axis in FRONTIER_AXES)
+        )
+
+    evaluations = heldout_rows(config.language)
+    evaluated = {row.get("commit"): row for row in evaluations if row.get("commit")}
+    chosen, missing = gate_selection(candidates, evaluated)
+    if chosen is None:
+        print(
+            "gate-select: step 2 has not run on "
+            + ", ".join(commit[:12] for commit in missing)
+            + f". Evaluate those points on the held-out corpus and append to "
+            f"state/heldout/{config.language}.jsonl. design/loops.md section 10 "
+            "refuses to select without them: selecting on the tuning corpus alone "
+            "would be model selection on the training set, and the frontier makes "
+            "that worse rather than better because it searches the whole history "
+            "for the best-looking point.",
+            file=sys.stderr,
+        )
+        return 1
+
+    commit = chosen["commit"]
+    verdict, widened = heldout_verdict(
+        gate_verdict_rows(evaluations, candidates, commit), phase.heldout_threshold
+    )
+    print(f"gate-select: step 3 — {commit[:12]} proceeds; held-out {verdict}")
+    if widened:
+        print(
+            f"gate-select: {', '.join(widened)} widened against the previous gate. "
+            "design/loops.md section 12 stops here and escalates: it is the one "
+            "signal that means the last several iterations were probably net "
+            "negative, and it needs a human to look at the diff.",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
 # §11's guardrail is on two things and only one of them is measurable today.
 # Naming the second anyway is what stops it being forgotten: a guardrail table
 # that silently covers half of what the section asks for reads, from the
@@ -7617,6 +7777,65 @@ def selftest_cases() -> list[tuple[str, object]]:
             [{"campaign": "mine", "sections_clean": 3}], "mine"
         ), "a conformance row carries no axes, so it can never advance a frontier"
 
+    def an_unevaluated_candidate_refuses_the_whole_selection():
+        # Not "skip it and rank the rest". The rest was chosen by the tuning
+        # numbers, which is the model-selection-on-the-training-set §10 spends
+        # its closing paragraph on — and skipping reads exactly like selecting.
+        candidates = [
+            {"commit": "aaa", "frontier_axes": {"top1": 0.9, "coverage": 0.5}},
+            {"commit": "bbb", "frontier_axes": {"top1": 0.5, "coverage": 0.9}},
+        ]
+        evaluated = {"aaa": {"strata": {"A": {"tuning": 0.9, "heldout": 0.8}}}}
+        chosen, missing = gate_selection(candidates, evaluated)
+        assert chosen is None and missing == ["bbb"], (chosen, missing)
+
+    def the_selection_is_on_held_out_and_not_on_the_tuning_axes():
+        candidates = [
+            {"commit": "aaa", "frontier_axes": {"top1": 0.99, "coverage": 0.99}},
+            {"commit": "bbb", "frontier_axes": {"top1": 0.50, "coverage": 0.50}},
+        ]
+        evaluated = {
+            "aaa": {"strata": {"A": {"tuning": 0.99, "heldout": 0.20}}},
+            "bbb": {"strata": {"A": {"tuning": 0.50, "heldout": 0.49}}},
+        }
+        chosen, missing = gate_selection(candidates, evaluated)
+        assert missing == [] and chosen["commit"] == "bbb", chosen
+        assert candidates[0]["frontier_axes"]["top1"] > candidates[1]["frontier_axes"]["top1"], (
+            "the point of the check: the tuning-best candidate is the one not chosen"
+        )
+
+    def a_held_out_tie_breaks_on_the_earlier_commit():
+        candidates = [
+            {"commit": "first", "frontier_axes": {"top1": 0.5, "coverage": 0.9}},
+            {"commit": "later", "frontier_axes": {"top1": 0.9, "coverage": 0.5}},
+        ]
+        evaluated = {
+            "first": {"strata": {"A": {"tuning": 0.6, "heldout": 0.6}}},
+            "later": {"strata": {"A": {"tuning": 0.9, "heldout": 0.6}}},
+        }
+        chosen, _ = gate_selection(candidates, evaluated)
+        assert chosen["commit"] == "first", (
+            "breaking a held-out tie on a tuning number is a small dose of the "
+            "thing step 2 exists to stop, and the invisible kind"
+        )
+
+    def nothing_on_the_frontier_selects_nothing():
+        assert gate_selection([], {}) == (None, [])
+
+    def a_gate_is_compared_with_the_previous_gate_and_not_the_previous_row():
+        evaluations = [
+            {"commit": "old", "strata": {"A": {"tuning": 0.9, "heldout": 0.85}}},
+            {"commit": "aaa", "strata": {"A": {"tuning": 0.9, "heldout": 0.60}}},
+            {"commit": "bbb", "strata": {"A": {"tuning": 0.9, "heldout": 0.86}}},
+        ]
+        candidates = [{"commit": "aaa"}, {"commit": "bbb"}]
+        rows = gate_verdict_rows(evaluations, candidates, "bbb")
+        assert [row["commit"] for row in rows] == ["old", "bbb"], rows
+        assert heldout_verdict(rows, None)[1] == [], (
+            "comparing bbb against aaa — a sibling it was selected over — would "
+            "report a widening on every gate whose frontier had two points"
+        )
+
     def the_verdict_carries_no_number_a_loop_could_climb():
         rows = [
             {"strata": {"ExplicitImport": {"tuning": 0.9137, "heldout": 0.8942}}},
@@ -8254,6 +8473,11 @@ def main() -> int:
     p = sub.add_parser("heldout", help="the held-out verdict, and never the numbers")
     p.add_argument("language", nargs="?")
     p.set_defaults(run=cmd_heldout)
+
+    p = sub.add_parser("gate-select", help="which version proceeds past a phase gate (loops.md §10)")
+    p.add_argument("loop")
+    p.add_argument("--phase", help="a phase other than the current one")
+    p.set_defaults(run=cmd_gate_select)
 
     p = sub.add_parser("guardrail", help="the standing ceilings of loops.md §11")
     p.add_argument("loop", nargs="?")
