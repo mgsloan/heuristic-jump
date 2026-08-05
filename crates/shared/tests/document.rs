@@ -81,6 +81,72 @@ fn the_printed_snapshot_types_have_the_fields_the_real_ones_have() {
     }
 }
 
+/// §2: "`DocumentSnapshot` contains no synchronisation primitive, and that is
+/// the point of the two-step shape."
+///
+/// The section arrives there by rejecting a working design. Handlers fan out
+/// across candidate files, so `&Query` — and therefore `&DocumentSnapshot` —
+/// crosses threads and must be `Sync`; an earlier revision got that by
+/// memoising the parse in a `std::sync::OnceLock`, "which works and is `Sync`,
+/// but is a blocking primitive on the query path in a design whose stated rule
+/// is that there are no locks anywhere". Parsing eagerly removes the question
+/// instead of excusing it.
+///
+/// `clippy.toml` does not hold this. It denies `Mutex`, `RwLock` and `Condvar`
+/// workspace-wide, and the tempting thing here is none of them: a `OnceLock` or
+/// a `Cell` reintroduces exactly what §2 removed while passing every lint, and
+/// it would arrive with a plausible reason — a memoised line index, a lazily
+/// resolved root — because a type this widely shared is where memoisation
+/// looks free.
+///
+/// Comment lines are skipped, and the doc comment on the struct names
+/// `OnceLock` in as many words. A scan that read prose would fail on the
+/// sentence explaining why the thing it looks for is absent.
+#[test]
+fn a_snapshot_carries_nothing_a_handler_could_contend_on() {
+    let source = source();
+    for header in ["pub struct SnapshotSeed {", "pub struct DocumentSnapshot {"] {
+        let body = body(&source, header);
+        assert!(
+            body.contains("uri"),
+            "no fields found for `{header}`, so this scan would pass against anything"
+        );
+        for primitive in [
+            "OnceLock", "OnceCell", "Cell<", "RefCell", "Mutex", "RwLock", "Atomic",
+        ] {
+            assert!(
+                !body.contains(primitive),
+                "`{header}` carries a {primitive}. §2's two-step split exists so that the \
+                 snapshot a handler fans out across threads with needs no primitive at all — \
+                 a memoised field here is a blocking call on the query path, and the design's \
+                 rule is that there are no locks anywhere"
+            );
+        }
+    }
+}
+
+/// A declaration's body, comments dropped, from `header` to its closing brace.
+fn body(text: &str, header: &str) -> String {
+    let Some(start) = text.find(header).map(|at| at + header.len()) else {
+        return String::new();
+    };
+    let mut depth = 1usize;
+    let mut kept = String::new();
+    for line in text[start..].lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("//") {
+            kept.push_str(trimmed);
+            kept.push('\n');
+        }
+        depth += trimmed.matches(['{', '(']).count();
+        depth = depth.saturating_sub(trimmed.matches(['}', ')']).count());
+        if depth == 0 {
+            break;
+        }
+    }
+    kept
+}
+
 /// The section that prints the two types. Sliced by heading rather than by
 /// line number, which moves.
 const SNAPSHOTS: &str = "### Snapshots are O(1) to take";
