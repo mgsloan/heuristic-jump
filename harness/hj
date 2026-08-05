@@ -157,8 +157,16 @@ CAMPAIGN_MAX_LIFETIME_SECONDS = 6 * 3600
 #       moves the attributed *term* on 13 and the progress *verdict* on
 #       none, because every campaign it takes the audit-side term from had
 #       already scored at close. `state/decisions/harness-010.md`.
+#   4 — §7's fifth form arrives: "a frontier point being added that is not
+#       dominated by an existing one". Rules 1 to 3 computed four of the five
+#       because nothing computed a frontier. Strictly a loosening — it is a
+#       disjunct — and before phase 2a no metrics row carries an axis, so
+#       `progress-replay --rule 4` differs from rule 3 on nothing at all:
+#       same terms, same verdicts, same longest run without progress. That
+#       is the whole reason this could be bumped without a history sweep,
+#       and it stops being true the moment a tuning loop records a row.
 # DECISION-harness-010: provisional
-PROGRESS_RULE = 3
+PROGRESS_RULE = 4
 
 OUTCOMES = ("confirmed", "falsified", "no-movement", "partial", "budget", "crashed", "error")
 
@@ -4719,7 +4727,7 @@ def replay_progress(rule: int) -> list[dict]:
                 if tests_only
                 else "none"
             )
-        elif rule == 3:
+        elif rule in (3, 4):
             started = opened.get("started") or ""
             window = [
                 audit
@@ -4759,7 +4767,18 @@ def replay_progress(rule: int) -> list[dict]:
             # row is read directly rather than from `merged`, which also
             # carries the settled row's answer and would make this circular.
             carried = bool(closed.get("progress"))
-            verdict = bool(cleaned or attributed or tests_only or carried)
+            # Rule 4 is rule 3 plus §7's fifth form, which rule 3 did not
+            # have because nothing computed a frontier. It is a disjunct, so
+            # it can only reclassify a campaign from no-progress to progress
+            # — and before phase 2a no metrics row carries an axis, so it
+            # reclassifies none. That is what the backtest is for and it is
+            # the whole justification for bumping the rule without a sweep:
+            # `hj progress-replay --rule 4` against rule 3 differs nowhere.
+            advanced = rule == 4 and campaign_frontier_advance(
+                [row for row in metrics.get(owner, []) if row.get("phase") == merged.get("phase")],
+                campaign_id,
+            )
+            verdict = bool(cleaned or attributed or tests_only or carried or advanced)
             term = (
                 "sections_clean"
                 if cleaned
@@ -4769,6 +4788,8 @@ def replay_progress(rule: int) -> list[dict]:
                 if tests_only
                 else "carried"
                 if carried
+                else "frontier"
+                if advanced
                 else "none"
             )
         else:
@@ -4968,7 +4989,17 @@ def settle_progress(
         attributed = gap_attribution(merged, closed, audited_sections)
         cleaned = current["sections_clean"] > opened.get("sections_clean", 0)
         consolidated = earned_consolidation_credit(merged, opened, current)
-        progress = bool(cleaned or attributed or consolidated or merged.get("progress"))
+        # Recomputed rather than left to the `merged.get("progress")` disjunct
+        # below, which would carry it anyway: what would be lost is the *term*.
+        # A settled row saying "carried" where the frontier is what moved makes
+        # the one term §7 added last unreadable in the history, and the row
+        # stamps `progress_rule` as though it had computed all five.
+        advanced = campaign_advanced_the_frontier(
+            config.owner, campaign_id, merged.get("phase") or ""
+        )
+        progress = bool(
+            cleaned or attributed or consolidated or advanced or merged.get("progress")
+        )
         append_jsonl(
             sessions_path(),
             {
@@ -4985,6 +5016,8 @@ def settle_progress(
                     if attributed
                     else "consolidation"
                     if consolidated
+                    else "frontier"
+                    if advanced
                     else "carried"
                 ),
                 **current,
@@ -5011,16 +5044,24 @@ def cmd_campaign_close(args: argparse.Namespace) -> int:
 
     reconciled = decisions_reconciled(args.id)
 
-    # Four of §7's five forms. The fifth is a frontier point that is not
-    # dominated by an existing one, and there is no frontier before phase 2a:
-    # it is produced by the corpus run, which is what `measure_<lang>` will
-    # write and no loop writes yet. Adding a term that reads a file nobody
-    # produces would make this look complete while behaving identically.
+    # All five of §7's forms. The fifth — "a frontier point being added that
+    # is not dominated by an existing one" — was absent while nothing computed
+    # a frontier, and its absence was not neutral: a campaign whose only
+    # result was a non-dominated point scored as no progress and counted
+    # toward the stall threshold, which is the one outcome §7 most wants a
+    # loop to be free to reach.
+    #
+    # It reads the metrics history rather than a corpus, so it is answerable
+    # today and answers False today: `record` writes no axis before there is
+    # a tuning loop. `hj progress-replay --rule 4` against rule 3 is the
+    # backtest, and it differs on nothing.
+    advanced = campaign_advanced_the_frontier(config.owner, args.id, phase.phase)
     progress = (
         after["sections_clean"] > before["sections_clean"]
         or after["open_gaps"] < before["open_gaps"]
         or (tests_before is not None and tests_after is not None and tests_after > tests_before)
         or bool(reconciled)
+        or advanced
     )
     drift = spec_drift(args.id, args.target)
     prompts = prompt_drift(args.id, config)
