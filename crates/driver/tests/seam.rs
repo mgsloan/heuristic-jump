@@ -1979,6 +1979,45 @@ fn no_member_declares_a_crate_section_13_rejects() {
             );
         }
     }
+
+    // The gix/git2 entry is the one on the list whose reason is a claim about
+    // *our* code rather than about a crate, and it was wrong: §13 said "we
+    // never need to talk to git" while `measure_core` was running `git
+    // rev-parse HEAD` and `git status --porcelain` to verify a corpus checkout
+    // (CHANGE-core-038). The rejection survives the correction, and what it now
+    // rests on is the scope — two commands, in the program that already spawns
+    // a language server, off any latency budget.
+    //
+    // So the scope is what is asserted. The shim's crates never invoke git:
+    // `ignore` reads `.gitignore` directly, which is §13's other clause and is
+    // the reason nothing on the query path needs to. A `Command::new("git")`
+    // reaching `driver` would put a subprocess inside a deadline and would make
+    // the case for a git *library* that §13 has twice now declined.
+    let mut invokes = Vec::new();
+    for member in &members {
+        let named = member.trim_start_matches("crates/");
+        if !member.starts_with("crates/") {
+            continue;
+        }
+        for (file, source) in sources_of(named) {
+            assert!(
+                !source.is_empty(),
+                "{file} is missing or empty, so the scan below would pass vacuously"
+            );
+            if source.contains("Command::new(\"git\")") {
+                invokes.push(named.to_owned());
+            }
+        }
+    }
+    invokes.sort();
+    invokes.dedup();
+    assert_eq!(
+        invokes,
+        vec!["measure_core".to_owned()],
+        "deps.md §13 rejects gix and git2 on the grounds that the only thing talking to git is \
+         measure_core's corpus verification. That is now false: a crate that shells out to git \
+         where the section says none does is the evidence for the library it declines"
+    );
 }
 
 /// `deps.md` §14's first two conventions, which are one mechanism:

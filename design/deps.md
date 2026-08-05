@@ -896,8 +896,18 @@ with a `TestClock` impl in `shared`, not a dependency.
 * **`jiff` / `chrono` / `time`** — trace timestamps are
   `SystemTime::UNIX_EPOCH.elapsed()` as micros. A date-time library for one
   integer is not worth it.
-* **`gix` / `git2`** — `ignore` reads `.gitignore` files directly; we never
-  need to talk to git.
+* **`gix` / `git2`** — `ignore` reads `.gitignore` files directly, so nothing
+  on the query path talks to git, and the shim's crates never do. What does is
+  `measure_core`'s corpus verification (`data-collection.md` §1: `HEAD` matches
+  and the tree is clean), and it needs `git rev-parse HEAD` and
+  `git status --porcelain` — two commands, off any latency budget, in a program
+  that already spawns a language server. Linking a git implementation for that
+  buys nothing the `git` on `PATH` does not already do, and `git2` would put
+  libgit2 in the graph for it. `driver/tests/seam.rs` holds the scope rather
+  than the sentence: git is invoked from `measure_core` and nowhere else.
+
+  This entry read "we never need to talk to git" until CHANGE-core-038, which
+  was false of the corpus path from the moment it existed.
 
 ## 14. Workspace `Cargo.toml` shape
 

@@ -138,3 +138,39 @@ distinguishing prefix") is left exactly as it was and the code was moved to
 satisfy it; what the spec lost is a false premise in a subordinate argument.
 
 **Campaign:** b67cc6d7-c0e6-4a24-bb9e-1adfdb5779f4
+
+## CHANGE-core-038 — deps.md#13-explicitly-not-depended-on — gix/git2 are still rejected, but not for the reason given
+
+**Contradiction:** §13's entry reads —
+
+> **`gix` / `git2`** — `ignore` reads `.gitignore` files directly; we never
+> need to talk to git.
+
+— while `measure_core::corpus::verify_checkout` runs `git rev-parse HEAD` and
+`git status --porcelain` on every repository of every corpus run, and
+`measure_core/tests/pipeline.rs` builds its fixture checkouts the same way.
+`data-collection.md` §1 requires that verification, so it is not incidental:
+the clean-tree half is what stops a modified file shifting the byte offsets a
+truth file was frozen against.
+
+**Resolution:** the entry keeps the rejection and states what it actually
+rests on. Nothing on the *query path* talks to git — that half is true, and
+`ignore` reading `.gitignore` directly is why. What talks to git is corpus
+verification, and it needs two commands in a program that already spawns a
+language server, with no latency budget to protect; a git implementation
+linked in for that buys nothing the `git` on `PATH` does not, and `git2` would
+put libgit2 in the graph as well.
+
+Nothing is traded off: no dependency changes, and the rejection is not
+weakened. What changes is that the reason is now checkable, which it was not
+while it quantified over the whole repository —
+`driver/tests/seam.rs::no_member_declares_a_crate_section_13_rejects` asserts
+that `Command::new("git")` appears in `measure_core` and in no other member,
+so a `git` call reaching `driver` fails rather than quietly becoming the case
+for the library §13 has now declined twice.
+
+**Spec and code in one campaign:** the document is edited and no code it
+describes moves — the only code change is the assertion above. The direction
+worth checking is that the entry says *more* than it did rather than less.
+
+**Campaign:** b67cc6d7-c0e6-4a24-bb9e-1adfdb5779f4
