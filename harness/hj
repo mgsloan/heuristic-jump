@@ -4660,6 +4660,18 @@ def cmd_campaign_open(args: argparse.Namespace) -> int:
 
     commit_harness_state([record, sessions_path()], f"open campaign {campaign_id[:8]} ({config.owner})")
 
+    # Kept beside the transcript, because the stream does not echo it and
+    # `harness/loop` deletes the file it was handed as soon as the run ends.
+    # §16 reads a turn as prompt, thinking, tool calls, results, text, and the
+    # first of those was recoverable from nothing: `prompt_sha` says *which*
+    # prompt and never what it said, and a spliced value — a gap's `found:`
+    # line, a stale digest — is exactly what a transcript is read to explain.
+    # Written here rather than by the runner so that every caller of
+    # campaign-open retains it, including a human opening one by hand.
+    kept = prompt_file_of(config.owner, campaign_id)
+    if kept:
+        Path(kept).parent.mkdir(parents=True, exist_ok=True)
+        Path(kept).write_text(rendered)
     if args.prompt_out:
         Path(args.prompt_out).write_text(rendered)
     print(campaign_id)
@@ -6073,6 +6085,15 @@ def transcript_of(owner: str, campaign_id: str) -> str:
     """
     return subprocess.run(
         [str(Path(__file__).resolve().parent / "adapter"), "transcript-path", owner, campaign_id],
+        capture_output=True, text=True, check=False,
+    ).stdout.strip()
+
+
+def prompt_file_of(owner: str, campaign_id: str) -> str:
+    """Where the rendered prompt is kept, asked of the adapter for
+    `transcript_of`'s reason."""
+    return subprocess.run(
+        [str(Path(__file__).resolve().parent / "adapter"), "prompt-path", owner, campaign_id],
         capture_output=True, text=True, check=False,
     ).stdout.strip()
 
@@ -9249,6 +9270,25 @@ def selftest_cases() -> list[tuple[str, object]]:
         assert "where the servers differ" in several, several
         assert serve.stratum_table([]).startswith("<p class=\"empty\""), (
             "no row is an empty panel that says what would fill it, not a blank"
+        )
+
+    def a_transcript_starts_at_the_prompt_and_not_mid_conversation():
+        # §16 reads a turn as prompt, thinking, tool calls, results, text. The
+        # stream carries the last four; the vendor never echoes the first, and
+        # `harness/loop` deletes the rendered file when the run ends — so the
+        # one thing that says what a campaign was actually asked has to be
+        # kept at open or it does not exist.
+        assert "prompt_file_of" in inspect.getsource(cmd_campaign_open), (
+            "retaining it is campaign-open's job; every caller gets it, not only the runner"
+        )
+        serve = _selftest_dashboard()
+        assert "prompt-path" in inspect.getsource(serve.rendered_prompt), (
+            "the layout is the adapter's to know (§17), here as much as for the transcript"
+        )
+        missing = serve.rendered_prompt("nobody", "no-such-campaign")
+        assert "was not kept" in missing and "prompt_sha" in missing, (
+            "campaigns that predate this have only their sha, and the page should say so "
+            "rather than render an empty block"
         )
 
     def the_held_out_panel_shows_a_verdict_and_never_a_number():

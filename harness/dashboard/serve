@@ -2301,6 +2301,32 @@ def earlier_button(owner: str, campaign: str, end: int) -> str:
     )
 
 
+def rendered_prompt(owner: str, campaign: str) -> str:
+    """The prompt this campaign was given, as the first thing on its page.
+
+    `design/loops.md` §16 reads a turn as prompt, thinking, tool calls,
+    results, text. The stream carries the last four and never the first — the
+    vendor does not echo it — so until `campaign-open` began keeping the
+    rendered file, every transcript here started mid-conversation. The session
+    row's `prompt_sha` says which prompt and never what it said, and what a
+    reader usually wants is the spliced part: which gaps this campaign was
+    handed, and what the digest above them claimed.
+
+    Collapsed, because it is long and it is context rather than the story.
+    """
+    path = Path(adapter("prompt-path", owner, campaign).strip() or "/nonexistent")
+    if not path.exists():
+        return (
+            '<p class="note">The rendered prompt was not kept for this campaign. '
+            "Campaigns opened before it was retained have only their <code>prompt_sha</code>.</p>"
+        )
+    text = path.read_text(errors="replace")
+    return (
+        f'<details class="turn prompt"><summary>prompt ({len(text):,} bytes)</summary>'
+        f"<pre>{esc(text)}</pre></details>"
+    )
+
+
 def render_transcript(owner: str, campaign: str) -> str:
     path, events = transcript_events(owner, campaign)
     if not events:
@@ -2320,6 +2346,11 @@ def render_transcript(owner: str, campaign: str) -> str:
     return page(
         "Transcript",
         header
+        # Above the window rather than inside it: the prompt is turn zero and
+        # the window loads backwards from the end, so an event-stream position
+        # would put it behind however many "load earlier" clicks the campaign
+        # was long.
+        + rendered_prompt(owner, campaign)
         + '<div id="events">'
         + earlier_button(owner, campaign, start)
         + "".join(parts)
@@ -2556,6 +2587,8 @@ tr.live td { border-bottom:1px solid var(--accent); }
 .paths code { display:inline-block; }
 .turn { margin:8px 0; }
 .turn.text p { margin:6px 0; }
+.turn.prompt { margin-bottom:18px; border-left:3px solid var(--line); padding-left:10px; }
+.turn.prompt pre { white-space:pre-wrap; }
 summary { cursor:pointer; color:var(--dim); font-size:12px; }
 .tool-name { color:var(--accent); font-weight:600; }
 .diff .del { color:var(--bad); }
