@@ -30,11 +30,17 @@
 //! has drifted. So these methods take the raw params — valid JSON, since a
 //! frame that is not JSON is `CodecError`'s and not ours — and project inside.
 //!
-//! What is missing is the actor and the transport. `shim.md` §5's `core` would
-//! own this map and feed it from the reader thread; there is no reader thread,
-//! so it is fed by its caller. That is the wiring. The ownership is already
-//! right: nothing here is shared, nothing is locked, and every mutation needs
-//! `&mut self`, which only the owner has.
+//! `shim.md` §5's `core` owns this map and feeds it, which is `actor.rs`; what
+//! is still missing is the transport that feeds *that*. The ownership is what
+//! makes the arrangement work: nothing here is shared, nothing is locked, and
+//! every mutation needs `&mut self`, which only the owner has.
+//!
+//! **One check leaves this thread and comes back**, and it is the reason
+//! [`SaveCheck`] and [`Generation`] exist. §8.6's `didSave` checksum "costs a
+//! read, so it belongs in a worker, off the critical path", so the map hands
+//! out a check and is told the answer later — by which time the document may
+//! have moved, which is a comparison that must not be made rather than one that
+//! must fail.
 
 use serde_json::value::RawValue;
 use shared::proto::{
@@ -149,8 +155,10 @@ pub enum Synced {
     /// Our model now matches the message.
     Applied,
     /// There was no trusted model to change — an unclaimed language, a
-    /// document never opened, or one already untrusted. Not a distrust:
-    /// nothing here stopped being believed, because nothing here was.
+    /// document never opened, one already untrusted, or one that moved while a
+    /// save check was out being read. Not a distrust: nothing here stopped
+    /// being believed, because there was nothing this message could be
+    /// compared against.
     Untracked,
     /// §8.6: at least one document is untrusted as of this message. Which, and
     /// why, is [`Documents::distrust`].
