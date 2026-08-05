@@ -19,12 +19,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use shared::{
-    ByteLen, Clock, Deadline, Error, FileExtension, FileList, Generation, HandlerError,
-    ProjectPath, ProjectRoot, ProjectView, RelPath, ScanRequest, SearchOrigin, Stratum, TestClock,
+    ByteLen, Clock, CommitPolicy, Deadline, DocumentUri, DocumentVersion, Error, FileExtension,
+    FileList, Generation, HandlerError, LanguageId, Offset, ProjectPath, ProjectRoot, ProjectView,
+    Query, RelPath, Rope, ScanRequest, SearchOrigin, ServerProfile, SnapshotSeed, Stratum,
+    TestClock,
 };
 use tree_sitter::Language;
 
 const RUST: FileExtension = FileExtension::new("rs");
+const RUST_ID: LanguageId = LanguageId::new("rust");
 
 /// The fixture, as (path, contents) relative to the single root. `notes.md` is
 /// the wrong extension and `vendored/copy.rs` is gitignored; both are files the
@@ -410,6 +413,75 @@ fn a_second_parse_of_the_same_path_is_a_fresh_parse() {
          disk-file key names a cache that does not exist and may not be added \
          here: ProjectView is reached through the Sync &Query several fan-out \
          threads hold, so a cache on it is a lock in a design that has none"
+    );
+}
+
+/// `core.md` §2: "handlers fan out across candidate files, so `&Query` — and
+/// therefore `&DocumentSnapshot` — crosses threads and must be `Sync`." That
+/// premise is what every refusal in this file is argued from, and the view is
+/// only one of the six references a `Query` is.
+///
+/// The other five are held from the wrong side. Planting a `RefCell` in
+/// `CommitPolicy` fails `driver/src/workers.rs:238`, which spawns pool threads
+/// holding an `Arc<CommitPolicy>` — so the bound in force is a consequence of
+/// how `driver` happens to own the value, not of the seam requiring it, and it
+/// goes away the day a policy is built per query instead of shared. `shared`
+/// itself asked nothing: the plant that added a `RefCell` field to
+/// `ProjectView` built the library and every other test binary in this crate.
+/// That matters more than it sounds, because under `phases.md` the seam is
+/// frozen a whole phase before `driver` exists to hold anything, and
+/// `CommitPolicy` is the one due to grow — §1 has it acquiring a per-stratum
+/// floor once a corpus exists, and a floor is a table, and a table on the query
+/// path is where memoisation looks free.
+#[test]
+fn the_whole_query_crosses_threads_and_not_only_the_view() {
+    let root = fixture("query_fanout");
+    let view = view(&root);
+    let deadline = Deadline::none();
+    let document = SnapshotSeed::fresh(
+        DocumentUri::from_file_path(&root.join("src/lib.rs")).expect("a file URI"),
+        Rope::from(FILES[0].1),
+        DocumentVersion(1),
+        RUST_ID,
+        grammar(),
+    )
+    .realise(&deadline)
+    .expect("parsing the fixture document");
+    let server = ServerProfile::standalone();
+    let policy = CommitPolicy::permissive();
+    let query = Query {
+        doc: &document,
+        position: Offset(3),
+        project: &view,
+        deadline: &deadline,
+        server: &server,
+        policy: &policy,
+    };
+
+    let observed: Vec<usize> = std::thread::scope(|scope| {
+        let query = &query;
+        let readers: Vec<_> = (0..4)
+            .map(|_| {
+                scope.spawn(move || {
+                    query.doc.tree().root_node().named_child_count()
+                        + query.project.roots().len()
+                        + usize::from(!query.deadline.expired())
+                        + usize::from(query.server.id().is_none())
+                })
+            })
+            .collect();
+        readers
+            .into_iter()
+            .map(|reader| reader.join().expect("a fan-out thread"))
+            .collect()
+    });
+
+    assert!(
+        observed.iter().all(|count| *count == observed[0]) && observed[0] > 2,
+        "four threads reading one `Query` saw {observed:?}. Every field a \
+         handler reads has to answer the same way on every thread, because \
+         core.md §2 makes the snapshot immune to concurrent edits by having \
+         nothing to contend on rather than by locking"
     );
 }
 
