@@ -182,12 +182,14 @@ wrong. Two classes:
 **Class A — fix it, record it, continue.** An internal contradiction, a
 section reference that does not resolve, a type name that changed, a false
 claim about a dependency's API, an example that does not compile. The test
-is: *is there a defensible answer that does not trade anything off?* document. **Ask for the id rather than picking one** —
+is: *is there a defensible answer that does not trade anything off?* If there
+is, apply it to the document, then record it.
+
+**Ask for the id rather than picking one** —
 `harness/hj allocate-id {{loop}} --kind change` prints the next free one and
 reserves it, because two workers choosing a number by reading the file both
 choose the same one. Then append to `{{changelog}}` — yours, not the loop's, so
-three workers appending at once do not conflict — in
-exactly this shape,
+three workers appending at once do not conflict — in exactly this shape,
 because a human is scheduled to read it and the dashboard finds entries by
 their id:
 
