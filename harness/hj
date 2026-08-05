@@ -6524,6 +6524,144 @@ def frontier_points(rows: list[dict]) -> list[dict]:
     return [dict(row, frontier_axes=position) for row, position in kept]
 
 
+# --------------------------------------------------------------------------
+# The exchange rate. `design/loops.md` §10, "What this retires".
+#
+# "The **local slope of the cost-phase frontier is the empirical rate** — it
+# says what a coverage point actually cost in bytes, at this operating point,
+# on this corpus. Deriving it beats declaring it, and it can be re-derived
+# whenever the operating point moves."
+#
+# A different object from the quality frontier above it, and deliberately not
+# built on the same functions. §10 is explicit that "phase 3 has no frontier of
+# its own … the frontier reappears there only inside an escalation, to show
+# what a proposed exception would cost", so this plane is coverage against
+# bytes and one of its axes is a minimisation. Sharing `dominates` would mean
+# giving it a direction table, and a direction table is how a third axis and a
+# weighting arrive later.
+#
+# What it must not become is a threshold. §10's whole argument is that "nobody
+# has to write down what a coverage point is worth in kilobytes in the
+# abstract" — the rate is derived to be *looked at* by the human ruling on an
+# escalation, and a rate that decided anything by itself would be that written
+# -down number arriving through the back door.
+
+
+def cost_point_of(row: dict) -> tuple[float, int] | None:
+    """A row's position on the cost plane: coverage, and stripped bytes.
+
+    Both or neither, for `frontier_axes_of`'s reason. A row missing the size
+    would otherwise sit at zero bytes and dominate everything that measured.
+    """
+    coverage = stratum_mean(row, "coverage")
+    binary = row.get("binary")
+    if coverage is None or not isinstance(binary, dict):
+        return None
+    stripped = binary.get("stripped")
+    if not isinstance(stripped, int) or isinstance(stripped, bool):
+        return None
+    return coverage, stripped
+
+
+def cost_frontier(rows: list[dict]) -> list[dict]:
+    """Non-dominated on more coverage and fewer bytes, cheapest first.
+
+    Ties on both axes keep the earliest commit, as the quality frontier does
+    and for the same reason: the commit that first reached a point is the one
+    that reached it.
+    """
+    positioned = [
+        (row, point) for row in rows if (point := cost_point_of(row)) is not None
+    ]
+    kept: list[tuple[dict, tuple[float, int]]] = []
+    for row, (coverage, size) in positioned:
+        dominated = any(
+            other_coverage >= coverage
+            and other_size <= size
+            and (other_coverage > coverage or other_size < size)
+            for _, (other_coverage, other_size) in positioned
+        )
+        if dominated or any(other == (coverage, size) for _, other in kept):
+            continue
+        kept.append((row, (coverage, size)))
+    kept.sort(key=lambda pair: pair[1][1])
+    return [
+        dict(row, cost_point={"coverage": coverage, "stripped": size})
+        for row, (coverage, size) in kept
+    ]
+
+
+def exchange_rates(points: list[dict]) -> list[dict]:
+    """The local slope between adjacent points: bytes per coverage point.
+
+    Local rather than a fit through the whole frontier. The section says "at
+    this operating point", and a single fitted rate over a curve that bends —
+    which is the shape the incompressible-peak failure in §19 predicts — would
+    read as one price for a surface that has several.
+    """
+    rates = []
+    for earlier, later in zip(points, points[1:]):
+        cheap, dear = earlier["cost_point"], later["cost_point"]
+        gained = dear["coverage"] - cheap["coverage"]
+        if gained <= 0:
+            continue
+        rates.append(
+            {
+                "from": earlier.get("commit"),
+                "to": later.get("commit"),
+                "coverage": gained,
+                "bytes": dear["stripped"] - cheap["stripped"],
+                "bytes_per_coverage_point": (dear["stripped"] - cheap["stripped"]) / gained,
+            }
+        )
+    return rates
+
+
+def cmd_exchange_rate(args: argparse.Namespace) -> int:
+    """§10's empirical exchange rate, derived rather than declared.
+
+    Not a gate step, not consulted by `harness/loop`, and exit 0 whatever it
+    finds. It exists to be read by the human ruling on a phase-3 escalation,
+    which is the one place §10 lets the frontier back in.
+    """
+    phase = load_phase()
+    owners = [args.loop] if args.loop else sorted(phase.loops)
+    wanted = args.phase or phase.phase
+    for owner in owners:
+        rows = [row for row in read_jsonl(metrics_path(owner)) if row.get("phase") == wanted]
+        points = cost_frontier(rows)
+        if len(points) < 2:
+            print(
+                f"exchange-rate: {owner}: {len(points)} point(s) on the cost plane, of "
+                f"{len(rows)} row(s) in phase {wanted}. A slope needs two, and a point "
+                "needs a row carrying both coverage and a stripped size — which is a "
+                "replayed commit of a loop that builds a measure_<lang>."
+            )
+            continue
+        print(
+            f"exchange-rate: {owner}: {len(points)} point(s) on coverage x stripped "
+            f"bytes in phase {wanted}, cheapest first"
+        )
+        for point in points:
+            place = point["cost_point"]
+            print(
+                f"  {(point.get('commit') or '')[:12]}  coverage {place['coverage']:.4f}"
+                f"  {place['stripped']} bytes"
+            )
+        for rate in exchange_rates(points):
+            print(
+                f"  {(rate['from'] or '')[:12]} -> {(rate['to'] or '')[:12]}  "
+                f"{rate['bytes_per_coverage_point']:,.0f} bytes per coverage point"
+            )
+        print(
+            "exchange-rate: derived and never declared (design/loops.md section 10). "
+            "It is what a coverage point cost at this operating point on this corpus, "
+            "for a human ruling on a phase-3 escalation to look at — not a threshold, "
+            "and nothing here reads it."
+        )
+    return 0
+
+
 def campaign_frontier_advance(rows: list[dict], campaign_id: str) -> bool:
     """§7's fifth form, for one campaign, over one phase's metrics rows.
 
@@ -8651,6 +8789,44 @@ def selftest_cases() -> list[tuple[str, object]]:
             "a trade is an advance; it is a point nothing existing reaches"
         )
 
+    def the_exchange_rate_is_derived_from_the_cost_frontier_and_never_declared():
+        # §10: "the local slope of the cost-phase frontier is the empirical
+        # rate — it says what a coverage point actually cost in bytes, at this
+        # operating point, on this corpus."
+        def row(commit, coverage, stripped):
+            return {
+                "commit": commit,
+                "strata": {"a": {"n": 10, "coverage": coverage}},
+                "binary": {"binary": "measure_rust", "stripped": stripped},
+            }
+
+        rows = [
+            row("cheap", 0.50, 1_000_000),
+            row("mid", 0.60, 1_200_000),
+            row("dear", 0.62, 2_000_000),
+            # Dominated: less coverage than `mid` for more bytes than `mid`.
+            row("waste", 0.55, 1_500_000),
+        ]
+        points = cost_frontier(rows)
+        assert [point["commit"] for point in points] == ["cheap", "mid", "dear"], points
+        assert cost_frontier([{"commit": "x", "strata": {"a": {"coverage": 0.9}}}]) == [], (
+            "a row with no size would sit at zero bytes and dominate every row "
+            "that measured one"
+        )
+        rates = [rate["bytes_per_coverage_point"] for rate in exchange_rates(points)]
+        assert all(
+            abs(measured - wanted) < 1 for measured, wanted in zip(rates, (2e6, 4e7))
+        ) and len(rates) == 2, (
+            "local slopes, not one fit through the curve: the second point is "
+            f"twenty times dearer than the first and a single rate hides that: {rates}"
+        )
+        assert exchange_rates(points[:1]) == [], "a slope needs two points"
+        flat = [
+            {"commit": "a", "cost_point": {"coverage": 0.5, "stripped": 10}},
+            {"commit": "b", "cost_point": {"coverage": 0.5, "stripped": 20}},
+        ]
+        assert exchange_rates(flat) == [], "no coverage gained is not an infinite price"
+
     def a_row_missing_one_axis_is_not_a_point():
         assert frontier_axes_of({"top1": 0.9}) is None
         assert frontier_axes_of({"top1": 0.9, "coverage": 0.8}) == {"top1": 0.9, "coverage": 0.8}
@@ -9603,6 +9779,14 @@ def main() -> int:
         help="how long that replay took (loops.md §9 records it, never gates on it)",
     )
     p.set_defaults(run=cmd_record)
+
+    p = sub.add_parser(
+        "exchange-rate",
+        help="what a coverage point cost in bytes, from the cost-phase frontier (loops.md §10)",
+    )
+    p.add_argument("loop", nargs="?")
+    p.add_argument("--phase", help="a phase other than the current one")
+    p.set_defaults(run=cmd_exchange_rate)
 
     p = sub.add_parser("frontier", help="the non-dominated commits of a phase (loops.md §10)")
     p.add_argument("loop", nargs="?")

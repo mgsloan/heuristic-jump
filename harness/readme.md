@@ -268,7 +268,20 @@ harness/hj check-heldout      # the separation, before a campaign is launched
 harness/hj heldout [<lang>]   # the verdict, and never the numbers
 harness/hj frontier [<loop>]  # the non-dominated commits of a phase
 harness/hj gate-select <loop> # which of those proceeds past the gate
+harness/hj exchange-rate      # what a coverage point cost in bytes
 ```
+
+`exchange-rate` is a different plane from `frontier` and deliberately shares no
+code with it. §10 says phase 3 "has no frontier of its own … the frontier
+reappears there only inside an escalation, to show what a proposed exception
+would cost", so this one is coverage against stripped bytes and one of its axes
+is a minimisation. It prints the local slope between adjacent points, because
+"at this operating point" is what the section asks for and one fitted rate over
+a bending curve reads as a single price for a surface that has several.
+
+It decides nothing and nothing reads it. §10's argument is that "nobody has to
+write down what a coverage point is worth in kilobytes in the abstract" — a
+rate that gated something would be that number arriving through the back door.
 
 **Nothing here evaluates anything.** That is the third bullet rather than an
 omission: a number reported every iteration is a number that gets optimised
