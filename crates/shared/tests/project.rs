@@ -515,6 +515,97 @@ fn the_view_is_read_from_several_threads_at_once() {
     );
 }
 
+/// `core.md` §1: "a handler cannot build a `ProjectPath` from a string — every
+/// path it holds came from `ProjectView::candidates` or `::lookup`, both of
+/// which consult the `ignore`-crate file list", and that is "what makes the
+/// scope rule true rather than customary".
+///
+/// The unforgeability half is the compiler's: the field and the constructor are
+/// private. The *two routes* half is not, and it is the one carrying the claim,
+/// because `FileList::paths` is `pub` and hands back every path in the project
+/// — it has to be, since `measure_core` enumerates corpus positions through it
+/// (`measure_core.rs:231`). What keeps it away from a handler is only that
+/// nothing in this impl returns a `&FileList`, which is a property of a list
+/// that has never been written down.
+///
+/// So the surface is the fixture, return types included. A method added here is
+/// a widening of the seam every language crate is written against; one handing
+/// back the file list, or paths in any order but `candidates`', would also cost
+/// `resolution.md` §1.3 the determinism replay compares against — quietly, and
+/// with every test in this file still passing.
+#[test]
+fn the_views_public_surface_is_what_a_query_gives_a_handler() {
+    assert_eq!(
+        public_functions(&source(), "impl ProjectView {"),
+        [
+            "new -> Self",
+            // `core-025` (accepted, option C): write-only, for an expiry.
+            "classified -> ()",
+            "roots -> &[ProjectRoot]",
+            "root_of -> Option<&ProjectRoot>",
+            // The two §1 names. Both mint a `ProjectPath` only for a path the
+            // `ignore` walker returned.
+            "lookup -> Option<ProjectPath>",
+            "candidates -> CandidateFiles<'_>",
+            "read -> Result<FileText, Error>",
+            "parse -> Option<Tree>",
+            "scan -> Result<ScanOutcome, Error>",
+        ],
+        "`ProjectView`'s public surface is not the one core.md §1 describes. \
+         This is everything a handler can do with the world outside its own \
+         document, so an addition is a change to the frozen seam — and one \
+         returning a `&FileList` or a bare path set is the scope rule turning \
+         back into a convention every language author has to remember"
+    );
+}
+
+/// Public functions of an `impl` block, as `name -> ReturnType`, in order.
+/// Whitespace-collapsed first, because a signature that spans four lines and one
+/// that fits on one are the same signature.
+fn public_functions(text: &str, header: &str) -> Vec<String> {
+    let mut signatures = Vec::new();
+    for declaration in impl_body(text, header).split("pub fn ").skip(1) {
+        let signature = declaration
+            .split_once('{')
+            .map_or(declaration, |(before, _)| before);
+        let name = signature
+            .split_once('(')
+            .map_or(signature, |(name, _)| name)
+            .trim();
+        let returns = signature
+            .rsplit_once("->")
+            .map_or("()", |(_, returns)| returns.trim());
+        signatures.push(format!("{name} -> {returns}"));
+    }
+    signatures
+}
+
+/// An `impl` block's body with its comment lines dropped and its whitespace
+/// collapsed. The comments go first for the reason `document.rs`'s scan gives:
+/// they are where the absent things are named, and `parse`'s says "No LRU" in
+/// as many words.
+fn impl_body(text: &str, header: &str) -> String {
+    let start = text
+        .find(header)
+        .map(|at| at + header.len())
+        .unwrap_or_else(|| panic!("`{header}` is not declared in the source this scan reads"));
+    let mut depth = 1usize;
+    let mut kept = String::new();
+    for line in text[start..].lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("//") {
+            kept.push_str(trimmed);
+            kept.push(' ');
+        }
+        depth += trimmed.matches('{').count();
+        depth = depth.saturating_sub(trimmed.matches('}').count());
+        if depth == 0 {
+            break;
+        }
+    }
+    kept
+}
+
 /// The fields of a declaration, as `name: Type`, in order. Scanning rather than
 /// parsing, for the reason `handler.rs` gives: the source is rustfmt's output,
 /// so a field is a line and its type is what follows the first colon.
