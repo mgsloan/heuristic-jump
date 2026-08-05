@@ -49,3 +49,50 @@ reads the section and `vendor/README.md` together, so the weaker sentence
 cannot come back without the patch list also emptying.
 
 **Campaign:** b106a11d-e4c9-43d7-8aad-dc42cb9f54d5
+
+## CHANGE-core-028 — core.md#vendoring-the-zed-crates — the sweep replaces bare integers, and `TextSummary`'s are not `u32`
+
+**Contradiction:** `core.md#vendoring-the-zed-crates` opens
+
+> its public API speaks in newtypes — `Offset`, `ByteLen`, and `ByteRange`
+> instead of `usize` and `Range<usize>`, and `LineIndex` / `ByteColumn` /
+> `Utf16Column` / `CharCount` instead of the bare **`u32`s** in `Point`,
+> `PointUtf16`, and `TextSummary`
+
+and names `rope-modifications.md` in the next sentence as the document to read
+before touching `vendor/`. That document states the same claim as its opening
+blockquote, and states it differently:
+
+> `ByteColumn`, `Utf16Column`, and `CharCount` instead of the bare **integers**
+> in `Point`, `PointUtf16`, and `TextSummary`.
+
+`TextSummary` is what separates them. Its `len` and `chars` are `usize`
+upstream, not `u32`, so "the bare `u32`s" is false of exactly the type the
+sweep changes most — and `rope-modifications.md` §2 spends a paragraph on why
+`CharCount` is the one member of the family backed by `usize` rather than
+`u32`, an argument `core.md`'s wording quietly contradicts.
+
+**Resolution:** `core.md` now says "the bare integers", which is
+`rope-modifications.md`'s own word for the same set. This trades nothing off
+because the sentence is a summary of the other document pointing at it: where
+the two disagree about a claim only one of them argues, the one that argues it
+is the one that stands. Nothing in `core.md` depends on the narrower reading —
+the section's three "things stated here because they change this section's own
+claims" are about where the types are defined, the re-sync cost, and upstream's
+tests, none of which mentions a width.
+
+**Code moved in this campaign and this entry is downstream of it, which is
+worth stating plainly rather than leaving to be noticed.** `CharCount` was
+`u32` in the code and `usize` in `rope-modifications.md`; commit `831f79f`
+widened the code, because a human commit (`1b9dd51`, "Design change: CharCount
+is usize") had moved the document two days after the code was written. This
+entry then corrects the *third* place the claim is stated. No design sentence
+was moved toward the code at any point: the code moved toward the design, and
+`core.md` moved toward `rope-modifications.md`.
+
+The mechanism is `vendor/rope/tests/newtype_api.rs`'s
+`both_documents_describe_the_newtype_sweep_the_same_way`, which asserts the
+shared clause in both documents, so a revert of either fires. Both directions
+planted.
+
+**Campaign:** b106a11d-e4c9-43d7-8aad-dc42cb9f54d5

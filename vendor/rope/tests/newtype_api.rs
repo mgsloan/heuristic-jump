@@ -1138,6 +1138,35 @@ fn offset_seeks_the_rope_and_sum_tree_never_hears_about_it() {
     );
 }
 
+/// The sweep's headline claim is stated twice — once as this document's
+/// opening blockquote and once in `core.md#vendoring-the-zed-crates`, which
+/// names `rope-modifications.md` as the document to read before touching
+/// `vendor/`. Two statements of one claim is two chances to be wrong, and
+/// `core.md`'s was: it said these newtypes replace "the bare `u32`s in `Point`,
+/// `PointUtf16`, and `TextSummary`", where this document says "the bare
+/// *integers*" (CHANGE-core-028).
+///
+/// The difference is `TextSummary`, whose `len` and `chars` are `usize`
+/// upstream and not `u32` — and `chars` is the field whose width the code got
+/// wrong for two days in exactly the direction `core.md`'s wording invited.
+/// The clause below is the one both documents now share, so a revert of either
+/// fires here.
+#[test]
+fn both_documents_describe_the_newtype_sweep_the_same_way() {
+    const SHARED: &str =
+        "instead of the bare integers in `Point`, `PointUtf16`, and `TextSummary`";
+
+    for document in ["rope-modifications.md", "core.md"] {
+        assert!(
+            unwrapped(&design(document)).contains(SHARED),
+            "design/{document} no longer says the sweep replaces \"the bare \
+             integers\". `TextSummary.len` and `TextSummary.chars` are `usize` \
+             upstream, so \"the bare `u32`s\" is false of the type the sweep \
+             changes most, and `CharCount` is `usize` for that reason"
+        );
+    }
+}
+
 /// §4's dimension-impls paragraph used to end "`sum_tree` stays a pristine
 /// copy, and [section 9]'s claim that it needs no patching survives". Both
 /// halves were false (CHANGE-core-027), and the second was false in the way a
@@ -1489,8 +1518,17 @@ fn line_end(text: &str, row: LineIndex) -> Offset {
 /// Prose with its hard wrapping removed, so that a scan for a sentence finds
 /// one that a line break happens to fall inside. Every run of whitespace
 /// becomes a single space, which also makes the scan survive a reflow.
+///
+/// A blockquote's `>` is wrapping too, and is stripped for the same reason: it
+/// is per-*line* markup around prose that is one sentence, so a claim stated
+/// inside one is otherwise unfindable — which is where `rope-modifications.md`
+/// states the sweep's headline claim.
 fn unwrapped(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
+    text.lines()
+        .map(|line| line.trim_start().trim_start_matches(['>', ' ']))
+        .flat_map(str::split_whitespace)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// A design document, by file name. `vendor/rope` is two levels below the
