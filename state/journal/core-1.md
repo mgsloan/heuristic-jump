@@ -1006,3 +1006,110 @@ corpus run reports what the rule costs.
 * `std::cmp::Ordering` is already imported in `project.rs`, so the atomic one
   needs `Ordering as AtomicOrdering`. And a `replace_all` on `, Ordering::Relaxed)`
   misses `load(Ordering::Relaxed)`, which has no leading comma.
+
+## Campaign 7fda63d7 — §8.6's didSave checksum, and the window a worker opens
+
+Assignment was four gaps. Three were stale *and* already mechanised; the fourth
+— `core.md#86[5746a16de3]`, the `didSave` read — was the only unbuilt thing in
+the round. Six commits, +4 tests, one Class A spec change, nothing reverted.
+
+### The stale check took one turn again, and the answer was better than usual
+
+`02c4cde612`, `9807aee0b3` and `a0661e4b63` all opened at `2026-08-04T23:43:10`
+against `4266031`; campaign `2f7fcfdd` built the worker pool 79 seconds later
+and no audit since has re-judged those sections. But this time the useful part
+was not "they are stale" — it was *what already holds them*:
+`tests/actor.rs::the_parse_and_the_conversion_never_run_on_the_thread_that_owns_the_state`
+(a run) and `tests/seam.rs::only_the_pool_realises_a_seed_or_calls_the_dispatch_wrapper`
+(the source). Reading those two before starting is what told me §8.4 and §2
+needed nothing, which is a different conclusion from "the row is old".
+
+### The gap named the read; the work was the window the read opens
+
+`actor.rs` named its own blocker exactly — "a `Job` *is* a query ... a checksum
+read is a second kind of job with a second kind of reply, which nothing builds"
+— so the enum was mechanical. What the gap did not say, and what took the
+thinking, is that **an asynchronous checksum can fire on its own latency**: a
+`didChange` between the save and the read makes the file and the buffer differ
+correctly, and comparing them then distrusts a document that never drifted.
+Every document a user types into while a read is outstanding is every document
+they save, so this is not an edge case.
+
+A `DocumentVersion` comparison does not close it, and the argument was already
+in the tree: `actor.rs`'s `TreeFate` says a `didOpen` is a resync, so the text
+behind a URI can be replaced at a version we have seen. So `Believed` carries a
+`Generation` of the map's own, `SaveCheck` carries the one it was minted at,
+and `checked` compares them. **When you find a guard you need, grep the file
+you are in for one that already argues the same thing** — `TreeFate` is four
+screens above `check_saved` and settled the design in one read.
+
+### The plant that found a bug in my own test
+
+`a_did_save_...` asserted "nothing was dispatched" with
+`answers.try_recv().is_err()`. It passed. Then I wrote a second test with the
+same shape, planted a dropped checksum answer to see it fail — and it **passed
+under the plant**, because a query that *was* dispatched takes a worker a parse
+and a handler call to answer, so an empty channel one instruction after
+`handle` returns is the ordinary state of a working dispatch. `file_list.rs`
+already had the fix and a name for it: a `QUIET` constant and `recv_timeout`.
+Both tests fail under the plant now.
+
+The earlier plant of the *first* test did fire, which is the part worth
+remembering: **a racy assertion that happens to win is indistinguishable from a
+sound one until you plant a second time.**
+
+### Approaches considered and left
+
+* **Skipping the checksum under `--proxy-only`.** §8.6's own argument is that
+  an undetected drift "produces confident answers about text the user does not
+  have", and in proxy-only nothing answers at all — so the read buys nothing
+  and costs I/O per save. Left alone: the same argument says stop tracking
+  documents entirely in that mode, which is a bigger change than §8.6 asks for,
+  and `shim.md` §11 is not a document this phase audits.
+* **Capping outstanding save checks.** A "save all" over a large project puts
+  one read per file on the pool, and a query queued behind them spends §5's
+  budget queueing. §10 gives two limits and both are about queries; inventing a
+  third with no evidence is what `CHANGE-core-034` had to argue its way out of.
+  A save is human-paced and a read is milliseconds, so the exposure is small.
+* **Boxing the large enum variants.** `clippy::large_enum_variant` fires on
+  both `Job` and `Finished`. The remedy is backwards here: the large variant is
+  the *common* one, so boxing allocates on every query's way out and back to
+  save the occasional checksum from sitting in a slot sized for a query.
+  `#[expect]` with that reason.
+* **Marking in-flight trees superseded when a save check distrusts.** Looks
+  needed and is not: a distrusted document yields no `Trusted`, so no seed, so
+  the cached tree is unreachable — and the only route back to trust is a
+  `didOpen`, which forgets trees on the way in.
+* **`ProjectView::read` for the checksum.** Wrong reader. It takes a
+  `ProjectPath`, which exists only for a file the project's own walk found, and
+  that rule is about where a *search* may look. A saved file that is gitignored
+  is exactly as capable of proving our rope wrong.
+
+### The thread left for the next campaign, and it is in these files
+
+**§2's argument for eager parsing rests on a claim this driver makes false.**
+"The parse is usually incremental from a cached base" — but `Actor::notified`
+calls `TreeCache::forget` on every `didChange`, because `Documents::changed`
+applies the edit without handing back the `InputEdit`s, so `core` has no edit
+log and `Actor::edits` is permanently empty. Every parse after a change is a
+full parse. The code documents this and calls it a latency question; §2 does
+not, and its "eager costs nothing real" bullet list is where the claim sits.
+
+Do **not** close it by editing §2 — that is the one shape the audit cannot see.
+Closing it means `Documents::changed` returning the edits it applied and
+`TreeCache` keeping them beside the tree, which is real work in
+`documents.rs`/`trees.rs`/`actor.rs` and wants a benchmark first (`CLAUDE.md`).
+
+### Mechanical notes
+
+* **`clippy.toml` denies `std::fs::read_dir`** ("bypasses gitignore
+  semantics"), so a test that wants a crate's modules reads the library root
+  and follows its `mod` declarations — which is the better question anyway,
+  since what is compiled is what the root names. `seam.rs` already did this;
+  I rediscovered it the expensive way.
+* A source scan for a *call* must decide whether it is matching a spelling or a
+  fact. Mine started at `.checked(` and a qualified-call plant showed it was
+  matching the spelling; it takes `::checked(` too now.
+* Every `try_iter()` already in `tests/actor.rs` is preceded by a blocking
+  `settle` or by `actor.run` returning, so the channel ordering gives them a
+  happens-before. They are sound; only my two new ones were not.
