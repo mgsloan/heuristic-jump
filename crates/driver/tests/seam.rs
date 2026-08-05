@@ -166,29 +166,34 @@ fn the_measurement_crates_have_the_edges_section_9_gives_them() {
         "core.md §9 says measure_core depends on shared and nothing else of ours"
     );
 
-    // §9's other measurement edge, stated the same way: `measure_<lang>` "is
-    // the only crate that depends on both `measure_core` and a language".
-    // `shared` is here for the reason `heuristic_jump` carries it — `main`
-    // returns `Result<(), shared::Error>` and there is no route to that name
-    // except the crate defining it (CHANGE-conformance-009).
-    let mut ours = ours_named_by(&dependencies_in(&manifest_text("measure_rust")));
-    let languages: Vec<String> = ours
-        .iter()
-        .filter(|name| name.starts_with("lang_"))
-        .cloned()
-        .collect();
+    // §9's other measurement edge — `measure_<lang>` "is the only crate that
+    // depends on both `measure_core` and a language" — is deliberately *not*
+    // asserted here. `adding_a_language_costs_the_template_and_one_line`
+    // already holds every `measure_*` manifest to a full equality against §9's
+    // template, which is the stronger claim and quantified over languages
+    // rather than over `measure_rust`. A copy here would be a third statement
+    // of one rule, and the copy is what goes stale.
+
+    // §9 calls `similarity` **frozen** — "Nothing is added to it during phase
+    // 2" — and nothing read its manifest. The crate is outside every loop's
+    // writable paths, so an edge appearing there arrives from a human or a
+    // phase-3 extraction and lands unremarked in the one crate the section
+    // says does not move.
+    //
+    // Ours only. §9's bullets are an edge list of our crates, and `similarity`
+    // carries third-party crates the ported code came with that no bullet
+    // names; `deps.md` §0 declines to settle those in as many words —
+    // "`similarity` and `lang_*` dependencies are named where they are already
+    // implied, but not settled here" — which is why
+    // `the_core_crates_declare_only_what_section_0_places_there` leaves the
+    // crate out. Asserting an equality over all of them would be this test
+    // inventing a rule two sections deliberately withheld.
     assert_eq!(
-        languages.len(),
-        1,
-        "measure_rust depends on {languages:?}: core.md §9 makes measure_<lang> the crate \
-         that pairs measure_core with *a* language, one apiece"
-    );
-    ours.retain(|name| !name.starts_with("lang_"));
-    assert_eq!(
-        ours,
-        vec!["measure_core".to_owned(), "shared".to_owned()],
-        "core.md §9 gives measure_rust an edge to measure_core and to one language, and \
-         `shared` beside them for the error type its main returns"
+        ours_named_by(&dependencies_in(&manifest_text("similarity"))),
+        vec!["shared".to_owned()],
+        "core.md §9 gives similarity one edge of ours, to shared, and calls the crate \
+         frozen: it holds only what is ported from the prior implementation, and phase 3's \
+         equality constraint is what any addition has to go through"
     );
 }
 
