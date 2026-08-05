@@ -1,59 +1,62 @@
 # Findings — harness loop
 
-Theory after five campaigns. Rewritten, not appended.
+Theory after seven campaigns. Rewritten, not appended.
 
 ## Falsified — act on these directly
 
-* **"Judge whether the code looks right" finds nothing.** Take the section's
-  literal nouns and grep for each. `tokei`, `master`, `dispatch` fell in a
-  minute that way.
-* **A docstring describing behaviour the function does not have is where the
-  bug is.** Third campaign running.
-* **A glob over `state/findings/` matches `core-1.md`..`core-3.md`.** Anything
-  meaning "per loop" must read `phase.loops`. Same trap in `state/journal/`.
-* **A computed prompt value can be spliced nowhere and nothing complains.**
-  Check `grep -o "{{[a-z_]*}}"` on templates against `prompt_values`.
-* **Do not rename a section heading.** The anchor is in
-  `harness/section-baseline.toml`, denied to every loop — a rename is
-  permanent drift no campaign can clear.
-* **The audit list is mostly stale.** Of sixteen "open" gaps, two were real;
-  §1, §2, §5, §6, §7, §11's tokei and both §13 entries were already fixed.
-  Verify with one grep before taking one.
-* **A selftest that reads `HARNESS / "hj"` is not hermetic.** `HARNESS`
-  resolves through `HJ_REPO`, so it inspects the *worktree's* copy and fails
-  every branch that predates it. The gate went red mid-campaign this way, from
-  a hand-authored commit on `main`. You cannot fix it in your tree — the
-  pinned copy runs first and fails before yours is consulted. Merge `main`:
-  `git stash push -u -- <files>`, `git merge --no-edit main`, `git stash pop`.
+* **Check `state/decisions/` before ranking gaps.** Two targets this campaign
+  were records already `accepted` whose ruling nobody had applied: a gap reads
+  as unsolved when the answer is written down.
+* **An audit's proposed fix can be an option a decision already refused** —
+  `[bfb721b74c]`'s was `harness-009` option one.
+* **"Judge whether the code looks right" finds nothing.** Grep the section's
+  literal nouns — `tokei`, `merge-blocked`, `ccusage` fell in a minute.
+* **A docstring describing behaviour the function lacks is where the bug is.**
+  Fifth campaign running.
+* **The audit lags ~1.5 campaigns** — six of ten listed gaps were already
+  closed — but its *one-line* list is still the best target-picker there is.
+* **A closed gap's section cannot be derived from its id** (`sha256`); record
+  it when it closes. **Do not rename a section heading** — the anchor is in
+  the denied baseline.
+* **A check on a file more than one loop writes belongs in `check-metrics`
+  scoped to `config.writes_harness`, never `selftest`.** `selftest` runs for
+  every loop, from the pinned `hj`, against `HARNESS` — which resolves through
+  `HJ_REPO` to *that* loop's worktree, so it fails in the tree of whoever has
+  not merged. `harness-011`, third campaign. Fixtures for the logic.
 
 ## Confirmed — candidates, test on your own evidence
 
-* **What is left is deferred mechanisms, not wrong words.** §11 and §12 were
-  each one gap from clean and were one thing seen twice: a number computed at
-  an iteration versus at a phase gate. Both had been deferred wholesale as
-  "phase 2a work", which took their computable-today halves with them.
-* **Where the code and `loops.md` disagree, it favours this loop.** Twice this
-  campaign: §18 says `harness/prompts/` stays denied and the code denies only
-  `auditor.md`; `harness/gate` step 5 hard-fails in the phase it exists for.
-  Both are escalations (`harness-008`, `harness-009`) and neither was closed by
-  editing the document. **Do not close them that way** — this loop is the
-  beneficiary of the grant.
-* **`decisions_reconciled` still reads tag *removals*,** so reconciling a
-  decision whose choice lived in a file the loop may not write scores nothing.
-  Counting a `decision:` trailer that names an already-*answered* record fixes
-  it. It is a metric redefinition, so Class B.
+* **What is left is deferred mechanisms, not wrong words.** Seven sections.
+* **An instructed number that nothing computes drifts.** The 512-word digest
+  cap went unmeasured since campaign one; three of five were over. Find others.
+* **Where the code and `loops.md` disagreed it favoured this loop** —
+  `harness-008`, `harness-009`, both now answered *for* the code. That call is
+  a human's: edit the document only under a ruling, and say so in the
+  changelog.
+* **Never reconcile a decision still `open` in your tree** — that is ruling on
+  your own escalation.
+* **Backtest a metric change** (`hj progress-replay --rule N`) before it.
+* **`decisions_reconciled` still reads tag *removals***, so reconciling a
+  decision tagged in a file the loop may not write scores nothing. Class B.
 
-## For the core loop specifically
+## Do not spend a campaign on these
 
-`crates/lang_rust` already depends on `tree-sitter-rust`, so the workspace
-`Cargo.toml` comment "no grammar crate is in the graph yet" is stale — that is
-`deps.md`, which is yours. And `hj link-delta` exits 1 until `heuristic_jump`
-carries one optional dependency per language behind a `lang-<x>` feature;
-without it §11's authoritative size number cannot be taken at all.
+* §12 held-out, §11 tokei and binary size, §5, §7, `#branches-…`: implemented.
+* `#sessions-assign-the-id-own-the-transcript`, `#reading-a-transcript`: the
+  adapter assigns `--session-id` and tees `stream-json`, and the dashboard
+  renders transcripts. Expect clean verdicts.
+* §17's two gaps are what genuinely remains, neither cheap. `ccusage` is
+  **not installed here**, so adopting it means unrunnable parsing code — the
+  `cargo bloat` dead end. EARS is a notation change to the denied auditor
+  prompt.
+* `#rules-are-inlined…`'s "Both go in the volatile tail" is ambiguous and the
+  code is arguably right. Let the auditor judge it.
 
 ## Load-bearing
 
-* Run `harness/hj selftest` after every edit to `hj` (68 → 92 here).
-* A syntax error in `hj` blocks every Edit and Write. Use bash.
+* `hj selftest` after every `hj` edit (104 → 115 here). A syntax error there
+  blocks Edit/Write — use bash or python.
+* **`campaign-open`'s stdout is the campaign id**; `harness/loop` captures it.
+* `prompt-prefix` percentages are not comparable across campaigns (the tail
+  grows); use absolute offsets.
 * Never add a per-campaign write to a shared single-valued file.
-* `gate_runs` counts any command mentioning `harness/gate`.

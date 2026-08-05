@@ -1,18 +1,18 @@
 # One round's assignments, written by `hj plan-merge` from the planner's
 # answer. Regenerated every round; not history.
-planned = "2026-08-04T20:36:31+00:00"
+planned = "2026-08-04T23:44:27+00:00"
 
 [worker.1]
-targets = ["core.md#83-the-wire-position-type-is-inert[f9ad1766b7]", "core.md#the-trait[218a36571e]", "core.md#two-modes-collect-and-replay[a6251d1926]"]
-reading = "design/core.md (\u00a78.3, \u00a76, the-trait, two-modes-collect-and-replay), state/spec-changelog/core.md, crates/shared/src/proto.rs, crates/shared/src/handler.rs, crates/driver/src/agreement.rs, crates/measure_core/src/cli.rs, crates/shared/tests/proto.rs, crates/measure_core/tests/pipeline.rs"
-why = "all three are stale printed spec against standing code (line() accessor, Strata/Trace/4-arg decide, three subcommands), so all three land in design/core.md plus state/spec-changelog/core.md \u2014 sole holder of both; code files are read-only for it"
+targets = ["core.md#84-location-is-byte-based-and-this-fixes-a-real-inconsistency[9807aee0b3]", "core.md#snapshots-are-o1-to-take-and-are-parsed-before-a-handler-sees-one[02c4cde612]", "core.md#text-and-tree-can-never-disagree[a0661e4b63]", "deps.md#10-errors-one-enumerated-type-no-anyhow[d50e2285d0]"]
+reading = "crates/driver/src/actor.rs, crates/driver/src/dispatch.rs, crates/driver/tests/, crates/driver/tests/seam.rs"
+why = "three gaps are one claim -- core parses/encodes on its own thread because there is no worker pool -- and all four land in actor.rs+dispatch.rs, so deps.md#10 must ride along rather than collide; this worker alone holds seam.rs"
 
 [worker.2]
-targets = ["deps.md#10-errors-one-enumerated-type-no-anyhow[d50e2285d0]", "deps.md#2-channels[8e707386b4]"]
-reading = "crates/driver/src/dispatch.rs, crates/driver/src/actor.rs, crates/driver/tests/deadline.rs, crates/driver/tests/actor.rs, crates/driver/tests/seam.rs"
-why = "both are driver-internal logging with one reading (dispatch.rs:528 silent deadline\u2192abstention, actor.rs:203 inbox depth); sole holder of seam.rs this round, and \u00a72 is likely already closed at actor.rs:256 \u2014 verify and say so rather than re-add"
+targets = ["core.md#both-sides-are-sets[c22993d037]", "core.md#two-modes-collect-and-replay[a6251d1926]"]
+reading = "crates/measure_core/src/table.rs, crates/measure_core/src/cli.rs, crates/measure_core/"
+why = "the only two measure_core gaps, one crate, no driver or shared files in reach"
 
 [worker.3]
-targets = ["deps.md#8-parse-cache[fb0aa10250]"]
-reading = "crates/shared/src/project.rs, crates/shared/tests/project.rs, design/deps.md \u00a78, state/spec-changelog/deps.md, state/decisions/conformance-005.md, design/core.md:1650-1690 (read-only)"
-why = "one gap but a real one \u2014 the disk-file cache key contradicts conformance-005, so it needs either the cache or a CHANGE- record; sole holder of design/deps.md and spec-changelog/deps.md, and must not edit design/core.md, which worker 1 holds"
+targets = ["core.md#the-trait[218a36571e]", "rope-modifications.md#textsummary-is-converted-too[22926927ef]"]
+reading = "crates/shared/src/handler.rs, design/core.md \u00a77, vendor/rope/src/point.rs, vendor/rope/src/rope.rs, vendor/rope/tests/newtype_api.rs, vendor/README.md"
+why = "both are stale-printed-block fixes in files nobody else opens, and the rope gap is the last one in rope-modifications so that section can go clean; core.md#4-project-file-enumeration is left for next round because files.rs closes through Dispatched classification, which worker 1 is rewriting"

@@ -807,6 +807,73 @@ that says what happened.
 
 **Campaign:** 9110a409-f685-4569-ba82-fbf938928727
 
+## CHANGE-core-024 — core.md#4-project-file-enumeration — the on-demand trigger has a second signal, so nothing depends on the watcher
+
+**Contradiction:** two sentences in §4's watcher bullet, one paragraph apart.
+
+> It also catches the one thing the on-demand trigger structurally cannot:
+> **deletions**. A rescan discovers files that appeared; a stale entry for a
+> file that was removed only ever surfaces as a failed read.
+
+against
+
+> It is **opportunistic, and nothing depends on it.** A child that does not
+> register file watching produces no events, and the on-demand path below is
+> the backstop that always works […] precision when present, never
+> load-bearing.
+
+If the on-demand trigger structurally cannot catch a deletion, then deletion
+handling depends on the watcher and the watcher is load-bearing after all. Two
+further sentences of the same section make the cost of getting this wrong
+concrete rather than theoretical: the next bullet defers `notify`, so
+standalone has no watcher at all; and `resolution.md` §4 forbids reporting a
+partial scan, so a candidate that vanished between the walk and the read fails
+the query outright. Nothing observed that failure, so a removed candidate
+failed *every later query* over the same candidate set for as long as the
+process lived — which "only ever surfaces as a failed read" reads as ruling
+out, and which is not a recall miss but an outage.
+
+**Resolution:** the document now says the on-demand trigger fires on two
+signals — `AbstainReason::NoCandidates`, and a candidate read that failed
+because the file is gone — and that what the watcher buys is *timing*: it
+catches a deletion before a query pays for one. The `structurally cannot`
+sentence is replaced by a paragraph saying what it got wrong and why the
+weaker claim is the true one.
+
+This is the reading that trades nothing off. The alternatives both cost
+something the section already refused: making the watcher load-bearing
+contradicts "nothing depends on it" and leaves standalone with no backstop, and
+having `scan` skip a vanished candidate contradicts §4-of-`resolution.md`'s
+exhaustive search — `ProjectView::scan` argues that one where it propagates,
+since a partial scan cannot tell "the only definition of this name" from "the
+first of eleven". Neither is touched. What changes is only that the failure is
+*observed*, which no claim anywhere depended on it not being.
+
+The narrowness is part of the resolution and not a detail: the signal is a read
+that failed *because the file is gone*, not any failed read. A permissions
+error or a candidate that is not text is a fact about the file rather than the
+walk, the walker returns the same entry next pass, and marking stale on one
+would be a rescan per query for as long as it lasted — the spin
+`FileListCache::install` refuses when a walk itself fails.
+
+The on-demand bullet's lead sentence moved with it, from "when a query finishes
+without a good candidate" to naming both things a query can run into. The bold
+heading on the second signal is enough for a reader going through the section;
+it is not enough for one skimming the bullet leads, and the lead was the
+sentence that said there was one signal.
+
+**Code moved in the same campaign, and it is the half that moved further.**
+`7ba59bd` added `Error::file_list_evidence` and made `FileListCache::observe`
+consult it on the `Failed` arm, with three tests in
+`crates/driver/tests/file_list.rs` over a real deletion. The direction is
+code-toward-spec: §4's standing claim that the on-demand path "always works" is
+what the code now satisfies, and the one sentence the document lost is the one
+that contradicted it. It is said here plainly because the campaign edited a
+design document and the code it describes in the same session, which is the
+shape a spec edit is watched for.
+
+**Campaign:** a519e98f-58e7-4d41-8b89-c36984f02e59
+
 ## CHANGE-core-025 — deps.md#6-tree-sitter — the grammar ban is on `[dependencies]`, and `driver` reaches the runtime through `shared`
 
 **Contradiction:** §6 said, in one sentence, two things the manifests do not

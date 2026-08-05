@@ -592,3 +592,146 @@ So three tests now read the document:
   excluded by the second colon and a generic argument
   (`BTreeMap<StageName, Micros>`) by having no colon at all. Those are the two
   false positives that exist in this source.
+
+## Campaign a519e98f — §4's missing backstop, and what a stale assignment is worth
+
+Assignment was three anchors. **One was live.** Seven commits, +8 tests, one
+changelog entry (CHANGE-core-024).
+
+### Settling a stale gap: read the gap log, not the timestamps
+
+Rows 15 and 16 of `state/audit/gap-log.jsonl` decide this in one turn, and they
+decide it two different ways:
+
+* Row 15 (20:33Z, `187307ee`) **opened** `218a36571e` (`#the-trait`) and
+  `a6251d1926` (`#two-modes`). My own previous campaign then landed
+  CHANGE-core-018 and -019, which are exactly those two claims.
+* Row 16 (21:12Z) audited a different section set — `#1`, `#3`, `#4`, `#6`,
+  `#81`–`#83` — and **never re-judged** either section. So both rows were
+  carried forward unjudged, which is core-2's "a stale row carried by a partial
+  audit" exactly.
+* Row 16 opened `d41389f7fe` and *did* audit `#4-project-file-enumeration`.
+  Live, and it was the whole campaign.
+
+Seventh campaign running with at least one stale assignment. The one-turn check
+is: find the run that **opened** the gap, then ask whether any *later* run's
+`sections_audited` names its section. Timestamps alone say nothing, because a
+partial audit moves the clock without moving the judgement.
+
+### The defect: §4 contradicted itself, and the code took the losing side
+
+§4 says the editor's watcher "catches the one thing the on-demand trigger
+structurally cannot: **deletions**", one paragraph before saying it is
+"**opportunistic, and nothing depends on it** … the on-demand path below is the
+backstop that always works". Both cannot hold.
+
+The code made it bite. `ProjectView::scan` propagates `ProjectError::Read` on
+the first vanished candidate — `resolution.md` §4 forbids reporting a partial
+scan, and `scan`'s doc argues that where it propagates — `classify` makes it
+`Dispatched::Failed`, and `FileListCache::observe` dropped every failure as
+"evidence about the handler". So nothing marked the list stale, no rescan was
+scheduled, and **every later query over the same candidate set failed
+identically**. In standalone, where `deps.md` §7 defers `notify` and there is no
+watcher, permanently.
+
+That is not the "failed read" §4 describes. It is an outage, and §4's whole
+posture is that a stale list costs recall and never correctness.
+
+### Why the resolution went code-first, and what would have been wrong
+
+Three ways out, and two of them cost something the section already refused:
+
+1. **Make the watcher load-bearing.** Contradicts "nothing depends on it", and
+   leaves standalone with no backstop at all. Refused.
+2. **Have `scan` skip a vanished candidate.** Contradicts the exhaustive
+   search: a partial scan cannot tell "the only definition of this name" from
+   "the first of eleven", which is the uniqueness signal the later stages rank
+   on. `scan`'s own doc comment argues this. Refused, and not touched.
+3. **Observe the failure.** Costs nothing any claim depended on — no claim
+   anywhere required that a failure teach the list nothing.
+
+So the code moved toward the spec's *standing* claim, and the one sentence the
+document lost is the one that contradicted it. That direction matters: moving
+the spec toward the code is the one way of faking progress the audit cannot
+catch, and the changelog entry says in as many words that both moved in one
+campaign.
+
+**The narrowness is half the design.** Only a read that failed *because the file
+is gone* is evidence about the walk. A permissions error or a non-UTF-8
+candidate is a fact about the *file* — the walker hands the same entry back next
+pass, so marking stale on one is a rescan per query for as long as it lasts,
+which is the spin `install` already refuses for a failed walk. `Unresolvable` is
+the second `Stale` arm, and its own doc comment ("the file list moved under the
+query") is what argues it.
+
+`Error::file_list_evidence` sits beside `AbstainReason::file_list_evidence` in
+`shared`, for that type's stated reason: the sub-enums are `#[non_exhaustive]`,
+so the same match written in `driver` needs the wildcard arm `CLAUDE.md` bans.
+
+### What re-reading the two stale sections bought
+
+**§1 (`#the-trait`) — three mechanisms and one drifted comment.**
+
+* §1 says of the commit funnel: "what holds this is review and not the type
+  system … the check available before then is mechanical: a source scan over
+  `crates/lang_*` for the construction, in the shape `driver/tests/seam.rs`
+  already uses". **Nobody had written the scan.** It is invisible until it is
+  expensive, and for the section's own reason: in v1 `decide` commits
+  everything, so a handler that skips the funnel behaves identically — the two
+  diverge exactly when a precision floor arrives, which is when there are the
+  most `lang_*` crates to audit by hand.
+* `Stratum`, `AbstainReason` and `Refinement` were unpinned. A `Stratum`
+  variant present in the source and unprinted is a `high-level.md`
+  stratification row nobody knows to return, and §7 groups coverage by that
+  list — it reads as a resolution failure rather than as a class nobody
+  classified.
+* The block's **input** side was unpinned. `Query` is everything a handler is
+  given; `policy` was exactly the "present but unprinted" shape before
+  conformance-013.
+* `ServerProfile`'s **source** doc said "the constructors are the two
+  situations" with three declared under it. Same sentence, same shape, as the
+  document defect CHANGE-core-018 found — prose beside code drifts the way
+  prose in a document does.
+
+**§two-modes — nothing.** It is the most thoroughly mechanised section I have
+read: `a_replay_enforces_no_deadline_at_all`, `only_a_replay_mints_section_7s_record`,
+`a_replay_names_nothing_that_could_reach_a_server`,
+`a_resume_refuses_every_provenance_field_that_moved`,
+`a_replay_refuses_a_truth_file_it_cannot_trust`, `a_replay_reports_its_own_wall_clock`,
+`the_oracles_latency_is_the_frozen_truths_and_never_this_runs`, and the
+subcommand pin I added last campaign. The provenance header carries all eight
+fields the section lists, `server_version` included. **Do not go looking here.**
+
+### Approaches tried and dropped
+
+* **A `variants` helper that ends the enum body at a `}` in column one.**
+  Written, passing, wrong: the document prints `Refinement` on one line, so the
+  scan swallowed the *next* enum and compared `Stratum`'s variants against
+  `Refinement`'s. It failed loudly this time only because the two lists differ;
+  a single-line enum whose successor had the same variants would have passed
+  silently. Replaced with brace matching, which also handles
+  `AbstainReason::External`'s braced field. **A scan over a printed block must
+  count braces — the two sides are formatted differently on purpose.**
+* **A typed struct for the meta model.** `serde_json::Value` is
+  `clippy::disallowed_types`; the suggested fix would put a `serde`
+  dev-dependency on `driver` for one deserialize. `seam.rs`'s `cargo metadata`
+  reader already carries the `#[expect]` with exactly this reasoning, so the
+  form was copied rather than invented.
+* **An end-to-end assertion that the actor routes a failed read to `observe`.**
+  Not done. `actor.rs:526` does call it on every `Completed` dispatch, which I
+  verified by reading — but asserting it needs a handler double through the
+  full actor, and `actor.rs` was another worker's file this round. The
+  classification point is `observe`, and that is what the tests drive.
+* **Extending to §4's "no content cache beyond the parse LRU".** That is
+  `deps.md` §8's subject, settled by conformance-005 and worked by core-3 two
+  campaigns running. Left alone.
+
+### Two mechanical notes
+
+* `git checkout <file>` to revert a plant reverts **uncommitted work in that
+  file** too. Cost me one edit. Plant with `python3` and revert with `python3`,
+  or commit first.
+* A fixture that writes a `.gitignore` nothing reads back is decoration. This
+  suite's walk assertion was a membership check, so a walker that ignored the
+  file would have passed — and would have handed the scan a candidate outside
+  the project. Asserting the whole set caught it in the plant, in two tests.

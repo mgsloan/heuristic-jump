@@ -16,15 +16,19 @@
 )]
 
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use driver::{Answer, Classified, DebounceMs, Dispatched, FileListCache};
+use driver::{Answer, Classified, DID_CHANGE_WATCHED_FILES, DebounceMs, Dispatched, FileListCache};
 use shared::{
-    AbstainReason, Clock, Confidence, Error, FileList, Generation, Outcome, ProjectError, Strata,
-    Stratum, TestClock, Trace,
+    AbstainReason, Clock, Confidence, Deadline, DocumentUri, Error, FileExtension, FileList,
+    Generation, Language, Outcome, ProjectError, ProjectPath, ProjectRoot, ProjectView, RelPath,
+    ScanRequest, SearchOrigin, Strata, Stratum, TestClock, Trace,
 };
+
+const RUST: FileExtension = FileExtension::new("rs");
 
 /// Long enough that "before the window closes" is a state a test can be in
 /// without racing the clock — which it cannot anyway, since the clock below is
@@ -167,9 +171,19 @@ fn the_list_is_walked_once_on_first_need_and_handed_back_by_refcount_after() {
          hundreds of milliseconds the cache exists to avoid"
     );
     assert_eq!(first.generation(), Generation::FIRST);
-    assert!(
-        relative_paths(&first).contains(&"src/lib.rs".to_owned()),
-        "the fixture's files are not in the list, so nothing below is testing a walk"
+    assert_eq!(
+        relative_paths(&first),
+        vec![
+            "notes.md".to_owned(),
+            "src/lib.rs".to_owned(),
+            "src/util.rs".to_owned()
+        ],
+        "§4's first bullet is that the walk is the `ignore` crate's, so `.gitignore` \
+         is respected for free — `vendored/copy.rs` is in the fixture and must not be \
+         in the list. Asserted as the whole set rather than as a membership, because \
+         every test in this file builds a fixture with that `.gitignore` and nothing \
+         was reading it back: a walk that ignored the file would have passed here and \
+         would have handed the scan below a candidate outside the project"
     );
 }
 
@@ -296,6 +310,220 @@ fn the_two_triggers_share_one_debounce_rather_than_one_each() {
         "four triggers produced more than one walk, so the debounce is per \
          trigger rather than the single one §4 describes"
     );
+}
+
+/// §4's proxy-mode invalidation is a routing row keyed by a method name, and
+/// the name is a `const` here with no caller: `shim.md` §3's router does not
+/// exist yet, and its own doc calls the string "the entire coupling between
+/// that row and this module".
+///
+/// A typo in it costs nothing today, and on the day the row is written costs
+/// the whole proxy-mode path *silently* — the tee never fires, the list never
+/// goes stale, and the only symptom is recall on files created since the walk,
+/// which §4 has already decided is an acceptable cost of a stale list. There is
+/// no failure to notice.
+///
+/// Held against `reference/lsp-3.17/metaModel.json`, the protocol
+/// machine-readable, rather than against a second copy of the string somewhere
+/// else in the workspace — which would only assert that two things we wrote
+/// agree. The direction is asserted with it because it is the half §4's
+/// argument rests on: these frames flow editor → child and the shim forwards
+/// them anyway, which is why teeing them costs one row and no descriptors.
+#[test]
+#[expect(
+    clippy::disallowed_types,
+    reason = "`serde_json::Value` is banned because it allocates a whole tree per frame and \
+              forwarded frames must not be materialized. There is no frame here: this is the \
+              vendored meta model, read once in a test, and the typed struct the lint suggests \
+              would put a `serde` dev-dependency on `driver` for one deserialize. Same \
+              reasoning as `seam.rs`'s `cargo metadata` reader"
+)]
+fn the_teed_notification_is_the_one_the_protocol_names() {
+    let model: serde_json::Value = serde_json::from_str(&meta_model()).expect("the meta model");
+    let notifications = model["notifications"]
+        .as_array()
+        .expect("the meta model lists notifications");
+    assert!(
+        notifications.len() > 10,
+        "only {} notification(s) parsed out of the meta model, so this lookup is \
+         not reading what it thinks it is",
+        notifications.len()
+    );
+
+    let teed = notifications
+        .iter()
+        .find(|notification| notification["method"] == DID_CHANGE_WATCHED_FILES)
+        .unwrap_or_else(|| panic!("LSP 3.17 has no notification {DID_CHANGE_WATCHED_FILES:?}"));
+    assert_eq!(
+        teed["messageDirection"], "clientToServer",
+        "§4 tees this because it already flows editor → child through the shim. A \
+         server-originated notification would have to be watched for rather than \
+         forwarded, and the bullet's whole argument — no descriptors, correct \
+         scoping for nothing — is about the editor having paid for it already"
+    );
+}
+
+fn meta_model() -> String {
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../reference/lsp-3.17/metaModel.json");
+    fs::read_to_string(&path).expect("the vendored LSP 3.17 meta model")
+}
+
+/// §4's deletion sentence, over a real removal: "a stale entry for a file that
+/// was removed only ever surfaces as a failed read".
+///
+/// The article is what the sentence turns on. A candidate that vanished
+/// between the walk and the read fails the *whole* scan — `resolution.md` §4
+/// forbids reporting a partial one, and `ProjectView::scan` says so where it
+/// propagates — so if the failure taught the list nothing, every later query
+/// over the same candidate set would fail identically for as long as the
+/// process lives. That is not a failed read, it is an outage, and standalone
+/// has nothing that would end it: `deps.md` §7 defers `notify`, and §4's own
+/// claim is that nothing depends on the editor's watcher.
+#[test]
+fn a_candidate_removed_after_the_walk_costs_one_failed_read_and_not_every_later_one() {
+    let root = fixture("removed_candidate");
+    let clock = Arc::new(TestClock::new());
+    let mut cache = cache(&root, &clock);
+
+    let view = cache
+        .view(Deadline::none(), grammar())
+        .expect("the first walk");
+    fs::remove_file(root.join("src/util.rs")).expect("removing a candidate after the walk");
+
+    let failure = scan_for_alpha(&view, &root).expect_err("a scan over a candidate that is gone");
+    assert!(
+        matches!(&failure, Error::Project(ProjectError::Read { path: _, source })
+            if source.kind() == io::ErrorKind::NotFound),
+        "a removed candidate surfaced as {failure:?} rather than as the failed read \
+         §4 describes, so the rest of this test is asserting the wrong mechanism"
+    );
+
+    cache.observe(&Dispatched::Failed(failure));
+    clock.advance(DEBOUNCE.window());
+    cache.refresh_if_due();
+    let rescan = cache
+        .rescans()
+        .recv_timeout(patience())
+        .expect("a read that failed because the file is gone schedules the rescan");
+    cache.install(rescan);
+
+    let after = cache.list().expect("the refreshed list");
+    assert!(
+        !relative_paths(&after).contains(&"src/util.rs".to_owned()),
+        "the rescan kept an entry for a file that is not there, so the next query \
+         fails on the same candidate"
+    );
+
+    // The claim, rather than its precondition: the query after the failed one
+    // gets an answer.
+    let next = cache
+        .view(Deadline::none(), grammar())
+        .expect("the view a later query is dispatched against");
+    let outcome = scan_for_alpha(&next, &root).expect("the scan a later query runs");
+    assert_eq!(
+        outcome
+            .hits
+            .iter()
+            .map(|file| file
+                .path
+                .rel()
+                .as_path()
+                .to_string_lossy()
+                .replace('\\', "/"))
+            .collect::<Vec<String>>(),
+        vec!["src/lib.rs".to_owned()],
+        "the later scan did not find the definition that is still on disk"
+    );
+}
+
+/// The discriminating half. Both of these are read failures on a file the walk
+/// returned, and neither is evidence the walk was wrong: the walker will hand
+/// the same entry back, so marking stale on one would be a rescan per query for
+/// as long as the file stays unreadable — the spin `install` refuses when a
+/// walk itself fails.
+///
+/// The permission error is constructed rather than provoked because it has to
+/// be the *same variant* as the one above with a different `ErrorKind`; a
+/// fixture that made the read fail some other way would be testing a different
+/// arm and would pass against a classifier that keyed on the variant alone.
+#[test]
+fn a_read_that_failed_for_any_reason_but_a_missing_file_leaves_the_list_alone() {
+    let root = fixture("unreadable_candidate");
+    let clock = Arc::new(TestClock::new());
+    let mut cache = cache(&root, &clock);
+
+    let view = cache
+        .view(Deadline::none(), grammar())
+        .expect("the first walk");
+    fs::write(root.join("src/util.rs"), [0xff, 0xfe]).expect("a candidate that is not text");
+
+    let not_text = scan_for_alpha(&view, &root).expect_err("a scan over a file that is not UTF-8");
+    assert!(
+        matches!(&not_text, Error::Project(ProjectError::NotUtf8 { path: _ })),
+        "expected the non-UTF-8 failure, got {not_text:?}"
+    );
+
+    for quiet in [
+        not_text,
+        Error::Project(ProjectError::Read {
+            path: root.join("src/util.rs"),
+            source: io::Error::from(io::ErrorKind::PermissionDenied),
+        }),
+    ] {
+        cache.observe(&Dispatched::Failed(quiet));
+    }
+
+    clock.advance(DEBOUNCE.window());
+    cache.refresh_if_due();
+    assert!(
+        cache.rescans().recv_timeout(QUIET).is_err(),
+        "a read failure that a rescan cannot fix scheduled one anyway: the file is \
+         still there and the walker still returns it, so this repeats on every \
+         query over that candidate"
+    );
+}
+
+/// The other failure that is a fact about the walk, from the other direction:
+/// `ProjectError::Unresolvable` is raised when §8.4's conversion is handed a
+/// `Location` whose file the view cannot find, and a handler only ever holds a
+/// path the list minted — so the list is what moved.
+#[test]
+fn a_location_the_view_cannot_resolve_is_the_other_failure_that_marks_the_list_stale() {
+    let root = fixture("unresolvable_target");
+    let clock = Arc::new(TestClock::new());
+    let mut cache = cache(&root, &clock);
+    drop(cache.list().expect("the first walk"));
+
+    let uri = DocumentUri::from_file_path(&root.join("src/gone.rs")).expect("a file URI");
+    cache.observe(&Dispatched::Failed(Error::Project(
+        ProjectError::Unresolvable { uri },
+    )));
+
+    clock.advance(DEBOUNCE.window());
+    cache.refresh_if_due();
+    cache
+        .rescans()
+        .recv_timeout(patience())
+        .expect("an unresolvable target schedules the rescan");
+}
+
+/// Every `.rs` candidate, scanned for the one identifier the fixture defines.
+fn scan_for_alpha(view: &ProjectView, root: &Path) -> Result<shared::ScanOutcome, Error> {
+    let origin = SearchOrigin::from_document(project_path(view, root, "src/lib.rs"));
+    let candidates = view.candidates(&[RUST], &origin);
+    let request = ScanRequest::new("alpha", &candidates).expect("an identifier literal");
+    view.scan(&request)
+}
+
+fn project_path(view: &ProjectView, root: &Path, relative: &str) -> ProjectPath {
+    let rel = RelPath::new(Path::new(relative)).expect("a relative path");
+    view.lookup(&ProjectRoot::new(root), &rel)
+        .expect("a fixture file the walk found")
+}
+
+fn grammar() -> Language {
+    tree_sitter_rust::LANGUAGE.into()
 }
 
 fn cache(root: &Path, clock: &Arc<TestClock>) -> FileListCache {

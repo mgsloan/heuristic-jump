@@ -143,7 +143,8 @@ blocked() {
 	"$hj" intervene --kind merge-blocked --target "$identity" \
 		--answer "$branch left unmerged" \
 		--rationale "$reason. Conflicting paths: ${files:-unknown}. Two workers wrote the same file, which is a failure of the plan that divided them rather than of either campaign. The branch is intact and rebases once the other side lands or a human picks. Nothing is discarded automatically: a machine choosing a side here would hide the evidence the planner needs." \
-		>/dev/null 2>&1 || true
+		>/dev/null ||
+		echo "loop: could not log the block; it reached this log and nothing else." >&2
 }
 
 # Resolve the conflicts whose answer is not a judgement, escalate the rest.
@@ -358,6 +359,9 @@ export HJ_LOOP="$loop"
 
 count=0
 crashes=0
+# Whether the one campaign §7's handoff needs has already been run. See the
+# stall branch at the bottom of the loop.
+handoff=0
 while :; do
 	desired="$(status_of "$loop")"
 	if [ "$desired" != "running" ]; then
@@ -557,13 +561,39 @@ while :; do
 		;;
 	esac
 
+	# `design/loops.md` §7: "On stall the loop stops and writes
+	# state/handoff.md: what it was trying, what it tried, what it believes is
+	# blocking, and the specific question that would unblock it."
+	#
+	# Two of those four are the campaign's and not the harness's, and the
+	# prompt's stall notice asks a campaign for them. But the notice fires on
+	# `trailing_without_progress >= stall_n`, which is the same predicate that
+	# stops the loop here — so the campaign that would see it never opened, and
+	# nothing wrote the file, while this branch and the dashboard's handoff card
+	# both assumed something had.
+	#
+	# So the loop runs exactly one more campaign. That one sees the notice and
+	# writes its account into its own campaign record; `hj handoff` then
+	# assembles the file from it and from the run of campaigns that stalled,
+	# which is the half only the loop can see. Exactly one, tracked here rather
+	# than by looking for the file, so a campaign that crashes without recording
+	# anything still stops the loop on the next pass.
 	if ! "$hj" stall "$loop"; then
-		echo
-		echo "loop: stalled. See state/handoff.md, then answer and set the loop"
-		echo "      back to 'running' in state/phase.toml."
-		log_stop "stalled: campaigns closed in a row without progress" \
-			"The stall rule fired. state/handoff.md is the campaign's account; unblocking it is a stall-unblocked intervention."
-		exit 1
+		if [ "$handoff" = 0 ]; then
+			handoff=1
+			echo
+			echo "loop: stalled. Running one campaign for its account of why,"
+			echo "      then writing state/handoff.md and stopping."
+		else
+			"$hj" handoff "$loop" ||
+				echo "loop: could not write state/handoff.md; stopping anyway." >&2
+			echo
+			echo "loop: stalled. See state/handoff.md, then answer and set the loop"
+			echo "      back to 'running' in state/phase.toml."
+			log_stop "stalled: campaigns closed in a row without progress" \
+				"The stall rule fired. state/handoff.md is the loop's account, assembled from the campaign record of the last campaign it ran; unblocking it is a stall-unblocked intervention."
+			exit 1
+		fi
 	fi
 
 	count=$((count + 1))

@@ -24,6 +24,7 @@ use std::path::PathBuf;
 use rope::{ByteLen, LineIndex, Offset};
 use thiserror::Error;
 
+use crate::handler::FileListEvidence;
 use crate::proto::PositionEncoding;
 use crate::vocabulary::{DocumentUri, DocumentVersion, LanguageId};
 
@@ -47,6 +48,41 @@ pub enum Error {
     Handler(#[from] HandlerError),
     #[error(transparent)]
     Encoding(#[from] EncodingError),
+}
+
+impl Error {
+    /// The other half of `core.md` §4's on-demand trigger, beside
+    /// [`crate::AbstainReason::file_list_evidence`]: a *failure* that is
+    /// itself evidence the list names a file that is no longer there.
+    ///
+    /// Without it a deletion has no backstop at all. §4 says the editor's
+    /// watcher is opportunistic and nothing depends on it, and a removed
+    /// candidate fails every later query over the same candidate set — so in
+    /// standalone, where `deps.md` §7 defers `notify` and no watcher exists,
+    /// that failure is permanent rather than the one failed read §4 describes.
+    ///
+    /// Here rather than in `driver` for the reasons that put the abstention's
+    /// twin here: what an error means is this enum's business, and every
+    /// sub-enum is `#[non_exhaustive]`, so the same match written in `driver`
+    /// would need the wildcard arm `CLAUDE.md` bans.
+    pub fn file_list_evidence(&self) -> FileListEvidence {
+        match self {
+            Self::Project(project) => project.file_list_evidence(),
+            // None of these is reached with a `ProjectPath` in hand, so none
+            // of them can be a fact about the walk. `Handler` is the one worth
+            // naming: `DeadlineExpired` never arrives here at all — `driver`
+            // converts it to an abstention before anything observes it — and
+            // rescanning on an expiry is what §4 rules out by name.
+            Self::Child(_)
+            | Self::Codec(_)
+            | Self::Config(_)
+            | Self::Document(_)
+            | Self::Encoding(_)
+            | Self::Handler(_)
+            | Self::Parse(_)
+            | Self::Protocol(_) => FileListEvidence::Inconclusive,
+        }
+    }
 }
 
 /// The run was asked for something that does not exist or does not agree with
@@ -435,6 +471,45 @@ pub enum ProjectError {
     /// outside its scope, which `ProjectPath` makes unspellable.
     #[error("{uri} is not a file this project view can resolve")]
     Unresolvable { uri: DocumentUri },
+}
+
+impl ProjectError {
+    /// `core.md` §4's rule that a failed read is the deletion signal, applied
+    /// to the two variants that can only mean the list is wrong.
+    ///
+    /// The narrowness is the point. A read that failed because the file is
+    /// gone is a fact about the walk; a read that failed for any other reason
+    /// is a fact about the file, and the walker will hand the same entry back
+    /// on the next pass — so marking stale on one would be a rescan per query
+    /// forever, which is the spin `FileListCache::install` refuses elsewhere.
+    pub fn file_list_evidence(&self) -> FileListEvidence {
+        match self {
+            // The list named a file that is not there, which is the one thing
+            // a rescan fixes.
+            Self::Read { path: _, source } if source.kind() == io::ErrorKind::NotFound => {
+                FileListEvidence::Stale
+            }
+            // A `Location` whose file the view cannot resolve back. This
+            // variant's own documentation above says what it means — the file
+            // list moved under the query — and that is the same evidence by a
+            // different route.
+            Self::Unresolvable { uri: _ } => FileListEvidence::Stale,
+            // Permissions, a directory where a file was, an I/O error on a
+            // file that is still enumerated: the entry is not stale, the read
+            // is.
+            Self::Read {
+                path: _,
+                source: _,
+            }
+            // The file is there and is not text. A rescan returns it.
+            | Self::NotUtf8 { path: _ }
+            // Both are failures *of* a walk rather than evidence about one,
+            // and rescanning on either is an immediate retry of the thing
+            // that just failed.
+            | Self::Enumerate { root: _, source: _ }
+            | Self::Scanner { roots: _, source: _ } => FileListEvidence::Inconclusive,
+        }
+    }
 }
 
 /// A wire position that does not name a place in the document it arrived

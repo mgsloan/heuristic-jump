@@ -31,7 +31,7 @@ import tempfile
 import textwrap
 import tomllib
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -43,6 +43,13 @@ from pathlib import Path
 # `harness/` makes necessary again).
 REPO = Path(os.environ.get("HJ_REPO") or Path(__file__).resolve().parent.parent).resolve()
 HARNESS = REPO / "harness"
+# The harness directory this file is actually in, which under gate step 3 is
+# the *reviewed* copy while `HARNESS` is the worktree being judged. A selftest
+# that asserts how two harness files agree with each other must use this one:
+# `harness/gate` is denied to every loop, so a branch that has not merged main
+# yet carries an older copy, and asserting against it fails a campaign for
+# something it is forbidden to fix. See `state/decisions/harness-011.md`.
+PINNED_HARNESS = Path(__file__).resolve().parent
 # Desired state, which is control rather than history and must have one
 # answer for the whole fleet. A worker reads `state/phase.toml` from its own
 # branch otherwise, so pausing the integration checkout does not stop it and
@@ -147,7 +154,18 @@ CAMPAIGN_MAX_LIFETIME_SECONDS = 6 * 3600
 #       count delta. Strictly additive: a campaign that scored under 1
 #       still scores, and the backtest confirms rule 2 reclassifies none
 #       of the 29 historical campaigns.
-PROGRESS_RULE = 2
+#   3 — attribution by the gap, not by the round. Rule 2 read "this campaign
+#       named a section the audit looked at, and *some* gap closed
+#       somewhere", so a campaign that closed none of the gaps it named was
+#       credited whenever a sibling worker closed one. Rule 3 intersects the
+#       ids the campaign named with the ids that closed, and where it named a
+#       section rather than a gap, with the gaps that closed *in that
+#       section*. Strictly a tightening: over the 50 closed campaigns it
+#       moves the attributed *term* on 13 and the progress *verdict* on
+#       none, because every campaign it takes the audit-side term from had
+#       already scored at close. `state/decisions/harness-010.md`.
+# DECISION-harness-010: provisional
+PROGRESS_RULE = 3
 
 OUTCOMES = ("confirmed", "falsified", "no-movement", "partial", "budget", "crashed", "error")
 
@@ -612,6 +630,34 @@ def open_gap_ids(docs: list[str]) -> dict[str, tuple[str, str]]:
     return out
 
 
+def campaign_was_audited(audits: list[dict], commit_times: list[str], opened_at: str) -> bool:
+    """Has anything judged this campaign's work?
+
+    `state/phase.toml` excludes a campaign that closes with no audit since it
+    opened from the stall count, "otherwise the cadence itself would stop the
+    loop". Two things have to be true for that exclusion to mean what it says,
+    and neither was.
+
+    **The audits must be this loop's.** The gap log is one file for both loops,
+    so the last row in it is whichever loop audited most recently. Campaign
+    2e588730 was judged as audited by the core loop's audit of `core.md`, while
+    the harness loop's own audit had run two seconds *before* it opened — so it
+    closed `confirmed` with no progress and tripped §7's "a loop that has
+    decided it is finished" notice, the most alarming line the harness prints,
+    over four commits nothing had looked at. Callers pass `audits_for(docs)`.
+
+    **The audit must postdate the work, not the session.** An audit that ran
+    while a campaign was still writing cannot see what it committed afterwards.
+    The commits are the work; the open time is only when the session began
+    reading, and it is the fallback for a campaign that committed nothing —
+    where there is no work to have been judged and the old question is the
+    right one.
+    """
+    if not audits:
+        return False
+    return audits[-1]["ts"] > max(commit_times, default=opened_at)
+
+
 def audits_for(docs: list[str]) -> list[dict]:
     """The gap-log rows belonging to a document set.
 
@@ -860,6 +906,24 @@ def commits_for_campaign(campaign_id: str) -> list[str]:
     return [line for line in raw.splitlines() if line]
 
 
+def commit_time(sha: str) -> str:
+    """Committer date, normalised to UTC so it sorts against `now()`'s output.
+
+    `%cI` rather than `%aI`: a rebase rewrites the committer date and leaves the
+    author date alone, and what is being compared here is when the work reached
+    the branch an audit would have read, not when it was first written.
+
+    Converted rather than passed through, because git emits the *local* offset
+    and every timestamp this is compared against is `now()`, which is UTC — and
+    these get compared as strings. `2026-08-04T15:18:26-06:00` sorts before
+    `2026-08-04T20:59:31+00:00` and is two minutes after it.
+    """
+    raw = git("show", "-s", "--format=%cI", sha, check=False).strip()
+    if not raw:
+        return ""
+    return datetime.fromisoformat(raw).astimezone(timezone.utc).isoformat(timespec="seconds")
+
+
 # --------------------------------------------------------------------------
 # The append-only records
 
@@ -1081,6 +1145,16 @@ KINDS_IN_USE = (
     # deletions to be flagged for review regardless of count, and a review
     # that leaves no trace is indistinguishable from nobody looking.
     "test-deletion-reviewed",
+    # `design/loops.md` §13, "Branches exist for one commit at a time": a
+    # rebase that turns the gate red is escalated as a blocked item rather
+    # than repaired locally. `harness/loop`'s `blocked` is the only caller and
+    # it was logging a kind this vocabulary did not name, so `cmd_intervene`
+    # died on every one of them and the call site's `|| true` swallowed it —
+    # for long enough that the five rows already in the log all predate the
+    # vocabulary being closed. The escalation reached the worker's own log
+    # file and nothing else, which is the failure mode §13 describes: the
+    # branch keeps accumulating while nobody is told.
+    "merge-blocked",
 )
 
 KNOWN_KINDS = INTERVENTION_KINDS + KINDS_IN_USE
@@ -1093,6 +1167,74 @@ KIND_ALIASES = {"prompt-revision": "prompt-revised"}
 
 def canonical_kind(kind: str) -> str:
     return KIND_ALIASES.get(kind, kind)
+
+
+# Only a bare literal. `--kind "$computed"` is not checkable from here and is
+# skipped rather than guessed at, and the angle-bracket placeholder in the
+# post-commit hook's help text is not a kind.
+SHELL_KIND = re.compile(r"--kind[ \t]+([a-z][a-z0-9-]*)")
+
+
+def intervention_kinds_in(script: str) -> list[str]:
+    return sorted({match.group(1) for match in SHELL_KIND.finditer(script)})
+
+
+def harness_scripts() -> list[tuple[str, str]]:
+    """The scripts beside this file, as (name, text).
+
+    Reaches through `HJ_REPO`, so it reads whichever tree is being judged
+    rather than the reviewed copy this file may have been run from. That is
+    deliberate and it is the only way the checks built on it catch anything:
+    the bug they exist for is a shell script changing while `hj` does not, and
+    in that case the tree's own `hj` is never run. Unreadable and missing files
+    are skipped — a branch that predates a script did not break it.
+    """
+    found = []
+    for root in (HARNESS, HARNESS / "hooks"):
+        if not root.is_dir():
+            continue
+        for path in sorted(root.iterdir()):
+            if not path.is_file() or path.name == "hj":
+                continue
+            try:
+                found.append((str(path.relative_to(HARNESS)), path.read_text()))
+            except (OSError, UnicodeDecodeError):
+                continue
+    return found
+
+
+def shell_intervention_kinds() -> dict[str, list[str]]:
+    """Every intervention kind the scripts beside this file log, by file.
+
+    The vocabulary above is enforced in `cmd_intervene` at runtime, and its
+    callers are shell scripts that cannot import it. `harness/loop` logged
+    `merge-blocked` for as long as that kind was missing here, and because the
+    call site ends in `|| true` the only symptom was an escalation that never
+    arrived. This is the seam that had no check.
+    """
+    return {name: kinds for name, text in harness_scripts() if (kinds := intervention_kinds_in(text))}
+
+
+# `"$hj" <subcommand>`, which is how every shell script here invokes this file.
+SHELL_HJ_CALL = re.compile(r'"\$hj"\s+([a-z][a-z-]*)')
+
+
+def hj_subcommands(source: str) -> set[str]:
+    return set(re.findall(r'sub\.add_parser\(\s*"([a-z][a-z-]*)"', source))
+
+
+def shell_hj_calls() -> dict[str, list[str]]:
+    """Every `hj` subcommand the scripts beside this file invoke, by file.
+
+    The same seam as `shell_intervention_kinds` and the same failure: a shell
+    script naming something this file does not have fails at run time, inside a
+    runner whose output nobody reads until a campaign is already lost.
+    """
+    return {
+        name: sorted(set(SHELL_HJ_CALL.findall(text)))
+        for name, text in harness_scripts()
+        if SHELL_HJ_CALL.search(text)
+    }
 
 
 def decision_status(identifier: str, recorded: str | None, answers: dict[str, dict] | None = None) -> str:
@@ -2303,6 +2445,7 @@ def cmd_audit_merge(args: argparse.Namespace) -> int:
         for identifier, value in open_gap_ids(config.docs).items()
         if value[0] in audited
     }
+    closed = {identifier: before[identifier][0] for identifier in set(before) - set(after)}
     append_jsonl(
         GAP_LOG,
         {
@@ -2310,11 +2453,20 @@ def cmd_audit_merge(args: argparse.Namespace) -> int:
             "commit": head_sha(),
             "sections_audited": sorted(audited),
             "opened": sorted(set(after) - set(before)),
-            "closed": sorted(set(before) - set(after)),
+            "closed": sorted(closed),
+            # The section each closed gap was in, which `closed` cannot say: an
+            # id is a hash of the section and the claim, and a gap that has
+            # closed is no longer in the audit to look up. Attribution by named
+            # gap needs it (`gap_attribution`), so it is recorded at the one
+            # moment it is still knowable. Additive — `closed` stays as it was,
+            # because rows written before this exist and are the record.
+            "closed_gaps": [
+                {"id": identifier, "section": closed[identifier]} for identifier in sorted(closed)
+            ],
             "persisted": len(set(before) & set(after)),
         },
     )
-    settled = settle_progress(config, stamp, sorted(audited), sorted(set(before) - set(after)))
+    settled = settle_progress(config, stamp, sorted(audited), closed)
     commit_harness_state(
         [audit_path(doc) for doc in config.docs] + [GAP_LOG] + ([sessions_path()] if settled else []),
         f"audit of {', '.join(config.docs)}",
@@ -2478,27 +2630,37 @@ def cmd_check_metrics(args: argparse.Namespace) -> int:
             )
             return 1
         print(f"metrics: {target[:12]} is recorded")
-    # `harness/gate`'s own step 5 hard-fails in a cost phase with "the phase
-    # ratchets are not implemented", and it is denied to every loop, so the
-    # size ratchet is run from here — where §7's "the gate checks metric
-    # direction itself" already puts a metric check, and where the test ratchet
-    # went for the same reason. `harness-008` asks for step 5 to call
-    # `hj check-ratchets` instead of failing.
-    # Both, rather than short-circuiting: a loop that has deleted a test and
-    # grown the binary should be told about both in one gate run, or it fixes
-    # one and discovers the other on the next.
-    return 1 if check_test_ratchet(config) + check_size_ratchet(config, phase) else 0
+    # The test-count ratchet only. The size ratchet ran here too while step 5
+    # of `harness/gate` hard-failed in a cost phase, since that file is denied
+    # to every loop; `harness-008` is answered and step 5 now calls
+    # `hj check-ratchets`, so this stops being the second route to it.
+    #
+    # The test ratchet stays because it is not the same mechanism: §4 scopes the
+    # gate's ratchets step to §11's *size* ratchets in phase 3, and §7's test
+    # count is a per-commit check that belongs with the metrics row it is
+    # computed from.
+    #
+    # The prompt check is here for the reason the size ratchet was: `harness/gate`
+    # is denied to every loop, so a check with no step of its own goes in the
+    # step whose subject it shares. §15's token lever is a cost measurement,
+    # and this is the step that asserts a measurement is going the right way.
+    # Both, never short-circuited: two failures reported at once cost one gate
+    # run instead of two.
+    failed = check_test_ratchet(config)
+    failed = check_prompt_prefix(config, phase) or failed
+    failed = check_denial_table(config) or failed
+    return 1 if failed else 0
 
 
 def cmd_check_ratchets(args: argparse.Namespace) -> int:
-    """`harness/gate` step 5, for whenever it is allowed to call this.
+    """`harness/gate` step 5.
 
-    The step currently hard-fails in a cost phase — "the phase ratchets are not
-    implemented" — and `harness/gate` is denied to every loop, so this command
-    exists unreferenced by it and is run from `check-metrics` meanwhile.
-    `harness-008` is the request to swap the step's body for a call to this.
-    Having both routes is not duplication: the ratchet runs today either way,
-    and the day step 5 changes it stops being two places.
+    It was written before the step could call it: the step hard-failed in a
+    cost phase with "the phase ratchets are not implemented", which stopped
+    being true once `hj size` and the re-baselining existed, and
+    `harness/gate` is denied to every loop — so this ran from `check-metrics`
+    meanwhile. `harness-008` answered that, the step now calls this, and
+    `check-metrics` no longer does: the size ratchet has one route again.
     """
     phase, config = loop_config(args.loop)
     if phase.phase not in SIZE_RATCHET_PHASES:
@@ -2654,6 +2816,55 @@ def render(template: str, values: dict[str, str]) -> str:
     return out
 
 
+# `design/loops.md` §14: "Every past campaign as one line — target,
+# hypothesis, outcome." The first and the last are in the session row; the
+# hypothesis is only ever in the campaign record, because it is the one part a
+# campaign writes in prose. Long enough to say which idea was tried and short
+# enough that forty of them are still a list rather than a document.
+HYPOTHESIS_CAP = 200
+HYPOTHESIS_HEADING = re.compile(r"^#{2,3}\s+Hypothesis\s*$", re.MULTILINE)
+NEXT_HEADING = re.compile(r"^#{1,3}\s+\S", re.MULTILINE)
+HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+
+
+def hypothesis_of(record: str) -> str:
+    """The first paragraph under a campaign record's `## Hypothesis`.
+
+    Empty when the section is missing or still holds the template's comment,
+    and that is the useful answer rather than a defect: a campaign that wrote
+    no hypothesis has none to report, and inventing one from its target would
+    put words in its mouth that the next campaign would read as evidence.
+    """
+    heading = HYPOTHESIS_HEADING.search(record)
+    if heading is None:
+        return ""
+    rest = record[heading.end() :]
+    following = NEXT_HEADING.search(rest)
+    body = HTML_COMMENT.sub("", rest[: following.start()] if following else rest).strip()
+    if not body:
+        return ""
+    paragraph = " ".join(body.split("\n\n")[0].split())
+    if len(paragraph) <= HYPOTHESIS_CAP:
+        return paragraph
+    cut = paragraph[:HYPOTHESIS_CAP].rsplit(" ", 1)[0]
+    return f"{cut}…"
+
+
+def campaign_hypothesis(owner: str, campaign: dict) -> str:
+    """`hypothesis_of` against the record a session row points at.
+
+    The row carries the path, so a record that moved is followed rather than
+    guessed at; the fallback is the layout `campaign-open` writes, for rows
+    written before the field existed.
+    """
+    identifier = str(campaign.get("campaign") or "")
+    relative = campaign.get("record") or f"state/campaigns/{owner}/{identifier}.md"
+    path = REPO / str(relative)
+    if not path.is_file():
+        return ""
+    return hypothesis_of(path.read_text())
+
+
 def judged_campaigns(owner: str) -> list[dict]:
     """Closed campaigns that actually ran.
 
@@ -2758,6 +2969,36 @@ def assignment_block(owner: str, worker: str, campaign: str = "<your id>") -> st
     return "\n".join(lines)
 
 
+# `design/loops.md` §13 and §14: the digest is "capped like the findings
+# digest", and the cap is the mechanism rather than a style note — to add
+# something you have to decide what no longer earns its place, which is
+# synthesis rather than accumulation. Instructed since the first campaign and
+# measured by nothing until now, at which point three of five digests were
+# over it and the largest was 632 words.
+DIGEST_WORD_CAP = 512
+
+
+def digest_note(words: int) -> str:
+    """What the prompt says above a worker's own digest.
+
+    Reported to the loop rather than gated. A campaign writes its digest at
+    close, after its last gate run, so a gate check would fail the *next*
+    campaign for its predecessor's overrun — and the fix is a trim only the
+    author's context makes well.
+    """
+    if words == 0:
+        return "You have not written one yet. Writing it is part of your close."
+    if words <= DIGEST_WORD_CAP:
+        return f"It is {words} words against a cap of {DIGEST_WORD_CAP}."
+    return (
+        f"**It is {words} words, over the {DIGEST_WORD_CAP}-word cap by "
+        f"{words - DIGEST_WORD_CAP}.** Bringing it back under is part of this close, and "
+        "the cap is the mechanism rather than a formatting rule: what has to be decided "
+        "to get back under it is which conclusion no longer earns its place, and nothing "
+        "else in this loop forces that decision."
+    )
+
+
 def worker_findings(owner: str, worker: str) -> str:
     """This worker's digest, followed by its siblings'.
 
@@ -2838,6 +3079,42 @@ def staleness_note(gap: Gap) -> str:
     return f"  **{path} has changed since this was found ({moved}) — verify before taking it.**"
 
 
+def stall_notice_for(stalled: int, stall_n: int) -> str:
+    """What a campaign is told about the stall it is opening under.
+
+    Above the threshold this is the last campaign the loop runs, and
+    `design/loops.md` §7 wants an account out of it: what was being tried, what
+    was tried, what is believed to be blocking, and the question. Two of those
+    the harness can assemble and two only the campaign knows.
+
+    It asks for the account in the *campaign record* rather than in
+    `state/handoff.md`, which is the file §7 names. There is one writer for
+    that file and it is `hj handoff`, which runs as the loop stops and
+    overwrites — a stale handoff from an answered stall is worse than none,
+    because the dashboard renders it as a live request. So the campaign writes
+    where it already writes, and the loop quotes it.
+    """
+    if stalled < stall_n:
+        return (
+            f"Not stalled: {stalled} campaign(s) without progress, of {stall_n} that"
+            " would stop this loop."
+        )
+    return (
+        f"**This loop has stalled**: {stalled} campaigns have closed in a row with no\n"
+        f"progress, and N is {stall_n}. This is the last campaign the loop will\n"
+        "run before it stops and asks a human. **Do not pick a new target.**\n\n"
+        "Write the account instead, in the Outcome section of your campaign record:\n"
+        "what the loop was trying, what it tried, what you believe is blocking it, and\n"
+        "the one question whose answer would unblock it. Then close with\n"
+        "`OUTCOME: no-movement`.\n\n"
+        "Put it in the record and **not** in `state/handoff.md`. The loop writes that\n"
+        "file itself as it stops (`design/loops.md` §7 — the run of campaigns that\n"
+        "stalled is the half only the loop can see), quoting your Outcome section\n"
+        "verbatim for the half only you can. Anything written straight to\n"
+        "`state/handoff.md` is overwritten and lost."
+    )
+
+
 def prompt_values(
     phase: Phase,
     config: LoopConfig,
@@ -2908,10 +3185,13 @@ def prompt_values(
 
     campaign_lines = []
     for campaign in campaigns_of(config.owner):
-        campaign_lines.append(
-            f"- {campaign.get('campaign', '?')[:8]} {campaign.get('target') or '(no target recorded)'} "
+        identifier = str(campaign.get("campaign") or "?")
+        line = (
+            f"- {identifier[:8]} {campaign.get('target') or '(no target recorded)'} "
             f"-> {campaign.get('outcome') or 'open'}"
         )
+        why = campaign_hypothesis(config.owner, campaign)
+        campaign_lines.append(f"{line}\n  why: {why}" if why else line)
 
     # Open records, and answered ones whose sites are still tagged. The second
     # kind matters as much as the first: `design/loops.md` section 6 makes
@@ -2976,18 +3256,12 @@ def prompt_values(
     journal_path = STATE / "journal" / f"{worker_name}.md"
     if not journal_path.exists():
         journal_path = STATE / "journal" / f"{config.owner}.md"
+    # This worker's own digest, not the spliced block below it: the cap is per
+    # file, and a worker cannot trim a sibling's.
+    digest = STATE / "findings" / f"{worker_name}.md"
 
     stalled = trailing_without_progress(config.owner)
-    if stalled >= config.stall_n:
-        stall_notice = (
-            f"**This loop has stalled**: {stalled} campaigns have closed in a row with no\n"
-            f"progress, and N is {config.stall_n}. Do not pick a new target. Write\n"
-            "`state/handoff.md` instead — what you were trying, what you tried, what you\n"
-            "believe is blocking it, and the one question whose answer would unblock it —\n"
-            "then close with `OUTCOME: no-movement`."
-        )
-    else:
-        stall_notice = f"Not stalled: {stalled} campaign(s) without progress, of {config.stall_n} that would stop this loop."
+    stall_notice = stall_notice_for(stalled, config.stall_n)
 
     return {
         "loop": config.owner,
@@ -3001,6 +3275,16 @@ def prompt_values(
         # findings digest below is deliberately shared and contended instead
         # (`design/loops.md` §13, "What is per worker and what is shared").
         "journal": f"state/journal/{worker_name}.md",
+        # Per worker for the same reason as the journal, and found the same
+        # way: `changelog_paths` already globs the directory, so a per-worker
+        # file needs no reader change. Three workers appending Class A entries
+        # to one file conflicted on both merges of every round — which is what
+        # §13 means by partitioning shared state by owner, one level below
+        # where `changelog_paths`'s own docstring had already applied it. A
+        # line-level union would resolve the conflict and corrupt the result:
+        # these are prose blocks, and interleaving two produces a third entry
+        # neither campaign wrote.
+        "changelog": f"state/spec-changelog/{worker_name}.md",
         "owned_paths": "\n".join(f"- `{p}`" for p in config.write),
         "denied_paths": "\n".join(f"- `{p}`" for p in denied_paths(phase, config.owner)),
         # A loop that may write `harness/` must not be able to run its own
@@ -3057,7 +3341,8 @@ def prompt_values(
             else ""
         ),
         "other_findings": "\n\n".join(findings) or "(no other loop has published a digest)",
-        "findings_path": f"state/findings/{os.environ.get('HJ_WORKER') or config.owner}.md",
+        "findings_path": f"state/findings/{worker_name}.md",
+        "summary_note": digest_note(len(digest.read_text().split()) if digest.exists() else 0),
         # The two most volatile things in the prompt, and they go last for that
         # reason (§15's token lever orders it stable-to-volatile). §4 opens an
         # iteration with "read `state/journal/<owner>.md` and the last N commit
@@ -3069,11 +3354,7 @@ def prompt_values(
             format_commit_lines(git("log", f"-n{RECENT_COMMITS * 6}", f"--format={COMMIT_FORMAT}", check=False))
         )
         or "- (no loop commits yet)",
-        "self_summary": (
-            worker_findings(config.owner, os.environ.get("HJ_WORKER") or config.owner)
-            if worker_findings(config.owner, os.environ.get("HJ_WORKER") or config.owner)
-            else "(none yet)"
-        ),
+        "self_summary": worker_findings(config.owner, worker_name) or "(none yet)",
     }
 
 
@@ -3113,6 +3394,176 @@ def assignments_path(owner: str) -> Path:
 # finds is the first place the id reaches the rendered prompt and never an
 # accidental shared prefix between two real uuids.
 PREFIX_PROBE = ("aaaaaaaa-0000-0000-0000-000000000000", "bbbbbbbb-1111-1111-1111-111111111111")
+
+# The two template values that carry the campaign uuid. Every other value in a
+# prompt is per loop, per phase or per audit, so it is byte-identical from one
+# campaign to the next and costs nothing wherever it sits; these two end the
+# cacheable prefix at the first place they appear.
+PER_CAMPAIGN_VALUES = ("campaign_record", "campaign_id")
+
+# The line dividing the instructional body from the state block, in *template*
+# coordinates rather than rendered ones. It is unique in the template — the
+# decision record's own frontmatter arrives through `{{decision_template}}`
+# and so is not in the file — which is what lets this be checked without
+# rendering a prompt, and therefore without reading any repository state.
+BODY_END = "\n---\n"
+
+
+def prompt_body_problems(name: str, template: str) -> list[str]:
+    """`design/loops.md` §15's first token lever, as an exact check.
+
+        Keep the prompt's fixed prefix byte-identical across iterations and
+        order it stable-to-volatile ... so the cacheable prefix is as long as
+        possible.
+
+    `hj prompt-prefix` measures how far that holds and deliberately never
+    fails, because when it was written the revision it argues for was an open
+    question (`harness-001`, since answered in favour of moving the two ids to
+    the tail). This is the part that can fail: not "the prefix is long enough",
+    which is a judgement, but "no per-campaign value appears above the
+    separator", which is where the length comes from and is exact.
+
+    The second arm matters as much as the first. A campaign that cannot find
+    its own record writes no record, so deleting the tail block is a worse
+    failure than putting the value back in the body, and it would otherwise
+    read as a perfect score.
+    """
+    separators = template.count(BODY_END)
+    if separators != 1:
+        return [
+            f"{name} has {separators} state-block separators (`---` alone on a line) "
+            "and needs exactly one: it is what divides the instructional body from "
+            "the per-campaign tail, and every check here is relative to it"
+        ]
+    body = template.split(BODY_END, 1)[0]
+    problems = []
+    for value in PER_CAMPAIGN_VALUES:
+        placeholder = "{{" + value + "}}"
+        if placeholder in body:
+            problems.append(
+                f"{name} renders {placeholder} in the instructional body. It carries the "
+                "campaign uuid, so the cacheable prefix ends there and everything after "
+                "it is re-sent uncached on every campaign of every loop "
+                "(design/loops.md section 15; state/decisions/harness-001.md). Refer to "
+                "the `## This campaign` block in the tail instead"
+            )
+        elif placeholder not in template:
+            problems.append(
+                f"{name} renders {placeholder} nowhere. A campaign that cannot find its "
+                "own record writes no record, which is worse than the prefix cost this "
+                "check exists to prevent"
+            )
+    return problems
+
+
+# The paragraph in `design/loops.md` §13 that states the bounded exception,
+# found by the phrase that is the claim rather than by a line number. It names
+# the files that stay denied while a loop is allowed to write `harness/`, and
+# `DENIED_ALWAYS` is the same list in code.
+EXCEPTION_PARAGRAPH = "stay denied to it"
+ISOLATION_SECTION = "loops.md#mechanics-isolation-in-four-layers"
+
+
+def documented_harness_denials(text: str) -> tuple[set[str], str]:
+    """The `harness/…` paths §13's bounded-exception paragraph names, and why
+    it found none when it finds none.
+
+    Paragraph-scoped rather than section-scoped on purpose: the section also
+    mentions `harness/workers`, `harness/measure` and `harness/hj` in passing,
+    and a check that read the whole section would demand that every path the
+    prose happens to name be denied.
+    """
+    paragraphs = [block for block in text.split("\n\n") if EXCEPTION_PARAGRAPH in block]
+    if len(paragraphs) != 1:
+        return set(), (
+            f"{len(paragraphs)} paragraphs of {ISOLATION_SECTION} say "
+            f"{EXCEPTION_PARAGRAPH!r} and exactly one should: it is the sentence that "
+            "names what a loop writing `harness/` still may not touch"
+        )
+    return set(re.findall(r"`(harness/[^`\s]+)`", paragraphs[0])), ""
+
+
+def check_denial_table(config: LoopConfig) -> int:
+    """`DENIED_ALWAYS` and the paragraph that states it, held together.
+
+    §13's four layers end at "the gate decides what may be in it", and this is
+    the case where the gate's rule and the document's sentence are the same
+    claim written twice — the shape §5 calls converting an audit finding into
+    a permanent check. The sentence was wrong for as long as it took an
+    auditor to read it: it said the prompts were denied while
+    `harness-009` was answering that they are not.
+
+    Scoped to `writes_harness` for `check_prompt_prefix`'s reason. Every loop
+    can write `design/`, but only one is judged on this document, and a check
+    that fails in the tree of whoever has not merged yet is `harness-011`.
+    """
+    if not config.writes_harness:
+        return 0
+    index = section_index(["loops.md"])
+    section = index.get(ISOLATION_SECTION)
+    if section is None:
+        print(
+            f"denials: {ISOLATION_SECTION} is gone, and it is where the deny list is "
+            "stated. Renaming the heading also breaks harness/section-baseline.toml, "
+            "which is the frozen denominator and is denied to every loop",
+            file=sys.stderr,
+        )
+        return 1
+    documented, problem = documented_harness_denials(section_text(section))
+    if problem:
+        print(f"denials: {problem}", file=sys.stderr)
+        return 1
+    constant = {path for path in DENIED_ALWAYS if path.startswith("harness/")}
+    if documented == constant:
+        print(f"denials: {len(constant)} harness path(s) denied, and the document says so")
+        return 0
+    for path in sorted(constant - documented):
+        print(
+            f"denials: DENIED_ALWAYS holds {path}, which §13's bounded-exception "
+            "paragraph does not name. A file denied without being written down is a "
+            "gate failure nobody can predict",
+            file=sys.stderr,
+        )
+    for path in sorted(documented - constant):
+        print(
+            f"denials: §13 says {path} is denied and DENIED_ALWAYS does not. The "
+            "document is the claim and the constant is the enforcement; where they "
+            "disagree the loop has more reach than the spec grants it",
+            file=sys.stderr,
+        )
+    return 1
+
+
+def check_prompt_prefix(config: LoopConfig, phase: Phase) -> int:
+    """The gate's route to `prompt_body_problems`, for the one loop that can
+    break it.
+
+    Scoped to `writes_harness`, and not because the property is that loop's
+    alone — it costs every loop tokens. It is that the pinned harness runs
+    this against *each* loop's own worktree (`HJ_REPO`), and a worktree that
+    has not merged `main` since the prompt changed still holds the old one. A
+    check on a shared file that fails in the tree of whoever has not merged
+    yet is `harness-011`, and it has cost two campaigns; only the loop that
+    owns `harness/prompts/` can act on the failure anyway.
+
+    Live templates only, for `live_prompt_templates`' reason: a tuning prompt
+    for a phase that has not run generates nothing, so its shape costs nobody
+    anything yet.
+    """
+    if not config.writes_harness:
+        return 0
+    problems = []
+    for name in sorted(live_prompt_templates(phase)):
+        path = REPO / name
+        if path.exists():
+            problems += prompt_body_problems(name, path.read_text())
+    for problem in problems:
+        print(f"prompt: {problem}", file=sys.stderr)
+    if problems:
+        print("prompt: `harness/hj prompt-prefix` reports what it costs.", file=sys.stderr)
+        return 1
+    print("prompt: no per-campaign value above the separator in any live template")
+    return 0
 
 
 def first_divergence(left: str, right: str) -> int:
@@ -3191,6 +3642,8 @@ def cmd_prompt_prefix(args: argparse.Namespace) -> int:
                     f"  re-sent per campaign  {state_at - offset:,} chars of the instructional body,"
                     " because a per-campaign value appears inside it"
                 )
+        for problem in prompt_body_problems(f"harness/prompts/{config.prompt}", template):
+            print(f"  problem            {problem}")
     return 0
 
 
@@ -3559,6 +4012,16 @@ def cmd_campaign_open(args: argparse.Namespace) -> int:
     claimed_now, _ = claim_targets(config.owner, campaign_id, list(assigned))
     rendered = render(template, values)
     prompt_sha = hashlib.sha256(rendered.encode()).hexdigest()
+    constitution = constitution_sha()
+    changed_from = log_constitution_change(campaign_id, phase, config.owner, constitution)
+    if changed_from:
+        # stderr: `harness/loop` reads this command's stdout as the campaign id.
+        print(
+            f"campaign: CLAUDE.md changed from {changed_from[:12]} since this loop's last "
+            "campaign, and it is loaded into every session. Logged as an intervention; "
+            "metrics either side of it are not strictly comparable.",
+            file=sys.stderr,
+        )
 
     record = STATE / "campaigns" / config.owner / f"{campaign_id}.md"
     record.parent.mkdir(parents=True, exist_ok=True)
@@ -3594,6 +4057,11 @@ def cmd_campaign_open(args: argparse.Namespace) -> int:
             "template_sha": hashlib.sha256(
                 (HARNESS / "prompts" / config.prompt).read_bytes()
             ).hexdigest(),
+            # The other file that is in every session's context and that no
+            # campaign can write. Recorded for the prompt sha's reason (§16):
+            # a campaign's behaviour is a function of both, and the join is
+            # only possible if both are on the row.
+            "constitution_sha": constitution,
             "cli_version": cli_version(),
             "started": now(),
             "start_commit": head_sha(),
@@ -3747,6 +4215,150 @@ def prompt_drift(campaign_id: str, config: LoopConfig) -> dict | None:
         "touches_own_prompt": own in edits,
         "own": own,
     }
+
+
+def constitution_sha() -> str:
+    """The blob sha of `CLAUDE.md` at HEAD, or empty if it is not tracked."""
+    return git("rev-parse", "HEAD:CLAUDE.md", check=False).strip()
+
+
+def constitution_change_unlogged(previous: str, current: str, rows: list[dict]) -> bool:
+    """Whether this constitution change still needs a row.
+
+    False when there is nothing to report and false when a sibling worker
+    opening seconds earlier already reported it — three workers open against
+    one `main`, so the first one to notice is the one that logs.
+    """
+    if not current or not previous or previous == current:
+        return False
+    return not any(
+        row.get("kind") == "spec-edited-by-hand"
+        and row.get("target") == "CLAUDE.md"
+        and current[:12] in str(row.get("answer") or "")
+        for row in rows
+    )
+
+
+def log_constitution_change(campaign_id: str, phase: Phase, owner: str, current: str) -> str:
+    """`CLAUDE.md` changing between campaigns, as an intervention row.
+
+    `design/loops.md` §14, on why the prompts splice its precedence rather than
+    its text: "Editing it is still logged as an intervention, for the same
+    reason a prompt revision is: it changes every subsequent campaign and
+    nothing downstream can tell." `CLAUDE.md`'s own rules-hygiene section makes
+    the same claim from the other side — an edit there "is a human change,
+    logged as an intervention like a prompt revision".
+
+    `hand_authored_commits` already *reports* the commit as an intervention
+    with no reasoning, and that is not the same thing: §16 calls the log the
+    mechanism rather than a record of it, and a candidate on a dashboard leaves
+    the log with no entry at all. This is `log_prompt_revision`'s argument
+    applied to the other file that changes every campaign, and the row carries
+    the commit so the dashboard's unlogged list agrees with it.
+
+    Detected against the last campaign of *this* loop rather than the fleet,
+    because that is the boundary the incomparability falls on: the campaigns
+    either side of the change are this loop's.
+
+    Returns the sha it changed from, so the caller can say so, and empty when
+    there was nothing to report.
+    """
+    previous = next(
+        (
+            str(row.get("constitution_sha"))
+            for row in reversed(campaigns_of(owner))
+            if row.get("constitution_sha")
+        ),
+        "",
+    )
+    if not constitution_change_unlogged(previous, current, read_jsonl(INTERVENTIONS)):
+        return previous if current and previous and previous != current else ""
+    append_jsonl(
+        INTERVENTIONS,
+        {
+            "ts": now(),
+            # §16's vocabulary is closed and names no constitution kind. This is
+            # the one it has for normative text a human changed outside the loop
+            # mechanism, and `target` is what keeps "which kinds recur" readable:
+            # a row naming CLAUDE.md is a different event from one naming a
+            # design document, and the field says which.
+            "kind": "spec-edited-by-hand",
+            "phase": phase.phase,
+            "target": "CLAUDE.md",
+            "answer": f"CLAUDE.md is now {current[:12]}, was {previous[:12]}",
+            "commit": git("log", "-1", "--format=%H", "--", "CLAUDE.md", check=False).strip(),
+            "rationale": (
+                f"Noticed at the open of campaign {campaign_id[:8]} ({owner}): the "
+                "constitution changed since this loop's last campaign. It is loaded into "
+                "every session, so like a prompt revision it changes the generator rather "
+                "than a campaign, and metrics either side of it are not strictly "
+                "comparable. Logged by the harness because nobody is present at a campaign "
+                "open to give a reason; whoever made the edit can add a row with theirs."
+            ),
+        },
+    )
+    return previous
+
+
+def live_prompt_templates(phase: Phase) -> set[str]:
+    """Prompt files that some loop is currently generated from.
+
+    Not every file under `harness/prompts/` is one. `design/loops.md` §18 gives
+    the harness loop the tuning and optimisation prompts, which belong to phases
+    that have not run — editing those changes no generator and is ordinary work.
+    """
+    return {f"harness/prompts/{loop.prompt}" for loop in phase.loops.values() if loop.prompt}
+
+
+def log_prompt_revision(campaign_id: str, phase: Phase, drift: dict) -> list[str]:
+    """Record a campaign's edit to a live prompt as a `prompt-revised` row.
+
+    `harness-009` is answered: a loop may edit the prompt that generates it, and
+    the edit is logged rather than prevented. Logged rather than merely flagged
+    because §16 calls a prompt revision the one intervention that cannot be
+    replayed — it changes the *generator* of campaigns, so metrics either side
+    of it are not comparable — and the dashboard flag alone left the log, which
+    §16 calls the mechanism rather than a record of it, with no entry at all.
+
+    Written here rather than through `hj intervene` because nobody is present to
+    give a rationale: this is the harness noticing, and the row says so. A human
+    reading the queue can still add their own row with the reasoning.
+
+    Only live templates. A tuning prompt for a phase that has not run changes no
+    campaign that has been measured.
+    """
+    revised = sorted(set(drift["prompts"]) & live_prompt_templates(phase))
+    if not revised:
+        return []
+    append_jsonl(
+        INTERVENTIONS,
+        {
+            "ts": now(),
+            "kind": "prompt-revised",
+            "phase": phase.phase,
+            "target": ", ".join(revised),
+            "answer": "logged automatically at campaign close",
+            "rationale": (
+                f"Campaign {campaign_id[:8]} edited "
+                + ", ".join(revised)
+                + (
+                    ", which is the template its own prompt was rendered from. "
+                    if drift["touches_own_prompt"]
+                    else ", a prompt another loop is generated from. "
+                )
+                + "design/loops.md §16: a prompt revision changes the generator of "
+                "campaigns rather than a campaign, so metrics either side of it are "
+                "not comparable and it cannot be replayed. Recorded by the harness "
+                "rather than by a person — state/decisions/harness-009.md is answered "
+                "'flag it and log it', so no rationale was given at the time. The diff "
+                "is in the campaign's commits."
+            ),
+            "campaign": campaign_id,
+            "automatic": True,
+            "commit": head_sha(),
+        },
+    )
+    return revised
 
 
 PYTHON_SHEBANG = re.compile(rb"^#!.*python")
@@ -4114,6 +4726,58 @@ def replay_progress(rule: int) -> list[dict]:
                 if tests_only
                 else "none"
             )
+        elif rule == 3:
+            started = opened.get("started") or ""
+            window = [
+                audit
+                for audit in read_jsonl(GAP_LOG)
+                if started < (audit.get("ts") or "") <= (ended or "￿")
+            ]
+            # Per audit rather than over the union of the window, because rule
+            # 2 was per audit: a section reached by one audit and a gap closed
+            # by a later one is not that campaign's gap, and unioning first
+            # would make rule 3 *looser* than the rule it tightens in exactly
+            # that case. The same `gap_attribution` decides live and in replay.
+            attributed = ""
+            for audit in window:
+                closed_then = {
+                    identifier: "" for identifier in audit.get("closed") or []
+                } | {
+                    entry["id"]: entry.get("section") or ""
+                    for entry in audit.get("closed_gaps") or []
+                }
+                attributed = (
+                    gap_attribution(merged, closed_then, set(audit.get("sections_audited") or []))
+                    or attributed
+                )
+            cleaned = merged.get("sections_clean", 0) > opened.get("sections_clean", 0)
+            tests_only = (
+                not window
+                and tests_before is not None
+                and tests_after is not None
+                and tests_after > tests_before
+            )
+            # `settle_progress` ORs in what the close row already decided, and
+            # rules 1 and 2 modelled only the audit-side term. That was near
+            # enough while the audit-side term was loose; under rule 3 it is
+            # not, and the difference is not cosmetic — the audit-side term
+            # alone reports a longest no-progress run of 10 for campaigns the
+            # loop scored at close and never came near stalling on. The close
+            # row is read directly rather than from `merged`, which also
+            # carries the settled row's answer and would make this circular.
+            carried = bool(closed.get("progress"))
+            verdict = bool(cleaned or attributed or tests_only or carried)
+            term = (
+                "sections_clean"
+                if cleaned
+                else attributed
+                if attributed
+                else "tests_unmeasured"
+                if tests_only
+                else "carried"
+                if carried
+                else "none"
+            )
         else:
             die(f"progress-replay: no rule {rule}")
         out.append(
@@ -4194,8 +4858,75 @@ def earned_consolidation_credit(merged: dict, opened: dict, current: dict) -> bo
     return True
 
 
+# A gap is named `anchor[id]` everywhere a campaign is asked to name one — in
+# the prompt's gap list, in `hj claim`, and on the TARGET line. The id is
+# `gap_id`'s ten hex characters.
+GAP_REFERENCE = re.compile(r"\[([0-9a-f]{10})\]\s*$")
+
+
+def named_targets(merged: dict) -> tuple[set[str], set[str], set[str]]:
+    """What a campaign said it was working on: every anchor, the anchors it
+    named *without* a gap id, and the gap ids.
+
+    Two sources, because a campaign can be handed targets and can also choose
+    them: `claimed` is what the planner assigned and `hj claim` granted, and
+    `target` is the TARGET line it closed with. A loop that runs one campaign
+    at a time has no planner, so `claimed` is empty and the TARGET line is the
+    whole of it.
+
+    The split matters for attribution. Naming `a#x[abc1234567]` is a claim
+    about one gap and is judged on that gap; naming `a#x` is a claim about the
+    section and is judged on any gap in it.
+    """
+    anchors: set[str] = set()
+    loose: set[str] = set()
+    ids: set[str] = set()
+    for field in [merged.get("target") or ""] + list(merged.get("claimed") or []):
+        for piece in str(field).split(","):
+            piece = piece.strip()
+            if not piece:
+                continue
+            reference = GAP_REFERENCE.search(piece)
+            if reference:
+                ids.add(reference.group(1))
+                anchors.add(piece[: reference.start()].strip())
+            else:
+                anchors.add(piece)
+                loose.add(piece)
+    return anchors, loose, ids
+
+
+def gap_attribution(merged: dict, closed: dict[str, str], audited: set[str]) -> str:
+    """Which gap closure, if any, this campaign gets credit for.
+
+    `design/loops.md` section 5: "attribution is by named gap rather than by
+    count delta". Rule 2 implemented the *round* version of that — the
+    campaign named a section the audit reached, and the round closed something
+    — which credits a campaign for a sibling worker's work and was the open
+    gap on that section. This is the exact version.
+
+    `closed` maps a closed gap's id to its section. The section is what the
+    gap log did not carry: an id is a hash of the section and the claim, so it
+    cannot be read back out, and a gap that has closed is no longer in the
+    audit to look up. Rows written before `closed_gaps` existed map to the
+    empty string, and those fall back to the round-wide reading rather than
+    silently scoring zero — a historical row cannot be re-attributed, and
+    pretending otherwise would rewrite the record rather than the rule.
+    """
+    _, loose, ids = named_targets(merged)
+    if ids & set(closed):
+        return "gap_named"
+    sections = {section for section in closed.values() if section}
+    if loose & sections:
+        return "gap_named"
+    if ids or sections:
+        return ""
+    anchors, _, _ = named_targets(merged)
+    return "gap_named_round" if (anchors & audited and closed) else ""
+
+
 def settle_progress(
-    config: LoopConfig, stamp: str, audited: list[str], closed_ids: list[str]
+    config: LoopConfig, stamp: str, audited: list[str], closed: dict[str, str]
 ) -> int:
     """Re-judge campaigns that closed since the previous audit.
 
@@ -4218,6 +4949,7 @@ def settle_progress(
     five. A campaign gets credit for a gap it named closing, and gaps closed
     that nobody named get round credit and no campaign credit, which is what
     makes padding a campaign with unrelated work score worse than not.
+    `gap_attribution` is where "a gap it named" is decided.
     """
     rows: dict[str, list[dict]] = {}
     for row in session_rows():
@@ -4240,15 +4972,10 @@ def settle_progress(
         if merged.get("settled_at"):
             continue
         opened = campaign_rows[0]
-        targets = {
-            anchor.strip()
-            for anchor in (merged.get("target") or "").split(",")
-            if anchor.strip()
-        }
-        named = bool(targets & audited_sections) and bool(closed_ids)
+        attributed = gap_attribution(merged, closed, audited_sections)
         cleaned = current["sections_clean"] > opened.get("sections_clean", 0)
         consolidated = earned_consolidation_credit(merged, opened, current)
-        progress = bool(cleaned or named or consolidated or merged.get("progress"))
+        progress = bool(cleaned or attributed or consolidated or merged.get("progress"))
         append_jsonl(
             sessions_path(),
             {
@@ -4261,8 +4988,8 @@ def settle_progress(
                 "settled_term": (
                     "sections_clean"
                     if cleaned
-                    else "gap_named"
-                    if named
+                    else attributed
+                    if attributed
                     else "consolidation"
                     if consolidated
                     else "carried"
@@ -4304,8 +5031,26 @@ def cmd_campaign_close(args: argparse.Namespace) -> int:
     )
     drift = spec_drift(args.id, args.target)
     prompts = prompt_drift(args.id, config)
-    audits = read_jsonl(GAP_LOG)
-    audited = bool(audits) and audits[-1]["ts"] > (opened.get("started") or "")
+    # `audits_for`, not the whole log: an audit covers one loop's documents and
+    # the log is shared, so `read_jsonl(GAP_LOG)[-1]` is whichever loop audited
+    # most recently. That is how campaign 2e588730 was judged as audited by the
+    # core loop's audit of core.md, two seconds after the harness loop's own
+    # audit had run *before* it opened — and so closed `confirmed` with
+    # `progress` false, tripping §7's "a loop that has decided it is finished"
+    # notice, which is the most alarming line the harness can print, on a
+    # campaign whose four commits nothing had looked at yet.
+    #
+    # Against the campaign's last commit rather than its start, for the same
+    # reason one step further in: `state/phase.toml` excludes a campaign with
+    # no audit since it opened so that the cadence cannot stop the loop, and an
+    # audit that ran while the campaign was still working cannot see what it
+    # committed afterwards. The commits are the work; the open time is only
+    # when the session began reading.
+    audited = campaign_was_audited(
+        audits_for(config.docs),
+        [commit_time(commit) for commit in commits],
+        opened.get("started") or "",
+    )
 
     # The last two fields of section 16's row spec. The transcript path is
     # known before the session starts and is recorded whether or not the file
@@ -4372,6 +5117,15 @@ def cmd_campaign_close(args: argparse.Namespace) -> int:
             "intervention that cannot be replayed, so the metrics either side of "
             "it are not comparable. Not a failure; see harness-009."
         )
+        # `harness-009` is answered "flag it and log it": the flag above reaches
+        # the dashboard, and this reaches the log §16 calls the mechanism. The
+        # commit is folded into the close rather than taken separately, so a
+        # campaign that revised a prompt and a campaign that did not leave the
+        # same number of commits behind.
+        revised = log_prompt_revision(args.id, phase, prompts)
+        if revised:
+            commit_harness_state([INTERVENTIONS], f"prompt-revised by {args.id[:8]}")
+            print(f"campaign: logged a prompt-revised intervention for {', '.join(revised)}")
     return 0
 
 
@@ -5514,6 +6268,172 @@ def cmd_audit_cost(args: argparse.Namespace) -> int:
     return 0
 
 
+HANDOFF = STATE / "handoff.md"
+
+# `design/loops.md` §7 names four things a handoff carries, and they are kept
+# here as one list because the file has two authors: the harness assembles the
+# first two from the run of campaigns, and the last two are quoted from the
+# stalled campaign's own record. A heading that drifts on one side is a
+# question that silently stops being answered.
+HANDOFF_SECTIONS = {
+    "trying": "## What it was trying",
+    "tried": "## What it tried",
+    "blocking": "## What the last campaign believed was blocking it",
+    "question": "## The question",
+}
+
+
+def handoff_text(owner: str, config: LoopConfig) -> str:
+    """`design/loops.md` §7: on stall the loop stops and writes
+    `state/handoff.md` — what it was trying, what it tried, what it believes is
+    blocking, and the specific question that would unblock it.
+
+    Assembled by the loop rather than written by a campaign, because §7 says
+    the *loop* writes it and only the loop knows the run of campaigns that
+    stalled it; a campaign sees one of them. The campaign's own account is not
+    lost — it is quoted from the record it fills at close, which is where the
+    only two of §7's four things a campaign knows and the harness does not
+    live: what it believes is blocking, and the question.
+    """
+    closed = judged_campaigns(owner)
+    trailing = trailing_without_progress(owner)
+    stalled_run = closed[-trailing:] if trailing else []
+    counts = audit_counts(config.docs)
+
+    tried = [
+        f"| `{row.get('campaign', '?')[:8]}` | {row.get('target') or '(none named)'} "
+        f"| {row.get('outcome') or 'open'} | {row.get('commits') if row.get('commits') is not None else '?'} |"
+        for row in stalled_run
+    ]
+
+    named: list[str] = []
+    for row in stalled_run:
+        anchors, _, _ = named_targets(row)
+        for anchor in sorted(anchors):
+            if anchor and anchor not in named:
+                named.append(anchor)
+    still_open = sorted(
+        {f"{key}[{gap_id(key, gap.claim)}]" for key, gap in open_gaps(config.docs) if key in named}
+    )
+
+    # This loop's own records only. Another loop's open question is not what
+    # stopped this one, and a handoff that lists the fleet's whole queue asks
+    # a human to do the filtering the harness could have done.
+    waiting = [
+        identifier
+        for identifier, _ in waiting_decisions()
+        if identifier.startswith(f"{owner}-")
+    ]
+
+    account = ""
+    if stalled_run:
+        record = STATE / "campaigns" / owner / f"{stalled_run[-1].get('campaign', '')}.md"
+        if record.is_file():
+            body = record.read_text()
+            outcome = body.split("\n## Outcome", 1)
+            if len(outcome) == 2:
+                account = outcome[1].strip()
+
+    lines = [
+        f"# Stall handoff — `{owner}`",
+        "",
+        f"- loop: `{owner}`",
+        f"- written: {now()}",
+        f"- commit: `{head_sha()[:12]}`",
+        f"- rule: {trailing} campaign(s) closed in a row with no progress; N is {config.stall_n}",
+        f"- number: {counts['sections_clean']}/{counts['sections_total']} sections clean, "
+        f"{counts['open_gaps']} open gaps, {counts['sections_unjudged']} unjudged",
+        "",
+        "The loop has stopped and will not start again until `state/phase.toml`",
+        f"sets `{owner}` back to `running`. Unblocking it is a `stall-unblocked`",
+        "intervention.",
+        "",
+        HANDOFF_SECTIONS["trying"],
+        "",
+    ]
+    lines += [f"- `{anchor}`" for anchor in named] or [
+        "- Nothing recorded. The stalled campaigns named no target, which is"
+        " itself the finding: a loop with nothing to take is not a loop that"
+        " failed at something."
+    ]
+    lines += [
+        "",
+        HANDOFF_SECTIONS["tried"],
+        "",
+        "| campaign | target | outcome | commits |",
+        "|---|---|---|---|",
+    ]
+    lines += tried or ["| (none) | | | |"]
+    lines += ["", "## What is still open under those targets", ""]
+    lines += [f"- `{gap}`" for gap in still_open] or [
+        "- None of the named sections has an open gap left, which means the"
+        " stall is in the measurement rather than in the work: the campaigns"
+        " closed something the audit has not re-judged."
+    ]
+    if account:
+        lines += [
+            "",
+            HANDOFF_SECTIONS["blocking"],
+            "",
+            f"From `state/campaigns/{owner}/{stalled_run[-1].get('campaign', '')}.md`:",
+            "",
+            account,
+        ]
+    else:
+        lines += [
+            "",
+            HANDOFF_SECTIONS["blocking"],
+            "",
+            "Its record has no outcome section. That is a gap in the account and"
+            " not evidence of anything: read the journal and the diff instead.",
+        ]
+    lines += ["", HANDOFF_SECTIONS["question"], ""]
+    if waiting:
+        lines += [
+            "These records are open and are this loop's own. The stall and at least",
+            "one of them are likely the same blockage:",
+            "",
+        ]
+        lines += [f"- `state/decisions/{identifier}.md`" for identifier in waiting]
+        lines += [
+            "",
+            "If none of them is what stopped the loop, the question is below and",
+            "nobody has written it down yet.",
+        ]
+    else:
+        lines += [
+            "No decision record is open for this loop, so the loop did not know",
+            "what to ask — which is the more serious of the two shapes. Read the",
+            "journal entries for the campaigns above: §7 asks a stalled loop for",
+            "the one question that would unblock it, and a stall with no question",
+            "means the campaigns did not find the edge they were hitting.",
+        ]
+    lines += [
+        "",
+        "---",
+        "",
+        "Delete this file once the stall is answered. It is the dashboard's signal",
+        "that a loop is waiting, and one left behind reports a stall that is over.",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def cmd_handoff(args: argparse.Namespace) -> int:
+    """`design/loops.md` §7's handoff, written by the loop as it stops.
+
+    Always rewritten. The file is the account of *this* stall, and a leftover
+    from a previous one that a human forgot to delete is worse than no file —
+    the dashboard renders it as a live request.
+    """
+    _, config = loop_config(args.loop)
+    HANDOFF.parent.mkdir(parents=True, exist_ok=True)
+    HANDOFF.write_text(handoff_text(config.owner, config))
+    commit_harness_state([HANDOFF], f"stall handoff for {config.owner}")
+    print(f"handoff: wrote {HANDOFF.relative_to(REPO)}")
+    return 0
+
+
 def cmd_stall(args: argparse.Namespace) -> int:
     """`design/loops.md` section 7: stall is judged per campaign, not per
     experiment. N consecutive closed campaigns with no progress stops the
@@ -5672,10 +6592,28 @@ def spec_changes() -> list[dict]:
                     "heading": match.group("rest").strip(),
                     "body": text[match.end() : end].strip(),
                     "reviewed": match.group("id") in reviewed,
-                    "owner": path.stem if path.parent.name == "spec-changelog" else "",
+                    "owner": (
+                        loop_of_worker(path.stem) if path.parent.name == "spec-changelog" else ""
+                    ),
+                    "worker": path.stem if path.parent.name == "spec-changelog" else "",
                 }
             )
     return entries
+
+
+def loop_of_worker(name: str) -> str:
+    """`core-2` is worker 2 of the `core` loop; `core` is the loop itself.
+
+    The changelog is per worker, like the journal and the findings, so the
+    filename stopped being the loop's name. Both are kept on the entry: the
+    loop is what a reader groups by, and the worker is what says which of three
+    campaigns in a round wrote it.
+
+    Only a trailing all-digit segment is a worker number, so a loop that is
+    named with a hyphen — `lang-rust` — is left alone.
+    """
+    head, _, tail = name.rpartition("-")
+    return head if head and tail.isdigit() else name
 
 
 def changelog_paths() -> list[Path]:
@@ -5868,6 +6806,98 @@ def selftest_cases() -> list[tuple[str, object]]:
         assert value_at(rendered, offset, values) == "campaign_id", "the shortest spanning value wins"
         assert value_at(rendered, 0, values) is None, "text outside every value belongs to the template"
 
+    def a_per_campaign_value_in_the_body_is_a_problem():
+        # The whole of §15's first token lever, and the state harness-001 was
+        # answered out of: the id sat in the body at step 1, which ended the
+        # core loop's cacheable prefix at 11.9% of a 40KB prompt.
+        template = "body {{campaign_record}} more\n---\n\ntail {{campaign_id}}\n"
+        problems = prompt_body_problems("p.md", template)
+        assert len(problems) == 1, problems
+        assert "campaign_record" in problems[0] and "instructional body" in problems[0]
+
+    def ids_in_the_tail_are_clean():
+        template = "body, no ids\n---\n\ntail {{campaign_record}} {{campaign_id}}\n"
+        assert prompt_body_problems("p.md", template) == []
+
+    def a_prompt_that_never_names_the_record_is_worse_than_a_slow_one():
+        template = "body\n---\n\ntail {{campaign_id}}\n"
+        problems = prompt_body_problems("p.md", template)
+        assert len(problems) == 1 and "nowhere" in problems[0], problems
+
+    def the_separator_has_to_be_findable():
+        for template in ("no separator at all {{campaign_id}}", "a\n---\nb\n---\nc"):
+            problems = prompt_body_problems("p.md", template)
+            assert len(problems) == 1 and "separator" in problems[0], template
+        # A body value under a missing separator is not silently forgiven: the
+        # separator failure is reported first and the check still fails.
+        assert prompt_body_problems("p.md", "{{campaign_id}} no separator") != []
+
+    def the_denied_paths_are_read_out_of_the_paragraph_that_states_them():
+        section = (
+            "### Mechanics\n\n"
+            "`harness/workers` runs in the integration checkout, and\n"
+            "`harness/measure` reports the number.\n\n"
+            "Four files stay denied to it: `harness/gate` and `harness/ratchets.toml`.\n\n"
+            "That list is a constant in `harness/hj`.\n"
+        )
+        found, problem = documented_harness_denials(section)
+        assert problem == "", problem
+        assert found == {"harness/gate", "harness/ratchets.toml"}, found
+
+    def a_paragraph_that_cannot_be_found_is_not_an_empty_list():
+        # Scoring a reworded paragraph as "nothing is denied" would pass the
+        # comparison against a constant that had also been emptied, which is
+        # the one direction this check exists to refuse.
+        for text in ("no such sentence here", "stay denied to it\n\nstay denied to it"):
+            found, problem = documented_harness_denials(text)
+            assert found == set() and problem, text
+
+    def a_one_liner_carries_the_hypothesis_it_was_written_with():
+        record = (
+            "# Campaign x\n\n## Target\n\nloops.md#one\n\n## Hypothesis\n\n"
+            "The gap is open because a decision was answered and nobody came back\nfor it.\n\n"
+            "A second paragraph that the one-liner does not need.\n\n## Outcome\n\ndone\n"
+        )
+        assert hypothesis_of(record) == (
+            "The gap is open because a decision was answered and nobody came back for it."
+        )
+
+    def an_unwritten_hypothesis_is_not_invented():
+        template = "## Hypothesis\n\n<!-- Why the target is in the state it is in. -->\n\n## Outcome\n"
+        assert hypothesis_of(template) == "", "the template's own comment is not a hypothesis"
+        assert hypothesis_of("# Campaign\n\n## Target\n\nx\n") == "", "no section, no line"
+
+    def a_long_hypothesis_is_cut_at_a_word():
+        record = "## Hypothesis\n\n" + "word " * 100
+        cut = hypothesis_of(record)
+        assert len(cut) <= HYPOTHESIS_CAP + 1 and cut.endswith("…"), cut
+        assert not cut.endswith(" …"), "cutting mid-word would misquote it"
+
+    def the_digest_cap_is_reported_with_the_amount_over():
+        assert digest_note(0).startswith("You have not written one yet")
+        assert digest_note(DIGEST_WORD_CAP) == f"It is {DIGEST_WORD_CAP} words against a cap of {DIGEST_WORD_CAP}."
+        over = digest_note(DIGEST_WORD_CAP + 120)
+        assert "over the 512-word cap by 120" in over, over
+        assert "part of this close" in over, "an overrun with no instruction is a statistic"
+
+    def a_constitution_change_is_logged_once_for_the_fleet():
+        rows = [{"kind": "spec-edited-by-hand", "target": "CLAUDE.md", "answer": "CLAUDE.md is now bbbbbbbbbbbb, was aaaaaaaaaaaa"}]
+        assert constitution_change_unlogged("a" * 40, "b" * 40, []) is True
+        assert constitution_change_unlogged("a" * 40, "b" * 40, rows) is False, (
+            "a sibling worker that opened first already reported this one"
+        )
+        assert constitution_change_unlogged("a" * 40, "a" * 40, []) is False
+        assert constitution_change_unlogged("", "b" * 40, []) is False, (
+            "the first campaign to record a sha has nothing to compare against"
+        )
+        assert constitution_change_unlogged("a" * 40, "", []) is False, (
+            "an untracked CLAUDE.md is not an edit"
+        )
+        other = [{"kind": "spec-edited-by-hand", "target": "design/loops.md", "answer": "b" * 40}]
+        assert constitution_change_unlogged("a" * 40, "b" * 40, other) is True, (
+            "a row about another document is not this row"
+        )
+
     def the_estimate_table_parses():
         rows = parse_estimate_table([
             "Some prose above it.",
@@ -5928,6 +6958,96 @@ def selftest_cases() -> list[tuple[str, object]]:
         assert not set(INTERVENTION_KINDS) & set(KINDS_IN_USE), "a kind is named once"
         for routine in ROUTINE_KINDS:
             assert routine in KNOWN_KINDS, routine
+
+    def every_kind_the_shell_logs_is_a_kind_this_file_knows():
+        # The vocabulary is checked at runtime and populated from two places:
+        # this file, and the shell scripts beside it. `merge-blocked` sat in
+        # `harness/loop` and in neither tuple here, so every escalation of a
+        # blocked rebase died in `cmd_intervene` and was swallowed by the call
+        # site's `|| true`. The shell cannot import this list, so the list
+        # reads the shell.
+        for name, kinds in shell_intervention_kinds().items():
+            for kind in kinds:
+                assert canonical_kind(kind) in KNOWN_KINDS, (
+                    f"harness/{name} logs {kind!r}, which is not in KNOWN_KINDS; "
+                    "cmd_intervene would die on it and the caller would swallow the failure"
+                )
+
+    def a_named_gap_is_read_off_the_target_line_and_the_claim():
+        anchors, loose, ids = named_targets(
+            {"target": "a.md#one[0123456789], a.md#two", "claimed": ["b.md#three[abcdef0123]"]}
+        )
+        assert ids == {"0123456789", "abcdef0123"}, ids
+        assert anchors == {"a.md#one", "a.md#two", "b.md#three"}, anchors
+        assert loose == {"a.md#two"}, "a section named with an id is a claim about that gap"
+        assert named_targets({}) == (set(), set(), set())
+
+    def a_sibling_closing_a_gap_does_not_credit_this_campaign():
+        # The whole of §5's "attribution is by named gap rather than by count
+        # delta". Rule 2 credited any campaign that named an audited section
+        # whenever the round closed anything at all, so three workers scored
+        # off one worker's gap.
+        campaign = {"target": "a.md#one[0123456789]"}
+        elsewhere = {"9999999999": "b.md#two"}
+        assert gap_attribution(campaign, elsewhere, {"a.md#one", "b.md#two"}) == ""
+        assert gap_attribution(campaign, {"0123456789": "a.md#one"}, {"a.md#one"}) == "gap_named"
+
+    def naming_a_section_is_judged_on_that_sections_gaps():
+        campaign = {"target": "a.md#one"}
+        assert gap_attribution(campaign, {"9999999999": "a.md#one"}, {"a.md#one"}) == "gap_named"
+        assert gap_attribution(campaign, {"9999999999": "b.md#two"}, {"a.md#one"}) == ""
+
+    def a_gap_log_row_with_no_sections_falls_back_rather_than_scoring_zero():
+        # Rows written before `closed_gaps` existed map a closed id to no
+        # section. Scoring them zero would rewrite the record rather than the
+        # rule, so they get the round-wide reading rule 2 used.
+        campaign = {"target": "a.md#one"}
+        assert gap_attribution(campaign, {"9999999999": ""}, {"a.md#one"}) == "gap_named_round"
+        assert gap_attribution(campaign, {"9999999999": ""}, {"b.md#two"}) == ""
+        assert gap_attribution(campaign, {}, {"a.md#one"}) == "", "nothing closed is not credit"
+
+    def every_hj_subcommand_the_shell_calls_exists():
+        # Same seam as the intervention kinds and the same failure: the shell
+        # names something this file does not have, and it fails inside a runner
+        # whose output nobody reads until a campaign is already lost.
+        known = hj_subcommands(Path(__file__).read_text())
+        assert "handoff" in known, "the parser scan found nothing; the regex has rotted"
+        for name, called in shell_hj_calls().items():
+            for subcommand in called:
+                assert subcommand in known, (
+                    f"harness/{name} calls `hj {subcommand}`, which this file has no parser "
+                    "for. If the call is new, the subcommand belongs in the same commit; if "
+                    "this copy of hj is the reviewed one and the tree's is newer, merge main."
+                )
+
+    def a_stalled_campaign_is_not_told_to_write_the_file_the_loop_writes():
+        # Both would write `state/handoff.md`, and `hj handoff` overwrites as
+        # the loop stops — so a campaign that followed the old notice lost its
+        # account. One writer for that file; the campaign writes its record.
+        notice = stall_notice_for(3, 3)
+        assert "campaign record" in notice and "no-movement" in notice
+        assert "overwritten and lost" in notice, (
+            "the notice has to say why, or the next campaign writes the file anyway"
+        )
+        assert stall_notice_for(2, 3).startswith("Not stalled"), (
+            "below the threshold this is a status line, not an instruction"
+        )
+
+    def the_handoff_answers_the_four_things_section_7_asks_for():
+        text = "\n".join(
+            HANDOFF_SECTIONS[key] for key in ("trying", "tried", "blocking", "question")
+        )
+        assert len(set(HANDOFF_SECTIONS.values())) == 4, "four distinct headings"
+        for heading in HANDOFF_SECTIONS.values():
+            assert heading.startswith("## "), heading
+        assert text.count("## ") == 4
+
+    def a_shell_scan_reads_literals_and_skips_what_it_cannot():
+        script = 'hj intervene --kind loop-killed --target x\nhj intervene --kind "$computed" --t\n'
+        assert intervention_kinds_in(script) == ["loop-killed"], (
+            "a kind built at runtime is not a literal and cannot be checked here"
+        )
+        assert intervention_kinds_in("") == []
 
     def the_session_row_carries_tokens_or_nothing():
         assert token_counts({}) is None, "no measurement is absent, not four zeroes"
@@ -6271,6 +7391,74 @@ def selftest_cases() -> list[tuple[str, object]]:
         phase = Phase(phase="2a", loops={"lang-rust": _selftest_loop("lang-rust", "rust")})
         assert check_size_ratchet(phase.loops["lang-rust"], phase) == 0
 
+    def a_worker_changelog_still_reports_its_loop():
+        assert loop_of_worker("core-2") == "core"
+        assert loop_of_worker("core") == "core"
+        assert loop_of_worker("harness") == "harness"
+        assert loop_of_worker("lang-rust") == "lang-rust", (
+            "a hyphen in a loop's own name is not a worker number"
+        )
+        assert loop_of_worker("lang-rust-3") == "lang-rust"
+
+    def an_audit_that_predates_the_work_has_not_judged_it():
+        opened = "2026-08-04T20:59:33+00:00"
+        commits = ["2026-08-04T21:04:28+00:00", "2026-08-04T21:18:26+00:00"]
+        # The real shape of the false positive: the loop's own audit ran two
+        # seconds before the campaign opened, and the commits came later.
+        early = [{"ts": "2026-08-04T20:59:31+00:00"}]
+        assert not campaign_was_audited(early, commits, opened)
+        # An audit mid-campaign still cannot see the last commit.
+        midway = [{"ts": "2026-08-04T21:12:07+00:00"}]
+        assert not campaign_was_audited(midway, commits, opened)
+        after = [{"ts": "2026-08-04T21:20:00+00:00"}]
+        assert campaign_was_audited(after, commits, opened)
+        # A campaign that committed nothing has no work to have been judged, so
+        # the question falls back to the session's own span.
+        assert campaign_was_audited(midway, [], opened), "no commits: measured from the open"
+        assert not campaign_was_audited(early, [], opened)
+        assert not campaign_was_audited([], commits, opened), "no audit at all is not audited"
+
+    def only_a_prompt_in_use_is_a_prompt_revision():
+        core = _selftest_loop("core", "rust")
+        harness = replace(_selftest_loop("harness", None), prompt="conformance.md")
+        phase = Phase(phase="1a", loops={"core": core, "harness": harness})
+        live = live_prompt_templates(phase)
+        assert live == {"harness/prompts/conformance.md"}, live
+        assert "harness/prompts/tuning.md" not in live, (
+            "§18 gives this loop the tuning and optimisation prompts, and a phase "
+            "that has not run has no metrics for an edit to make incomparable"
+        )
+        assert "harness/prompts/auditor.md" not in live, "the auditor generates no campaign"
+
+    def gate_step_5_calls_the_command_that_exists():
+        # `harness/gate` is denied to every loop and reaches `hj` by name, so a
+        # rename here breaks a step that only runs in a phase nobody has run —
+        # the failure would surface as the first cost-phase campaign's gate
+        # dying on an unrecognised subcommand. `harness-008` is the record; the
+        # step spent a whole phase hard-failing before anyone looked.
+        gate = (PINNED_HARNESS / "gate").read_text()
+        assert '"$hj" check-ratchets "$loop"' in gate, (
+            "step 5 no longer calls check-ratchets; see state/decisions/harness-008.md"
+        )
+        assert "ratchets are not implemented" not in gate, "the false message is back"
+        assert "cmd_check_ratchets" in globals(), "the command the gate names must exist"
+
+    def the_size_ratchet_has_one_route():
+        # It ran from `check-metrics` too while step 5 could not call it. Two
+        # routes meant a loop could be failed twice for one regression, and the
+        # answer to `harness-008` was explicit that the second goes away.
+        source = (PINNED_HARNESS / "hj").read_text()
+        first, past = selftest_line_range(source)
+        callers = [
+            number
+            for number, line in enumerate(source.splitlines(), start=1)
+            if re.match(r"^[^#]*\bcheck_size_ratchet\(", line) and not first <= number < past
+        ]
+        assert len(callers) == 2, (
+            "expected the definition and cmd_check_ratchets outside the selftest, "
+            f"found {len(callers)}: lines {callers}"
+        )
+
     def a_loop_without_a_language_measures_no_binary():
         assert measure_packages(_selftest_loop("core", None)) == [], (
             "a release build with lto per row costs minutes, and §11's bullet "
@@ -6496,7 +7684,65 @@ def _selftest_adapter_cost(events: list[dict]) -> dict:
         os.unlink(path)
 
 
+def worktree_roots() -> list[Path]:
+    """Every checkout a live loop branch is currently in, integration first.
+
+    Read from git rather than from `state/phase.toml`'s `worktree`, which gives
+    the stem a worker number is appended to and would have to be re-derived
+    here; `git worktree list` already knows what exists.
+    """
+    roots = [CONTROL]
+    for line in git("worktree", "list", "--porcelain", check=False).splitlines():
+        if line.startswith("worktree "):
+            root = Path(line.split(" ", 1)[1]).resolve()
+            if root not in roots:
+                roots.append(root)
+    return roots
+
+
 def cmd_selftest(args: argparse.Namespace) -> int:
+    """`harness-011`: `--across-worktrees` is the convention made runnable.
+
+    Gate step 3 runs *this* copy of the selftest against whichever tree
+    `HJ_REPO` names, so a case that reads `HARNESS` asserts about the candidate
+    rather than about itself. That is what the three surviving `HARNESS` reads
+    are for — they catch a campaign introducing a defect. It is also how two
+    cases came to fail every branch at once: they encoded a requirement added
+    in the integration checkout, and `harness/gate` is denied to every loop, so
+    no branch could satisfy it and green-or-revert had no green to revert to.
+
+    The record's option B was "assert only what every live branch already
+    satisfies", and its own stated cost is that conventions are what failed
+    twice. This makes the question decidable instead: run the checks against
+    every checkout and see. It is what to run before committing a selftest
+    case that reads `HARNESS`.
+    """
+    if getattr(args, "across_worktrees", False):
+        failures = 0
+        for root in worktree_roots():
+            environment = {**os.environ, "HJ_REPO": str(root)}
+            result = subprocess.run(
+                [str(PINNED_HARNESS / "hj"), "selftest"],
+                capture_output=True,
+                text=True,
+                check=False,
+                env=environment,
+            )
+            tail = (result.stdout + result.stderr).strip().splitlines()
+            print(f"{root.name}: {tail[-1] if tail else 'no output'}")
+            if result.returncode:
+                failures += 1
+                for line in tail[:-1]:
+                    print(f"    {line}")
+        if failures:
+            print(
+                f"selftest: the reviewed checks fail in {failures} checkout(s). A case that "
+                "reads HARNESS asserts about the tree being judged, so it fails every branch "
+                "that has not merged what it encodes — see state/decisions/harness-011.md.",
+                file=sys.stderr,
+            )
+            return 1
+        return 0
     cases = selftest_cases()
     failed = []
     for name, case in cases:
@@ -6788,6 +8034,11 @@ def main() -> int:
     p.set_defaults(run=cmd_estimates)
 
     p = sub.add_parser("selftest", help="gate step: hj's own parsing and arithmetic still hold")
+    p.add_argument(
+        "--across-worktrees",
+        action="store_true",
+        help="run these checks against every checkout; run before committing a case that reads HARNESS",
+    )
     p.set_defaults(run=cmd_selftest)
 
     p = sub.add_parser("budget", help="spend against each ceiling; exit 1 when one is reached")
@@ -6816,6 +8067,10 @@ def main() -> int:
     p = sub.add_parser("stall", help="exit 1 when the loop has stalled")
     p.add_argument("loop")
     p.set_defaults(run=cmd_stall)
+
+    p = sub.add_parser("handoff", help="write state/handoff.md as the loop stops on a stall")
+    p.add_argument("loop")
+    p.set_defaults(run=cmd_handoff)
 
     p = sub.add_parser("status", help="the operator view, until there is a dashboard")
     p.set_defaults(run=cmd_status)
