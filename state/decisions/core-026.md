@@ -1,6 +1,6 @@
 ---
 id: core-026
-status: open
+status: accepted
 opened: 2026-08-05T00:30:00+00:00
 campaign: 2f7fcfdd-a930-4241-909d-0e8a4f86631e
 kind: class-b
@@ -71,7 +71,58 @@ was bought with.
 
 ## Decision
 
-Undecided — waiting on a human.
+**accepted: D — a shed query is a disposition, not an abstention reason**,
+answered 2026-08-05 and logged as a `decision-answered` intervention, which is
+what makes it answered — `design/loops.md` §16 derives the status from the log
+rather than from this line.
+
+None of the three options as posed, and the reason is that all three answer
+"what does the query *say*" when the honest answer is that it says nothing: it
+was never attempted. So it is recorded at the level where that is true.
+
+`AbstainReason` is the **handler's** vocabulary — what the language said when it
+declined — which is why §1 can describe four of its variants as facts about the
+code and single out `Deadline` as the exception. A shed query is not the
+handler's event at all. Putting it there costs what option A prices honestly: a
+sixth variant on a frozen seam that no handler can ever return, so every
+`lang_*` match grows an arm for an unreachable case. `CLAUDE.md` asks for enums
+that enforce an invariant rather than comments describing one, and "this variant
+exists but you must never return it" is exactly the comment.
+
+B is rejected for the reason the record gives: §7's `decision` column would say
+`failed` for a shim working as designed, which is the merge §1 spends a
+paragraph refusing.
+
+C is rejected as a resting place, though it was the right thing to be running
+in the meantime and the record is right that it was strictly better than what it
+replaced.
+
+**What makes D affordable now rather than later.** Its cost is §7's record
+shape, and §7's record is *already* being changed: `core-025` was accepted with
+option B — `stratum_prior` becomes nullable — and has not been implemented yet.
+The same campaign is already in `shared::record`, both producers,
+`Table::observe` and `pipeline.rs`'s field-order fixture. Paid once for two
+changes rather than twice, and the corpus is still small, which was the argument
+for B in `core-025` and holds here for the same reason.
+
+**What it buys that A does not.** `high-level.md`'s posture is that blowing the
+budget must cost coverage and never correctness, and that is only auditable if
+the coverage lost to load is visible *as such*. A separate disposition makes the
+shed rate its own number instead of a reason competing with `Deadline` in a
+column `resolution.md` §8 built to separate "this class is hard" from "this
+handler is broken". A third meaning in that column is what the whole reason
+vocabulary exists to prevent.
+
+### What is left
+
+The core loop's, and it should be one campaign with `core-025` rather than two:
+both change §7's record and nothing else shares that reading. Then §10's two
+limits become buildable — the in-flight cap as a refusal in front of
+`Workers::dispatch`, and the `core`-inbox check in `Actor::requested` — which is
+the work this record was raised to unblock.
+
+Reconcile the `DECISION-core-026: provisional` tag at the head of
+`crates/driver/src/workers.rs` when it lands.
 
 ## Provisional choice in force
 
