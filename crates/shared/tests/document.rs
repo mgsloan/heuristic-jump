@@ -10,10 +10,19 @@
 //! of. So the document here is deliberately large enough for tree-sitter's
 //! progress callback to fire, and one test asserts what happens when it does
 //! not.
+//!
+//! **The section's printed block is held against these two types**, in the
+//! shape and for the reason `tests/handler.rs` holds §1's — the block is prose
+//! to everything that reads it, and editing the document is the way of faking
+//! progress an audit cannot catch. The scanner is copied rather than shared
+//! because an integration test file that exported one would be compiled as a
+//! test binary of its own; `handler.rs` is the original and carries the
+//! argument for what the comparison elides.
 
 #![expect(
     clippy::expect_used,
-    reason = "`clippy.toml`'s allow-expect-in-tests reaches only `#[test]` bodies, and the builders below are free functions. Failing loudly is the point: a seed that will not parse makes every assertion here vacuous."
+    clippy::panic,
+    reason = "`clippy.toml`'s allow-expect-in-tests and allow-panic-in-tests reach only `#[test]` bodies, and the builders and the block readers below are free functions. Failing loudly is the point: a seed that will not parse makes every assertion here vacuous, and so does a section this cannot find — it would compare an empty block against the source and pass."
 )]
 
 use std::sync::Arc;
@@ -33,6 +42,113 @@ const RUST: LanguageId = LanguageId::new("rust");
 /// interval and never calls the callback — which is the point of
 /// `a_parse_too_small_to_report_progress_is_not_abandoned`.
 const SMALL: &str = "fn caller() {\n    target();\n}\n";
+
+/// `core.md` §2's printed block, held against the two types it prints.
+///
+/// The field lists are the claim, not decoration. "A snapshot is three
+/// refcount bumps and a struct move, regardless of file size" is true of
+/// exactly the fields printed there — a `Rope` and a `Tree` clone by refcount
+/// and the rest are small — so a field added to either type without touching
+/// the section leaves the document asserting an O(1) that the type no longer
+/// has. There is nowhere else a reader is told what a snapshot costs, and a
+/// `String` or a `Vec` here would be invisible to every other test in the
+/// workspace: they would all still pass, a little slower, on fixtures small
+/// enough that nobody could tell.
+///
+/// The seed is checked beside the snapshot because the split is the design.
+/// `base` and `grammar` are what `core` holds and a handler must not, and a
+/// field that moved from one type to the other would be §2's whole argument
+/// inverted with both lists still the right length.
+#[test]
+fn the_printed_snapshot_types_have_the_fields_the_real_ones_have() {
+    let block = printed(&document(), SNAPSHOTS);
+    let source = source();
+
+    for header in ["pub struct SnapshotSeed {", "pub struct DocumentSnapshot {"] {
+        let documented = members(&block, header);
+        let declared = members(&source, header);
+        assert!(
+            !documented.is_empty(),
+            "§2's printed block declares no fields for `{header}`, so this comparison would \
+             pass against anything"
+        );
+        assert_eq!(
+            documented, declared,
+            "§2's printed `{header}` and `shared::document`'s disagree. The section's claim \
+             is that a snapshot is three refcount bumps and a struct move whatever the file's \
+             size, and that claim is about this field list and no other"
+        );
+    }
+}
+
+/// The section that prints the two types. Sliced by heading rather than by
+/// line number, which moves.
+const SNAPSHOTS: &str = "### Snapshots are O(1) to take";
+
+fn document() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../design/core.md");
+    std::fs::read_to_string(&path).expect("design/core.md is at the workspace root")
+}
+
+fn source() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/document.rs");
+    std::fs::read_to_string(&path).expect("the types this section prints")
+}
+
+/// The first fenced block after a heading.
+fn printed(document: &str, heading: &str) -> String {
+    let section = document
+        .find(heading)
+        .map(|start| &document[start..])
+        .unwrap_or_else(|| panic!("core.md has no {heading}"));
+    let open = section
+        .find("```")
+        .map(|start| start + "```".len())
+        .expect("§2 prints the snapshot types in a fenced block");
+    let body = &section[open..];
+    let body = &body[body.find('\n').map_or(0, |line| line + 1)..];
+    body[..body.find("```").expect("an unclosed fenced block")].to_owned()
+}
+
+/// Named members of a brace-delimited group, in order. `handler.rs` explains
+/// why this scans rather than parses; the two shapes that would otherwise be
+/// false positives are a path (excluded by its second colon) and a generic
+/// argument (excluded by having no colon).
+fn members(text: &str, header: &str) -> Vec<String> {
+    let Some(start) = text.find(header).map(|at| at + header.len()) else {
+        return Vec::new();
+    };
+    let mut depth = 1usize;
+    let mut names = Vec::new();
+    for line in text[start..].lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("//") || trimmed.starts_with("#[") {
+            continue;
+        }
+        for piece in trimmed.split([',', '{', '}', '(', ')', ';']) {
+            let piece = piece.trim();
+            let Some((name, rest)) = piece.split_once(':') else {
+                continue;
+            };
+            let name = name.trim_start_matches("pub ");
+            if rest.starts_with(':') || name.is_empty() {
+                continue;
+            }
+            if name
+                .chars()
+                .all(|scalar| scalar.is_ascii_lowercase() || scalar == '_')
+            {
+                names.push(name.to_owned());
+            }
+        }
+        depth += trimmed.matches(['{', '(']).count();
+        depth = depth.saturating_sub(trimmed.matches(['}', ')']).count());
+        if depth == 0 {
+            break;
+        }
+    }
+    names
+}
 
 /// §2's central claim, and the reason `tree()` is infallible: there is one
 /// tree and it was produced from `text`.
