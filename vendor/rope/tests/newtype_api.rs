@@ -83,6 +83,35 @@ fn no_public_signature_names_a_bare_primitive() {
     );
 }
 
+/// §6: "The allowlist is `vendor/rope/allowed-primitives.txt` and is
+/// **empty**." `vendor/README.md` says it a second time — "**That file has no
+/// entries** (CHANGE-core-015)" — and the file's own header says it a third.
+/// Three assertions of one fact, and the only code that read the file was
+/// [`no_public_signature_names_a_bare_primitive`], which *consumes* entries
+/// rather than bounding them: an entry silently weakens the check by exactly
+/// one function and every one of those three sentences goes quietly false.
+///
+/// That is the whole reason for asserting it here rather than trusting it. §6
+/// is explicit that the file is not dead — "what it is for is the re-sync case
+/// … not the conversion's leftovers" — so this does not forbid an entry. It
+/// prices one: adding a function here means also editing the three places that
+/// say there are none, which is what §6 asks for when it says "an entry is a
+/// hole in the change" and "keep this short".
+#[test]
+fn the_bare_primitive_allowlist_is_empty_so_the_scan_forgives_nothing() {
+    let allowed = allowed_primitives();
+    assert!(
+        allowed.is_empty(),
+        "`allowed-primitives.txt` forgives {allowed:?}, and three places say it \
+         forgives nothing: `rope-modifications.md` §6, `vendor/README.md`'s \
+         patch-7 entry, and this file's own header. If the entry is right — a \
+         re-synced upstream `pub fn` whose primitive is genuinely one — say so \
+         in all three, with the comment §6 requires naming the unit. What must \
+         not happen is the list growing while the documents go on calling it \
+         empty"
+    );
+}
+
 /// The negative control for the check above, which is what makes it evidence
 /// rather than a test that has never failed: the scanner has to *find* a bare
 /// primitive when one is there, and has to read a multi-line signature, which
