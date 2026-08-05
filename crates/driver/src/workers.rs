@@ -14,10 +14,15 @@
 //!   **reads the target file** ... `core` may not do that — it does only O(1)
 //!   state transitions and never touches the filesystem".
 //!
-//! The third is the one that had teeth. `Actor::notified` already refuses the
-//! `didSave` checksum read for exactly that reason — "reading the file on this
-//! thread is the one thing `shim.md` §2 forbids `core` outright" — while the
-//! query path did a read per returned location on the same thread.
+//! The third is the one that had teeth. `Actor::notified` already refused
+//! §8.6's `didSave` checksum read for exactly that reason — "reading the file
+//! on this thread is the one thing `shim.md` §2 forbids `core` outright" —
+//! while the query path did a read per returned location on the same thread.
+//!
+//! That refusal is why there are two kinds of [`Job`]. The checksum is the
+//! other thing `core` may not do, arriving from the notification side rather
+//! than the query side, and it was unbuildable while a job *was* a query: it
+//! has no handler, no seed, no position and no answer.
 //!
 //! **What is here is the pool and its sizing. §10's two additional limits are
 //! applied before a job ever reaches this module** — the in-flight cap and the
@@ -33,6 +38,7 @@
 //! `decision` — so a shed query is recorded at the level where "it says
 //! nothing" is true.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread::{Builder, JoinHandle, available_parallelism};
 use std::time::{Duration, Instant};
@@ -41,11 +47,80 @@ use crossbeam_channel::{Receiver, Sender, unbounded};
 use shared::proto::PositionEncoding;
 use shared::{
     Clock, CommitPolicy, ConfigError, Deadline, DocumentUri, EditorRequestId, Error,
-    LanguageHandler, LanguageId, Offset, ProjectView, SnapshotSeed,
+    LanguageHandler, LanguageId, Offset, ProjectError, ProjectView, SnapshotSeed,
 };
 
 use crate::config::{Config, Mode};
 use crate::dispatch::{Completed, Request, dispatch};
+use crate::documents::SaveCheck;
+
+/// What the pool takes.
+///
+/// Two kinds and not one, because a query is not the only thing `core` may not
+/// do on its own thread. `core.md` §8.6's `didSave` checksum "costs a read, so
+/// it belongs in a worker, off the critical path" — the same rule that puts
+/// §8.4's conversion here, arriving from the notification side instead of the
+/// query side.
+///
+/// One pool and not two. The reason the pool is bounded at all is §10's — not
+/// competing with the proper LSP for CPU while it starts up — and a second pool
+/// sized separately would be that budget counted twice. What the two kinds do
+/// *not* share is §10's other two limits: the in-flight cap and the shed-load
+/// rule are refusals to do heuristic work, and a checksum is not heuristic
+/// work. It is how `core` finds out that its model of a document is wrong,
+/// which is worth more under load rather than less.
+#[derive(Debug)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "the lint's remedy is a `Box` on the larger variant, which here is the common one: every query would pay an allocation and a copy on the latency path so that the occasional save check does not sit in a slot sized for a query. The channel holds one element per outstanding job, and §10 caps those, so the waste is bounded by the in-flight cap times the difference"
+)]
+pub enum Job {
+    Query(QueryJob),
+    Save(SaveJob),
+}
+
+impl Job {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "every one of these is a distinct per-query fact `core` holds and a worker cannot reconstruct; a builder or a bag struct would move the same list somewhere the compiler checks less"
+    )]
+    pub fn query(
+        handler: Arc<dyn LanguageHandler>,
+        seed: SnapshotSeed,
+        project: ProjectView,
+        deadline: Deadline,
+        config: Arc<Config>,
+        policy: Arc<CommitPolicy>,
+        clock: Arc<dyn Clock>,
+        encoding: PositionEncoding,
+        asked: Asked,
+    ) -> Job {
+        Self::Query(QueryJob {
+            handler,
+            seed,
+            project,
+            deadline,
+            config,
+            policy,
+            clock,
+            encoding,
+            asked,
+            subscriber: tracing::dispatcher::get_default(Clone::clone),
+        })
+    }
+
+    /// Hands the read off with the path already resolved, because
+    /// `DocumentUri::to_file_path` is string work and the worker exists for the
+    /// I/O: a URI that names no path on this platform is settled in `core`,
+    /// where it costs a comparison rather than a thread.
+    pub fn save_check(check: SaveCheck, path: PathBuf) -> Self {
+        Self::Save(SaveJob {
+            check,
+            path,
+            subscriber: tracing::dispatcher::get_default(Clone::clone),
+        })
+    }
+}
 
 /// One query's worth of work, owned rather than borrowed.
 ///
@@ -56,7 +131,7 @@ use crate::dispatch::{Completed, Request, dispatch};
 /// handler set, the configuration and the policy are shared by refcount, so a
 /// job is a struct move and a handful of increments rather than a copy of
 /// anything.
-pub struct Job {
+pub struct QueryJob {
     handler: Arc<dyn LanguageHandler>,
     seed: SnapshotSeed,
     project: ProjectView,
@@ -80,17 +155,33 @@ pub struct Job {
     subscriber: tracing::Dispatch,
 }
 
-/// By hand, and only the query: a `Job` holds an `Arc<dyn LanguageHandler>`
+/// By hand, and only the query: a `QueryJob` holds an `Arc<dyn LanguageHandler>`
 /// and the seam does not require a handler to be `Debug` — the same reason
 /// [`crate::Registry`] writes its own. What identifies a job is the query it
 /// is, which is `Asked`.
-impl std::fmt::Debug for Job {
+impl std::fmt::Debug for QueryJob {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
-            .debug_struct("Job")
+            .debug_struct("QueryJob")
             .field("asked", &self.asked)
             .finish_non_exhaustive()
     }
+}
+
+/// §8.6's checksum, in the half that has to leave `core`: read this file, and
+/// hand back what it says.
+///
+/// It carries no deadline. The read is off the critical path by construction —
+/// nobody is waiting for it and no editor request depends on it — so a budget
+/// here would only be able to abandon a check that costs nothing to finish.
+#[derive(Debug)]
+pub struct SaveJob {
+    check: SaveCheck,
+    path: PathBuf,
+    /// The same reason [`QueryJob::subscriber`] carries one: `tracing`'s
+    /// default is thread-local first, so a line emitted on a worker without it
+    /// is collected nowhere.
+    subscriber: tracing::Dispatch,
 }
 
 /// What `core` needs back to finish a query, carried out to the pool and
@@ -110,9 +201,24 @@ pub struct Asked {
     pub arrived: Instant,
 }
 
+/// What comes back off the pool, on the one channel `Actor::run` selects on.
+///
+/// One channel and not two, so that `Actor::run`'s `select!` grows no arm and
+/// the drain after the wire closes has one thing to wait for. The two kinds are
+/// told apart here rather than by which channel they came off.
+#[derive(Debug)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "the same trade as `Job`, in the other direction: boxing the answer to a query would allocate on the way back from every query so that a checksum's reply does not sit in a slot sized for one"
+)]
+pub enum Finished {
+    Query(FinishedQuery),
+    Save(FinishedSave),
+}
+
 /// A query the pool has finished with, whatever it decided.
 #[derive(Debug)]
-pub struct Finished {
+pub struct FinishedQuery {
     pub asked: Asked,
     pub completed: Completed,
     /// When the worker took the job off the channel. §5's `queued_us` is the
@@ -124,40 +230,69 @@ pub struct Finished {
     pub elapsed: Duration,
 }
 
-impl Job {
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "every one of these is a distinct per-query fact `core` holds and a worker cannot reconstruct; a builder or a bag struct would move the same list somewhere the compiler checks less"
-    )]
-    pub fn new(
-        handler: Arc<dyn LanguageHandler>,
-        seed: SnapshotSeed,
-        project: ProjectView,
-        deadline: Deadline,
-        config: Arc<Config>,
-        policy: Arc<CommitPolicy>,
-        clock: Arc<dyn Clock>,
-        encoding: PositionEncoding,
-        asked: Asked,
-    ) -> Self {
-        Self {
-            handler,
-            seed,
-            project,
-            deadline,
-            config,
-            policy,
-            clock,
-            encoding,
-            asked,
-            subscriber: tracing::dispatcher::get_default(Clone::clone),
+/// What the file said, and which check was asking.
+///
+/// The text is carried back rather than compared out here, because the
+/// comparison is against the rope in `Documents` and that map is `core`'s: a
+/// worker holding it would be the shared mutable state the design does not
+/// have. The read is the expensive half and it is the half that moved.
+#[derive(Debug)]
+pub struct FinishedSave {
+    pub check: SaveCheck,
+    /// `Err` is a read that did not happen — the file was removed between the
+    /// save and the read, or is not UTF-8. It is `core`'s to log rather than
+    /// the worker's, because what is done about a document is decided in one
+    /// place.
+    pub text: Result<String, Error>,
+}
+
+impl SaveJob {
+    fn run(self) -> FinishedSave {
+        let Self {
+            check,
+            path,
+            subscriber,
+        } = self;
+        let _collecting = tracing::dispatcher::set_default(&subscriber);
+        FinishedSave {
+            check,
+            text: read(&path),
         }
     }
+}
 
+/// The one filesystem read in `driver` that is not a handler's, and the reason
+/// it is in this file: `shim.md` §2 forbids `core` the filesystem outright.
+///
+/// Not through [`ProjectView::read`], which is the other reader of a file's
+/// text. That one takes a `ProjectPath`, and a `ProjectPath` is minted only for
+/// a file the project's own walk found — which is the scope rule, and it is a
+/// rule about where a *search* may look. The document the editor just saved is
+/// one the editor named, and it is checked whether or not the walk would have
+/// found it: a saved file that is gitignored is exactly as capable of proving
+/// our rope wrong.
+fn read(path: &Path) -> Result<String, Error> {
+    let bytes = std::fs::read(path).map_err(|source| ProjectError::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    match String::from_utf8(bytes) {
+        Ok(text) => Ok(text),
+        // The bytes are dropped rather than carried into the error: what a
+        // caller does with this is stop comparing, and the file is on disk to
+        // be looked at.
+        Err(_) => Err(ProjectError::NotUtf8 {
+            path: path.to_path_buf(),
+        }
+        .into()),
+    }
+}
+
+impl QueryJob {
     /// The whole of a worker thread's body, and the only place a `Request` is
     /// built: `dispatch` parses the seed, calls the handler and converts the
     /// answer onto the wire, all three on this thread.
-    fn run(self) -> Finished {
+    fn run(self) -> FinishedQuery {
         let Self {
             handler,
             seed,
@@ -185,7 +320,7 @@ impl Job {
             },
             encoding,
         );
-        Finished {
+        FinishedQuery {
             asked,
             completed,
             started,
@@ -310,7 +445,10 @@ fn size(mode: &Mode) -> usize {
 /// forever to discover that there is still nothing to do.
 fn work_until_closed(jobs: &Receiver<Job>, done: &Sender<Finished>) {
     for job in jobs {
-        let finished = job.run();
+        let finished = match job {
+            Job::Query(query) => Finished::Query(query.run()),
+            Job::Save(save) => Finished::Save(save.run()),
+        };
         if done.send(finished).is_err() {
             // `core` is gone, so there is nobody to give this to and no reason
             // to take the next job either.

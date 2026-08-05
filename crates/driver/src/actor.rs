@@ -56,12 +56,12 @@ use shared::{
 
 use crate::config::{Config, DebounceMs, Heuristics};
 use crate::dispatch::{Answer, Completed, Dispatched, Registry};
-use crate::documents::{Documents, Queried};
+use crate::documents::{Documents, Queried, SaveCheck, Saved};
 use crate::files::FileListCache;
 use crate::pending::{PendingQueries, PendingQuery, Resolution};
 use crate::trace::Traces;
 use crate::trees::{OpenDocument, TreeCache};
-use crate::workers::{Asked, Dispatchable, Finished, Job, Workers};
+use crate::workers::{Asked, Dispatchable, Finished, FinishedQuery, FinishedSave, Job, Workers};
 
 /// What reaches `core` from the outside. `shim.md` §3's router produces these;
 /// today only a test does.
@@ -524,32 +524,53 @@ impl Actor {
                 self.forget_trees(notification, params);
                 self.documents.changed(params, encoding)
             }
-            DocumentNotification::DidSave => {
-                // The half that needs a read is not wired. There is a pool
-                // now, but a `Job` *is* a query — a handler, a seed, a
-                // position and an answer — and a checksum read is a second
-                // kind of job with a second kind of reply, which nothing
-                // builds. What has not changed is why it cannot happen here:
-                // reading the file on this thread is the one thing `shim.md`
-                // §2 forbids `core` outright. The free half — a `didSave` that
-                // carried the text — is settled inside.
-                match self.documents.saved(params) {
-                    crate::documents::Saved::Checked(synced) => synced,
-                    crate::documents::Saved::NeedsRead(check) => {
-                        tracing::debug!(
-                            uri = %check.uri(),
-                            "a didSave checksum needs a read, and the pool takes queries only"
-                        );
-                        return;
-                    }
+            // The free half — a `didSave` that carried the text — is settled
+            // inside `Documents`. The other half costs a read, and reading a
+            // file on this thread is the one thing `shim.md` §2 forbids `core`
+            // outright, so it leaves as a job like a query does.
+            DocumentNotification::DidSave => match self.documents.saved(params) {
+                Saved::Checked(synced) => synced,
+                Saved::NeedsRead(check) => {
+                    self.check_saved(check);
+                    return;
                 }
-            }
+            },
             DocumentNotification::DidClose => {
                 self.forget_trees(notification, params);
                 self.documents.closed(params)
             }
         };
         tracing::trace!(%notification, ?synced, "a document notification was applied");
+    }
+
+    /// `core.md` §8.6's third self-check, in the half that costs a read: "it
+    /// belongs in a worker, off the critical path, and a mismatch marks the
+    /// document untrusted rather than raising an error".
+    ///
+    /// Nothing is recorded and nothing waits for it. A checksum is not a query
+    /// — it has no editor request, no deadline and no §7 row — so `core` keeps
+    /// no entry for one, and the answer is matched to its document by the
+    /// `SaveCheck` travelling out and back. That is also why it is not subject
+    /// to §10's limits: the in-flight cap counts queries, and a check refused
+    /// under load is the shim declining to find out that it is wrong.
+    fn check_saved(&mut self, check: SaveCheck) {
+        let Some(path) = check.uri().to_file_path() else {
+            // Every route to a checksum is a file the editor saved, so this is
+            // an editor that saved something with no path — a `untitled:` or
+            // `zip:` document. There is nothing to read and nothing is wrong.
+            tracing::debug!(
+                uri = %check.uri(),
+                "a didSave for a document that is not a file, so there is nothing to check"
+            );
+            return;
+        };
+        match self.workers.dispatch(Job::save_check(check, path)) {
+            Dispatchable::Accepted => {}
+            // Logged inside `dispatch`, and nothing to unwind: a check holds no
+            // pending record and no trace row, so a pool that is gone means the
+            // check does not happen rather than that something is left waiting.
+            Dispatchable::Refused => {}
+        }
     }
 
     /// Every cached tree for the document a notification names.
@@ -774,7 +795,7 @@ impl Actor {
             },
         );
         let editor_id = asked.editor_id.clone();
-        let dispatchable = self.workers.dispatch(Job::new(
+        let dispatchable = self.workers.dispatch(Job::query(
             handler,
             seed,
             project,
@@ -797,15 +818,50 @@ impl Actor {
         Ok(())
     }
 
-    /// A query the pool has finished with: §2's `Parsed` goes into the cache,
-    /// §4's evidence goes to the file list, and the answer goes where
-    /// [`Actor::settle`] takes it.
+    /// One thing the pool has finished with, of the two kinds it takes.
     ///
     /// It is `pub` for the reason [`Actor::handle`] is: a test drives the state
     /// machine without the loop, and this is the half of a query that the loop
     /// — rather than the transport — delivers.
     pub fn finished(&mut self, finished: Finished) {
-        let Finished {
+        match finished {
+            Finished::Query(query) => self.finished_query(query),
+            Finished::Save(save) => self.finished_save(save),
+        }
+    }
+
+    /// §8.6's checksum, compared at last: the read happened on a worker, and
+    /// the rope it is compared against is `core`'s.
+    ///
+    /// The comparison is `Documents`', including the part where a check that
+    /// raced the editor is dropped rather than believed — the buffer and the
+    /// file are identical only at the instant of the save, and a `didChange`
+    /// since makes them differ correctly.
+    fn finished_save(&mut self, save: FinishedSave) {
+        let FinishedSave { check, text } = save;
+        match text {
+            Ok(text) => {
+                let synced = self.documents.checked(check, &text);
+                tracing::trace!(?synced, "a didSave checksum was compared against the file");
+            }
+            // Not a distrust, and the distinction is §8.6's own: the rule fires
+            // on "any failure or detected inconsistency **while deserializing**
+            // a state-bearing message", and a read that did not happen has
+            // detected nothing. The document may be perfectly in sync; giving
+            // up every query against it until a `didOpen` would spend coverage
+            // on a file that was removed or renamed after being saved, which is
+            // a thing editors do.
+            Err(error) => {
+                tracing::warn!(%error, "a didSave checksum could not read the file it saved");
+            }
+        }
+    }
+
+    /// A query the pool has finished with: §2's `Parsed` goes into the cache,
+    /// §4's evidence goes to the file list, and the answer goes where
+    /// [`Actor::settle`] takes it.
+    fn finished_query(&mut self, finished: FinishedQuery) {
+        let FinishedQuery {
             asked,
             completed,
             started,

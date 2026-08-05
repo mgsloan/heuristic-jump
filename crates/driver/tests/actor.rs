@@ -1085,6 +1085,63 @@ fn the_parse_and_the_conversion_never_run_on_the_thread_that_owns_the_state() {
     );
 }
 
+/// `core.md` §8.6's third self-check, in the half that costs a read: "it
+/// belongs in a worker, off the critical path, and a mismatch marks the
+/// document untrusted rather than raising an error".
+///
+/// The free half — a `didSave` carrying the text — has been settled inside
+/// `Documents` since it was written. This is the other one, and until there
+/// were two kinds of job it could not be built: `core` may not read a file
+/// (`shim.md` §2), and the pool took queries only.
+///
+/// **The `Finished::Save` assertion is what makes this a test of the thread.**
+/// A checksum settled on `core`'s own thread would leave nothing on the
+/// channel, so a run that produced the same distrust without the round trip
+/// fails here rather than passing quietly.
+///
+/// The matching save first, and not as decoration: a map that distrusted every
+/// `didSave` would pass the second half, and would be indistinguishable from
+/// one that never compared anything from the third.
+#[test]
+fn a_did_save_is_checked_against_the_file_by_a_worker_and_a_mismatch_ends_the_trust() {
+    let fixture = Fixture::new("actor_did_save", Proxying::No);
+    let target = fixture.definition_in("src/target.rs");
+    let mut actor = fixture.actor(Arc::new(Committing {
+        locations: vec![target],
+    }));
+    let answers = actor.dispatches().clone();
+    fixture.open(&mut actor);
+
+    // What a save is: the buffer and the file are identical by definition.
+    fixture.save(&mut actor, &answers);
+    fixture.request(&mut actor, 1);
+    assert_eq!(
+        fixture.outbound().len(),
+        1,
+        "a document whose saved text matched the buffer stopped being queried, so §8.6's \
+         checksum is distrusting documents that never drifted"
+    );
+
+    // And what drift is: the file the editor saved is not the text we hold.
+    fs::write(fixture.root.join("src").join("lib.rs"), REOPENED)
+        .expect("rewriting the fixture document behind the buffer");
+    fixture.save(&mut actor, &answers);
+
+    actor
+        .handle(fixture.definition(2))
+        .expect("a definition request");
+    assert!(
+        answers.try_recv().is_err(),
+        "a query was dispatched against a document whose file did not match the buffer, so \
+         §8.6's \"queries against an untrusted document abstain, unconditionally\" is not what \
+         the checksum produces"
+    );
+    assert!(
+        fixture.outbound().is_empty(),
+        "the shim answered from a document it had stopped believing"
+    );
+}
+
 /// The race the pool introduces, which nothing could produce before it: the
 /// child answers while a worker is still running.
 ///
@@ -1632,6 +1689,32 @@ impl Fixture {
             params: definition_params(&self.uri("src/lib.rs")),
             arrived: self.clock.now(),
         }
+    }
+
+    /// A `didSave` that carries no text, and the round trip it costs.
+    ///
+    /// The variant is asserted rather than assumed: the whole claim is that the
+    /// read left `core`, and a checksum settled on this thread would put
+    /// nothing on the channel at all.
+    fn save(&self, actor: &mut Actor, answers: &Receiver<Finished>) {
+        actor
+            .handle(Event::Notified {
+                notification: DocumentNotification::DidSave,
+                params: raw(&format!(
+                    r#"{{"textDocument":{{"uri":"{}"}}}}"#,
+                    self.uri("src/lib.rs")
+                )),
+            })
+            .expect("a didSave");
+        let read = match answers.recv_timeout(Duration::from_secs(30)) {
+            Ok(read) => read,
+            Err(error) => panic!("the pool did not read the saved file: {error}"),
+        };
+        assert!(
+            matches!(read, Finished::Save(_)),
+            "a didSave put something other than a checksum read on the pool's channel: {read:?}"
+        );
+        actor.finished(read);
     }
 
     fn open(&self, actor: &mut Actor) {

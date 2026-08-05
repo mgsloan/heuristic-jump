@@ -32,7 +32,9 @@ pub use files::{DID_CHANGE_WATCHED_FILES, FileListCache, Rescan};
 pub use pending::{Divergence, PendingQueries, PendingQuery, Resolution};
 pub use trace::{Traces, Tracing};
 pub use trees::{CacheBytes, CacheEntries, OpenDocument, TreeCache};
-pub use workers::{Asked, Dispatchable, Finished, Job, Workers};
+pub use workers::{
+    Asked, Dispatchable, Finished, FinishedQuery, FinishedSave, Job, QueryJob, SaveJob, Workers,
+};
 
 /// The whole of `heuristic_jump`'s `main` after argument parsing, and the
 /// reason `driver` needs no opinion about how it was invoked: the binary hands
