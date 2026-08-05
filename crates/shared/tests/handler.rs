@@ -260,6 +260,56 @@ fn the_printed_enums_a_handler_returns_have_the_variants_it_may_return() {
     }
 }
 
+/// `EVERY_STRATUM` is the list [`Stratum::from_index`] searches, and a variant
+/// missing from it is one that cannot be decoded back.
+///
+/// That matters because the encode side is compiler-checked and the decode side
+/// is not. `Stratum::index` is an exhaustive match, so a new stratum fails to
+/// build until it is given a number; the array beside it is a literal, and a
+/// variant added to the enum and given an index but never added here would
+/// round-trip to `None`. The consequence is quiet in the worst way — a handler
+/// publishes that prior through `ProjectView::classified`, an expired read
+/// carries nothing out, and `core-025`'s whole point is undone for exactly one
+/// class of query.
+///
+/// The array's declared length gives some protection, since it has to be
+/// changed too, but it protects the wrong thing: it forces the *count* to move,
+/// not the missing name to appear. Comparing the names is what says the two
+/// agree.
+#[test]
+fn every_stratum_is_in_the_list_the_codec_decodes_from() {
+    let source = source();
+    let declared = variants(&source, "pub enum Stratum {");
+    assert!(
+        !declared.is_empty(),
+        "no `Stratum` variants were found, so the comparison below is vacuous"
+    );
+
+    let start = source
+        .find("const EVERY_STRATUM: [Stratum;")
+        .expect("EVERY_STRATUM is what `Stratum::from_index` reads");
+    let body = &source[start..];
+    let end = body.find("];").expect("the array is terminated");
+    let listed: Vec<String> = body[..end]
+        .match_indices("Stratum::")
+        .map(|(at, marker)| {
+            body[at + marker.len()..]
+                .chars()
+                .take_while(char::is_ascii_alphanumeric)
+                .collect()
+        })
+        .collect();
+
+    assert_eq!(
+        listed, declared,
+        "`EVERY_STRATUM` and `Stratum`'s variants disagree. `Stratum::index` is an \
+         exhaustive match so the encode side cannot drift, but `from_index` searches this \
+         array — so a stratum missing here decodes to `None`, and a prior a handler \
+         published through `ProjectView::classified` is silently dropped on the way out of \
+         an expired read (core-025, option C)"
+    );
+}
+
 /// Variant names of the enum introduced by `header`, in declaration order.
 ///
 /// Scanning rather than parsing, for the reason [`members`] gives — but the

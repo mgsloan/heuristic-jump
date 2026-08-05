@@ -409,12 +409,21 @@ pub enum Stratum {
     Unimplemented,
 }
 
-/// Every stratum, once. The single list: [`Stratum::from_index`] reads it, and
-/// `shared/tests/handler.rs` walks it to hold the codec below against the enum.
+/// Every stratum, once. [`Stratum::from_index`] searches it, which is the only
+/// thing that reads it.
 ///
-/// The array's length is written out, so a variant added to `Stratum` without
-/// being added here fails to compile rather than dropping out of the round trip
-/// quietly.
+/// It is the one place the two directions of the codec below can drift.
+/// [`Stratum::index`] is an exhaustive match, so a new variant fails to compile
+/// until it is given a number; this is a literal, so a variant given a number
+/// and not added here decodes back to `None` — and a prior a handler published
+/// is then dropped on the way out of an expired read, silently and for exactly
+/// one class of query.
+///
+/// Two things hold it. The declared length has to be changed, which makes the
+/// omission loud rather than quiet; and
+/// `shared/tests/handler.rs::every_stratum_is_in_the_list_the_codec_decodes_from`
+/// compares these names against the enum's, because the length forces the count
+/// to move and not the missing name to appear.
 pub(crate) const EVERY_STRATUM: [Stratum; 9] = [
     Stratum::LocalBinding,
     Stratum::SameFileModule,
