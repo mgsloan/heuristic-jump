@@ -79,7 +79,12 @@ last_audited = "2026-08-05T00:26:46+00:00"
 
 [section."loops.md#5-the-auditor-and-the-conformance-loops-number"]
 state = "clean"
-last_audited = "2026-08-04T23:50:43+00:00"
+last_audited = "2026-08-05T01:55:30+00:00"
+
+  [[section."loops.md#5-the-auditor-and-the-conformance-loops-number".minor]]
+  claim = "a fresh session is given the spec and the implementation"
+  note = "the changes-since-last-audit splice is hardcoded to `-- crates vendor`, so for the loop whose implementation is harness/ it shows another loop's churn and hides the audited tree's own; deriving the paths from config.write would fix it for every loop"
+  where = "harness/hj:4297"
 
 [section."loops.md#sections-clean-is-the-metric"]
 state = "gaps"
@@ -93,11 +98,11 @@ last_audited = "2026-08-04T23:50:43+00:00"
 
 [section."loops.md#making-the-count-mean-something"]
 state = "clean"
-last_audited = "2026-08-04T20:59:31+00:00"
+last_audited = "2026-08-05T01:55:30+00:00"
 
 [section."loops.md#properties-worth-keeping"]
 state = "clean"
-last_audited = "2026-08-04T23:50:43+00:00"
+last_audited = "2026-08-05T01:55:30+00:00"
 
 [section."loops.md#6-spec-changes-what-the-loop-may-decide-alone"]
 state = "clean"
@@ -152,21 +157,21 @@ last_audited = "2026-08-05T01:11:28+00:00"
 
 [section."loops.md#determinism-is-a-precondition-not-a-description"]
 state = "unjudged"
-last_audited = "2026-08-04T20:59:31+00:00"
+last_audited = "2026-08-05T01:55:30+00:00"
 
 [section."loops.md#10-objectives-phases-and-the-frontier"]
-state = "gaps"
-last_audited = "2026-08-05T00:26:46+00:00"
-
-  [[section."loops.md#10-objectives-phases-and-the-frontier".gap]]
-  claim = "in phase 2a metrics are still per (language, server)"
-  found = "the metrics row carries no server dimension \u2014 one row per commit per loop, strata merged from a single replay report, metrics_path keyed on the loop \u2014 so two servers' runs for one language land in one indistinguishable series and one frontier"
-  where = "harness/hj:2714"
-  found_at = "1907a2e4c604f0783913feeedc1d2a1dc038b3d2"
+state = "clean"
+last_audited = "2026-08-05T01:55:30+00:00"
 
 [section."loops.md#phase-3-is-a-refactor-under-an-exact-oracle"]
-state = "clean"
-last_audited = "2026-08-04T20:59:31+00:00"
+state = "gaps"
+last_audited = "2026-08-05T01:55:30+00:00"
+
+  [[section."loops.md#phase-3-is-a-refactor-under-an-exact-oracle".gap]]
+  claim = "the gate has no carve-out: any difference in deterministic responses fails it"
+  found = "harness/gate has no equality step; in phases 3 and 7 the only cost-phase check is the size ratchet, so a refactor that changed every reply would pass"
+  where = "harness/gate:147"
+  found_at = "b691ed7060338ed514365727507fb29e92dc86c7"
 
 [section."loops.md#the-metrics-history"]
 state = "gaps"
@@ -186,22 +191,17 @@ last_audited = "2026-08-05T01:11:28+00:00"
 
 [section."loops.md#what-cannot-be-measured-in-isolation"]
 state = "gaps"
-last_audited = "2026-08-05T00:26:46+00:00"
+last_audited = "2026-08-05T01:55:30+00:00"
 
   [[section."loops.md#what-cannot-be-measured-in-isolation".gap]]
-  claim = "work counters \u2014 bytes read, files parsed, nodes visited \u2014 go in every row"
-  found = "replay_digest sums bytes_scanned and files_parsed only, and no node counter exists in the QueryRecord it digests (crates/shared/src/record.rs:74)"
-  where = "harness/hj:5964"
-  found_at = "1907a2e4c604f0783913feeedc1d2a1dc038b3d2"
+  claim = "bytes read, files parsed and nodes visited go in every row"
+  found = "replay_digest sums bytes_scanned and files_parsed only; no node counter is collected or recorded, and DECISION-harness-012 is still provisional"
+  where = "harness/hj:6812"
+  found_at = "b691ed7060338ed514365727507fb29e92dc86c7"
 
 [section."loops.md#measure_lang-size-covers-the-size-gap"]
 state = "clean"
-last_audited = "2026-08-04T20:59:31+00:00"
-
-  [[section."loops.md#measure_lang-size-covers-the-size-gap".minor]]
-  claim = "it is built in isolation, by construction, so it goes in every row"
-  note = "measure_packages returns nothing unless the loop declares a `language`, so no conformance-loop row carries a size. Argued from \u00a711's Per-language billing heading and mitigated by `hj size`, but it narrows the section's words \u2014 and it is the conformance loop that moves the constant."
-  where = "harness/hj:1651"
+last_audited = "2026-08-05T01:55:30+00:00"
 
 [section."loops.md#the-frontier-and-why-it-stays-two-dimensional"]
 state = "clean"
@@ -213,36 +213,36 @@ last_audited = "2026-08-05T01:11:28+00:00"
   where = "harness/hj:6408, harness/hj:6710"
 
 [section."loops.md#several-servers-do-not-mean-several-loops"]
-state = "unjudged"
-last_audited = "2026-08-04T23:50:43+00:00"
+state = "clean"
+last_audited = "2026-08-05T01:55:30+00:00"
 
 [section."loops.md#selecting-a-version-at-a-phase-gate"]
 state = "clean"
 last_audited = "2026-08-05T01:11:28+00:00"
 
 [section."loops.md#going-back-is-not-a-reset"]
-state = "clean"
-last_audited = "2026-08-04T20:59:31+00:00"
+state = "gaps"
+last_audited = "2026-08-05T01:55:30+00:00"
+
+  [[section."loops.md#going-back-is-not-a-reset".gap]]
+  claim = "a selection is a new commit matching the chosen sha for the affected crates, with a trailer naming it and a decision record"
+  found = "cmd_gate_select prints which commit proceeds and returns; nothing creates the commit, and trailer-format.md's table has no trailer naming a selected sha"
+  where = "harness/hj:7698"
+  found_at = "b691ed7060338ed514365727507fb29e92dc86c7"
 
 [section."loops.md#what-this-retires"]
-state = "gaps"
-last_audited = "2026-08-05T00:26:46+00:00"
-
-  [[section."loops.md#what-this-retires".gap]]
-  claim = "the local slope of the cost-phase frontier is the empirical exchange rate \u2014 what a coverage point cost in bytes"
-  found = "no such frontier exists: FRONTIER_AXES is fixed at top1 x coverage with no size or bytes axis, and FRONTIER_PHASES excludes the cost phases 3 and 7"
-  where = "harness/hj:6112"
-  found_at = "1907a2e4c604f0783913feeedc1d2a1dc038b3d2"
+state = "clean"
+last_audited = "2026-08-05T01:55:30+00:00"
 
 [section."loops.md#11-size-and-loc-as-objectives"]
 state = "gaps"
-last_audited = "2026-08-05T00:26:46+00:00"
+last_audited = "2026-08-05T01:55:30+00:00"
 
   [[section."loops.md#11-size-and-loc-as-objectives".gap]]
-  claim = "phase 2a carries a standing ceiling on measure_<lang> size and on per-query work"
-  found = "only the size half is ever observed; guardrail_scopes hardcodes query_micros to a reason string and reads no number, so it cannot fire even once rows carry strata latency percentiles, which replay_digest already computes"
-  where = "harness/hj:6736"
-  found_at = "1907a2e4c604f0783913feeedc1d2a1dc038b3d2"
+  claim = "in phase 3 the ratchet is hard on both binary-size numbers: neither may increase at all"
+  found = "check_size_ratchet ratchets only the stripped measure_<lang> proxy; the per-language link delta is computed by no ratchet and cmd_link_delta exits non-zero for want of the lang-<x> features"
+  where = "harness/hj:2047"
+  found_at = "b691ed7060338ed514365727507fb29e92dc86c7"
 
 [section."loops.md#12-held-out-integrity"]
 state = "clean"
@@ -261,26 +261,43 @@ state = "clean"
 last_audited = "2026-08-05T00:26:46+00:00"
 
 [section."loops.md#extraction-is-phase-3-work"]
-state = "clean"
-last_audited = "2026-08-04T20:59:31+00:00"
+state = "gaps"
+last_audited = "2026-08-05T01:55:30+00:00"
+
+  [[section."loops.md#extraction-is-phase-3-work".gap]]
+  claim = "a promotion must leave every affected language's replay outputs byte-identical, and duplication is mechanically detected"
+  found = "no equivalence runner exists anywhere under harness/, and nothing produces the duplication report the optimisation loop is specified to be handed; only the phase-gated write access to crates/similarity/ is implemented"
+  where = "harness/hj:124"
+  found_at = "b691ed7060338ed514365727507fb29e92dc86c7"
 
 [section."loops.md#lang_-is-free"]
 state = "clean"
-last_audited = "2026-08-04T20:59:31+00:00"
+last_audited = "2026-08-05T01:55:30+00:00"
 
 [section."loops.md#mechanics-isolation-in-four-layers"]
 state = "gaps"
-last_audited = "2026-08-05T00:26:46+00:00"
+last_audited = "2026-08-05T01:55:30+00:00"
 
   [[section."loops.md#mechanics-isolation-in-four-layers".gap]]
-  claim = "the harness keeps one evaluation worktree, git worktree add once then git checkout <sha> to each frontier candidate, so one warm target/ is shared across candidates"
-  found = "nothing creates or uses an evaluation worktree; the only `git worktree add` is the per-loop/per-worker branch tree in harness/loop, and hj gate-select ranks candidate commits without checking any out"
-  where = "harness/loop:113"
-  found_at = "1907a2e4c604f0783913feeedc1d2a1dc038b3d2"
+  claim = "the sandbox leaves .claude/ read-only, so a loop cannot reach the file that configures its own sandbox"
+  found = "allowWrite grants each worker worktree and the project root wholesale, and .claude/settings.json is a tracked file inside every one of them; only layer 4's DENIED_ALWAYS stops it, which is the layer that does not cover subprocesses. A selftest could assert that no allowWrite root contains a .claude directory"
+  where = ".claude/settings.json:6"
+  found_at = "b691ed7060338ed514365727507fb29e92dc86c7"
+
+  [[section."loops.md#mechanics-isolation-in-four-layers".gap]]
+  claim = "the harness keeps one evaluation worktree, moved to each frontier candidate in turn"
+  found = "no such worktree is created or used; git worktree appears only for per-loop worktrees, workers fast-forwarding them, and the selftest fan-out, and gate-select never puts a candidate on disk"
+  where = "harness/hj:7637"
+  found_at = "b691ed7060338ed514365727507fb29e92dc86c7"
+
+  [[section."loops.md#mechanics-isolation-in-four-layers".minor]]
+  claim = "the prompt a loop is generated from is not on the denied list"
+  note = "harness/readme.md still states that harness/prompts/ stays denied to the loop at phase 1.5, which is the revision harness-009 overturned"
+  where = "harness/readme.md:542"
 
 [section."loops.md#parallel-loops-and-what-they-share"]
 state = "clean"
-last_audited = "2026-08-04T20:59:31+00:00"
+last_audited = "2026-08-05T01:55:30+00:00"
 
 [section."loops.md#branches-exist-for-one-campaign-at-a-time"]
 state = "gaps"
@@ -322,17 +339,24 @@ last_audited = "2026-08-04T23:50:43+00:00"
   found_at = "fa8ac4e8ca8578447ced914e8b2f39f0822ee5a2"
 
 [section."loops.md#prompts-as-starting-points"]
-state = "clean"
-last_audited = "2026-08-04T20:59:31+00:00"
+state = "gaps"
+last_audited = "2026-08-05T01:55:30+00:00"
 
-  [[section."loops.md#prompts-as-starting-points".minor]]
-  claim = "Spec changes: fix contradictions in design/, record them in the changelog"
-  note = "the deployed Class A instruction is garbled \u2014 '...does not trade anything off?* document. **Ask for the id...' \u2014 the clause telling the loop to fix the document lost its verb in an edit."
-  where = "harness/prompts/conformance.md:173"
+  [[section."loops.md#prompts-as-starting-points".gap]]
+  claim = "a tuning-loop prompt and an optimisation-loop prompt"
+  found = "harness/prompts/ holds conformance.md, auditor.md and planner.md only; phase.toml's commented tuning row already names a tuning.md that does not exist"
+  where = "harness/prompts/auditor.md:1"
+  found_at = "b691ed7060338ed514365727507fb29e92dc86c7"
+
+  [[section."loops.md#prompts-as-starting-points".gap]]
+  claim = "the auditor prompt carries the prior audit \u2014 verdicts and open gaps for those sections"
+  found = "auditor.md deliberately withholds it and splices a diffstat instead, and cmd_render_auditor renders no prior-audit value; the code's reasoning is sound and the document was not brought along"
+  where = "harness/hj:4288"
+  found_at = "b691ed7060338ed514365727507fb29e92dc86c7"
 
 [section."loops.md#one-prompt-per-variety-of-phase"]
 state = "clean"
-last_audited = "2026-08-04T20:59:31+00:00"
+last_audited = "2026-08-05T01:55:30+00:00"
 
 [section."loops.md#rules-are-inlined-subject-matter-is-read"]
 state = "gaps"
@@ -357,8 +381,14 @@ state = "clean"
 last_audited = "2026-08-04T23:50:43+00:00"
 
 [section."loops.md#cost-per-unit-of-progress"]
-state = "clean"
-last_audited = "2026-08-04T20:59:31+00:00"
+state = "gaps"
+last_audited = "2026-08-05T01:55:30+00:00"
+
+  [[section."loops.md#cost-per-unit-of-progress".gap]]
+  claim = "three per-phase ratios: tokens per gap closed, tokens per coverage point per stratum, tokens per kilobyte removed"
+  found = "only the conformance ratio is computed; the comment above CONFORMANCE_PHASES states the other two are not, and the dashboard substitutes tokens per campaign that made progress"
+  where = "harness/hj:6296"
+  found_at = "b691ed7060338ed514365727507fb29e92dc86c7"
 
 [section."loops.md#budgets-at-three-scopes"]
 state = "clean"
@@ -371,7 +401,7 @@ last_audited = "2026-08-05T01:11:28+00:00"
 
 [section."loops.md#estimates-and-replacing-them-with-measurements"]
 state = "clean"
-last_audited = "2026-08-04T20:59:31+00:00"
+last_audited = "2026-08-05T01:55:30+00:00"
 
 [section."loops.md#levers-by-which-resource-they-move"]
 state = "clean"
@@ -391,27 +421,33 @@ last_audited = "2026-08-05T01:11:28+00:00"
   where = "harness/dashboard/serve:146"
 
 [section."loops.md#what-is-on-it"]
-state = "gaps"
-last_audited = "2026-08-05T00:26:46+00:00"
-
-  [[section."loops.md#what-is-on-it".gap]]
-  claim = "the metrics panel carries the per-stratum table and the held-out verdict alongside the frontier chart"
-  found = "panel_metrics renders gap/section charts, the size chart and the frontier table only; `heldout` appears nowhere in the dashboard although hj heldout already produces the verdict string, and there is no per-stratum table"
-  where = "harness/dashboard/serve:1355"
-  found_at = "1907a2e4c604f0783913feeedc1d2a1dc038b3d2"
+state = "clean"
+last_audited = "2026-08-05T01:55:30+00:00"
 
   [[section."loops.md#what-is-on-it".minor]]
-  claim = "five panels, in descending order of how often they should change your behaviour, ending with Sessions"
-  note = "the overview renders decisions, loops, metrics, cost, campaigns and audits; the sessions panel is only on the separate campaigns view"
-  where = "harness/dashboard/serve:2011"
+  claim = "five panels, ending with Sessions"
+  note = "the overview renders decisions, loops, metrics, cost, campaigns and audits; panel_sessions is only under the Campaigns view, so the fifth panel is a tab away rather than below the fourth"
+  where = "harness/dashboard/serve:2202"
 
 [section."loops.md#decisions-carry-their-evidence"]
-state = "clean"
-last_audited = "2026-08-04T20:59:31+00:00"
+state = "gaps"
+last_audited = "2026-08-05T01:55:30+00:00"
+
+  [[section."loops.md#decisions-carry-their-evidence".gap]]
+  claim = "each of five escalation types is rendered with the evidence its row names"
+  found = "panel_decisions renders Class B decisions and the stall handoff only; there is no card for a phase-3 behaviour change, for frontier selection, or for a widened held-out gap, which today reaches the operator only as a loop-killed log row"
+  where = "harness/dashboard/serve:514"
+  found_at = "b691ed7060338ed514365727507fb29e92dc86c7"
 
 [section."loops.md#every-intervention-is-logged"]
-state = "clean"
-last_audited = "2026-08-04T20:59:31+00:00"
+state = "gaps"
+last_audited = "2026-08-05T01:55:30+00:00"
+
+  [[section."loops.md#every-intervention-is-logged".gap]]
+  claim = "prompt files live in harness/prompts/, owned by nobody like the rest of harness/"
+  found = "HARNESS_PATHS is dropped from the deny list for a writes_harness loop, leaving auditor.md the only denied prompt; the isolation section says the opposite explicitly, so the code resolves the contradiction against this sentence"
+  where = "harness/hj:142"
+  found_at = "b691ed7060338ed514365727507fb29e92dc86c7"
 
 [section."loops.md#sessions-assign-the-id-own-the-transcript"]
 state = "clean"
@@ -519,8 +555,13 @@ last_audited = "2026-08-05T01:11:28+00:00"
 
 [section."loops.md#decided"]
 state = "clean"
-last_audited = "2026-08-04T20:59:31+00:00"
+last_audited = "2026-08-05T01:55:30+00:00"
+
+  [[section."loops.md#decided".minor]]
+  claim = "stall N is 3 for conformance, 5 for tuning"
+  note = "5 exists only in the commented-out lang-rust template; load_phase defaults stall_n to 3 for every loop, so a tuning row that omits it silently gets the conformance number"
+  where = "harness/hj:341"
 
 [section."loops.md#open-questions"]
 state = "clean"
-last_audited = "2026-08-04T20:59:31+00:00"
+last_audited = "2026-08-05T01:55:30+00:00"
