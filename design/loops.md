@@ -1646,6 +1646,23 @@ next one with no review in between. What the loop cannot do is change
 how it is *scored*; what it can do, from its next campaign on, is change
 what it is *told*.
 
+**The same split cuts the other way inside the checks themselves**, and
+it is worth stating because two campaigns lost time to it before anybody
+wrote it down. A check in the reviewed harness that resolves a path
+through `HJ_REPO` asserts about the *candidate* tree, not about the copy
+it is written in. That is right for a check on an invariant every live
+branch already satisfies, which is where it catches a campaign
+introducing a defect. It is wrong for a check on how two harness files
+agree with each other: a branch carrying an older copy of a file every
+loop is denied is behind rather than broken, and failing it for that
+fails a campaign for something it may not fix — and leaves
+green-or-revert with no green to revert to. So such a check reads the
+reviewed copy's own siblings, the deliberate exceptions are named in a
+list rather than remembered, and `hj selftest --across-worktrees` runs
+the reviewed checks against every checkout so that "would this fail a
+branch that predates it" is answered by running rather than by
+judgement.
+
 **A language is one loop, servers and all.** An earlier revision split
 `lang_python/` between a language loop and a per-server profile loop, on
 the grounds that the two are evaluated on disjoint corpus positions

@@ -225,13 +225,35 @@ in while failing in everyone else's. That is not hypothetical: the adapter
 check did exactly this, and would have failed three core workers' gates on
 their next run with `KeyError: 'gate_runs'`.
 
-Before merging a change to `harness/`, run it everywhere:
+**So there are two roots and they are not interchangeable**, which is
+`harness-011`'s answer after two campaigns lost time to the difference:
+
+* `PINNED_HARNESS` is the directory the running `hj` is actually in — the
+  reviewed copy. A check asserting how two harness files agree *with each
+  other* reads this. A branch carrying an older copy of `harness/gate`, which
+  every loop is denied, is behind rather than broken, and failing it for that
+  is failing a campaign for something it may not fix.
+* `HARNESS` is the tree being judged. A check reads this only when it asserts
+  an invariant **every live branch already satisfies**, because then catching a
+  campaign that introduces the defect is the whole of its value.
+
+Three cases read `HARNESS` on purpose, and `CANDIDATE_TREE_CHECKS` in `hj`
+names them; a fourth appearing is a selftest failure rather than a convention
+someone has to remember. That check is the mechanical half of the same answer:
+the record's own option B was "assert only what every live branch already
+satisfies", and it said the cost was that conventions are what had failed
+twice.
+
+The other half is a command, because "would this fail a branch that predates
+it" is decidable by running it:
 
 ```sh
-for t in $(git worktree list --porcelain | awk '/^worktree /{print $2}'); do
-  HJ_REPO="$t" harness/hj selftest
-done
+harness/hj selftest --across-worktrees
 ```
+
+It runs the reviewed checks against every checkout `git worktree list` knows
+about and names the ones that fail. Run it before committing a case that reads
+`HARNESS`, and before merging any change to `harness/`.
 
 A check belongs in `selftest` only if it is hermetic — in-memory fixtures, or
 files resolved relative to `hj` itself. Nothing that reads repository state:

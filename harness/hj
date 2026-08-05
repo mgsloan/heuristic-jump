@@ -8490,6 +8490,29 @@ def selftest_cases() -> list[tuple[str, object]]:
         assert frontier_axes_of(both) == {"top1": 0.75, "coverage": 0.8}, both
         assert sorted(both["servers"]) == ["pylsp", "pyright"]
 
+    def a_check_that_reads_the_candidate_tree_is_on_the_list_that_says_so():
+        # `harness-011`, made mechanical. Two campaigns lost time to a case
+        # that read `HARNESS` and so asserted about whichever tree the gate was
+        # judging — one of them encoding a requirement no branch could satisfy,
+        # which left green-or-revert with no green to revert to.
+        #
+        # Reads `PINNED_HARNESS`, being an assertion about this file's own
+        # contents. Gate step 3 runs the tree's own copy whenever `hj` differs,
+        # which is exactly when a new read could have appeared.
+        reads = candidate_tree_reads((PINNED_HARNESS / "hj").read_text())
+        unlisted = [name for name in reads if name not in CANDIDATE_TREE_CHECKS]
+        assert not unlisted, (
+            "these read HARNESS — the tree being judged — without being on "
+            f"CANDIDATE_TREE_CHECKS: {unlisted}. If that is deliberate, add the "
+            "name and run `hj selftest --across-worktrees` first; if it is not, "
+            "read PINNED_HARNESS instead"
+        )
+        stale = [name for name in CANDIDATE_TREE_CHECKS if name not in reads]
+        assert not stale, (
+            f"listed as reading HARNESS and no longer does: {stale}. A stale "
+            "exemption is how the next one gets added without anybody noticing"
+        )
+
     def the_per_stratum_table_renders_one_surface_per_server():
         # §16 asks the metrics panel for "the per-stratum table — one per
         # server where a language has several". The trap is the other half of
@@ -9210,6 +9233,41 @@ def _selftest_loop(owner: str, language: str | None) -> LoopConfig:
         stall_n=3, rotation=6, splice_sections=3, detail_gaps=8, turn_target="about 150",
         budget_usd=None, model=None, language=language, writes_harness=False,
     )
+
+
+# The selftest cases that deliberately read `HARNESS` — the tree being judged —
+# instead of `PINNED_HARNESS`, the reviewed copy this file sits in.
+#
+# `harness-011` answered that the two are not interchangeable, after two
+# campaigns lost time to the difference. A case asserting how two harness files
+# agree with *each other* reads `PINNED_HARNESS`: a branch carrying an older
+# copy of a file it is denied is behind rather than broken, and failing it for
+# that is failing a campaign for something it may not fix. A case asserting an
+# invariant every live branch already satisfies reads `HARNESS`, because
+# catching a campaign that introduces the defect is the whole of its value.
+#
+# Named rather than counted, so joining the list is a decision rather than a
+# habit — and `hj selftest --across-worktrees` is what answers "would this fail
+# a branch that predates it", which the record called undecidable.
+CANDIDATE_TREE_CHECKS = (
+    "the_reaper_is_the_only_caller_that_asks_the_process_table",
+    "a_tuple_returning_helper_is_not_used_as_one_value",
+    "the_digest_asymmetry_reaches_both_ends",
+)
+
+
+def candidate_tree_reads(source: str) -> list[str]:
+    """The selftest cases that read `HARNESS`, by name, in file order."""
+    first, past = selftest_line_range(source)
+    found, name = [], None
+    for number, line in enumerate(source.splitlines(), start=1):
+        match = re.match(r"    def ([a-z0-9_]+)\(\):", line)
+        if match:
+            name = match.group(1)
+        if first <= number < past and name and re.search(r"\(HARNESS\s*/", line):
+            if name not in found:
+                found.append(name)
+    return found
 
 
 def _selftest_dashboard():

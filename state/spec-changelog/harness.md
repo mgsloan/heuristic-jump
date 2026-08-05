@@ -644,3 +644,38 @@ does not carry. That is `state/decisions/harness-012.md` and it is a Class B
 question, not this edit.
 
 **Campaign:** fb78b589-0b53-462a-b22d-f65de1c9a78f
+
+## CHANGE-harness-015 — loops.md#mechanics-isolation-in-four-layers — the pinned-harness argument says what it means for a check, which §13 left out
+
+**Contradiction:** not a contradiction but an omission the answered record
+`harness-011` names as outstanding work, quoted from it verbatim:
+
+> The harness loop's: `design/loops.md` §13 and `harness/readme.md` both warn
+> that a check reaching through `HJ_REPO` tests the candidate tree, and neither
+> says what to do about it. They should name `PINNED_HARNESS`, the three
+> deliberate exceptions, and the command.
+
+§13 already carried the pinned-harness argument in the direction that protects
+the score — "an edit to `hj` cannot change the verdict on the campaign that
+made it" — and said nothing about the direction that costs campaigns. Twice a
+check was written that resolved a path through `HJ_REPO` and so asserted about
+whichever tree the gate was judging; the second time it encoded a requirement
+no branch could satisfy, and the campaign that hit it had no green to revert
+to.
+
+**Resolution:** §13 gains a paragraph stating the split as a rule with the two
+sides named — a check on an invariant every live branch already satisfies reads
+the candidate, a check on how two harness files agree with each other reads the
+reviewed copy's own siblings — and names both mechanisms the record settled on:
+the list of deliberate exceptions, and `hj selftest --across-worktrees`. This
+trades nothing off: it is the ruling in an answered record written into the
+document that record says is missing it, and the human who answered it asked
+for exactly this text.
+
+Code changed in the same campaign under this anchor, and it should be read
+together rather than separately: `CANDIDATE_TREE_CHECKS` and the check that
+holds it to the source are the "named in a list rather than remembered" half of
+the paragraph. The section's open gap — the evaluation worktree,
+`[8e7ec3af37]` — is untouched by either.
+
+**Campaign:** fb78b589-0b53-462a-b22d-f65de1c9a78f
