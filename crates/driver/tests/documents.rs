@@ -32,7 +32,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use driver::{Documents, Queried, Registry, Saved, Synced};
+use driver::{Documents, Queried, Registry, SaveCheck, Saved, Synced};
 use serde_json::value::RawValue;
 use shared::proto::PositionEncoding;
 use shared::{
@@ -281,6 +281,58 @@ fn a_save_without_text_hands_the_read_to_a_worker() {
     assert_abstains(&documents, &uri);
 }
 
+/// The window that read opens, and what has to be true across it.
+///
+/// §8.6's checksum is sound only at the instant it names — "immediately after a
+/// save the buffer and the file are identical **by definition**" — and putting
+/// the read in a worker means the answer arrives later than that instant. A
+/// `didChange` in between makes the two differ *correctly*, so a comparison
+/// then is evidence of nothing, and distrusting on it would fail closed on the
+/// shim's own latency rather than on drift. Every document a user types into
+/// while a read is outstanding is every document they save.
+///
+/// The second half is the one a version comparison cannot answer, and is the
+/// reason the guard is a stamp of our own: §8.6 makes `didOpen` a *resync*, so
+/// the text behind a URI is replaced at a version we have already seen. An
+/// implementation comparing `DocumentVersion` sees 2 against 2 and compares two
+/// different documents.
+#[test]
+fn a_save_check_that_raced_the_editor_is_dropped_rather_than_believed() {
+    let mut documents = Documents::new();
+    let registry = registry();
+    let uri = uri();
+    documents.opened(&did_open(&uri, TEXT, 1), &registry);
+
+    let check = needs_read(&mut documents, &uri);
+    assert_eq!(
+        documents.changed(
+            &did_change(&uri, 2, r#"{"text":"fn other() {}\n"}"#),
+            PositionEncoding::Utf16
+        ),
+        Synced::Applied
+    );
+    assert_eq!(
+        documents.checked(check, TEXT),
+        Synced::Untracked,
+        "the file as it was at the save was compared against a buffer the user has typed into \
+         since, so §8.6's checksum fires on the read's own latency"
+    );
+    assert_held(&documents, &uri, "fn other() {}\n", 2);
+
+    let check = needs_read(&mut documents, &uri);
+    assert_eq!(
+        documents.opened(&did_open(&uri, TEXT, 2), &registry),
+        Synced::Applied
+    );
+    assert_eq!(
+        documents.checked(check, "fn other() {}\n"),
+        Synced::Untracked,
+        "a resync at a version we had already seen was not noticed, so the check compared the \
+         text before the resync against the text after it"
+    );
+    assert_held(&documents, &uri, TEXT, 2);
+}
+
 /// §8.6's rule at its first clause — a *deserialization* failure, not a
 /// detected inconsistency — and §8.5's `range: null` is the case that produces
 /// one on traffic that is otherwise well formed.
@@ -455,6 +507,17 @@ fn assert_held(documents: &Documents, uri: &DocumentUri, text: &str, version: i3
         }
         other @ (Queried::NotOpen | Queried::Untrusted(_)) => {
             panic!("{uri} is not queryable: {other:?}")
+        }
+    }
+}
+
+/// The outstanding half of a `didSave`, for the tests that are about what
+/// happens while it is outstanding.
+fn needs_read(documents: &mut Documents, uri: &DocumentUri) -> SaveCheck {
+    match documents.saved(&did_save(uri, None)) {
+        Saved::NeedsRead(check) => check,
+        other @ Saved::Checked(_) => {
+            panic!("a save with no text settled without reading the file: {other:?}")
         }
     }
 }

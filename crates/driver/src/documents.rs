@@ -52,7 +52,23 @@ use crate::dispatch::Registry;
 #[derive(Debug, Default)]
 pub struct Documents {
     open: Map<DocumentUri, Open>,
+    next_generation: Generation,
 }
+
+/// Which state of the map a row is in — ours, and not the editor's.
+///
+/// It exists because §8.6 puts the `didSave` read in a worker, so the
+/// comparison happens some time after the message that asked for it, and a
+/// `didChange` arriving in between makes the buffer and the file differ
+/// *correctly*. Comparing them anyway would distrust a document that never
+/// drifted — §8.6's rule firing on our own latency rather than on evidence.
+///
+/// [`DocumentVersion`] cannot answer the question, for the reason
+/// `actor.rs`'s `TreeFate` gives: §8.6 makes `didOpen` a resync, so the text
+/// behind a URI can be replaced at a version we have already seen. That is
+/// what an editor does after a revert.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
+struct Generation(u64);
 
 /// A row, in the two states §8.6 gives it.
 ///
@@ -71,6 +87,7 @@ struct Believed {
     text: Rope,
     version: DocumentVersion,
     language_id: LanguageId,
+    generation: Generation,
 }
 
 /// A document the map still believes in, borrowed from it.
@@ -158,13 +175,19 @@ pub enum Saved {
 
 /// The outstanding half of a `didSave` check.
 ///
-/// Its field is private and it has no constructor, so [`Documents::checked`]
+/// Its fields are private and it has no constructor, so [`Documents::checked`]
 /// cannot be reached except by having been told a read was needed — which is
 /// what stops the expensive check being run speculatively against text nobody
 /// saved.
+///
+/// The [`Generation`] travels with it because the read happens on another
+/// thread: it is what the answer is compared *against*, and a check that comes
+/// back to a document something has touched since is one whose comparison
+/// would be about two different texts.
 #[derive(Debug)]
 pub struct SaveCheck {
     uri: DocumentUri,
+    generation: Generation,
 }
 
 impl SaveCheck {
@@ -200,12 +223,14 @@ impl Documents {
             self.open.remove(&item.uri);
             return Synced::Untracked;
         };
+        let generation = self.stamp();
         self.open.insert(
             item.uri,
             Open::Trusted(Believed {
                 text: Rope::from(&*item.text),
                 version: item.version,
                 language_id,
+                generation,
             }),
         );
         Synced::Applied
@@ -228,6 +253,11 @@ impl Documents {
         let uri = changed.text_document.uri;
         let arriving = changed.text_document.version;
 
+        // Taken before the row is borrowed, and spent whether or not the change
+        // applies: a stamp skipped by a refused change costs nothing, where a
+        // row left at the stamp an outstanding save check is holding would have
+        // that check compare a file against a rope this message moved.
+        let generation = self.stamp();
         let applied = match self.open.get_mut(&uri) {
             None => Err(DocumentError::NotOpen {
                 notification: DocumentNotification::DidChange,
@@ -236,9 +266,16 @@ impl Documents {
             // Already untrusted, and it stays that way until a didOpen. There
             // is no text to apply the change to, which is the point.
             Some(Open::Untrusted(_)) => return Synced::Untracked,
-            Some(Open::Trusted(believed)) => {
-                apply(&uri, believed, arriving, &changed.content_changes, encoding)
-            }
+            Some(Open::Trusted(believed)) => apply(
+                &uri,
+                believed,
+                Arriving {
+                    version: arriving,
+                    generation,
+                },
+                &changed.content_changes,
+                encoding,
+            ),
         };
         match applied {
             Ok(()) => Synced::Applied,
@@ -264,16 +301,40 @@ impl Documents {
         let uri = saved.text_document.uri;
         match self.open.get(&uri) {
             None | Some(Open::Untrusted(_)) => Saved::Checked(Synced::Untracked),
-            Some(Open::Trusted(_)) => match saved.text {
-                Some(text) => Saved::Checked(self.compare(uri, &text)),
-                None => Saved::NeedsRead(SaveCheck { uri }),
-            },
+            Some(Open::Trusted(believed)) => {
+                let generation = believed.generation;
+                match saved.text {
+                    Some(text) => Saved::Checked(self.compare(uri, &text)),
+                    None => Saved::NeedsRead(SaveCheck { uri, generation }),
+                }
+            }
         }
     }
 
     /// The other half of [`Documents::saved`], once the worker's read has
     /// landed.
+    ///
+    /// The comparison is skipped when anything has touched the document since
+    /// the save. That is not a weakening of §8.6: the check is only sound at
+    /// the instant it names — "immediately after a save the buffer and the file
+    /// are identical **by definition**" — and after a `didChange` they are
+    /// definitionally different, so a mismatch would be evidence of nothing.
+    /// Left in, it would distrust every document the user types into while a
+    /// read is outstanding, which is every document they save.
     pub fn checked(&mut self, check: SaveCheck, on_disk: &str) -> Synced {
+        let held = match self.open.get(&check.uri) {
+            Some(Open::Trusted(believed)) => believed.generation,
+            // Distrusted or closed while the read was outstanding. Nothing to
+            // check against, and in the first case nothing left to distrust.
+            None | Some(Open::Untrusted(_)) => return Synced::Untracked,
+        };
+        if held != check.generation {
+            tracing::debug!(
+                uri = %check.uri,
+                "the document moved while its didSave checksum was being read"
+            );
+            return Synced::Untracked;
+        }
         self.compare(check.uri, on_disk)
     }
 
@@ -373,6 +434,18 @@ impl Documents {
         }
     }
 
+    /// The next state of the map, taken by whatever is about to write a row.
+    ///
+    /// One counter for the whole map rather than one per document: what a save
+    /// check asks is whether *this* row is the row it was told about, and a
+    /// counter that skips values because another document was edited answers
+    /// that just as well as a dense one.
+    fn stamp(&mut self) -> Generation {
+        let generation = self.next_generation;
+        self.next_generation = Generation(generation.0.wrapping_add(1));
+        generation
+    }
+
     /// The conversion `deps.md` §10 requires to be "explicit and logged": an
     /// `Error` becoming an abstention. It is the only writer of an untrusted
     /// row, and the insert is what drops the text.
@@ -393,15 +466,15 @@ impl Documents {
 fn apply(
     uri: &DocumentUri,
     believed: &mut Believed,
-    arriving: DocumentVersion,
+    arriving: Arriving,
     changes: &[ContentChange],
     encoding: PositionEncoding,
 ) -> Result<(), DocumentError> {
-    if arriving <= believed.version {
+    if arriving.version <= believed.version {
         return Err(DocumentError::VersionDidNotIncrease {
             uri: uri.clone(),
             held: believed.version,
-            arriving,
+            arriving: arriving.version,
         });
     }
     for change in changes {
@@ -431,8 +504,21 @@ fn apply(
             }
         }
     }
-    believed.version = arriving;
+    believed.version = arriving.version;
+    believed.generation = arriving.generation;
     Ok(())
+}
+
+/// What a `didChange` moves a row to: the version the editor named, and the
+/// state of the map that message produced.
+///
+/// One parameter rather than two, because the pair is what "the row after this
+/// notification" is and neither half is meaningful on its own — a version
+/// applied without a stamp leaves an outstanding save check believing it is
+/// looking at text this change replaced.
+struct Arriving {
+    version: DocumentVersion,
+    generation: Generation,
 }
 
 /// Whether a rope and a `&str` are the same bytes, without building the
