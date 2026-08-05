@@ -720,26 +720,7 @@ fn a_location_the_view_cannot_resolve_is_the_other_failure_that_marks_the_list_s
 /// design is being relaxed was not holding a claim.
 #[test]
 fn the_walk_and_the_scan_are_in_process_and_never_shell_out() {
-    let on_the_query_path: Vec<(String, String)> = crate_sources()
-        .into_iter()
-        .filter(|(file, _)| file.starts_with("shared/") || file == "driver/src/files.rs")
-        .collect();
-
-    assert!(
-        on_the_query_path.len() > 5,
-        "only {} query-path source file(s) walked, so this scan would pass \
-         against almost anything",
-        on_the_query_path.len()
-    );
-    assert!(
-        on_the_query_path
-            .iter()
-            .any(|(file, _)| file == "driver/src/files.rs"),
-        "the enumeration cache itself is not in the scanned set, which is the \
-         one file §4's bullet is literally about"
-    );
-
-    let offenders: Vec<String> = on_the_query_path
+    let offenders: Vec<String> = query_path_sources()
         .iter()
         .flat_map(|(file, text)| {
             spawns_a_subprocess(text)
@@ -782,6 +763,134 @@ fn the_subprocess_scan_finds_what_it_is_looking_for() {
          comment that records the decision, and must not mistake \
          `ServerCommand` for one"
     );
+
+    // The persistence scan shares the marker walker, so its own list is
+    // controlled here rather than in a second near-identical test. The
+    // `read_to_string` is the discriminating line: §4 rules out *writing* an
+    // index, and the walk reads the tree on every pass by design.
+    let written = "
+        // No persisted map from name to definition sites (§4).
+        let cached = fs::read_to_string(path)?;
+        fs::write(index_path, serialised)?;
+        let handle = File::create(index_path)?;
+    ";
+    assert_eq!(
+        persists_something(written),
+        vec!["fs::write", "File::create"],
+        "the persistence scan must see a write however it is spelled, must not \
+         read the comment recording the refusal, and must not flag a read — \
+         reading the tree is what the walk does"
+    );
+}
+
+/// §4's opening boundary, which is the one it calls "the one place where 'no
+/// index' needs a stated boundary": "There is no *symbol* index — **no
+/// persisted map from name to definition sites**, which is the thing
+/// `high-level.md` rules out and the thing that would cost startup CPU and
+/// invalidation complexity", and "**The driver caches a file list. It does not
+/// cache anything about file contents beyond the parse LRU.**"
+///
+/// The in-memory half is structural and needs no test: `FileList` holds roots,
+/// paths and a generation, and `FileListCache` holds one of those — there is
+/// nowhere for a file's contents to be, and a field that gave them one would
+/// be read by somebody. The *persisted* half has no such backstop. Writing the
+/// walk to disk so the cold walk is paid once per machine rather than once per
+/// process is a plausible, well-meant optimisation that would pass review and
+/// make every assertion in this file pass faster, and it is the exact thing
+/// §4's paragraph exists to refuse.
+///
+/// It is refused on grounds nothing here can measure — startup CPU, and
+/// invalidation complexity that arrives later than the change does — so the
+/// scan is the record of the decision rather than a check of its consequences.
+/// Same scope as the subprocess scan above and for the same reason:
+/// `measure_core` writes truth files and record streams by design, and the
+/// rest of `driver` is where a log file would go if one is ever wanted.
+#[test]
+fn nothing_on_the_query_path_persists_an_index() {
+    let offenders: Vec<String> = query_path_sources()
+        .iter()
+        .flat_map(|(file, text)| {
+            persists_something(text)
+                .into_iter()
+                .map(move |used| format!("{file}: {used}"))
+        })
+        .collect();
+
+    assert!(
+        offenders.is_empty(),
+        "the file list or the search writes to disk. §4 allows exactly one \
+         cache — the file list, in memory, rebuilt by a walk — and rules out a \
+         persisted map because it \"would cost startup CPU and invalidation \
+         complexity\". A file list written out is that map in its cheapest \
+         disguise: it needs a validity check against the tree it describes, \
+         which is the invalidation problem the whole no-index posture \
+         avoids:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Every way a source file writes to disk, in `text`, skipping comments.
+fn persists_something(text: &str) -> Vec<&'static str> {
+    const MARKERS: [&str; 5] = [
+        "fs::write",
+        "File::create",
+        "OpenOptions",
+        "fs::create_dir",
+        "fs::rename",
+    ];
+
+    found_markers(text, &MARKERS)
+}
+
+/// The source files §4's two mechanism claims are about: the whole of
+/// `shared`, where `FileList::enumerate` and `ProjectView::scan` live and
+/// where the seam crate has no other business, plus this file's own subject.
+///
+/// The rest of `driver` is deliberately outside it. `shim.md` has `driver`
+/// spawning the proxied child — which is why `ServerCommand` already exists in
+/// `config.rs` — and a log file, if one is ever wanted, goes there too. A scan
+/// that forbade either would have to be weakened by the campaign that writes
+/// it, and a test whose first encounter with the design is being relaxed was
+/// not holding a claim.
+fn query_path_sources() -> Vec<(String, String)> {
+    let sources: Vec<(String, String)> = crate_sources()
+        .into_iter()
+        .filter(|(file, _)| file.starts_with("shared/") || file == "driver/src/files.rs")
+        .collect();
+
+    assert!(
+        sources.len() > 5,
+        "only {} query-path source file(s) walked, so a scan over these would \
+         pass against almost anything",
+        sources.len()
+    );
+    assert!(
+        sources
+            .iter()
+            .any(|(file, _)| file == "driver/src/files.rs"),
+        "the enumeration cache itself is not in the scanned set, which is the \
+         one file §4's bullets are literally about"
+    );
+    sources
+}
+
+/// Every marker in `text`, in the order the list gives them, skipping
+/// comments — a comment naming one is the record of its refusal, which §4
+/// asks for rather than forbids.
+fn found_markers(text: &str, markers: &[&'static str]) -> Vec<&'static str> {
+    let mut found = Vec::new();
+    for line in text.lines() {
+        let code = line.trim_start();
+        if code.starts_with("//") {
+            continue;
+        }
+        for marker in markers {
+            if code.contains(marker) && !found.contains(marker) {
+                found.push(*marker);
+            }
+        }
+    }
+    found
 }
 
 /// Every way a source file starts a process, in `text`, skipping comments.
@@ -793,19 +902,7 @@ fn the_subprocess_scan_finds_what_it_is_looking_for() {
 fn spawns_a_subprocess(text: &str) -> Vec<&'static str> {
     const MARKERS: [&str; 2] = ["std::process", "Command::new"];
 
-    let mut found = Vec::new();
-    for line in text.lines() {
-        let code = line.trim_start();
-        if code.starts_with("//") {
-            continue;
-        }
-        for marker in MARKERS {
-            if code.contains(marker) && !found.contains(&marker) {
-                found.push(marker);
-            }
-        }
-    }
-    found
+    found_markers(text, &MARKERS)
 }
 
 /// §4's last paragraph: "**Search scope is the workspace folders only.**
