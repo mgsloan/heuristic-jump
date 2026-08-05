@@ -635,6 +635,73 @@ fn the_mask_is_not_the_whole_record() {
     }
 }
 
+/// The determinism claim below, held against the one disposition that would
+/// break it by construction rather than by accident.
+///
+/// `core-026` gave `shim.md` §10's load shedding a `decision` of its own, and a
+/// shed query is the only ending in §7's record that depends on **how busy the
+/// machine was**: the in-flight cap and the inbox check both read state that
+/// varies with scheduling. A replay that could produce one would have a table
+/// that moves with background load, which is precisely what "same corpus, same
+/// commit, same table, byte for byte" rules out — and it would move *coverage*
+/// and not just latency, so the number a tuning campaign acts on would depend
+/// on what else was running.
+///
+/// Nothing in `measure_core` sheds today, and the point is to keep that true
+/// for a reason rather than by nobody having thought of it: the driver's two
+/// limits exist because a shim shares a machine with the language server it is
+/// racing, and a corpus run races nothing. `Deadline::none()` is the same
+/// argument already made for the deadline (§7: "replay enforces no deadline at
+/// all"), and this is its other half.
+///
+/// A scan over the crate rather than an assertion on one report, because a
+/// report only says this corpus did not shed, where the claim is that none can.
+///
+/// **Construction and not mention.** `Table::observe` matches on `Decision` and
+/// must have an arm for every value, `shed` included — that is the exhaustive
+/// match `CLAUDE.md` asks for, and counting it here would make the scan fire on
+/// the code that reads a record correctly. A pattern is told from a value by
+/// what follows it: an arm is `Decision::Shed =>` or `Decision::Shed |`, and
+/// anything else with that name in it is building one. `Answered::shed` is
+/// unconditional, since it is a constructor and cannot appear in a pattern.
+#[test]
+fn a_replay_has_no_route_to_shedding_a_query() {
+    let sources = files_under(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"));
+    assert!(
+        !sources.is_empty(),
+        "no source files were scanned, so the assertion below holds against nothing"
+    );
+
+    let mut offending: Vec<String> = Vec::new();
+    for name in &sources {
+        let text = fs::read_to_string(measure_core_source(name)).expect("a source file");
+        for (number, line) in text.lines().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            let constructs = code.contains("Answered::shed")
+                || code.match_indices("Decision::Shed").any(|(at, name)| {
+                    let after = code[at + name.len()..].trim_start();
+                    !after.starts_with("=>") && !after.starts_with('|')
+                });
+            if constructs {
+                offending.push(format!("{name}:{}: {code}", number + 1));
+            }
+        }
+    }
+
+    assert!(
+        offending.is_empty(),
+        "measure_core can produce a shed query, and a shed query is the one ending in \
+         §7's record that depends on machine load. core.md §7 makes `replay` deterministic \
+         — same corpus, same commit, same table byte for byte — and shedding would move \
+         coverage with whatever else was running, which is the same defect a wall-clock \
+         deadline in replay would be and is refused for the same reason.\n{}",
+        offending.join("\n")
+    );
+}
+
 /// The sibling of the test above, and the one §7's command line actually
 /// states: "**`replay` is deterministic.** Same corpus, same commit, same
 /// table, byte for byte — which is what makes it usable as a gate rather than
