@@ -149,9 +149,16 @@ fn the_measurement_crates_have_the_edges_section_9_gives_them() {
     // prefix bans above are a subset of it: `measure_core` could acquire
     // `similarity` or `rope` and every assertion so far would pass. Quantified
     // over the whole member list rather than over a second list of prefixes,
-    // because the crate that breaks this is the one nobody thought to ban —
-    // and `vendor/` counts, since `rope` is as much an edge in §9's graph as
-    // `driver` is.
+    // because the crate that breaks this is the one nobody thought to ban.
+    //
+    // `vendor/` is included, which is stricter than §9's own use of the word —
+    // "ours" there means `crates/`, or the `shared` bullet's "depends on
+    // nothing of ours" would contradict the `rope` on its own list
+    // (CHANGE-core-030). The strict reading is deliberate and §9 now says so:
+    // the text vocabulary reaches `measure_core` through `shared`'s re-export,
+    // which `the_text_vocabulary_is_nameable_through_shared_and_defined_in_rope`
+    // asserts, so a direct `rope` edge here would be a divergence rather than
+    // another spelling of the same one.
     let ours = ours_named_by(&dependencies_in(&manifest_text("measure_core")));
     assert_eq!(
         ours,

@@ -72,3 +72,46 @@ Both edits are to the document alone except for the deleted `tracing` line and
 a stale comment in `project.rs` — no code changed behaviour under this entry.
 
 **Campaign:** 26e3bb3c-2937-495c-afea-2f1d0ae858f3
+
+## CHANGE-core-030 — core.md#the-dependency-graph — "ours" is used in two senses one paragraph apart, and only one of them is meant
+
+**Contradiction:** §9's first edge bullet reads
+
+> * **`shared` depends on nothing of ours.**
+
+and its own list, three lines later in the same bullet, reads
+
+> Its own dependencies are `serde`, `serde_json`, `url`, `rope`,
+> `tree-sitter`, `ignore` […]
+
+`rope` is `vendor/rope`, a workspace member of this repository listed in the
+root `Cargo.toml` beside `crates/shared`. So `shared` depends on something of
+ours by the reading that counts workspace members, and on nothing of ours by
+the reading that counts `crates/` — and the section uses the same word again,
+two bullets down, for a claim that has to be checked rather than read:
+`measure_core` "depends on `shared` and nothing else of ours".
+
+That second one is where it bit. Mechanising it
+(`the_measurement_crates_have_the_edges_section_9_gives_them`) required
+choosing a sense of "ours", and the two give different tests: the strict one
+fails a `measure_core` that declares `rope` directly, the loose one does not.
+Nothing in the section said which.
+
+**Resolution:** the bullet now states the sense §9 uses — "no crate of ours in
+`crates/`" — and says in as many words that the vendored text crates are
+neither an exception to it nor covered by it. That is the reading the rest of
+the document already takes: `deps.md` §14's tree separates `crates/` from
+`vendor/` so provenance and licensing stay obvious, and §9's own graph draws
+`rope` on the same arrow as `tree-sitter` and `serde`. Nothing is traded,
+because no edge changes and no dependency is added or removed — the word stops
+meaning two things.
+
+The seam test reads the `measure_core` claim **strictly**, quantifying over
+`vendor/` as well, and §9 now says so rather than leaving the test to imply it.
+The reason is given there and is specific rather than a preference for
+strictness: the text vocabulary reaches `measure_core` through `shared`'s
+re-export, which `the_text_vocabulary_is_nameable_through_shared_and_defined_in_rope`
+already asserts, so a direct `rope` edge would be a divergence and not another
+spelling of the same edge.
+
+**Campaign:** 26e3bb3c-2937-495c-afea-2f1d0ae858f3

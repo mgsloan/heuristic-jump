@@ -2220,7 +2220,22 @@ the two into an equality it can check:
 
 Every edge, and why:
 
-* **`shared` depends on nothing of ours.** The shared vocabulary: it holds
+* **`shared` depends on no crate of ours in `crates/`.** The vendored text
+  crates are not an exception to that and are not covered by it: `rope` is on
+  the list below and `shared` depends on it, and "ours" throughout this section
+  means the code in `crates/` rather than every workspace member. Keeping the
+  two apart is what `vendor/` is for — `deps.md` §14's tree separates them so
+  provenance and licensing stay obvious — and a `vendor/` crate is a dependency
+  like any other except for who wrote it. Where the distinction has teeth is
+  the other edges: `measure_core` "depends on `shared` and nothing else of
+  ours" is the same word used the same way, and
+  `crates/driver/tests/seam.rs::the_measurement_crates_have_the_edges_section_9_gives_them`
+  reads it strictly, quantifying over `vendor/` too — not because §9's sentence
+  demands it, but because the text vocabulary reaches `measure_core` through
+  `shared`'s re-export, so a direct `rope` edge there would be a divergence
+  worth failing on rather than a spelling of the same thing.
+
+  The shared vocabulary: it holds
   `LanguageHandler`, `Query`, `Outcome`, `Stratum`, `Deadline`,
   `DocumentSnapshot`, `ProjectView`, and `Error` — types every other
   crate needs to talk about, and almost no behaviour. It also holds `proto`, the
