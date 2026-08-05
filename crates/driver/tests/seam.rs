@@ -3165,7 +3165,7 @@ fn our_log_lines_are_distinguishable_and_the_subscriber_is_installed_once() {
     );
 
     let mut written = Vec::new();
-    let mut writer = driver::PrefixedWriter::new(&mut written);
+    let mut writer = shared::PrefixedWriter::new(&mut written);
     let event = "a warning\nwith a second line\n";
     assert_eq!(
         std::io::Write::write(&mut writer, event.as_bytes()).expect("a write to a Vec"),
@@ -3183,7 +3183,7 @@ fn our_log_lines_are_distinguishable_and_the_subscriber_is_installed_once() {
     );
     for line in lines {
         assert!(
-            line.starts_with(driver::LOG_PREFIX),
+            line.starts_with(shared::LOG_PREFIX),
             "the line {line:?} carries no prefix: deps.md §9 wants every line distinguishable \
              from the child's, and a continuation line is the one most easily read as the \
              child's"
@@ -3251,6 +3251,86 @@ fn our_log_lines_are_distinguishable_and_the_subscriber_is_installed_once() {
         "tracing-subscriber is declared as `{declared}` without env-filter: deps.md §9 names \
          it as one of the two features, and it is what --log is a string for"
     );
+}
+
+/// The other half of `deps.md` §9's prefix rule, and the half that was missing:
+/// a prefix nothing is routed through is a prefix that is not applied.
+///
+/// The test above asserts that [`shared::PrefixedWriter`] prefixes what it is
+/// given; this asserts that each process that installs a subscriber gives it
+/// one. Two claims and two tests because they fail apart — until
+/// CHANGE-core-036 the adapter was correct and `measure_core` handed
+/// `tracing-subscriber` a bare `std::io::Stderr` instead, in the process that
+/// spawns a language server with `Stdio::inherit()` and so has exactly the
+/// interleaving §9's prefix exists for.
+///
+/// **Naming the type would not be enough**, which is why this reads the writer
+/// back out of the `MakeWriter` impl. `tracing-subscriber` has a blanket impl
+/// for `Fn() -> W`, so `with_writer(stderr_for_logging)` — what the defect
+/// actually looked like — compiles, in a crate that could name `PrefixedWriter`
+/// somewhere else entirely and pass a scan for the name.
+#[test]
+fn every_subscriber_we_install_writes_through_the_prefix() {
+    for member in INSTALLS_THE_SUBSCRIBER {
+        let source = sources_of(member)
+            .into_iter()
+            .map(|(_, text)| text)
+            .collect::<Vec<String>>()
+            .join("\n");
+        let arguments = with_writer_arguments(&source);
+        assert!(
+            !arguments.is_empty(),
+            "{member} installs the subscriber and never calls with_writer, so the prefix check \
+             below is vacuous — either the default writer is in use, which is unprefixed, or \
+             this scan has stopped finding the call"
+        );
+        for argument in arguments {
+            let writer = make_writer_associated_type(&source, &argument).unwrap_or_else(|| {
+                panic!(
+                    "{member} passes `{argument}` to with_writer, and no MakeWriter impl for it \
+                     is in the crate: deps.md §9 wants every line prefixed, and the blanket impl \
+                     for `Fn() -> W` is exactly how a bare stderr gets there without one"
+                )
+            });
+            assert!(
+                writer.contains("PrefixedWriter"),
+                "{member} writes through `{argument}`, whose Writer is `{writer}` rather than a \
+                 PrefixedWriter: deps.md §9 requires the prefix of every line we emit, and both \
+                 processes forward a language server's stderr into the stream they log to"
+            );
+        }
+    }
+}
+
+/// Every `.with_writer(X)` argument in a source, as the text of `X`.
+fn with_writer_arguments(source: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut rest = source;
+    while let Some(at) = rest.find("with_writer(") {
+        rest = &rest[at + "with_writer(".len()..];
+        if let Some(end) = rest.find(')') {
+            found.push(rest[..end].trim().to_owned());
+        }
+    }
+    found
+}
+
+/// The `type Writer = …` of the `MakeWriter` impl for `name`, if the source has
+/// one.
+///
+/// Tolerant of how the lifetime is spelled, because `MakeWriter<'_>` and
+/// `MakeWriter<'a>` are the same claim and a test whose first encounter with a
+/// legitimate refactor is being relaxed was never holding anything.
+fn make_writer_associated_type(source: &str, name: &str) -> Option<String> {
+    let header = format!("for {name}");
+    let at = source
+        .lines()
+        .position(|line| line.contains("MakeWriter") && line.contains(&header))?;
+    source.lines().skip(at).take(6).find_map(|line| {
+        line.trim()
+            .strip_prefix("type Writer =")
+            .map(|writer| writer.trim().trim_end_matches(';').to_owned())
+    })
 }
 
 /// `deps.md` §7, whose two claims are both about a manifest and neither about

@@ -159,12 +159,22 @@ pub fn replay_table(
 ///
 /// **The default is `info`, where the shim's is `warn`**, and that is not a
 /// disagreement with `deps.md` §9 but the scope of its reason: the shim is
-/// quiet by default because its stderr is the editor's log panel with the
-/// child's own output interleaved into it (`shim.md` §2). `measure` has no
-/// child forwarding anything and no editor reading it — and §7 requires it to
-/// *report* something, namely the replay's own wall clock beside the per-query
-/// work counters, which `loops.md` §9 records from the very first run. A `warn`
-/// default would emit that into nothing.
+/// quiet by default because its stderr is the **editor's log panel**
+/// (`shim.md` §2), where volume costs the attention of someone who did not ask
+/// to hear from us. Nobody is reading a `measure` run's stderr that way — and
+/// §7 requires it to *report* something, namely the replay's own wall clock
+/// beside the per-query work counters, which `loops.md` §9 records from the
+/// very first run. A `warn` default would emit that into nothing.
+///
+/// **The prefix is not scoped the same way as the filter, and used to be.**
+/// `deps.md` §9 requires it of every line we emit, unconditionally, and this
+/// process has the interleaving it exists for: `collect` spawns the language
+/// server with `Stdio::inherit()` (`client::Server::start`), so the server's
+/// stderr *is* this stderr. The reason the `info` default survives that is the
+/// other half — nobody is reading a `measure` run's stderr as an editor's log
+/// panel, and §7 requires the run to report — but "no child" was never true of
+/// `collect` and a bare writer was the half that followed from it
+/// (CHANGE-core-036).
 ///
 /// `RUST_LOG` still overrides, and there is deliberately no flag: §7's command
 /// line is a closed set (`tests/pipeline.rs`), and a flag is a thing a run can
@@ -184,13 +194,26 @@ fn install_logging() {
     if let Err(error) = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_ansi(false)
-        .with_writer(stderr_for_logging)
+        .with_writer(PrefixedStderr)
         .try_init()
     {
         // Not discarded: a subscriber is already installed, and it is the one
         // that gets told. That is the case a test drives, where the scoped
         // subscriber is the point rather than an accident.
         tracing::debug!(%error, "a log subscriber was already installed");
+    }
+}
+
+/// `deps.md` §9's destination, wrapped in §9's prefix — the same wrapper the
+/// shim uses, out of `shared`, because §9's graph gives this crate no edge to
+/// `driver` and two copies of a prefix are two things that can drift apart.
+struct PrefixedStderr;
+
+impl tracing_subscriber::fmt::MakeWriter<'_> for PrefixedStderr {
+    type Writer = shared::PrefixedWriter<std::io::Stderr>;
+
+    fn make_writer(&self) -> Self::Writer {
+        shared::PrefixedWriter::new(stderr_for_logging())
     }
 }
 

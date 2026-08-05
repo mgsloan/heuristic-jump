@@ -96,3 +96,45 @@ shared clause in both documents, so a revert of either fires. Both directions
 planted.
 
 **Campaign:** b106a11d-e4c9-43d7-8aad-dc42cb9f54d5
+## CHANGE-core-036 — deps.md#9-logging-and-tracing — the prefix rule and the filter default are scoped differently, and only one of them excuses `measure`
+
+**Contradiction:** §9 states the prefix unconditionally —
+
+> "Every line we emit gets a distinguishing prefix, and the default filter is
+> `warn` so we are quiet unless asked."
+
+— and then, arguing for `measure_core`'s `info` default, gives a reason that
+would excuse it from both:
+
+> "a `measure` run has neither a child nor an editor while §7 requires it to
+> report its own wall clock."
+
+The "neither a child" half is false of the code. `measure_core::client::Server::start`
+spawns the language server with `.stderr(Stdio::inherit())` — "a server's stderr
+is its own", in its own comment — so a `collect` run has exactly the
+interleaving the prefix exists for, in the one process that had no prefix:
+`install_logging` handed `tracing-subscriber` a bare `std::io::Stderr`.
+
+**Resolution:** §9 now separates the two rules. The prefix applies to every
+process of ours that forwards a child's stderr, which is both of them; the
+`warn` default is justified by the editor panel alone, which is the half that
+is true, and `measure`'s `info` stands on the same reason it always did (§7
+requires it to report). Nothing is traded off: the unconditional claim is not
+weakened, and the `info` default is not disturbed — what changes is that its
+stated reason no longer asserts something the code contradicts.
+
+The mechanical consequence is that `LOG_PREFIX` and `PrefixedWriter` move from
+`driver` to `shared`, because `core.md` §9's graph gives `measure_core` no edge
+to `driver` and two copies of a prefix are two strings that can drift. No graph
+edge is added: `driver` and `measure_core` both already depend on `shared`, and
+nothing in `shared` reaches `tracing-subscriber`, which is the line §9 draws
+and the one `driver/tests/seam.rs` scans for.
+
+**Spec and code in one campaign, deliberately:** this edit accompanies the fix
+to `measure_core::install_logging` and a new assertion in
+`driver/tests/seam.rs`. The direction is worth checking rather than taking on
+trust — the section's load-bearing claim ("every line we emit gets a
+distinguishing prefix") is left exactly as it was and the code was moved to
+satisfy it; what the spec lost is a false premise in a subordinate argument.
+
+**Campaign:** b67cc6d7-c0e6-4a24-bb9e-1adfdb5779f4

@@ -583,6 +583,16 @@ stderr (`shim.md` §2), so our own log lines interleave with rust-analyzer's in
 the editor's log panel. Every line we emit gets a distinguishing prefix, and
 the default filter is `warn` so we are quiet unless asked.
 
+**Both of our processes have that interleaving, and only one of them has the
+editor**, which is why the two rules below are scoped differently and used not
+to be. `measure collect` spawns the language server with `Stdio::inherit()`, so
+the server's stderr *is* the `measure` process's stderr — the prefix therefore
+applies to `measure_core` exactly as it does to the shim, and the wrapper that
+applies it is `shared::PrefixedWriter` so that both installers reach one copy
+(CHANGE-core-036). What does not carry across is the *filter*: the default
+below is about how much of someone's attention a tool spends, and it is an
+editor panel that makes that expensive.
+
 The JSONL metric records of `core.md` §7 are **not** tracing output. They go to
 their own file via `serde_json`, because they are structured data with a fixed
 schema that `measure_core` also writes, and routing them through a log
@@ -601,9 +611,10 @@ shim's. `measure_<lang>`'s is `measure_core`, which is the whole of it —
 puts `clap` there, and the seventh copy of a log setup is the seventh chance
 for one binary to be quiet where the others are not. Its default filter is
 `info` where the shim's is `warn`, which is this section's reason rather than a
-disagreement with it: the shim is quiet because its stderr is an editor panel
-with the child's output interleaved, and a `measure` run has neither a child
-nor an editor while §7 requires it to report its own wall clock.
+disagreement with it: the shim is quiet because its stderr is an editor panel,
+and nobody reads a `measure` run's that way while §7 requires it to report its
+own wall clock. The prefix does not move with the filter — a `measure` run has
+a child, so it gets one (CHANGE-core-036).
 
 The trade is a library that installs a global subscriber, which is why it was a
 decision record rather than a fix. It is answered — `state/decisions/core-002.md`
