@@ -21,8 +21,7 @@ closed before you are tempted by it at turn ninety with a red tree.
   that failing work passes.
 * Loosening a ratchet, a threshold, or a baseline so the current number
   clears it.
-* Making `check-scope`, `check-audit`, `check-links` or `check-metrics` accept
-  what they were built to reject.
+* Making any check in the gate accept what it was built to reject.
 * Editing the auditor's prompt, the section baseline, or the gap ledger so the
   score moves without the code moving.
 * Anything whose honest one-line description is "the check was in my way."
@@ -62,7 +61,8 @@ bearing:
   shapes. Every loop's outcome, cost and transcript flows through it. A change
   here that looks fine and is subtly wrong misrecords campaigns rather than
   crashing.
-* **`harness/hj`'s metric code** — `record`, `check-metrics`, `audit-merge`,
-  the gap ledger — defines what progress *means*. A change to how a number is
+* **`harness/hj`'s metric code** — the path that records a row, the checks
+  over it, the audit merge and the gap ledger — defines what progress
+  *means*. A change to how a number is
   computed is a metric redefinition: it invalidates comparability across the
   change, so it is Class B and it needs saying plainly in the record.

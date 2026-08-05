@@ -313,9 +313,9 @@ instructional body ends the cacheable prefix at the first place it appears
 and re-sends everything after it, uncached, on every campaign of every loop —
 measured at 11.9% of the core loop's prompt before they moved
 (`design/loops.md` §15, and `state/decisions/harness-001.md`, answered in
-favour of moving them). `hj prompt-prefix` reports the number and
-`check-metrics` fails if a per-campaign value reappears above, so please do
-not helpfully move them back.
+favour of moving them). `hj prompt-prefix` reports the number, and a
+per-campaign value that reappears above the line is checked for rather than
+trusted, so please do not helpfully move them back.
 
 ## Your campaigns so far
 

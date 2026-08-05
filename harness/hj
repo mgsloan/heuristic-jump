@@ -2698,6 +2698,7 @@ def cmd_check_metrics(args: argparse.Namespace) -> int:
     # run instead of two.
     failed = check_test_ratchet(config)
     failed = check_prompt_prefix(config, phase) or failed
+    failed = check_prompt_leaks(config, phase) or failed
     failed = check_denial_table(config) or failed
     # Not scoped to `writes_harness`, unlike the two above it. Those read a
     # document only one loop is judged on; this reads `state/phase.toml`, which
@@ -3915,6 +3916,101 @@ def check_denial_table(config: LoopConfig) -> int:
             file=sys.stderr,
         )
     return 1
+
+
+# The gate runs `hj` as `"$hj" <subcommand>`, and those subcommands are its
+# steps. Parsed rather than listed, so a step added to the gate tomorrow is
+# covered the day it is added: a list of step names kept in two files is a
+# list that eventually disagrees with itself, and the half that would go
+# stale here is the half that enforces.
+GATE_INVOCATION = re.compile(r'"\$hj"\s+([a-z][a-z0-9-]*)')
+
+
+def gate_steps() -> set[str]:
+    return set(GATE_INVOCATION.findall((HARNESS / "gate").read_text()))
+
+
+def prompt_gate_leaks(name: str, text: str, steps: set[str]) -> list[str]:
+    """Gate steps this prompt text names. `design/loops.md` §14:
+
+        they do not describe the gate's checks — which ones run, what each
+        inspects, and what makes one fail — since a loop that knows the
+        checker in detail is a loop that can optimise against the checker
+        rather than against the work
+
+    A rule the loop must obey is inlined; the check that enforces it is not.
+    The two are easy to run together — "do not put a per-campaign value in the
+    body, `check-metrics` fails on it" — and the second clause is the leak: it
+    tells a campaign which check to satisfy, where the first told it what to
+    do.
+
+    Template coordinates, deliberately, like `prompt_body_problems`. A
+    campaign's journal entry and its findings digest are spliced into the
+    rendered prompt and routinely name a check by name — that is a loop
+    writing down what it learned, which is the thing the digest is for, and
+    failing a gate over it would punish exactly the honesty §13 asks for.
+
+    A hyphenated name is a leak wherever it appears, since nothing else spells
+    `check-metrics`. A one-word name is only a leak written as `hj <name>`:
+    `crates` and `selftest` are also ordinary English in a document about
+    crates and tests, and a check that failed on those would fail every prompt
+    in the tree for no reason anyone could act on.
+    """
+    problems = []
+    for step in sorted(steps):
+        pattern = (
+            rf"(?<![\w-]){re.escape(step)}(?![\w-])"
+            if "-" in step
+            else rf"\bhj\s+{re.escape(step)}(?![\w-])"
+        )
+        if re.search(pattern, text):
+            problems.append(
+                f"{name} names the gate step `{step}`. §14: the prompts state the rules "
+                "and not the checks, because a loop told which check to satisfy optimises "
+                "against the check. Say what the rule is and leave the enforcement "
+                "unnamed — the gate says which step failed when one does"
+            )
+    return problems
+
+
+def check_prompt_leaks(config: LoopConfig, phase: Phase) -> int:
+    """§14's "they do not describe the gate's checks", as an exact check.
+
+    Every file that is spliced into a live prompt and is prose rather than
+    state: the live templates whole — the leak this was written for was in a
+    template's tail, below `BODY_END`, so the body alone is the wrong scope —
+    plus the fragments and the two shared blocks. All of `fragments/` is live
+    today; a fragment added for a prompt that no loop runs would want the same
+    narrowing `live_prompt_templates` already applies to templates.
+
+    Scoped to `writes_harness` for `check_prompt_prefix`'s reason: the pinned
+    harness runs it against each loop's worktree, and only the loop that owns
+    `harness/prompts/` can act on a failure.
+    """
+    if not config.writes_harness:
+        return 0
+    steps = gate_steps()
+    if not steps:
+        print(
+            "prompt: harness/gate runs no `\"$hj\" <step>` at all, so this check has "
+            "nothing to look for. Either the gate stopped calling hj or the parse is "
+            "wrong; a check that can only pass is not a check",
+            file=sys.stderr,
+        )
+        return 1
+    spliced = [REPO / name for name in sorted(live_prompt_templates(phase))]
+    spliced += sorted((HARNESS / "prompts" / "fragments").glob("*.md"))
+    spliced += [HARNESS / "trailer-format.md", HARNESS / "decision-template.md"]
+    problems = []
+    for path in spliced:
+        if path.exists():
+            problems += prompt_gate_leaks(str(path.relative_to(REPO)), path.read_text(), steps)
+    for problem in problems:
+        print(f"prompt: {problem}", file=sys.stderr)
+    if problems:
+        return 1
+    print(f"prompt: no live prompt names any of the {len(steps)} gate steps")
+    return 0
 
 
 def check_prompt_prefix(config: LoopConfig, phase: Phase) -> int:
@@ -9527,6 +9623,60 @@ def selftest_cases() -> list[tuple[str, object]]:
             d.startswith("### What the `core` loop concluded")
             for d in other_loop_findings(["core", "harness"], "harness")
         ), "one heading per loop, whatever the file count under it"
+
+    def the_gate_steps_are_read_off_the_gate():
+        fixture = '"$hj" crates "$loop" --lintable\n\t"$hj" check-scope "$loop" || fail "x"\n'
+        assert set(GATE_INVOCATION.findall(fixture)) == {"crates", "check-scope"}, (
+            "the subcommand, never the argument after it"
+        )
+        # PINNED_HARNESS for `no_live_prompt_names_a_gate_step`'s reason;
+        # `gate_steps` itself reads the tree, because what it feeds judges the
+        # tree's prompts and the two must be the same gate.
+        steps = set(GATE_INVOCATION.findall((PINNED_HARNESS / "gate").read_text()))
+        assert {"check-scope", "check-audit", "check-links", "check-metrics"} <= steps, steps
+        assert "selftest" in steps and "crates" in steps, "every `\"$hj\" <step>`, not only the checks"
+
+    def a_prompt_may_state_the_rule_and_not_the_check_that_holds_it():
+        steps = {"check-metrics", "selftest", "crates"}
+        assert prompt_gate_leaks("t", "the gate fails a row that regresses", steps) == []
+        assert len(prompt_gate_leaks("t", "`check-metrics` fails if you do", steps)) == 1
+        assert prompt_gate_leaks("t", "avoid creating many small crates", steps) == [], (
+            "an ordinary word that happens to be a subcommand is not a leak; a check "
+            "that fired on this would fire on every prompt in the tree"
+        )
+        assert len(prompt_gate_leaks("t", "run `harness/hj selftest` first", steps)) == 1, (
+            "written as an invocation, it is naming the step"
+        )
+        assert prompt_gate_leaks("t", "check-metricsish", steps) == [], "whole names only"
+
+    def no_live_prompt_names_a_gate_step():
+        # The leak this was written for was in the template's *tail*, below
+        # BODY_END, so a body-only scope would have missed it entirely.
+        #
+        # PINNED_HARNESS, not the candidate tree, and this is `harness-011`
+        # exactly: gate step 3 runs this selftest for *every* loop against
+        # that loop's worktree, and a worktree that has not merged since the
+        # prompt was fixed still holds the leak. Failing there turns another
+        # loop's gate red over a file it is denied. The tree's own copy is
+        # still checked — the gate runs it too when it differs, and then
+        # PINNED_HARNESS is the tree — and `check_prompt_leaks` is scoped to
+        # the one loop that can act on it.
+        steps = set(GATE_INVOCATION.findall((PINNED_HARNESS / "gate").read_text()))
+        phase = load_phase()
+        prompts = PINNED_HARNESS / "prompts"
+        files = [prompts / Path(name).name for name in sorted(live_prompt_templates(phase))]
+        files += sorted((prompts / "fragments").glob("*.md"))
+        files += [PINNED_HARNESS / "trailer-format.md", PINNED_HARNESS / "decision-template.md"]
+        found = [
+            problem
+            for path in files
+            if path.exists()
+            for problem in prompt_gate_leaks(path.name, path.read_text(), steps)
+        ]
+        assert found == [], found
+        assert "check_prompt_leaks" in inspect.getsource(cmd_check_metrics), (
+            "a check nothing runs is a comment"
+        )
 
     def the_digest_asymmetry_reaches_both_ends():
         template = (HARNESS / "prompts" / "conformance.md").read_text()
