@@ -155,3 +155,49 @@ the claim already holds, and the correction is one already made elsewhere in
 the same document under a campaign that argued it.
 
 **Campaign:** 26e3bb3c-2937-495c-afea-2f1d0ae858f3
+
+## CHANGE-core-035 — core.md#the-trait — §1's `ProjectView` bullet stops claiming a read cache, a parse LRU and a pool that two rulings refused
+
+**Contradiction:** §1 gives the reason handlers go through `ProjectView` as
+
+> so the driver can enforce the scope rules (workspace only, gitignore
+> respected), cache reads within a query, reuse the parse LRU from
+> [section 5](shim.md#5-document-state), and run the literal scan on the
+> bounded pool from
+> [section 10](shim.md#10-parallel-dispatch-and-resource-limits)
+
+Three of those four are refused elsewhere in the same document and by two
+answered decisions. §8.4 already says, of the identical claim, that "an earlier
+revision of this section said something stronger and no longer true […] There
+is no per-query read cache. `conformance-005` asked for one and was answered
+**no**". `crates/shared/src/project.rs:591` says the LRU is refused by the same
+argument — "the cache would be shared mutable state behind the `Sync` `&Query`
+several fan-out threads hold, which is a lock" — and `:649` says `scan` is
+sequential because `ProjectView::new` takes no pool. §9 named the last of the
+three as deferred in CHANGE-core-029, listing `rayon` among the dependencies
+"chosen and not yet declared"; §1 was left claiming the arrangement was in
+force.
+
+**Resolution:** the bullet keeps the two reasons that are true today — the
+scope rules are the driver's rather than each language author's, and a search
+runs on the shim's threads rather than on threads a handler spawned — and a
+paragraph beneath it states the three refusals with the one argument behind
+them, cross-referencing §8.4 and §9 rather than restating either. Nothing is
+traded: `conformance-005` and `conformance-012` are answered human rulings, and
+`CLAUDE.md` withholds caching and optimisation until a corpus and a benchmark
+exist, so the reading that keeps §1's sentence would contradict all three. The
+deferred arrangement is still described, in `resolution.md` §3's voice, so a
+future campaign that adds the pool has the design to build back to.
+
+A third paragraph names the field list the refusals amount to, because that is
+what a test can hold: `crates/shared/tests/project.rs::the_view_holds_no_cache_and_no_pool`
+reads `ProjectView`'s fields *with their types* out of the source and fails on
+a fifth or on one of the four changing type.
+
+**A design document and the code it describes in the same campaign:** the code
+is unchanged — this campaign added a test and edited no line of
+`crates/shared/src/`. The edit moves §1's prose to what `project.rs` has said
+in its own doc comments since `conformance-005` was answered, and the new test
+is what stops the prose being the only thing that says so.
+
+**Campaign:** b5c7bae2-e62f-478a-8faf-182713552bd6

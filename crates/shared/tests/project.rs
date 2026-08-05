@@ -413,6 +413,88 @@ fn a_second_parse_of_the_same_path_is_a_fresh_parse() {
     );
 }
 
+/// `core.md` §1's bullet on `ProjectView`, as CHANGE-core-035 corrected it:
+/// the view caches nothing and fans out onto nothing, and both are rulings
+/// rather than omissions — `conformance-005` answered **no** to a cache reached
+/// through the `Sync` `&Query`, and `CLAUDE.md` withholds the pool until a
+/// corpus and a benchmark exist.
+///
+/// The behavioural tests above discriminate against a cache that changes an
+/// answer, which is the cache somebody adds deliberately. This is for the one
+/// that arrives with a plausible reason and no visible effect — a memoised
+/// root, a small map of paths already read — on a type every handler holds and
+/// where memoisation therefore looks free. `document.rs`'s equivalent scan
+/// bans a list of primitives by name; that shape is unavailable here, because
+/// `classified` is an `AtomicU8` on purpose (`core-025`, option C) and a
+/// blocklist that admits `Atomic` admits the memoisation too.
+///
+/// So it is an equality, and over `name: Type` rather than names alone: the
+/// likelier hole is not a fifth field but one of these four changing type, and
+/// a scan reading names would call `files: Arc<Mutex<FileList>>` unchanged.
+/// That is the mistake CHANGE-core-032 found in `handler.rs`'s variant
+/// comparison, which compared `AbstainReason`'s variant names and never its
+/// payloads.
+#[test]
+fn the_view_holds_no_cache_and_no_pool() {
+    assert_eq!(
+        fields(&source(), "pub struct ProjectView {"),
+        [
+            // The walk, shared by every query in the same generation.
+            "files: Arc<FileList>",
+            // Per query, which is what lets `read` check it without a
+            // deadline argument on every method.
+            "deadline: Deadline",
+            // `conformance-012` (answered): the one language a query can be for.
+            "grammar: Language",
+            // `core-025` (accepted, option C): the prior an expiry carries out.
+            "classified: AtomicU8",
+        ],
+        "`ProjectView`'s fields are not the four `core.md` §1 names. A fifth, or \
+         one of these four acquiring a map or a pool, is `conformance-005` \
+         reversed by a diff rather than by a ruling: the view is reached through \
+         the `Sync` `&Query` that fan-out threads hold, so state added here is a \
+         lock in a design that has none, and `rayon`'s absence from `shared` \
+         (§9's deferred list) is the same answer's other half"
+    );
+}
+
+/// The fields of a declaration, as `name: Type`, in order. Scanning rather than
+/// parsing, for the reason `handler.rs` gives: the source is rustfmt's output,
+/// so a field is a line and its type is what follows the first colon.
+fn fields(text: &str, header: &str) -> Vec<String> {
+    let start = text
+        .find(header)
+        .map(|at| at + header.len())
+        .unwrap_or_else(|| panic!("`{header}` is not declared in the source this scan reads"));
+    let mut declared = Vec::new();
+    for line in text[start..].lines() {
+        let trimmed = line.trim();
+        if trimmed == "}" {
+            break;
+        }
+        // The doc comments on these fields name `conformance-012` and a lock,
+        // and a scan that read prose would report the reason a thing is absent
+        // as the thing.
+        if trimmed.starts_with("//") || trimmed.starts_with("#[") || trimmed.is_empty() {
+            continue;
+        }
+        let Some((name, kind)) = trimmed.trim_end_matches(',').split_once(':') else {
+            continue;
+        };
+        declared.push(format!(
+            "{}: {}",
+            name.trim().trim_start_matches("pub "),
+            kind.trim()
+        ));
+    }
+    declared
+}
+
+fn source() -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/project.rs");
+    fs::read_to_string(&path).expect("the view this section describes")
+}
+
 fn view(root: &Path) -> ProjectView {
     ProjectView::new(Arc::new(file_list(root)), Deadline::none(), grammar())
 }
