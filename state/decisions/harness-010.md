@@ -1,6 +1,6 @@
 ---
 id: harness-010
-status: open
+status: accepted
 opened: 2026-08-04T21:24:00+00:00
 campaign: 2e588730-78d0-4235-ad89-afebe7ddcdea
 kind: class-b
@@ -57,7 +57,32 @@ beneficiary.
 
 ## Decision
 
-Undecided — waiting on a human.
+**accepted: A — tighten attribution to the named gap, `PROGRESS_RULE` 3**,
+answered 2026-08-04 and logged as a `decision-answered` intervention, which is
+what makes it answered — `design/loops.md` §16 derives the status from the log
+rather than from this line.
+
+§5's sentence is what pays for the round audit's known weakness. Weakening it in
+the document to match the code would remove the reason a round audit is
+acceptable at all, and it is this loop that benefits — the shape §7's table says
+has no second defence. So the code moves, not the spec.
+
+The backtest is what makes this cheap rather than a leap: over 50 closed
+campaigns the attributed *term* moves on 13 and the progress *verdict* on none,
+because every campaign it takes the audit-side term from had already scored
+`sections_clean` at close. So no campaign in the history changes status, and the
+redefinition is one of precision rather than of outcome.
+
+The comparability cost is accepted and is bounded by being recorded: rows either
+side carry different `progress_rule` values, and `hj progress-replay --rule 2`
+recomputes the old answer from the same rows. That is the difference between a
+metric redefinition that is legible and one that is lost, which is all §11 asks
+for.
+
+`closed_gaps` on the gap log was not part of the judgement and is right
+regardless: a gap id is `sha256(section|claim)[:10]` and a closed gap is no
+longer in the audit to look up, so the section has to be recorded at the one
+moment it is knowable. Additive, so old rows keep working.
 
 ## Provisional choice in force
 

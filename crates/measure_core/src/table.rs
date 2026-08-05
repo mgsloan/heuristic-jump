@@ -62,9 +62,33 @@ pub(crate) struct Row {
     pub(crate) match_top1: u64,
     pub(crate) match_contained: u64,
     pub(crate) mismatch: u64,
+    /// How many locations the judged answers under this stratum committed,
+    /// summed. `core.md`'s "both sides are sets" reports `contained` "only
+    /// alongside the result count, since alone it is gameable" — a handler
+    /// that returns everything it considered reaches every containment there
+    /// is, and this is the counter that says so.
+    pub(crate) locations: u64,
+}
+
+/// What one judged answer contributes: §6's verdict, and the size of the
+/// ranked list it was computed over.
+///
+/// They arrive together rather than as two parameters because neither is
+/// meaningful without the other. An abstention has no answer to classify (§6),
+/// and a result count on a row nothing judged would be a denominator for a
+/// number that does not exist.
+pub(crate) struct Judged {
+    pub(crate) agreement: Agreement,
+    pub(crate) results: u64,
 }
 
 impl Row {
+    /// The three agreement counters partition the judged commits, so this is
+    /// the denominator of everything below: `Agreement::classify` returns
+    /// exactly one of them for every row it is asked about.
+    fn judged(&self) -> u64 {
+        self.match_top1 + self.match_contained + self.mismatch
+    }
     /// Committed over queries. A ratio computed here rather than by every
     /// consumer, because a metric with two definitions is two metrics.
     pub(crate) fn coverage(&self) -> f64 {
@@ -81,10 +105,34 @@ impl Row {
     /// judged commits exactly (`Agreement::classify` returns one of them for
     /// every committed row), so where nothing refined this is the old value.
     pub(crate) fn precision(&self) -> f64 {
-        ratio(
-            self.match_top1,
-            self.match_top1 + self.match_contained + self.mismatch,
-        )
+        ratio(self.match_top1, self.judged())
+    }
+
+    /// `core.md`'s "both sides are sets": `contained` is "any of the shim's
+    /// locations matches", and the three values are **ordered** — "`match_top1`
+    /// implies `match_contained`".
+    ///
+    /// So the number reported under that name is not the `MatchContained`
+    /// counter, which is the disjoint remainder: a run where every answer
+    /// matched on its first location would report a containment of zero, which
+    /// is the opposite of what the section says containment means. The counter
+    /// stays disjoint because that is what a classification is; the implication
+    /// is applied here, once, where the metric is computed.
+    ///
+    /// Always at least [`Row::precision`], which is the implication as
+    /// arithmetic.
+    pub(crate) fn contained(&self) -> f64 {
+        ratio(self.match_top1 + self.match_contained, self.judged())
+    }
+
+    /// The result count `contained` is reported alongside: locations per judged
+    /// answer, over the same denominator, since "alone it is gameable".
+    ///
+    /// A mean rather than a total because the total is not comparable across
+    /// strata — the row with more queries would look like the row that returns
+    /// more — and gaming containment means returning more *per answer*.
+    pub(crate) fn results(&self) -> f64 {
+        ratio(self.locations, self.judged())
     }
 }
 
@@ -110,18 +158,13 @@ impl Table {
     /// `strata.settled()`, so an answer is judged against the class it turned
     /// out to be.
     ///
-    /// `agreement` is an `Option` rather than a value the second half filters
+    /// `judged` is an `Option` rather than a value the second half filters
     /// by `decision`, because there is exactly one caller and it is the one
     /// that mints the verdict: an abstention has no answer of ours to compare
     /// (§6), so there is no `Agreement` to hand over rather than one to ignore.
     /// That is also what keeps this table and the per-query record from holding
     /// different verdicts for the same row — they are given the same option.
-    pub(crate) fn observe(
-        &mut self,
-        strata: Strata,
-        decision: Decision,
-        agreement: Option<Agreement>,
-    ) {
+    pub(crate) fn observe(&mut self, strata: Strata, decision: Decision, judged: Option<Judged>) {
         if let Some(row) = self.row(strata.prior()) {
             row.queries += 1;
             match decision {
@@ -131,15 +174,16 @@ impl Table {
             }
         }
 
-        let Some(agreement) = agreement else { return };
+        let Some(judged) = judged else { return };
         let Some(row) = self.row(strata.settled()) else {
             return;
         };
-        match agreement {
+        match judged.agreement {
             Agreement::MatchTop1 => row.match_top1 += 1,
             Agreement::MatchContained => row.match_contained += 1,
             Agreement::Mismatch { .. } => row.mismatch += 1,
         }
+        row.locations += judged.results;
     }
 
     /// `core.md`'s template section: the placeholder "reports
@@ -199,13 +243,21 @@ impl Table {
         let mut text = String::new();
         let _ = writeln!(
             text,
-            "{:<24} {:>8} {:>8} {:>8} {:>8} {:>9} {:>10} {:>9}",
-            "stratum", "queries", "commit", "abstain", "fail", "coverage", "precision", "contained"
+            "{:<24} {:>8} {:>8} {:>8} {:>8} {:>9} {:>10} {:>10} {:>8}",
+            "stratum",
+            "queries",
+            "commit",
+            "abstain",
+            "fail",
+            "coverage",
+            "precision",
+            "contained",
+            "results"
         );
         for row in &self.rows {
             let _ = writeln!(
                 text,
-                "{:<24} {:>8} {:>8} {:>8} {:>8} {:>8.1}% {:>9.1}% {:>9}",
+                "{:<24} {:>8} {:>8} {:>8} {:>8} {:>8.1}% {:>9.1}% {:>9.1}% {:>8.1}",
                 row.stratum,
                 row.queries,
                 row.committed,
@@ -213,7 +265,8 @@ impl Table {
                 row.failed,
                 row.coverage() * 100.0,
                 row.precision() * 100.0,
-                row.match_contained,
+                row.contained() * 100.0,
+                row.results(),
             );
         }
 

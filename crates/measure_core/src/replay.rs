@@ -26,7 +26,7 @@ use shared::{
 };
 
 use crate::corpus::{Corpus, Repository, verify_checkout};
-use crate::table::Table;
+use crate::table::{Judged, Table};
 use crate::truth::{self, Truth};
 
 pub(crate) struct Replay<'a> {
@@ -116,7 +116,7 @@ impl Replay<'_> {
                 Some((file, document)) if *file == *row.file => (file, document),
                 _ => (row.file.clone(), self.snapshot(repository, &row.file)?),
             };
-            records.push(self.one(&files, &open.1, row, table)?);
+            records.push(self.one(&path, &files, &open.1, row, table)?);
             current = Some(open);
         }
 
@@ -170,6 +170,7 @@ impl Replay<'_> {
 
     fn one(
         &self,
+        path: &Path,
         files: &Arc<FileList>,
         document: &shared::DocumentSnapshot,
         row: &truth::Row,
@@ -205,8 +206,32 @@ impl Replay<'_> {
         let answered = self.handler.goto_definition(&query);
         let elapsed = self.clock.now().saturating_duration_since(started);
 
-        let child = serde_json::from_str::<DefinitionResult>(row.answer.get())
-            .unwrap_or(DefinitionResult::Null);
+        // Refused rather than read as `null`, for the reason `snapshot` above
+        // refuses a file it cannot read: this is the same "positions that have
+        // since moved" condition arriving one row at a time. §7 stores the
+        // answer as the bytes the server sent so that a replay hands them to
+        // the deserializer the shim reads a live answer with — so bytes that
+        // deserializer refuses are a corrupt artifact, and there is no reading
+        // of them under which the oracle answered anything.
+        //
+        // `null` is the one substitute that looks safe and is not: §6 calls
+        // two empty sides a `match_top1`, so a corrupt row would score as the
+        // mutual "no definition here" wherever the handler abstained, and as a
+        // `Mismatch { Unrelated }` wherever it committed. Both are verdicts
+        // about a handler, invented from a file that says nothing about it.
+        // `uncollected` is the other, and it is wrong for a smaller reason:
+        // that counter is `data-collection.md` §4's coverage figure for the
+        // *collection*, which is a quality signal about a repository's build
+        // setup — a corrupt file is not a server that failed to answer.
+        let child =
+            serde_json::from_str::<DefinitionResult>(row.answer.get()).map_err(|source| {
+                shared::ConfigError::AnswerMalformed {
+                    path: path.to_path_buf(),
+                    file: row.file.clone(),
+                    offset: row.offset,
+                    source,
+                }
+            })?;
 
         // `answered` is consumed rather than borrowed, and the classification
         // is `shared`'s rather than this crate's: the shim emits the same
@@ -239,7 +264,20 @@ impl Replay<'_> {
         // `elapsed` is not offered to the table: §7's command line makes the
         // table byte-identical across runs, and it goes into the record below
         // instead, which is the one field §7 says a replay does not reproduce.
-        table.observe(strata, decision, agreement);
+        //
+        // The list's *length* is offered, and comes from the same place the
+        // verdict does: §"both sides are sets" reports containment "only
+        // alongside the result count, since alone it is gameable", and a count
+        // taken anywhere but beside the classification is a count of some other
+        // answer.
+        table.observe(
+            strata,
+            decision,
+            agreement.map(|agreement| Judged {
+                agreement,
+                results: u64::try_from(ours.len()).unwrap_or(u64::MAX),
+            }),
+        );
 
         let mut record = QueryRecord::new(
             &QueryContext {

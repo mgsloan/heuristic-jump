@@ -9,9 +9,9 @@ license = "GPL-3.0-or-later"
 # workspace rules on `crates/*` only, so upstream's text stays unedited and
 # the re-sync diff stays readable. Recorded in `vendor/README.md`.
 #
-# The one entry is not a rule but a false positive: `rust_analyzer` is a cfg
-# Zed sets from outside cargo, and Zed allows this lint workspace-wide
-# (`../zed/Cargo.toml`). Their cfg, not ours to delete.
+# The one entry is not a rule but a false positive: `unexpected_cfgs` fires on
+# `rust_analyzer`, a cfg Zed sets from outside cargo, and Zed allows the lint
+# workspace-wide (`../zed/Cargo.toml`). Their cfg, not ours to delete.
 [lints.rust]
 unexpected_cfgs = { level = "allow" }
 

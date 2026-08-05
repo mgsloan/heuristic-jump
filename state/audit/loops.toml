@@ -19,10 +19,17 @@ state = "clean"
 last_audited = "2026-08-04T04:23:19+00:00"
 
 [section."loops.md#the-audit-produces-the-queue"]
-state = "unjudged"
+state = "clean"
+last_audited = "2026-08-04T23:50:43+00:00"
 
 [section."loops.md#sections-clean-is-the-number"]
-state = "unjudged"
+state = "clean"
+last_audited = "2026-08-04T23:50:43+00:00"
+
+  [[section."loops.md#sections-clean-is-the-number".minor]]
+  claim = "every audit covers the sections the last campaign touched plus a rotating slice"
+  note = "audit_plan takes targets[-1:], one campaign, while \u00a75 makes the audit unit a round of N workers; the other workers' targets wait for rotation"
+  where = "harness/hj:2283"
 
 [section."loops.md#who-uses-it"]
 state = "unjudged"
@@ -51,24 +58,26 @@ last_audited = "2026-08-04T20:59:31+00:00"
 state = "unjudged"
 
 [section."loops.md#5-the-auditor-and-the-conformance-loops-number"]
-state = "gaps"
-last_audited = "2026-08-04T20:59:31+00:00"
-
-  [[section."loops.md#5-the-auditor-and-the-conformance-loops-number".gap]]
-  claim = "attribution is by named gap rather than by count delta"
-  found = "settle_progress attributes by section anchor plus a round-wide non-empty closed set: `named = bool(targets & audited_sections) and bool(closed_ids)`. A campaign that closed none of the gaps it named is credited whenever any sibling worker closes one. The exact version is available and mechanical: intersect the open row's `claimed` gap ids (harness/hj:3586) with the gap log's `closed` ids (harness/hj:2313)."
-  where = "harness/hj:4248"
-  found_at = "ff5413873eb0d1e73acadb3902191591102caf3b"
+state = "clean"
+last_audited = "2026-08-04T23:50:43+00:00"
 
 [section."loops.md#sections-clean-is-the-metric"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-04T23:50:43+00:00"
+
+  [[section."loops.md#sections-clean-is-the-metric".gap]]
+  claim = "when only minor items remain, the loop stops and asks \u2014 a terminal condition rather than an asymptote"
+  found = "no code tests open_gaps == 0 with audit_minors > 0; harness/loop stops only on status, budget, held-out, guardrail, dirty tree, failed sessions and stall. Mechanisable as an hj check beside hj budget"
+  where = "harness/loop:365"
+  found_at = "fa8ac4e8ca8578447ced914e8b2f39f0822ee5a2"
 
 [section."loops.md#making-the-count-mean-something"]
 state = "clean"
 last_audited = "2026-08-04T20:59:31+00:00"
 
 [section."loops.md#properties-worth-keeping"]
-state = "unjudged"
+state = "clean"
+last_audited = "2026-08-04T23:50:43+00:00"
 
 [section."loops.md#6-spec-changes-what-the-loop-may-decide-alone"]
 state = "clean"
@@ -81,18 +90,23 @@ last_audited = "2026-08-04T20:59:31+00:00"
 
 [section."loops.md#7-progress-stall-and-the-ways-it-is-faked"]
 state = "gaps"
-last_audited = "2026-08-04T20:59:31+00:00"
+last_audited = "2026-08-04T23:50:43+00:00"
 
   [[section."loops.md#7-progress-stall-and-the-ways-it-is-faked".gap]]
-  claim = "On stall the loop stops and writes state/handoff.md ... then it notifies and exits"
-  found = "nothing writes it. `hj stall` exits 1 at trailing >= stall_n (harness/hj:5551) and harness/loop exits at once; the prompt's handoff instruction only appears when a campaign opens with stalled >= stall_n (harness/hj:2981) \u2014 the same predicate \u2014 so under the single-campaign runner the notice is unreachable and state/handoff.md does not exist, while harness/loop:562 and the dashboard's handoff_card both assume it will."
-  where = "harness/loop:560"
-  found_at = "ff5413873eb0d1e73acadb3902191591102caf3b"
+  claim = "progress is any of five forms, all computable from the repository"
+  found = "cmd_campaign_close computes four; the frontier-point term is absent, so a campaign whose only result is a non-dominated point scores as no progress and counts toward the stall threshold"
+  where = "harness/hj:4963"
+  found_at = "fa8ac4e8ca8578447ced914e8b2f39f0822ee5a2"
 
   [[section."loops.md#7-progress-stall-and-the-ways-it-is-faked".minor]]
-  claim = "all five forms of progress are computable from the repository"
-  note = "four are computed; the frontier term is absent with the reason stated inline. Correct for phase 1a, but the sentence is one a reader will check."
-  where = "harness/hj:4299"
+  claim = "harness/ is owned by nobody and denied to every loop; changes to it are Class B"
+  note = "HARNESS_PATHS grants harness/** to a loop declaring writes_harness; only four files stay denied. The invariant is held by the pinned gate instead, and \u00a718 grants the exception, but this row still reads as unqualified"
+  where = "harness/hj:125"
+
+  [[section."loops.md#7-progress-stall-and-the-ways-it-is-faked".minor]]
+  claim = "N is 3 for a conformance loop and 5 for a tuning loop"
+  note = "stall_n is a per-loop number defaulting to 3 with no notion of regime, so a tuning loop added without it silently gets the conformance threshold"
+  where = "harness/hj:316"
 
 [section."loops.md#8-sequencing-and-gates"]
 state = "clean"
@@ -106,7 +120,14 @@ state = "unjudged"
 last_audited = "2026-08-04T04:23:19+00:00"
 
 [section."loops.md#there-is-no-replay-time-target-and-that-is-deliberate"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-04T23:50:43+00:00"
+
+  [[section."loops.md#there-is-no-replay-time-target-and-that-is-deliberate".gap]]
+  claim = "so it is measured instead \u2014 the harness records replay wall clock as an ordinary metric, per language, per commit, from the very first run"
+  found = "no harness code reads a replay result or writes a wall-clock field; the section's argument for having no target rests on a measurement that is never taken"
+  where = "harness/hj:2619"
+  found_at = "fa8ac4e8ca8578447ced914e8b2f39f0822ee5a2"
 
 [section."loops.md#determinism-is-a-precondition-not-a-description"]
 state = "unjudged"
@@ -121,7 +142,14 @@ state = "clean"
 last_audited = "2026-08-04T20:59:31+00:00"
 
 [section."loops.md#the-metrics-history"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-04T23:50:43+00:00"
+
+  [[section."loops.md#the-metrics-history".gap]]
+  claim = "the row carries work counters, replay wall clock, per-stratum latency percentiles with the per-stage breakdown, and the deadline-abstention rate"
+  found = "cmd_record's row has none of these and no code path reads a measure result; it writes commit, ts, phase, loop, campaign, audit counts, loc, tests, tests_removed, provisional decisions and binary size"
+  where = "harness/hj:2627"
+  found_at = "fa8ac4e8ca8578447ced914e8b2f39f0822ee5a2"
 
 [section."loops.md#what-cannot-be-measured-in-isolation"]
 state = "unjudged"
@@ -136,13 +164,28 @@ last_audited = "2026-08-04T20:59:31+00:00"
   where = "harness/hj:1651"
 
 [section."loops.md#the-frontier-and-why-it-stays-two-dimensional"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-04T23:50:43+00:00"
+
+  [[section."loops.md#the-frontier-and-why-it-stays-two-dimensional".gap]]
+  claim = "a commit is on the frontier if no other commit beats it on every axis \u2014 a real, computable object"
+  found = "nothing in harness/ computes a frontier: no hj subcommand, no tool, and the dashboard panel says there is nothing to plot; top-1 agreement, containment and result count are never read"
+  where = "harness/dashboard/serve:1404"
+  found_at = "fa8ac4e8ca8578447ced914e8b2f39f0822ee5a2"
 
 [section."loops.md#several-servers-do-not-mean-several-loops"]
 state = "unjudged"
+last_audited = "2026-08-04T23:50:43+00:00"
 
 [section."loops.md#selecting-a-version-at-a-phase-gate"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-04T23:50:43+00:00"
+
+  [[section."loops.md#selecting-a-version-at-a-phase-gate".gap]]
+  claim = "compute the frontier over the phase's commits, evaluate those points on held-out, pick one"
+  found = "none of the three steps exists: no frontier computation, nothing writes state/heldout/<lang>.jsonl, and no selection command; hj heldout only renders a verdict from rows nobody produces"
+  where = "harness/hj:5851"
+  found_at = "fa8ac4e8ca8578447ced914e8b2f39f0822ee5a2"
 
 [section."loops.md#going-back-is-not-a-reset"]
 state = "clean"
@@ -227,7 +270,14 @@ state = "clean"
 last_audited = "2026-08-04T04:23:19+00:00"
 
 [section."loops.md#the-supervisor-is-a-reconciler-not-a-scheduler"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-04T23:50:43+00:00"
+
+  [[section."loops.md#the-supervisor-is-a-reconciler-not-a-scheduler".gap]]
+  claim = "one process above the loops that reconciles observed state to desired, with a concurrency cap, least-recently-run arbitration, a drain state for quiescing, and crash recovery on every tick"
+  found = "no supervisor exists; harness/loop is a per-loop bash runner that reaps once at startup, and there is no cap, no arbitration, no drain, and no dashboard resume action"
+  where = "harness/loop:9"
+  found_at = "fa8ac4e8ca8578447ced914e8b2f39f0822ee5a2"
 
 [section."loops.md#prompts-as-starting-points"]
 state = "clean"
@@ -243,17 +293,25 @@ state = "clean"
 last_audited = "2026-08-04T20:59:31+00:00"
 
 [section."loops.md#rules-are-inlined-subject-matter-is-read"]
-state = "unjudged"
+state = "clean"
+last_audited = "2026-08-04T23:50:43+00:00"
+
+  [[section."loops.md#rules-are-inlined-subject-matter-is-read".minor]]
+  claim = "anything the campaign must obey is in the prompt text, not behind a filename"
+  note = "the inlined Class A rule is textually damaged \u2014 'is there a defensible answer that does not trade anything off? document.' \u2014 a clause was lost in an edit"
+  where = "harness/prompts/conformance.md:185"
 
 [section."loops.md#15-cost-and-timing"]
 state = "clean"
 last_audited = "2026-08-04T04:23:19+00:00"
 
 [section."loops.md#three-resources-not-one"]
-state = "unjudged"
+state = "clean"
+last_audited = "2026-08-04T23:50:43+00:00"
 
 [section."loops.md#the-unit-of-accounting-is-the-campaign"]
-state = "unjudged"
+state = "clean"
+last_audited = "2026-08-04T23:50:43+00:00"
 
 [section."loops.md#cost-per-unit-of-progress"]
 state = "clean"
@@ -307,10 +365,28 @@ state = "clean"
 last_audited = "2026-08-04T20:59:31+00:00"
 
 [section."loops.md#sessions-assign-the-id-own-the-transcript"]
-state = "unjudged"
+state = "clean"
+last_audited = "2026-08-04T23:50:43+00:00"
+
+  [[section."loops.md#sessions-assign-the-id-own-the-transcript".minor]]
+  claim = "the stream is written to <transcripts>/<owner>/<campaign-id>.jsonl"
+  note = "harness/audit passes an $out already ending in .jsonl and the adapter writes $out.jsonl, leaving audit-<id>.jsonl.jsonl beside audit-<id>.jsonl on disk"
+  where = "harness/adapter:150"
+
+  [[section."loops.md#sessions-assign-the-id-own-the-transcript".minor]]
+  claim = "--fork-session covers resuming a campaign down a different path"
+  note = "the adapter exposes only resume-command with a plain --resume; nothing forks, and no caller offers it"
+  where = "harness/adapter:76"
 
 [section."loops.md#reading-a-transcript"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-04T23:50:43+00:00"
+
+  [[section."loops.md#reading-a-transcript".gap]]
+  claim = "turn structure \u2014 prompt, thinking, tool calls, results, text"
+  found = "the prompt is never rendered and never retained: the stream does not echo it, parse-stream emits no prompt event, render_event has no prompt case, and harness/loop deletes the rendered prompt file after the run"
+  where = "harness/dashboard/serve:2115"
+  found_at = "fa8ac4e8ca8578447ced914e8b2f39f0822ee5a2"
 
 [section."loops.md#17-tooling-adopt-steal-reject"]
 state = "gaps"
@@ -329,10 +405,23 @@ last_audited = "2026-08-04T04:23:19+00:00"
   found_at = "9e070d8e36f6168ea60a85d1a8302e9281e97f18"
 
 [section."loops.md#the-largest-dependency-in-this-project-is-not-a-crate"]
-state = "unjudged"
+state = "gaps"
+last_audited = "2026-08-04T23:50:43+00:00"
+
+  [[section."loops.md#the-largest-dependency-in-this-project-is-not-a-crate".gap]]
+  claim = "record the CLI version per campaign, and treat an upgrade as the intervention it is"
+  found = "the version is recorded and never compared \u2014 no code diffs cli_version between campaigns or against the pin, unlike log_constitution_change. Two upgrades (2.1.220 to 2.1.221, audit at 2.1.222) went unlogged against a pin of 2.1.220, and the closed vocabulary has no cli-upgraded kind. Mechanisable at campaign open"
+  where = "harness/hj:4002"
+  found_at = "fa8ac4e8ca8578447ced914e8b2f39f0822ee5a2"
+
+  [[section."loops.md#the-largest-dependency-in-this-project-is-not-a-crate".minor]]
+  claim = "every claude flag lives in one file in harness/"
+  note = "the campaign record stub hardcodes `claude --resume {campaign_id}` instead of asking the adapter, so it goes stale under $HJ_RUNNER"
+  where = "harness/hj:3746"
 
 [section."loops.md#three-rejections-worth-recording"]
-state = "unjudged"
+state = "clean"
+last_audited = "2026-08-04T23:50:43+00:00"
 
 [section."loops.md#18-scope-phases-1-and-15-first"]
 state = "clean"
@@ -353,7 +442,8 @@ state = "unjudged"
 state = "unjudged"
 
 [section."loops.md#the-conformance-loop-builds-the-followup"]
-state = "unjudged"
+state = "clean"
+last_audited = "2026-08-04T23:50:43+00:00"
 
 [section."loops.md#what-the-followup-will-know-that-this-document-does-not"]
 state = "unjudged"

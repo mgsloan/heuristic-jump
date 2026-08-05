@@ -1598,11 +1598,53 @@ edit the design documents themselves
 changes are still escalations — the write access is what makes fixing a
 contradiction possible, not permission to decide one.
 
-`harness/` has one bounded exception, and only one: while the
-conformance loop is building the phase-2 machinery
+`harness/` has one bounded exception: while the conformance loop is
+building the phase-2 machinery
 ([section 18](#the-conformance-loop-builds-the-followup)) it may write
-the parts that will judge *later* loops, and never the gate, the prompts,
-or the auditor that judge it now.
+the parts that will judge *later* loops. Four files stay denied to it,
+and they are the ones that decide the number rather than compute it:
+`harness/gate`, `harness/prompts/auditor.md`,
+`harness/section-baseline.toml` and `harness/ratchets.toml` — the gate's
+step list, the judge's instructions, the frozen denominator of *sections
+clean*, and the ratchet floors.
+
+That list is a constant in `harness/hj` rather than a row in
+`state/phase.toml`, for the reason the deny list generally is: the
+ownership table is data the gate reads, and a loop that could widen the
+table could widen its own reach. The gate reads the four names back out
+of the paragraph above and compares them against the constant, so a file
+cannot be quietly added to one and not the other — a paragraph is a
+claim about what may be written, and this one is checkable.
+
+**The prompt it is generated from is not on that list**, and an earlier
+revision of this paragraph said it was. `harness-009` asked whether it
+should be and was answered no, on two grounds.
+[Section 18](#the-conformance-loop-builds-the-followup) assigns the
+tuning and optimisation prompts to this same loop in the same paragraph
+that denies it `harness/prompts/`, so the two sentences cannot both be
+satisfied. And the defect [section 16](#every-intervention-is-logged)
+actually names is not that a prompt was edited — several claims in this
+document are about what a loop is *told*, so the prompt is where closing
+them lives — but that the revision went unrecorded, which leaves the
+metrics either side of it incomparable with nothing saying where the
+generator changed. So every edit to a template some loop is currently
+generated from is logged as a `prompt-revised` intervention at campaign
+close, and flagged on the dashboard. Made visible rather than
+impossible, which is the answer
+[section 7](#7-progress-stall-and-the-ways-it-is-faked) already gives to
+spec drift, for the same reason: denying the route removes a legitimate
+way of closing a gap in order to prevent an illegitimate one nobody has
+taken yet.
+
+**The pinned-harness argument does not cover it, which is why the log is
+not optional.** Everything else a loop writes under `harness/` is graded
+by the reviewed copy on the integration branch, so an edit to `hj`
+cannot change the verdict on the campaign that made it. A prompt is
+different: the template is read through `HJ_REPO`, which is the loop's
+own worktree, so a revision committed in one campaign generates the
+next one with no review in between. What the loop cannot do is change
+how it is *scored*; what it can do, from its next campaign on, is change
+what it is *told*.
 
 **A language is one loop, servers and all.** An earlier revision split
 `lang_python/` between a language loop and a per-server profile loop, on
@@ -2876,12 +2918,25 @@ suspending it:
 
 | Path | While building the followup |
 |---|---|
-| `harness/gate*`, `harness/prompts/`, the auditor | **denied** — these judge this loop, now |
+| `harness/gate`, `harness/prompts/auditor.md`, `harness/section-baseline.toml`, `harness/ratchets.toml` | **denied** — these judge this loop, now |
 | `harness/supervisor/`, `harness/dashboard/`, the frontier tool | writable — these judge phase 2a, later |
+| the live prompt templates, and `harness/hj` | writable, and every prompt revision logged — see below |
 
 That is enforceable by the same diff-scope check as everything else, and
 it keeps the invariant intact: nothing a loop writes can change how that
 loop is being scored.
+
+**The third row is the one that moved.** An earlier draft denied
+`harness/prompts/` whole, in the same paragraph that hands this loop the
+tuning and optimisation prompts, and `harness-009` answered the
+contradiction in favour of keeping the route and logging the use of it.
+[Section 13](#mechanics-isolation-in-four-layers) carries the reasoning.
+The part worth repeating here is the limit of the argument above: a
+prompt template is read from the loop's own worktree at render time
+rather than from the reviewed copy, so a revision generates the very
+next campaign. The `prompt-revised` intervention is the only thing
+standing there, and a campaign that revises a prompt says so in its
+close.
 
 **Conformance to this document is necessary and not sufficient.** An
 audit can check that the supervisor has the structure described here.

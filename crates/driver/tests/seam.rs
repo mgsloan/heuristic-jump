@@ -732,13 +732,25 @@ fn the_gpl_inputs_are_the_two_the_documents_name() {
 /// registry cache, and no scan over `crates/*` and `vendor/*` will ever read
 /// one — which is why every check in this file was blind to it.
 ///
-/// **The mechanism is not the one §14 names, and that is `core-021`.**
-/// `deny.toml` is outside every loop's owned paths and `cargo-deny` is not
-/// installed here, so a config committed now would be a file nothing runs —
-/// which is worse than no check, because the section would read as satisfied.
-/// `cargo metadata` carries `license` for every package in the graph, offline
-/// and in about a tenth of a second, so the property is asserted directly and
-/// on every gate instead.
+/// **The mechanism is not the one §14 names**, and the record is `core-021`,
+/// closed as a duplicate of `core-023`, which is **answered: `cargo-deny` is
+/// adopted**. What that leaves is a human's: `deny.toml` sits at the repository
+/// root and `harness/gate` is where it has to run, and both are outside every
+/// loop's owned paths — re-measured each campaign that has taken this section,
+/// most recently as `deny.toml: outside core's owned paths` and
+/// `cargo deny: no such command`. So the ruling does not delete this; a config
+/// committed now would be a file nothing runs, which is worse than no check
+/// because §14 would then read as satisfied.
+///
+/// It also survives the ruling for a reason the ruling did not have.
+/// `core-023` weighed `cargo-deny` against the *manifest* scans and reasoned
+/// that the resolved graph is what "no test can reach" — and this one reaches
+/// it, offline and in about a tenth of a second, because `cargo metadata`
+/// carries `license` for every package in the graph. What `cargo-deny` still
+/// buys over it is real and is narrower than that: proper SPDX expression
+/// parsing where this splits on `OR` and looks for `GPL`, an exception list
+/// with a reason per entry, and advisories. When `deny.toml` lands, this is
+/// the test to weigh against it rather than one already made redundant.
 ///
 /// The expected set is **derived rather than listed**: the copyleft packages
 /// in the graph must be exactly the copyleft workspace members, and which
@@ -760,7 +772,6 @@ fn the_gpl_inputs_are_the_two_the_documents_name() {
               there is no deadline to poll against"
 )]
 fn no_third_copyleft_input_reaches_the_dependency_graph() {
-    // DECISION-core-021: provisional
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
     let produced = std::process::Command::new(&cargo)
         .args(["metadata", "--format-version", "1"])
@@ -946,13 +957,14 @@ fn section_of(document: &str, heading: &str) -> String {
 ///
 /// `[dev-dependencies]` are out of it, as they are in §9's graph tests: what a
 /// licence is about is what the shipped binary combines.
-// DECISION-core-023: provisional. §14's last bullet asks for a `cargo-deny`
-// config "because it is what notices a third arriving without anyone
-// deciding", and this is what notices it meanwhile. The two are not equal: a
-// manifest scan cannot see a GPL crate arriving *transitively* through a
-// permissive direct dependency, which cargo-deny reads off the resolved graph.
-// Nothing reaches that case today — every GPL input in the graph is a
-// workspace member — and the record is where that stops being true.
+/// `core-023` is answered, and this test is the half of it that was never
+/// really provisional. The ruling adopts `cargo-deny` and keeps this: "they
+/// are not two statements of one policy. [This] is a claim about *our* crates
+/// and their direct manifests, which is a design property the tests should
+/// keep asserting. `deny.toml` is a claim about the resolved graph." A config
+/// could not make this claim in any case — a manifest edge that widens the GPL
+/// surface changes no `license` field, so it changes nothing `cargo-deny`
+/// reads.
 #[test]
 fn the_permissive_surface_is_exactly_what_does_not_reach_similarity() {
     let members = workspace_members();
@@ -2016,6 +2028,20 @@ fn no_member_names_a_dependency_version_of_its_own() {
 /// produce dozens of errors across upstream's text, before `unwrap_used` or
 /// the `cast_*` family is reached.
 ///
+/// > So each vendored crate carries its own `[lints]` table — empty, or near
+/// > enough — and the workspace rules apply to `crates/*` only. … It is worth
+/// > restating in `vendor/README.md` as one of the recorded differences from
+/// > upstream.
+///
+/// That last sentence is the half with a live failure mode, and it is the one
+/// the compiler's incidental enforcement does not reach in either direction.
+/// An *empty* `[lints]` table changes nothing about what is linted, so
+/// deleting it takes the exemption's only record with it while every other
+/// assertion here goes on passing — and the next re-sync then reads a
+/// deliberate decision as a crate somebody forgot. Both controls fire:
+/// removing `vendor/sum_tree`'s table, and rewording its comment so it no
+/// longer names the section it is obeying.
+///
 /// That is §14's own claim, measured rather than argued: "Bending them to
 /// `unwrap_used`, `panic`, and the `cast_*` family would be a large amount of
 /// work that buys no correctness, and every line of it would widen the re-sync
@@ -2052,6 +2078,52 @@ fn the_workspace_lints_reach_our_crates_and_not_the_vendored_ones() {
                  readable — a vendored crate under unwrap_used and the cast_* family is a \
                  large edit that buys no correctness"
             );
+
+            // The rest of §14's sentence, which is the half that decays: "So
+            // each vendored crate carries its own `[lints]` table -- empty, or
+            // near enough". An empty table changes nothing about what is
+            // linted, so deleting it and the comment above it leaves the
+            // assertion above still passing and the exemption looking like an
+            // oversight. What the table is *for* is being the place the
+            // omission is recorded, which is why the argument is asserted with
+            // it.
+            let recorded: String = lint_tables(&manifest)
+                .into_iter()
+                .map(|(_, argument)| argument)
+                .collect();
+            assert!(
+                !recorded.is_empty(),
+                "{member} carries no [lints] table at all: deps.md §14 asks each vendored crate \
+                 for its own, empty or near enough, and restates it in vendor/README.md — an \
+                 absent table and a deliberate exemption are the same file, and a re-sync reads \
+                 the first as the second's oversight"
+            );
+            for marker in ["§14", "vendor/README.md"] {
+                assert!(
+                    recorded.contains(marker),
+                    "{member}'s [lints] table is not argued for -- no comment above it names \
+                     {marker}: the table's whole purpose is to record that the workspace rules \
+                     were left off on purpose, and one with no argument beside it is \
+                     indistinguishable from a crate somebody forgot"
+                );
+            }
+
+            // The other end of that pointer, which §14 asks for in the same
+            // breath: "It is worth restating in `vendor/README.md` as one of
+            // the recorded differences from upstream." A manifest comment
+            // sending a reader to a file that no longer records it is worse
+            // than one that says nothing, and neither end can see the other.
+            let differences = section_of(
+                &workspace_file("vendor/README.md"),
+                "\n## Recorded differences",
+            );
+            assert!(
+                differences.contains("[lints] workspace = true"),
+                "vendor/README.md's recorded differences no longer state that the vendored \
+                 crates do not take `[lints] workspace = true`: every vendored manifest sends a \
+                 reader there for the reason, which deps.md §14 asks for because an exemption \
+                 recorded only as an absence is one a re-sync repairs"
+            );
         } else {
             assert!(
                 inherits,
@@ -2062,6 +2134,271 @@ fn the_workspace_lints_reach_our_crates_and_not_the_vendored_ones() {
             );
         }
     }
+}
+
+/// `deps.md` §14 closes with a file tree, and its third column is a licence per
+/// crate:
+///
+/// ```text
+/// crates/
+///   shared/           MIT -- vocabulary newtypes, LanguageHandler, proto, Error
+///   similarity/       GPL-3.0-or-later -- ported; see section 5
+///   lang_*/           GPL-3.0-or-later -- they depend on similarity
+/// ```
+///
+/// It is a second statement of §5's table, one section away from it, and
+/// nothing read it. `the_gpl_inputs_are_the_two_the_documents_name` reads §5's
+/// licensing subsection and `every_member_declares_the_licence_section_5_assigns_it`
+/// reads the manifests; both stop at §5's boundary, so §14 could go on printing
+/// the superseded answer indefinitely — which is the failure `core.md` §7's
+/// mode split had, where the section directly above a pinned claim restated it
+/// and drifted.
+///
+/// **A tree is not compared for membership, only for licence.** §14's ends by
+/// saying so: "`similarity`, `lang_*`, `measure_core`, and `measure_<lang>` are
+/// in `core.md` §9's layout but are not created by this piece of work" — the
+/// tree is deliberately the subset §14 is about, and `measure_core` and
+/// `measure_rust` are absent on purpose. §9's tree is the one that has to be
+/// exhaustive, and `the_workspace_is_the_layout_section_9_prints` holds it that
+/// way.
+///
+/// `lang_*` is expanded rather than read literally, for the reason
+/// `language_members` gives: six more arrive by copying the template, and a
+/// row that had to be edited for each would be a row nobody edits.
+#[test]
+fn the_tree_section_14_prints_carries_the_licence_each_manifest_declares() {
+    let section = section_of(&workspace_file("design/deps.md"), "\n## 14. Workspace");
+    let tree = section
+        .split("```")
+        .find(|block| block.contains("rust-toolchain.toml"))
+        .unwrap_or_default();
+    assert!(
+        tree.contains("crates/") && tree.contains("vendor/"),
+        "no file tree found under deps.md §14, so this test would compare nothing: it is the \
+         fenced block naming rust-toolchain.toml, and §14 has a second one showing the licence \
+         symlinks"
+    );
+
+    let mut parent = String::new();
+    let mut compared = Vec::new();
+    for line in tree.lines() {
+        let indented = line.starts_with(' ');
+        let mut fields = line.split_whitespace();
+        let Some(entry) = fields.next().and_then(|name| name.strip_suffix('/')) else {
+            continue;
+        };
+        if !indented {
+            entry.clone_into(&mut parent);
+            continue;
+        }
+
+        let printed = fields.next().unwrap_or_default();
+        assert!(
+            ["MIT", "GPL-3.0-or-later", "Apache-2.0"].contains(&printed),
+            "deps.md §14's tree gives {parent}/{entry} no licence, or one that is not among the \
+             three the section keeps texts for at the workspace root: the column is the whole \
+             reason the tree is in a dependency document rather than in core.md §9, and a row \
+             without it reads as a crate nobody assigned"
+        );
+
+        let members: Vec<String> = match entry {
+            "lang_*" => language_members()
+                .into_iter()
+                .map(|member| format!("crates/{member}"))
+                .collect(),
+            _ => vec![format!("{parent}/{entry}")],
+        };
+        assert!(
+            !members.is_empty(),
+            "deps.md §14's tree names {entry} and the workspace has no such member, so this row \
+             is compared against nothing"
+        );
+
+        for member in members {
+            let declared = licence_of(&workspace_file(&format!("{member}/Cargo.toml")));
+            assert_eq!(
+                declared.as_deref(),
+                Some(printed),
+                "{member} declares license = {declared:?} and deps.md §14's tree prints \
+                 {printed}: the tree is a second statement of §5's table one section away from \
+                 it, so the two go stale independently — and this is the copy a reader of the \
+                 dependency document sees"
+            );
+            compared.push(member);
+        }
+    }
+
+    for named in ["crates/similarity", "crates/lang_rust", "vendor/rope"] {
+        assert!(
+            compared.iter().any(|member| member == named),
+            "§14's tree was read and {named} was not among the {} rows compared: it names all \
+             three, and a reader that missed them is one that stopped at the first line",
+            compared.len()
+        );
+    }
+}
+
+/// `deps.md` §14, the bullet directly after the one about denying a short list
+/// of real hazards:
+///
+/// > **Each `allow` carries a comment saying why.** Zed does this consistently
+/// > and it is the difference between a lint config and a pile of silenced
+/// > warnings.
+///
+/// Nothing read it. `the_workspace_lints_are_the_ones_section_15_prints` above
+/// compares §15's printed block against the manifest and drops trailing
+/// comments on *both* sides — which it has to, since the two are formatted
+/// differently — so a level is held and the argument for it is not. Deleting
+/// the CAUTION block above `style` passes every other test in this file, and
+/// what it takes with it is the note that `disallowed_fields` is in the style
+/// group and is therefore currently off.
+///
+/// The comment has to **name the lint**, which is the whole of the assertion.
+/// Requiring merely that some comment sits nearby makes the section header the
+/// argument, and a decorative `# -- misc ---` satisfies that. It is also the
+/// weaker reading of §14's own sentence: a pile of silenced warnings with a
+/// banner over it is still a pile.
+///
+/// Two comment runs govern an entry, because both forms are in use here and
+/// both are right. The root manifest argues per group — one run above several
+/// entries — and `vendor/rope` argues once above `[lints.clippy]` for the two
+/// beneath it. A blank line ends a run, which is what stops an unrelated block
+/// from three tables up counting as an argument for anything.
+///
+/// The clippy attribute lints are a different claim and do not cover this one.
+/// `allow_attributes` and `allow_attributes_without_reason` hold `#[allow]` at
+/// a *source* site; §14's bullet is about the lint table, where nothing is
+/// compiled and no lint fires.
+#[test]
+fn every_allow_in_a_lint_table_names_the_lint_it_argues_for() {
+    let mut manifests = vec![("Cargo.toml".to_owned(), workspace_file("Cargo.toml"))];
+    let members = workspace_members();
+    assert!(
+        !members.is_empty(),
+        "no workspace members parsed out of Cargo.toml, so this test would read one manifest"
+    );
+    for member in &members {
+        let relative = format!("{member}/Cargo.toml");
+        let text = workspace_file(&relative);
+        assert!(
+            !text.is_empty(),
+            "no manifest for {member}, so every assertion below is vacuous"
+        );
+        manifests.push((relative, text));
+    }
+
+    let mut allowed = Vec::new();
+    for (relative, manifest) in &manifests {
+        for (table, lint, argument) in lint_allowances(manifest) {
+            assert!(
+                argument.contains(&lint),
+                "{relative}'s [{table}] allows {lint} and no comment governing it names it: \
+                 deps.md §14 wants each allow to carry the reason it exists, because that is \
+                 the difference between a lint config and a pile of silenced warnings — and a \
+                 level survives a diff where the argument for it does not"
+            );
+            allowed.push(format!("{relative}: {lint}"));
+        }
+    }
+
+    assert!(
+        allowed.contains(&"Cargo.toml: style".to_owned()),
+        "the scan did not find the workspace's own `style` allowance, which deps.md §14 names \
+         in the bullet above this one -- so it is reading no lint table at all, and {} \
+         allowance(s) is what an empty reader reports",
+        allowed.len()
+    );
+    assert!(
+        allowed.len() > 3,
+        "only {} lint allowance(s) found across {} manifest(s): the vendored crates carry three \
+         between them, so a smaller number means the reader stopped at the first table",
+        allowed.len(),
+        manifests.len()
+    );
+}
+
+/// Every lint table in one manifest, as `(table, the comment run above it)`.
+/// Unlike `lint_allowances` below, an entry line ends a run here: what is being
+/// read is the argument for the *table*, and a comment two entries above it
+/// argues for something else.
+fn lint_tables(manifest: &str) -> Vec<(String, String)> {
+    let mut found = Vec::new();
+    let mut run = String::new();
+    for line in manifest.lines() {
+        let line = line.trim();
+        if let Some(comment) = line.strip_prefix('#') {
+            run.push_str(comment);
+            run.push('\n');
+            continue;
+        }
+        match line
+            .strip_prefix('[')
+            .and_then(|rest| rest.strip_suffix(']'))
+        {
+            Some(name) => {
+                let above = std::mem::take(&mut run);
+                if name.split('.').any(|part| part == "lints") {
+                    found.push((name.to_owned(), above));
+                }
+            }
+            None => run.clear(),
+        }
+    }
+    found
+}
+
+/// Every `allow` in every lint table of one manifest, as
+/// `(table, lint, the comment text governing it)`.
+///
+/// A comment run accumulates until a blank line or a table header ends it; the
+/// run before a header governs every entry in that table, and a run inside the
+/// table governs the entries after it until the next blank line. Deliberately
+/// *not* cleared by an entry, since the root manifest's style is one comment
+/// over a group of them.
+fn lint_allowances(manifest: &str) -> Vec<(String, String, String)> {
+    let mut found = Vec::new();
+    let mut table = String::new();
+    let mut header = String::new();
+    let mut run = String::new();
+
+    for line in manifest.lines() {
+        let line = line.trim();
+        if let Some(comment) = line.strip_prefix('#') {
+            run.push_str(comment);
+            run.push('\n');
+            continue;
+        }
+        if line.is_empty() {
+            run.clear();
+            continue;
+        }
+        if let Some(name) = line
+            .strip_prefix('[')
+            .and_then(|rest| rest.strip_suffix(']'))
+        {
+            name.clone_into(&mut table);
+            header = std::mem::take(&mut run);
+            continue;
+        }
+        if !table.split('.').any(|part| part == "lints") {
+            continue;
+        }
+        let Some((lint, value)) = line.split_once('=') else {
+            continue;
+        };
+        // The trailing comment counts too: it is where a one-line argument
+        // goes, and dropping it would demand a block above an entry that
+        // already says why beside itself.
+        let (value, trailing) = value.split_once('#').unwrap_or((value, ""));
+        if value.contains("\"allow\"") {
+            found.push((
+                table.clone(),
+                lint.trim().to_owned(),
+                format!("{header}{run}{trailing}"),
+            ));
+        }
+    }
+    found
 }
 
 /// `deps.md` §14: "**Explicit `[lib] path`.** Zed writes
@@ -2299,6 +2636,26 @@ fn the_workspace_manifest_has_the_shape_section_14_states() {
          and a selection rather than a duplicate, and they are only both true while they agree \
          — above the channel every build fails, below it the floor is a fiction \
          (conformance-002)"
+    );
+    // §14's tree writes the version out a third time: "rust-toolchain.toml
+    // pin 1.95.0, so grammar/rope behaviour is reproducible". The two files
+    // above are edited together, because a build fails the moment they are
+    // not; the document is edited by whoever remembers it exists, and a
+    // toolchain bump is logged as an intervention precisely because it moves
+    // every latency number without a diff explaining it. A section printing
+    // the superseded version is the one place that record is read from.
+    let printed = section_of(&workspace_file("design/deps.md"), "\n## 14. Workspace")
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("rust-toolchain.toml"))
+        .and_then(|rest| rest.split_whitespace().nth(1))
+        .map(|version| version.trim_end_matches(',').to_owned())
+        .unwrap_or_default();
+    assert_eq!(
+        printed, pinned,
+        "deps.md §14's file tree prints the pin as {printed:?} and rust-toolchain.toml selects \
+         {pinned:?}: a toolchain bump moves every latency number and every binary size with no \
+         diff in this repository explaining it, so the section that records which one is in \
+         force is the one place a reader can find out"
     );
 
     let members = workspace_members();
@@ -3372,6 +3729,107 @@ fn every_vendored_crate_records_the_patches_it_carries() {
          the one patch the section counts rather than describes, and counting \
          it wrong is what made the section claim `sum_tree` needs no patching \
          at all"
+    );
+
+    // The revision the copy came from is written down five times: twice in
+    // full, in the README's table, and three times abbreviated -- once more in
+    // the README's own prose and once in `deps.md` §14's "checked against
+    // `../zed/Cargo.toml` at `90d024b8`". A re-sync updates the table, because
+    // that is the row anyone looks at; the abbreviations are where the old
+    // revision survives, and an abbreviated sha that no longer prefixes the
+    // real one sends a re-sync to the wrong upstream commit while looking
+    // exactly like a correct record.
+    let table: Vec<&str> = readme
+        .lines()
+        .filter(|line| line.starts_with("| `"))
+        .filter_map(|line| line.split('`').nth(5))
+        .filter(|cell| cell.len() == 40)
+        .collect();
+    assert_eq!(
+        table.len(),
+        vendored.len(),
+        "vendor/README.md's table records {} full revision(s) for {} vendored crate(s): the row \
+         is what a re-sync reads, and a crate whose revision is abbreviated there has no \
+         upstream commit anyone can check out",
+        table.len(),
+        vendored.len()
+    );
+    let upstream = table.first().copied().unwrap_or_default();
+    for revision in &table {
+        assert_eq!(
+            *revision, upstream,
+            "vendor/README.md's table gives the two crates different upstream revisions: they \
+             are one copy of one Zed checkout, and rope's sum_tree is the sum_tree that shipped \
+             beside it"
+        );
+    }
+
+    let abbreviated = |text: &str| -> Vec<String> {
+        text.split('`')
+            .skip(1)
+            .step_by(2)
+            .filter(|token| {
+                (7..40).contains(&token.len()) && token.chars().all(|c| c.is_ascii_hexdigit())
+            })
+            .map(str::to_owned)
+            .collect()
+    };
+    let mut mentions = abbreviated(&readme);
+    mentions.extend(abbreviated(&section_of(
+        &workspace_file("design/deps.md"),
+        "\n## 14. Workspace",
+    )));
+    assert!(
+        mentions.len() > 2,
+        "only {} abbreviated revision(s) found across vendor/README.md and deps.md §14, and \
+         there are three -- the reader is matching nothing and this assertion is vacuous",
+        mentions.len()
+    );
+    for mention in &mentions {
+        assert!(
+            upstream.starts_with(mention.as_str()),
+            "`{mention}` is not a prefix of the revision vendor/README.md's table records \
+             (`{upstream}`): the table is what a re-sync updates and the abbreviations are \
+             where the superseded one survives, pointing at a different upstream commit while \
+             reading as a correct record"
+        );
+    }
+
+    // `deps.md` §5 lists the patches vendoring costs and says each is
+    // "recorded in `vendor/README.md`". That is a claim about two documents
+    // and it held in only one direction: the README's list has grown to eight
+    // while §5's stayed at four, and for a while §5's preamble read as a
+    // census of the vendored tree rather than a cost of the choice.
+    //
+    // The direction with teeth is the other one. `CLAUDE.md` requires every
+    // edit to a vendored crate to be recorded, so a patch §5 decides and the
+    // README does not carry is an unrecorded edit — where a patch the README
+    // carries and §5 does not is ordinary work on a crate that is ours. So the
+    // README is asserted to be the longer list, never the equal one.
+    let counted = |text: &str| {
+        text.lines()
+            .filter(|line| {
+                line.split_once(". **")
+                    .is_some_and(|(number, _)| number.trim().parse::<u32>().is_ok())
+            })
+            .count()
+    };
+    let decided = counted(&section_of(
+        &workspace_file("design/deps.md"),
+        "\n## 5. Text: vendored",
+    ));
+    let recorded = counted(
+        section_of(&readme, "\n## Patches to `rope`")
+            .split("\n## ")
+            .next()
+            .unwrap_or_default(),
+    );
+    assert!(
+        decided > 0 && recorded >= decided,
+        "deps.md §5 decides {decided} patch(es) to rope and vendor/README.md records \
+         {recorded}: CLAUDE.md permits editing a vendored crate and requires the edit be \
+         recorded, so a patch the section decides and the README does not carry is an edit a \
+         re-sync has no account of — the README is meant to be the longer list"
     );
 
     let surviving: Vec<&String> = vendored

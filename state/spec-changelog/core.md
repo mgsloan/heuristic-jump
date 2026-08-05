@@ -873,3 +873,73 @@ design document and the code it describes in the same session, which is the
 shape a spec edit is watched for.
 
 **Campaign:** a519e98f-58e7-4d41-8b89-c36984f02e59
+
+## CHANGE-core-025 — deps.md#6-tree-sitter — the grammar ban is on `[dependencies]`, and `driver` reaches the runtime through `shared`
+
+**Contradiction:** §6 said, in one sentence, two things the manifests do not
+support.
+
+> `driver` depends on `tree-sitter` but on **no** grammar crate — that is the
+> rule `core.md` §9 exists to enforce
+
+`crates/driver/Cargo.toml` declares `tree-sitter` in no table; it reaches
+`Language`, `Tree` and `InputEdit` through `shared`'s re-export
+(`crates/shared/src/shared.rs:61`), which §0's table anticipates by placing the
+runtime at "shared, driver". And it *does* declare a grammar crate:
+`tree-sitter-rust` is in `[dev-dependencies]`, as it is for `shared`.
+
+**Resolution:** the paragraph now says `driver` "takes **no** grammar crate
+into its shipped graph", and carries the two refinements. Neither is a new
+decision — both are already what the code does and what other sections say:
+
+* §12 states the same `[dependencies]`-only exemption for `lsp-types`, so §6 is
+  being brought in line with an exemption the document already grants.
+* `core.md` §9's graph is defined as the graph the shipped binary has, and
+  `crates/driver/Cargo.toml` already argues its dev-dependency grammar in a
+  comment citing that. `neither_driver_nor_shared_depends_on_a_language` in
+  `crates/driver/tests/seam.rs` has read `[dependencies]` alone since it was
+  written, and bans a `lang_*` edge in every table.
+
+Nothing trades off: the rule the sentence exists to state is unchanged, the
+test that enforces it is unchanged, and no code was edited for this. The one
+site that could have drifted — `shared`'s re-export — turned out to be held by
+the compiler (`driver/src/trees.rs` imports all three names), which is recorded
+in the bullet rather than asserted in a test that would pass for the wrong
+reason.
+
+**Campaign:** 340b4361-1c73-4b85-a5c8-0de27852ea8d
+
+## CHANGE-core-026 — deps.md#5-text-vendored-zed-rope — the four patches are a cost of vendoring, not a census of the tree
+
+**Contradiction:** §5's list is introduced as
+
+> Four patches, each recorded in `vendor/README.md`:
+
+and `vendor/README.md`'s `## Patches to \`rope\`` numbers **eight**. The four
+§5 names are all present and are the README's 1–4; what was wrong was the
+reading the sentence invites, that four is how many there are. Patches 5–8 are
+the vocabulary newtypes, the `sum_tree::Bias` re-export, the public-API sweep
+and two upstream `TextSummary::add_newline` bugs — all `rope-modifications.md`
+§4's work, which §5 explicitly defers to that document.
+
+**Resolution:** the preamble now says the four follow from the vendoring
+itself, names the README as the exhaustive and longer list, and states the
+asymmetry: a fifth item arriving *here* is a fifth thing the choice costs, and
+one arriving in the README alone is ordinary work on a crate `CLAUDE.md` says
+is ours to edit.
+
+This trades nothing off because it changes no decision — §5's four are the same
+four, and the README's eight are unchanged. It also declines the alternative
+resolution, which would be renumbering §5 to eight and duplicating
+`rope-modifications.md` §4 into a dependency section: that is the transcription
+that goes stale on the next patch, and the reason `vendor/README.md` is the
+record in the first place.
+
+The direction that matters is now asserted, in
+`every_vendored_crate_records_the_patches_it_carries`: the README must number
+at least as many rope patches as §5 decides, never fewer. A patch §5 decides
+and the README does not carry is an edit to a vendored crate with no record,
+which is the one thing `CLAUDE.md` requires; the reverse is expected and is why
+this is an inequality rather than the equality the old sentence implied.
+
+**Campaign:** 340b4361-1c73-4b85-a5c8-0de27852ea8d
