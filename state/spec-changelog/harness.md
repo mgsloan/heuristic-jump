@@ -568,3 +568,41 @@ paragraph and the two sections it edits are what has to be reverted, and the
 evidence `harness-009` says would justify revisiting it.
 
 **Campaign:** 59da1668-66ac-46f5-9479-0075734f62b3
+
+## CHANGE-harness-013 — loops.md#what-is-deliberately-not-built-yet — the frontier crosses off the deferral list
+
+**Contradiction:** not a contradiction between two claims, and this entry is
+here for the other reason. §18 says "The supervisor, the frontier, the
+evaluation half of held-out selection, the per-language link delta, and the
+tuning and optimisation prompts" are deliberately not built. The same section
+says "**This list shortens as the followup is built, and it is the list rather
+than the argument that moves** … [section 18] points the conformance loop at
+this document precisely so that they cross it during phase 1.5. Anything
+crossed off here has a section that now describes something real."
+
+So the edit is one the document asks for, and it is still worth writing down,
+because **this campaign edited a design document and the code that document
+describes, in the same run** — three commits building `hj frontier`,
+`hj gate-select` and §7's fifth progress term, then this. That is the one
+gaming route §7's own table concedes the audit cannot catch, so it goes in
+front of a person rather than being left to be noticed.
+
+**Resolution:** "the frontier" is removed from the list, and a paragraph
+underneath names what was crossed off, what it was crossed off *by*
+(`hj frontier`, `hj gate-select`), and what stayed behind — the evaluation in
+the middle of the gate's selection, which is a corpus run and not arithmetic
+over the metrics history. The argument is untouched, which is what §18 says
+should happen: nothing consumes a frontier before 2a, and every function
+computing one answers "no row carries both axes" until a tuning loop records
+one. The claim the audit can now check is that three sections describe
+something real — §10's frontier, §10's gate selection, and §7's fifth form —
+rather than that a list got shorter.
+
+What is deliberately *not* crossed off, though the code exists: the
+per-language link delta. `hj link-delta` is implemented, but it reports
+`unmeasured` because `heuristic_jump` declares no `lang-<x>` features, so the
+number the section is about still cannot be taken. Crossing that off would be
+the version of this edit that trades something off — a list that says "built"
+where the measurement is unavailable is worse than one that says nothing.
+
+**Campaign:** 68b83370-8fef-4b7d-8ad1-13b3a3ad2b60

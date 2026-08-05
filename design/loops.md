@@ -2846,11 +2846,27 @@ with no model in it at all.
 
 ### What is deliberately not built yet
 
-The supervisor, the frontier, the evaluation half of held-out selection,
-the per-language link delta, and the tuning and optimisation prompts.
+The supervisor, the evaluation half of held-out selection, the
+per-language link delta, and the tuning and optimisation prompts.
 Each is specified here because the specification is what makes the
 followup cheap — but every one of them exists to serve tuning loops, and
 there are none until 2a.
+
+**Crossed off so far: the frontier**, and with it the arithmetic half of
+the gate's selection step — `hj frontier` and `hj gate-select`. The two
+cross together because neither is worth anything alone: the frontier's
+only automatic consumer is [section 7](#7-progress-stall-and-the-ways-it-is-faked)'s
+fifth form of progress, and its only manual one is
+[the selection at a gate](#selecting-a-version-at-a-phase-gate). What
+stayed behind is the *evaluation* in the middle of that selection, which
+is a corpus run rather than arithmetic over the metrics history, and
+which nothing outside `measure_<lang>` can perform. Crossing them off
+early rather than at 1.5 costs nothing the argument below protects —
+nothing consumes a frontier before 2a, and every function computing one
+answers "no row carries both axes" until a tuning loop records one. What
+it buys is that the axes are fixed before there are numbers to pick them
+by, which is the whole of the discipline
+[section 10](#the-frontier-and-why-it-stays-two-dimensional) asks for.
 
 **This list shortens as the followup is built, and it is the list rather
 than the argument that moves.** The argument is unchanged: a thing that
