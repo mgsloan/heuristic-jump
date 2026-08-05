@@ -160,6 +160,25 @@ impl FileList {
         for root_path in roots {
             let root = ProjectRoot::new(root_path);
             for entry in WalkBuilder::new(root_path).build() {
+                // DECISION-core-027: provisional. A file inside two roots is
+                // enumerated by both walks and lands in the set twice, under a
+                // different `ProjectPath` each time — so `scan` reads it twice,
+                // `bytes_scanned` counts it twice, and one definition comes
+                // back as two hits, which is exactly the shape
+                // `resolution.md` §1.3 reads as an ambiguity. The innermost
+                // root keeps it, because `root_of` already resolves a document
+                // to the innermost root and a list that disagreed would make
+                // `lookup(root_of(uri), rel)` miss.
+                let nested = roots.iter().any(|other| {
+                    other != root_path
+                        && other.starts_with(root_path)
+                        && entry
+                            .as_ref()
+                            .is_ok_and(|entry| entry.path().starts_with(other))
+                });
+                if nested {
+                    continue;
+                }
                 let entry = match entry {
                     Ok(entry) => entry,
                     // One unreadable directory must not cost the whole list:

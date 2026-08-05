@@ -416,6 +416,78 @@ fn a_second_parse_of_the_same_path_is_a_fresh_parse() {
     );
 }
 
+/// `core.md` §4's file list over the one shape an editor can send and nothing
+/// here had: two workspace folders where one contains the other.
+///
+/// Both walks find the inner root's files, and they land in the set as two
+/// different `ProjectPath`s — same file, different `(root, rel)` — so nothing
+/// deduplicates them. The cost is not the extra entry: `scan` reads the file
+/// twice, `bytes_scanned` counts it twice, and one definition comes back as two
+/// hits in two files, which is precisely what `resolution.md` §1.3 reads as an
+/// ambiguity. A query that should have committed "the only definition of this
+/// name" abstains instead, on a workspace layout the user is entitled to.
+///
+/// `DECISION-core-027` (open) has the innermost root keep it, because `root_of`
+/// already resolves a document to the innermost root — a list that disagreed
+/// would make `lookup(root_of(uri), rel)` miss. What it trades is the tier a
+/// file lands in for a document elsewhere in the outer root, which is
+/// `open-questions.md` question 8's territory.
+#[test]
+fn a_file_inside_two_roots_is_one_candidate() {
+    let outer = fixture("nested");
+    let inner = outer.join("src");
+    let files = Arc::new(
+        FileList::enumerate(&[outer.clone(), inner.clone()]).expect("enumerating two roots"),
+    );
+    let view = ProjectView::new(Arc::clone(&files), Deadline::none(), grammar());
+
+    let mut absolute: Vec<PathBuf> = files.paths().map(ProjectPath::to_absolute).collect();
+    absolute.sort();
+    let mut unique = absolute.clone();
+    unique.dedup();
+    assert_eq!(
+        absolute, unique,
+        "a file inside both roots was enumerated once per root. The duplicate \
+         is a second `ProjectPath` for one file, so the scan reads it twice and \
+         reports one definition as two"
+    );
+
+    let document = path(&view, &inner, "lib.rs");
+    assert!(
+        view.lookup(
+            &ProjectRoot::new(&outer),
+            &RelPath::new(Path::new("src/lib.rs")).expect("a relative path")
+        )
+        .is_none(),
+        "the outer root still owns a file the inner root contains. `root_of` \
+         resolves that document to the inner root, so this is the entry a \
+         handler's own `lookup(root_of(uri), rel)` would fail to find"
+    );
+
+    let origin = SearchOrigin::from_document(document);
+    let candidates = view.candidates(&[RUST], &origin);
+    let request = ScanRequest::new("alpha", &candidates).expect("an identifier literal");
+    let outcome = view.scan(&request).expect("an unbounded scan");
+
+    assert_eq!(
+        outcome.files_scanned,
+        candidates.count(),
+        "the scan read a different number of files than it was given"
+    );
+    assert_eq!(
+        outcome
+            .hits
+            .iter()
+            .map(|file| file.hits.len())
+            .sum::<usize>(),
+        3,
+        "the fixture holds `alpha` as a whole token twice in src/lib.rs and \
+         once in other/far.rs. Any more than three means one file was scanned \
+         under two roots, and the uniqueness signal stages 4 and 5 rank on has \
+         been counted twice"
+    );
+}
+
 /// `core.md` §2: "handlers fan out across candidate files, so `&Query` — and
 /// therefore `&DocumentSnapshot` — crosses threads and must be `Sync`." That
 /// premise is what every refusal in this file is argued from, and the view is
