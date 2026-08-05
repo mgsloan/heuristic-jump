@@ -93,9 +93,13 @@ impl Registry {
     /// An incoming LSP `languageId` is a string until this returns. A language
     /// nothing handles fails to resolve at the boundary rather than travelling
     /// inward as a string that matches nothing.
-    pub fn for_language_id(&self, language_id: &str) -> Option<&dyn LanguageHandler> {
+    ///
+    /// The `Arc` is kept rather than dereferenced away because a dispatch
+    /// outlives the event that started it (`shim.md` §10): a worker holding a
+    /// borrow of the registry would be a worker holding a borrow of `core`.
+    pub fn for_language_id(&self, language_id: &str) -> Option<&Arc<dyn LanguageHandler>> {
         let index = *self.by_language_id.get(language_id)?;
-        self.handlers.get(index).map(Arc::as_ref)
+        self.handlers.get(index)
     }
 
     /// The same resolution, interning rather than dispatching: an incoming
@@ -458,10 +462,13 @@ impl Parsed {
     }
 }
 
-/// The hard cap, separated from `dispatch` because it is the half of it that
-/// can be tested: a `Query` cannot be built without a `DocumentSnapshot`, and
-/// that cannot be built without a grammar, so there is no handler double until
-/// a `lang_*` crate exists.
+/// The hard cap, separated from `dispatch` so that it can be tested on a
+/// `Dispatched` alone. That was once the only way to reach it — a `Query`
+/// needs a `DocumentSnapshot`, which needs a grammar, so there was no handler
+/// double until something in the workspace could supply one — and it no longer
+/// is: `driver` takes `tree-sitter-rust` as a dev-dependency and
+/// `tests/actor.rs` caps a real answer end to end. What the split still buys
+/// is a test of the arm that discards, without a document to produce one.
 ///
 /// A late *failure* stays a failure. The cap exists to stop a late answer
 /// reaching the user, and a failure is not an answer; recording it as an

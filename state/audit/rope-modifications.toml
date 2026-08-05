@@ -8,15 +8,30 @@ last_audited = "2026-08-04T23:43:10+00:00"
 
 [section."rope-modifications.md#2-where-the-types-live-is-forced"]
 state = "clean"
-last_audited = "2026-08-04T20:33:33+00:00"
+last_audited = "2026-08-05T00:43:32+00:00"
 
 [section."rope-modifications.md#3-what-keeps-this-safe"]
 state = "clean"
-last_audited = "2026-08-04T20:33:33+00:00"
+last_audited = "2026-08-05T00:43:32+00:00"
+
+  [[section."rope-modifications.md#3-what-keeps-this-safe".minor]]
+  claim = "every edit changes representation, never arithmetic; a hunk that is not one of the five shapes is a bug in the patch"
+  note = "TextSummary::add_newline carries two arithmetic hunks \u2014 an added `chars.0 += 1` and a changed len_utf16 increment. Deliberate upstream bug fixes, recorded as a separate patch class in vendor/README.md, but \u00a73's stated verification (upstream's tests) cannot cover them since nothing upstream calls the method"
+  where = "vendor/rope/src/rope.rs:1412"
 
 [section."rope-modifications.md#4-what-changes"]
 state = "clean"
-last_audited = "2026-08-04T20:33:33+00:00"
+last_audited = "2026-08-05T00:43:32+00:00"
+
+  [[section."rope-modifications.md#4-what-changes".minor]]
+  claim = "sum_tree needs no changes for this, and \u00a74 now says explicitly that vendor/sum_tree is not a pristine copy"
+  note = "the comment on the dimension impls still asserts the retracted claim, 'the vendored sum_tree stays a pristine copy'; newtype_api.rs pins the two documents against each other but reads no source comment"
+  where = "vendor/rope/src/rope.rs:1604"
+
+  [[section."rope-modifications.md#4-what-changes".minor]]
+  claim = "each newtype gets ZERO and MAX associated consts, so a literal never has to appear"
+  note = "ByteRange has EMPTY and neither ZERO nor MAX; the bounds test encodes the exception by asserting MAX for six types and EMPTY for the seventh, so it agrees with the code rather than the document"
+  where = "vendor/rope/src/offset.rs:116"
 
 [section."rope-modifications.md#the-newtypes-are-opaque"]
 state = "clean"

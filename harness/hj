@@ -676,6 +676,31 @@ def campaign_was_audited(audits: list[dict], commit_times: list[str], opened_at:
     return audits[-1]["ts"] > max(commit_times, default=opened_at)
 
 
+def prompts_dir(config: LoopConfig) -> Path:
+    """Where a loop's prompt and its fragments are read from.
+
+    The reviewed copy for every loop **except** the one that writes prompts.
+
+    Reading through `HJ_REPO` means a campaign is generated from whatever
+    template its own branch happens to carry, and a branch can be a long way
+    back: `heuristic-jump-core-2` ran a campaign from a prompt eighty commits
+    stale, missing every improvement the harness loop had landed. Nothing
+    reported it, because a stale prompt renders perfectly well. That is the
+    cost this fixes, and it is larger than the review gap `CHANGE-harness-012`
+    named — under normal flow the loop merges at close, so the edit is on
+    `main` before the next campaign renders anyway.
+
+    The `writes_harness` loop keeps reading its own worktree, and the asymmetry
+    is deliberate rather than an oversight: prompts are its deliverable, and a
+    loop that could not see its own edit until it merged would be writing the
+    next campaign's instructions blind, one round at a time. What stands in the
+    way of that being a hole is `harness-009`'s answer — every revision to a
+    live template is written to the intervention log at close — and the fact
+    that the exemption is exactly one loop, named here rather than inferred.
+    """
+    return (HARNESS if config.writes_harness else PINNED_HARNESS) / "prompts"
+
+
 def audits_for(docs: list[str]) -> list[dict]:
     """The gap-log rows belonging to a document set.
 
@@ -3047,8 +3072,15 @@ def cmd_link_delta(args: argparse.Namespace) -> int:
     return 1 if unmeasured else 0
 
 
-def fragment(name: str) -> str:
-    return (HARNESS / "prompts" / "fragments" / f"{name}.md").read_text().rstrip("\n")
+def fragment(config: LoopConfig, name: str) -> str:
+    """Spliced into the prompt, so it follows the prompt's own source.
+
+    Reading fragments from a different checkout than the template they land in
+    would give a campaign a reviewed prompt with its own branch's fragments, or
+    the reverse — one prompt assembled from two trees, and `template_sha` would
+    name only half of it.
+    """
+    return (prompts_dir(config) / "fragments" / f"{name}.md").read_text().rstrip("\n")
 
 
 def render(template: str, values: dict[str, str]) -> str:
@@ -3560,9 +3592,11 @@ def prompt_values(
         # loop is improved for all of them — which is what `render` means by
         # there being one copy of every rule.
         "harness_note": fragment(
+            config,
             "harness-writable" if config.writes_harness else "harness-denied"
         ),
         "reference_note": fragment(
+            config,
             "reference-harness" if config.writes_harness else "reference-lsp"
         ),
         "decision_template": (HARNESS / "decision-template.md").read_text().strip(),
@@ -3588,7 +3622,7 @@ def prompt_values(
         # is never routed a request, and should not be shown a heading it can
         # do nothing about.
         "harness_requests": (
-            "\n" + fragment("harness-requests").replace(
+            "\n" + fragment(config, "harness-requests").replace(
                 "{{items}}", "\n".join(requests) or "- (none right now)"
             )
             if config.writes_harness
@@ -3614,7 +3648,7 @@ def prompt_values(
 
 def cmd_render_prompt(args: argparse.Namespace) -> int:
     phase, config = loop_config(args.loop)
-    template = (HARNESS / "prompts" / config.prompt).read_text()
+    template = (prompts_dir(config) / config.prompt).read_text()
     rendered = render(template, prompt_values(phase, config, args.campaign or "(unassigned)"))
     if args.out:
         Path(args.out).write_text(rendered)
@@ -3913,7 +3947,7 @@ def cmd_prompt_prefix(args: argparse.Namespace) -> int:
     owners = [args.loop] if args.loop else sorted(phase.loops)
     for owner in owners:
         _, config = loop_config(owner)
-        template = (HARNESS / "prompts" / config.prompt).read_text()
+        template = (prompts_dir(config) / config.prompt).read_text()
         left_values = prompt_values(phase, config, PREFIX_PROBE[0])
         right_values = prompt_values(phase, config, PREFIX_PROBE[1])
         left = render(template, left_values)
@@ -4299,7 +4333,7 @@ def cmd_claim(args: argparse.Namespace) -> int:
 def cmd_campaign_open(args: argparse.Namespace) -> int:
     phase, config = loop_config(args.loop)
     campaign_id = args.id or str(uuid.uuid4())
-    template = (HARNESS / "prompts" / config.prompt).read_text()
+    template = (prompts_dir(config) / config.prompt).read_text()
     values = prompt_values(phase, config, campaign_id, claimed_gaps(config.owner, campaign_id))
     # The assignment is claimed on the campaign's behalf, so a worker never
     # has to ask for what it was already given.
@@ -4350,7 +4384,7 @@ def cmd_campaign_open(args: argparse.Namespace) -> int:
             # which *template* a campaign ran under, though, and that is the
             # question a prompt revision needs answered. So both.
             "template_sha": hashlib.sha256(
-                (HARNESS / "prompts" / config.prompt).read_bytes()
+                (prompts_dir(config) / config.prompt).read_bytes()
             ).hexdigest(),
             # The other file that is in every session's context and that no
             # campaign can write. Recorded for the prompt sha's reason (§16):
@@ -4702,11 +4736,18 @@ def test_churn(owner: str, window: int = TEST_CHURN_WINDOW) -> dict:
         text=True,
         check=False,
     ).stdout
-    commits: list[set[str]] = []
+    credit = audit_credit(owner)
+    commits: list[tuple[set[str], bool | None]] = []
+    skipped = 0
     pending: str | None = None
     for block in raw.split("\0"):
         if re.search(rf"^loop:\s*{re.escape(owner)}\s*$", block, re.MULTILINE):
-            pending = owner
+            # The campaign trailer is in *this* block, the message. The next
+            # block is the numstat and has no trailers in it at all — reading
+            # the id from there found nothing, so every commit looked unjudged
+            # and the measure went permanently silent.
+            trailer = re.search(r"^campaign:\s*(\S+)\s*$", block, re.MULTILINE)
+            pending = trailer.group(1) if trailer else ""
             continue
         if pending is None:
             continue
@@ -4715,27 +4756,85 @@ def test_churn(owner: str, window: int = TEST_CHURN_WINDOW) -> dict:
             for line in block.splitlines()
             if len(parts := line.split("\t")) == 3 and parts[0].isdigit()
         }
-        commits.append(kinds)
+        credited = credit.get(pending) if pending else None
         pending = None
+        # The window counts *judged* commits, and walks past the rest. With
+        # three workers a round is about eighteen commits, so a window of the
+        # last twenty raw commits is always the round in flight — the one no
+        # audit has reached — and the measure would report nothing, for ever.
+        # Skipping backwards to the last twenty the audit has settled is what
+        # makes it a trend rather than a permanent shrug.
+        if credited is None:
+            skipped += 1
+            continue
+        commits.append((kinds, credited))
         if len(commits) >= window:
             break
-    return test_churn_ratio(commits)
+    return {**test_churn_ratio(commits), "unsettled": skipped}
 
 
-def test_churn_ratio(commits: list[set[str]]) -> dict:
-    """The arithmetic of `test_churn`, over one bucket-set per commit."""
-    classifiable = [kinds for kinds in commits if kinds & {"rust_test", "rust_source"}]
+CREDITED_TERMS = ("gap_named", "sections_clean")
+
+
+def audit_credit(owner: str) -> dict[str, bool]:
+    """Per campaign: did the audit credit it with moving something?
+
+    `settled_term` is written when the audit settles a campaign, and is
+    `gap_named` or `sections_clean` when it moved the number, `carried` when it
+    did not. Audit-derived on purpose — the commit's own `audit:` trailer says
+    what the campaign *intended*, and section 5 is explicit that the auditor
+    decides whether it happened, so a padding campaign could write the trailer
+    it liked. A campaign with no settled term yet is `None` rather than False.
+    """
+    settled: dict[str, bool] = {}
+    for row in session_rows():
+        if row.get("loop") != owner:
+            continue
+        term = row.get("settled_term")
+        if term:
+            settled[row["campaign"]] = term in CREDITED_TERMS
+    return settled
+
+
+def test_churn_ratio(commits: list[tuple[set[str], bool | None]]) -> dict:
+    """The arithmetic of `test_churn`, over one (buckets, credited) per commit.
+
+    A test-only commit from a campaign the audit credited with closing a named
+    gap is **conformance work, not churn**, and leaves the numerator. That is
+    what this loop is for: late in a phase the remaining gaps are increasingly
+    "the claim holds and nothing asserts it", and closing one produces a
+    test-only commit by construction. All three core workers crossed the flag
+    at once (36%, 57%, 64%) while four of five recent test-only commits carried
+    `gaps -> clean` — a flag that fires on the deliverable is one nobody keeps
+    reading, which is the failure the strict reading was chosen to avoid.
+
+    A campaign the audit has not settled yet is **unclassifiable**, and leaves
+    the denominator rather than counting either way. That is the same rule this
+    measure already applies to a commit it cannot see into: reporting a
+    denominator of nothing as 0% would say "healthy" about work nothing has
+    judged. The cost is that the number lags the audit by a round, which is
+    what `progress` already does and is the price of it being audit-derived
+    rather than self-reported.
+    """
+    judged = [(kinds, credited) for kinds, credited in commits if credited is not None]
+    classifiable = [kinds for kinds, _ in judged if kinds & {"rust_test", "rust_source"}]
     # Strictly nothing else, not merely "no source". A commit that adds a test
     # and edits `design/` did other work, and for a conformance loop that other
     # work is often the deliverable — the test carries the claim the spec edit
     # settles. The loose reading measured 71% against a core loop that was
     # closing gaps at the time, which is a flag nobody would keep believing.
-    test_only = [kinds for kinds in classifiable if kinds == {"rust_test"}]
+    test_only = [
+        kinds
+        for kinds, credited in judged
+        if kinds == {"rust_test"} and not credited
+    ]
     ratio = len(test_only) / len(classifiable) if classifiable else None
     return {
         "commits": len(commits),
+        "unsettled": len(commits) - len(judged),
         "classifiable": len(classifiable),
         "test_only": len(test_only),
+        "conformance": len([1 for kinds, credited in judged if kinds == {"rust_test"} and credited]),
         "ratio": ratio,
         "flagged": ratio is not None and ratio >= TEST_CHURN_FLAG,
     }
@@ -7629,15 +7728,28 @@ def cmd_stall(args: argparse.Namespace) -> int:
             " show — a loop that has decided it is finished, not one that has hit something hard"
         )
     churn = test_churn(config.owner)
-    if churn["ratio"] is None:
+    if churn["ratio"] is None and not churn["commits"]:
+        # Distinct from the no-Rust case below, and it was printing as "none of
+        # the last 0 commit(s) touched Rust", which is both false and unhelpful.
         print(
-            f"stall: test churn not measurable — none of the last {churn['commits']} commit(s)"
-            " touched Rust, so there is no source/test split to read"
+            f"stall: test churn not measurable yet — {churn['unsettled']} recent commit(s)"
+            " belong to campaigns no audit has settled, and the measure only counts"
+            " work the audit has judged"
+        )
+    elif churn["ratio"] is None:
+        print(
+            f"stall: test churn not measurable — none of the last {churn['commits']} judged"
+            " commit(s) touched Rust, so there is no source/test split to read"
         )
     else:
         print(
-            f"stall: {churn['test_only']} of {churn['classifiable']} recent Rust commits were"
+            f"stall: {churn['test_only']} of {churn['classifiable']} judged Rust commits were"
             f" test-only ({churn['ratio']:.0%}, flag at {TEST_CHURN_FLAG:.0%})"
+            + (
+                f"; {churn['conformance']} more closed a gap the audit credited and are not churn"
+                if churn["conformance"]
+                else ""
+            )
             + ("  — FLAGGED" if churn["flagged"] else "")
         )
     return 1 if trailing >= config.stall_n else 0
@@ -9290,11 +9402,11 @@ def selftest_cases() -> list[tuple[str, object]]:
         # test and edits `design/` churn, and measured 71% against a core loop
         # that was closing gaps at the time. For a conformance loop the test
         # carries the claim the spec edit settles, so that is the deliverable.
-        churn = test_churn_ratio([{"rust_test", "markdown"}, {"rust_source"}])
+        churn = test_churn_ratio([({"rust_test", "markdown"}, False), ({"rust_source"}, False)])
         assert churn["test_only"] == 0 and churn["ratio"] == 0.0, churn
 
     def test_churn_is_undefined_rather_than_zero_when_nothing_is_rust():
-        churn = test_churn_ratio([{"markdown"}, {"other"}])
+        churn = test_churn_ratio([({"markdown"}, False), ({"other"}, False)])
         assert churn["ratio"] is None and churn["flagged"] is False, (
             "the harness loop's tests live inside harness/hj, so no path can see them; "
             "0% would report health about a loop this measure cannot look at"
@@ -9302,9 +9414,28 @@ def selftest_cases() -> list[tuple[str, object]]:
         assert churn["commits"] == 2 and churn["classifiable"] == 0
 
     def the_churn_flag_fires_at_thirty_percent():
-        churn = test_churn_ratio([{"rust_test"}, {"rust_source"}, {"rust_source"}])
+        uncredited = [({"rust_test"}, False), ({"rust_source"}, False), ({"rust_source"}, False)]
+        churn = test_churn_ratio(uncredited)
         assert churn["ratio"] == 1 / 3 and churn["flagged"] is True
-        assert test_churn_ratio([{"rust_test"}] + [{"rust_source"}] * 3)["flagged"] is False
+        assert test_churn_ratio([({"rust_test"}, False)] + [({"rust_source"}, False)] * 3)["flagged"] is False
+
+    def a_credited_campaigns_test_only_commit_is_conformance_not_churn():
+        # Four of five recent test-only commits carried `gaps -> clean`, and
+        # all three core workers crossed the flag at once. A gap closed by
+        # writing the assertion that was missing is the deliverable.
+        credited = [({"rust_test"}, True), ({"rust_source"}, False), ({"rust_source"}, False)]
+        churn = test_churn_ratio(credited)
+        assert churn["test_only"] == 0 and churn["conformance"] == 1
+        assert churn["ratio"] == 0.0 and churn["flagged"] is False
+        assert churn["classifiable"] == 3, "it stays in the denominator; it was real work"
+
+    def a_campaign_the_audit_has_not_settled_is_not_counted_either_way():
+        mixed = [({"rust_test"}, None), ({"rust_test"}, False), ({"rust_source"}, False)]
+        churn = test_churn_ratio(mixed)
+        assert churn["unsettled"] == 1
+        assert churn["classifiable"] == 2 and churn["test_only"] == 1
+        assert churn["ratio"] == 0.5, "the unjudged commit leaves the denominator, not the numerator"
+        assert test_churn_ratio([({"rust_test"}, None)])["ratio"] is None
 
     def classify_diff_path_splits_tests_by_directory():
         assert classify_diff_path("crates/shared/tests/proto.rs") == "rust_test"

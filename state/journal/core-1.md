@@ -735,3 +735,137 @@ fields the section lists, `server_version` included. **Do not go looking here.**
   suite's walk assertion was a membership check, so a walker that ignored the
   file would have passed — and would have handed the scan a candidate outside
   the project. Asserting the whole set caught it in the plant, in two tests.
+
+## Campaign 2f7fcfdd — the worker did not exist, so three sections were false
+
+Assignment was four gaps. Three were one claim; the fourth was stale. Seven
+commits, +9 tests, one decision record (`core-026`), no spec change.
+
+### The gap was in the code, and the code said so itself
+
+§2 twice and §8.4 once say the parse, the handler and the `Location ->
+WireLocation` conversion happen "in the worker, not in `core`". `Actor::requested`
+called `dispatch` in line, so one thread did all three — including a filesystem
+read per returned location, which `shim.md` §2 forbids `core` outright.
+
+What settled the direction was not the audit's wording but a contradiction
+already in `actor.rs`: the `didSave` branch *refuses* the checksum read on the
+grounds that "reading the file on this thread is the one thing `shim.md` §2
+forbids `core` outright", ten lines from a query path that read a file per
+answer on that same thread. Two paths, one rule, opposite behaviour. That is
+what made this a code defect rather than an aspiration in a document, and it is
+worth looking for deliberately: **when a section and the code disagree, check
+whether some other part of the code already agrees with the section.** It
+decides the direction without any judgement about which is easier to edit.
+
+### What the pool forced, none of which was optional
+
+A dispatch that outlives the event that started it changes four things, and I
+found them by asking "what used to be guaranteed by these two things happening
+in one event?" rather than by testing:
+
+1. **The child can answer first.** `trace.rs` said "the shim answers first and
+   the child answers later" — a property of in-line dispatch, not a fact about
+   either party. Resolved by parking the child's answer in `Actor::in_flight`
+   until the worker returns, so `pending.rs` and `trace.rs` keep their
+   one-order shape. Considered and rejected: teaching `PendingQueries` to
+   resolve in either order, which needs `answered_by_shim: Option<Vec<..>>` to
+   grow a third state (abstained vs not-yet), and `Traces` to hold an early
+   `ChildAnswer` — two more state machines for a case the actor can see
+   directly, since it is the actor that knows the pool still has the query.
+2. **`$/cancelRequest` finally has something to signal.** The old comment said
+   a cancellation token wired up then "would be unreachable code with a test
+   that cannot fail". It is reachable now and there is a test.
+3. **`run` must drain.** The wire closing is not the query being over, and the
+   rows still outstanding are the slow ones — the tail of every repository in a
+   corpus run.
+4. **A tree can outlive the text it was parsed from.** This is the one that was
+   a real bug; see below.
+
+### The bug the pool opened, and why a version check will not close it
+
+`didChange`/`didOpen` calls `TreeCache::forget`, which clears the cached tree
+*and* the `newest` row. A worker that started before the notification then
+returns a tree of the old text, and `insert`'s guard — which drops a tree older
+than the cached one — sees no cached version at all and stores it. `seed` then
+hands that tree to the next query as an incremental base with an **empty** edit
+log, and tree-sitter, told nothing changed, returns it unchanged. Caught
+test-first at `(46, 31)`: a 46-byte tree handed to a handler for 31 bytes of
+text, which is exactly the confidently-wrong answer §2 exists to prevent.
+
+**Comparing versions does not fix it and I nearly shipped that.** §8.6 makes
+`didOpen` a resync, so the text behind a URI can be replaced at a version
+already seen — the fixture reopens at version 1, which is what an editor does
+after a revert. What works is a flag on the in-flight entry (`TreeFate`), set
+by the notification handler, which is the only place that knows a document
+moved. A cancelled query drops its tree for the same reason: the entry that
+carried the proof is gone.
+
+### The flake, and two fixes that looked right and were not
+
+Moving `classify`'s log line onto a pool thread made
+`converting_an_expiry_into_an_abstention_is_logged` fail about one run in three
+— under `cargo test` only. **`harness/gate` runs `cargo nextest`, which gives
+each test its own process, so the gate cannot see a flake of this kind at all.**
+Six `cargo test` runs at the previous commit failed once. If you introduce
+concurrency, run `cargo test -p <crate>` in a loop before believing the gate.
+
+Diagnosis that worked, after two wrong theories: put a `tracing::warn!("probe")`
+as the first line inside the `with_default` closure. The probe was captured and
+**everything else was not** — including lines emitted on the test thread. That
+rules out "the worker's subscriber is wrong" and points at `tracing`'s
+process-wide callsite interest cache: a callsite first reached while nothing is
+capturing is cached as disabled for every later test in the binary.
+
+Falsified fixes, measured at 10 runs each:
+
+* Skipping `set_default` on the worker when the carried dispatch is a
+  `NoSubscriber`. Still flaked.
+* `Capturing::register_callsite -> Interest::sometimes()`, so the answer cannot
+  be cached. Still flaked.
+
+What works is a floor: install one global subscriber that is interested in
+everything and collects nothing (`keep_callsites_enabled`), once per test
+binary. A scoped `with_default` still takes priority on any thread that sets
+one. 10/10 green, and 8/8 after removing both failed fixes.
+
+`measure_core/tests/pipeline.rs` uses `with_default` too and has no pool, so it
+cannot hit the cross-thread half — but the cache is still process-wide, and if
+that test ever flakes this is the first thing to try.
+
+### Approaches considered and dropped
+
+* **Building §10's in-flight cap and shed-load rule.** Both are refusals to run
+  a query, and `AbstainReason` has no word for one; `Deadline` would be false
+  and a failure would merge a working shim with a broken handler. Escalated as
+  `core-026` with C (queue) in force, tagged at `workers.rs`. Queueing violates
+  a limit; dispatching in line violated the invariant the limit exists to
+  protect, so this is strictly better than what it replaces.
+* **A test that `core` keeps taking events while a query runs.** Every version
+  needs a handler that outlives the call, and under the old code such a handler
+  deadlocks the actor — so the test would hang rather than fail. It is already
+  implied by `a_cancel_reaches_the_worker_that_is_still_running_the_query`,
+  which handles a second event with the handler blocked.
+* **Extending §2's pin to `realise`'s signature.** The deadline parameter is
+  already held behaviourally by
+  `a_parse_that_runs_past_its_deadline_is_abandoned_rather_than_failed`, and
+  `tree()`'s infallibility is held by the compiler.
+* **Reconciling `core-021`/`core-023`** (answered, still tagged in `seam.rs`,
+  which I held). Different subject, needs its own reading. Left named.
+* **`catch_unwind` around a handler.** A panicking handler now leaks its
+  in-flight entry instead of killing the process. Better, but not free, and
+  `shim.md` §11's failure handling is where it belongs.
+
+### Mechanical notes
+
+* **A plant must compile.** Adding a field to a struct to check a field-list
+  scan breaks its constructors, and the run then reports no `test result` line
+  at all — which reads like a pass if you are grepping. Plant on the *document*
+  side of a document-versus-source comparison, or add the constructor line too.
+* `iter_over_hash_type` fires on marking every value of a map. The `#[expect]`
+  is honest when nothing is produced by the iteration.
+* An integration test file cannot export a helper to another one without
+  becoming a test binary, so `tests/document.rs` carries a copy of
+  `tests/handler.rs`'s block scanner. `handler.rs` stays the original.
+* `Registry::for_language_id` now returns `&Arc<dyn LanguageHandler>`: a worker
+  holding a borrow of the registry is a worker holding a borrow of `core`.

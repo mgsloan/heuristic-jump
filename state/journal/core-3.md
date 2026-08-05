@@ -694,3 +694,86 @@ five, and briefly believed two were fictional. The character class excludes
 digits and `offset_utf16_to_offset_raw` contains `16`. **A grep that disagrees
 with a document is a claim about the grep first.** Cost two turns; would have
 cost a false changelog entry.
+
+## Campaign d9435dad — both assigned gaps were stale, so I worked the sections
+
+Assigned `core.md#4-project-file-enumeration[d41389f7fe]` and
+`rope-modifications.md#textsummary-is-converted-too[22926927ef]`. Both already
+closed. Settled in **one turn** with the recipe core-1 wrote down: find the
+gap-log row that *opened* the id, then ask whether any later row's
+`sections_audited` names its section.
+
+- `d41389f7fe` opened 21:12:07Z; fixture landed 21:22Z (`7ba59bd`).
+- `22926927ef` opened 23:43:10Z; `CharCount` became `usize` 23:54Z (`831f79f`).
+
+Ninth and tenth campaigns running with a stale assignment. The recipe works
+and costs one turn — run it before reading any code.
+
+### What paid: the section's *other* sentences
+
+Six commits, ten tests, none of them the assigned gap. Every one was a
+sentence in the assigned section that no test reached, and in every case the
+failure mode was silent. The generalisation, which is the useful part: **a
+section that carried a live gap for two audit rounds has more unheld sentences
+than the gap named.** Nobody had swept §4 as a whole; they had each closed the
+gap in front of them.
+
+### The one that took measurement rather than reading
+
+`mark_stale` refuses to restart the debounce window and says why: "a burst
+would otherwise push the rescan out indefinitely". I assumed
+`the_two_triggers_share_one_debounce_rather_than_one_each` held it. It does
+not, and the arithmetic is why — three triggers 50ms apart then a whole window
+advanced leaves the last trigger 500ms behind the tick *either way*, so both
+behaviours send the rescan.
+
+I only found this because I planted `Refresh::Pending { since: now }` and ran
+the **whole file** rather than reasoning about which test covered it. All
+fourteen passed. **When you believe an existing test covers a claim, plant
+against it rather than reading it** — reading tells you what the test looks
+at, planting tells you what it would notice.
+
+### Scoping a "nothing does X" scan so a later campaign will not have to weaken it
+
+The in-process bullet tempts you to scan `driver` for `std::process`. That
+would be wrong and would be found wrong by whoever implements proxy mode:
+`shim.md` has `driver` spawning the child, and `ServerCommand` is already in
+`config.rs` waiting for it. Scoped instead to the query path — all of
+`shared`, plus `driver/src/files.rs` — which is the boundary the latency
+claim is actually about.
+
+The test to apply: *who is the first person who will legitimately break this,
+and what will they do about it?* If the answer is "relax the assertion", the
+scope is wrong. A test whose first encounter with the design is being relaxed
+was never holding a claim.
+
+### Traps paid for
+
+* **`/tmp` is read-only in this sandbox.** `cp x /tmp/x.bak` fails, so a plant
+  I thought was backed up was not, and the planted document survived the run.
+  Use `git checkout <path>` to revert a plant — never a manual backup — and
+  check `git status` after.
+* **A plant that does not apply looks exactly like a plant that does not
+  fire.** My first shell-out plant anchored on an import line that was not in
+  the file; `python3` wrote nothing, the test passed, and the honest reading is
+  "no evidence" rather than "the scan is broken". `assert old in s` in the
+  plant script turns this into a loud failure — every later plant had one.
+* **A plant must compile** (already in my findings; hit it again). A bare
+  `Command::new` in `files.rs` fails the *build*, so the test never runs. The
+  fix is a fully-qualified `std::process::Command::new`, which compiles.
+* **`cargo test` passing does not mean the gate passes.** `redundant_clone` on
+  a `vec![root.clone()]` in a test was a clippy error and a gate failure with
+  a green test run. Run `cargo clippy -p <crate> --all-targets -- -D warnings`
+  before the gate, not after it.
+* **Plants mask each other** — already known, and the control test caught a
+  variant of it in my own scan: I wrote three subprocess markers and the
+  control returned three when I expected two, because `use std::process::Command;`
+  contains both `std::process` and `process::Command`. The redundant marker is
+  gone. **Write the control's expectation first and let it correct you.**
+
+### Not done, and not mine
+
+Every remaining gap sits in `actor.rs`, `dispatch.rs` or
+`shared/src/project.rs`, all reserved by the planner this round. I did not
+claim outside the assignment because there was nothing outside it that was
+both free and cheap.

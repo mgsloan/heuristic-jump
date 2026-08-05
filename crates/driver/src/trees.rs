@@ -7,11 +7,18 @@
 //! property: a seed leaves here, `dispatch` turns it into a tree, and the tree
 //! can go nowhere but back here.
 //!
-//! What is missing is the channel. `shim.md` §10's worker pool and the
-//! single-threaded actor that would own this do not exist yet, so `Parsed`
-//! travels by return value rather than by `send`. That is the wiring; the
-//! ownership is already right — nothing here is shared, nothing is locked, and
-//! every method takes `&mut self`, which only its owner has.
+//! The channel is there now. §10's pool answers the query and `Parsed` comes
+//! back inside a `Finished`, so the loop above crosses a thread boundary in
+//! the middle — which is why [`crate::Actor::finished`] decides whether to
+//! offer it at all. A tree the pool produces while the editor is replacing the
+//! document is correct for text nobody holds, and the cache is where it would
+//! do its damage: `seed` would hand it to the next query as an incremental
+//! base. Nothing here can tell — [`TreeCache::insert`]'s own guard compares
+//! against `newest`, and `forget` has just cleared it — so the check lives
+//! where the notifications are.
+//!
+//! What has not changed is the ownership: nothing here is shared, nothing is
+//! locked, and every method takes `&mut self`, which only `core` has.
 //!
 //! The bound is `deps.md` §8's: `lru`, wrapped, because `shim.md` §5 wants the
 //! cache bounded by *both* entry count and total bytes and `lru` bounds only

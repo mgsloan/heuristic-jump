@@ -37,7 +37,7 @@ last_audited = "2026-08-04T20:33:33+00:00"
 
 [section."core.md#2-document-snapshots"]
 state = "clean"
-last_audited = "2026-08-04T05:37:37+00:00"
+last_audited = "2026-08-05T00:43:32+00:00"
 
 [section."core.md#snapshots-are-o1-to-take-and-are-parsed-before-a-handler-sees-one"]
 state = "gaps"
@@ -80,21 +80,15 @@ last_audited = "2026-08-04T21:12:07+00:00"
 
 [section."core.md#5-deadlines-and-abstention"]
 state = "clean"
-last_audited = "2026-08-04T05:37:37+00:00"
+last_audited = "2026-08-05T00:43:32+00:00"
 
 [section."core.md#6-the-agreement-predicate"]
 state = "clean"
 last_audited = "2026-08-04T21:12:07+00:00"
 
 [section."core.md#both-sides-are-sets"]
-state = "gaps"
-last_audited = "2026-08-04T23:43:10+00:00"
-
-  [[section."core.md#both-sides-are-sets".gap]]
-  claim = "`contained` is any of the shim's locations matching, and match_top1 implies match_contained; it is reported only alongside the result count"
-  found = "the replay table's `contained` column prints the MatchContained counter alone, so a run of all top-1 matches reports contained = 0, and the table carries no result count. Mechanisable: a fixture where every committed row is match_top1 must print contained == committed"
-  where = "crates/measure_core/src/table.rs:216"
-  found_at = "4266031455e91fde2c3f8d08f91909260ab9a81f"
+state = "clean"
+last_audited = "2026-08-05T00:43:32+00:00"
 
 [section."core.md#7-observability-and-the-corpus-scan"]
 state = "clean"
@@ -119,36 +113,25 @@ state = "clean"
 last_audited = "2026-08-04T23:43:10+00:00"
 
 [section."core.md#two-modes-collect-and-replay"]
-state = "gaps"
-last_audited = "2026-08-04T20:33:33+00:00"
-
-  [[section."core.md#two-modes-collect-and-replay".gap]]
-  claim = "`measure` has two subcommands, and `collect` enumerates identifiers before asking the LSP"
-  found = "three subcommands, with identifier enumeration split into `enumerate`; `collect` reads `positions/<repo>.jsonl` instead. `core.md#the-command-line` already says three, and no CHANGE- record reconciles this section"
-  where = "crates/measure_core/src/cli.rs:19"
-  found_at = "187307eeed4c196ebb471f4a3e8d46f60e18a53a"
-
-  [[section."core.md#two-modes-collect-and-replay".minor]]
-  claim = "replay hands the oracle's stored bytes to the same deserializer the shim reads a live answer with"
-  note = "a stored answer that will not deserialize becomes `DefinitionResult::Null` silently, so an unreadable oracle row scores as `the oracle returned nothing`"
-  where = "crates/measure_core/src/replay.rs:208"
+state = "clean"
+last_audited = "2026-08-05T00:43:32+00:00"
 
 [section."core.md#the-table-is-not-enough-a-replay-has-to-show-its-failures"]
 state = "clean"
-last_audited = "2026-08-04T05:37:37+00:00"
+last_audited = "2026-08-05T00:43:32+00:00"
 
   [[section."core.md#the-table-is-not-enough-a-replay-has-to-show-its-failures".minor]]
-  claim = "digesting the records into something readable is the harness's job \u2014 harness/measure runs the replay, prints the table, and writes a failure digest beside it"
-  note = "harness/** is outside the paths given, so this half is unjudged; the measure_core half (--records unfiltered, both grouping keys recoverable by exact string group-by) is satisfied and tested"
-  where = "crates/measure_core/src/replay.rs:248"
+  claim = "abstentions are grouped by (stratum_prior, reason, stages)"
+  note = "the record has no `reason` column; the reason is appended into `stages`, so the partition is the same but the field the section names does not exist"
+  where = "crates/shared/src/record.rs:381"
 
 [section."core.md#the-oracle-is-the-server-being-proxied"]
 state = "clean"
-last_audited = "2026-08-04T05:37:37+00:00"
+last_audited = "2026-08-05T00:43:32+00:00"
 
 [section."core.md#where-the-corpus-lives"]
 state = "clean"
-last_audited = "2026-08-04T05:37:37+00:00"
+last_audited = "2026-08-05T00:43:32+00:00"
 
 [section."core.md#the-command-line"]
 state = "clean"
@@ -192,16 +175,17 @@ last_audited = "2026-08-04T23:43:10+00:00"
 
 [section."core.md#85-the-untagged-unions-are-the-actual-risk"]
 state = "clean"
-last_audited = "2026-08-04T05:37:37+00:00"
+last_audited = "2026-08-05T00:43:32+00:00"
 
 [section."core.md#86-modelling-errors-must-fail-closed"]
-state = "clean"
-last_audited = "2026-08-04T05:37:37+00:00"
+state = "gaps"
+last_audited = "2026-08-05T00:43:32+00:00"
 
-  [[section."core.md#86-modelling-errors-must-fail-closed".minor]]
-  claim = "didSave is a free end-to-end checksum; it costs a read, so it belongs in a worker, and a mismatch marks the document untrusted"
-  note = "Documents::checked has no caller and the actor returns early on Saved::NeedsRead, so the check fires only when the editor volunteered the text \u2014 the case that needs no read at all"
-  where = "crates/driver/src/actor.rs:341"
+  [[section."core.md#86-modelling-errors-must-fail-closed".gap]]
+  claim = "didSave is a free end-to-end checksum: the rope's length or hash must match the file, the read belongs in a worker off the critical path, and a mismatch marks the document untrusted"
+  found = "only the half where the notification carries `text` is performed; `Documents::saved` returns `Saved::NeedsRead` otherwise and the actor logs it and returns, doing no read and no comparison, and `Documents::checked` has no caller in src/. A scan asserting `Documents::checked` is reached from driver/src/ would make this mechanical"
+  where = "crates/driver/src/actor.rs:477"
+  found_at = "fe25ac72eba0104d52a3b4100fdfb6fe59e7e9a9"
 
 [section."core.md#87-where-it-lives"]
 state = "clean"
@@ -209,11 +193,22 @@ last_audited = "2026-08-04T23:43:10+00:00"
 
 [section."core.md#9-workspace-layout"]
 state = "clean"
-last_audited = "2026-08-04T05:37:37+00:00"
+last_audited = "2026-08-05T00:43:32+00:00"
 
 [section."core.md#the-dependency-graph"]
-state = "clean"
-last_audited = "2026-08-04T05:37:37+00:00"
+state = "gaps"
+last_audited = "2026-08-05T00:43:32+00:00"
+
+  [[section."core.md#the-dependency-graph".gap]]
+  claim = "shared's authoritative dependency list includes rayon, for ProjectView::scan, which executes on the pool it is handed at construction"
+  found = "shared declares no rayon; ProjectView::new takes no pool and scan is a sequential for-loop over candidates. driver/tests/seam.rs:3508 asserts a subset rather than an equality precisely to permit this; making it an equality against \u00a79's list is the mechanical check"
+  where = "crates/shared/src/project.rs:584"
+  found_at = "fe25ac72eba0104d52a3b4100fdfb6fe59e7e9a9"
+
+  [[section."core.md#the-dependency-graph".minor]]
+  claim = "heuristic_jump depends on driver and every lang_*, plus clap, tracing-subscriber, and shared"
+  note = "heuristic_jump also declares `tracing`, which nothing in the crate uses and \u00a79 does not name; driver likewise carries lru and serde_json and lacks the rayon and rustc-hash \u00a79's arrow lists"
+  where = "crates/heuristic_jump/Cargo.toml:33"
 
 [section."core.md#why-shared-is-separate-from-driver"]
 state = "clean"
@@ -221,16 +216,11 @@ last_audited = "2026-08-04T21:12:07+00:00"
 
 [section."core.md#adding-a-language"]
 state = "clean"
-last_audited = "2026-08-04T05:37:37+00:00"
-
-  [[section."core.md#adding-a-language".minor]]
-  claim = "the language-crate template's manifest is shared, similarity, tree-sitter-<x>, and nothing else"
-  note = "the manifest comment says \"verbatim: shared, similarity, the grammar. Nothing else\" while declaring the tree-sitter runtime too; measure_rust likewise adds clap and shared to \u00a79's two"
-  where = "crates/lang_rust/Cargo.toml:19"
+last_audited = "2026-08-05T00:43:32+00:00"
 
 [section."core.md#what-the-templates-handler-does"]
 state = "clean"
-last_audited = "2026-08-04T05:37:37+00:00"
+last_audited = "2026-08-05T00:43:32+00:00"
 
 [section."core.md#vendoring-the-zed-crates"]
 state = "clean"

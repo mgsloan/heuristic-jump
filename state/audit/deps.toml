@@ -21,11 +21,11 @@ last_audited = "2026-08-04T23:43:10+00:00"
 
 [section."deps.md#3-lsp-types-our-own-not-lsp-types"]
 state = "clean"
-last_audited = "2026-08-04T20:33:33+00:00"
+last_audited = "2026-08-05T00:43:32+00:00"
 
 [section."deps.md#4-json"]
 state = "clean"
-last_audited = "2026-08-04T20:33:33+00:00"
+last_audited = "2026-08-05T00:43:32+00:00"
 
 [section."deps.md#5-text-vendored-zed-rope"]
 state = "clean"
@@ -66,19 +66,8 @@ last_audited = "2026-08-04T20:33:33+00:00"
   where = "crates/measure_core/src/measure_core.rs:181"
 
 [section."deps.md#10-errors-one-enumerated-type-no-anyhow"]
-state = "gaps"
-last_audited = "2026-08-04T20:33:33+00:00"
-
-  [[section."deps.md#10-errors-one-enumerated-type-no-anyhow".gap]]
-  claim = "some `driver` code converts an `Error` into an abstention; that conversion is explicit and logged"
-  found = "the deadline conversion is explicit but silent \u2014 neither `classify` nor `Actor::answer` logs it, and `hard_cap`'s debug line covers only the late-answer case"
-  where = "crates/driver/src/dispatch.rs:528"
-  found_at = "187307eeed4c196ebb471f4a3e8d46f60e18a53a"
-
-  [[section."deps.md#10-errors-one-enumerated-type-no-anyhow".minor]]
-  claim = "every variant carries typed context, and foreign errors are wrapped as `#[source]` fields"
-  note = "`ConfigError::ManifestMalformed` renders the TOML parser's error into `reason: Box<str>`, losing the `Error` chain \u2014 for a stated reason, but it is the one foreign error not sourced"
-  where = "crates/shared/src/error.rs:76"
+state = "clean"
+last_audited = "2026-08-05T00:43:32+00:00"
 
 [section."deps.md#11-cli-parsing-clap"]
 state = "clean"
@@ -86,7 +75,7 @@ last_audited = "2026-08-04T23:43:10+00:00"
 
 [section."deps.md#12-testing"]
 state = "clean"
-last_audited = "2026-08-04T20:33:33+00:00"
+last_audited = "2026-08-05T00:43:32+00:00"
 
 [section."deps.md#13-explicitly-not-depended-on"]
 state = "clean"

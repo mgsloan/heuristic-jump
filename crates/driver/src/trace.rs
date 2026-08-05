@@ -3,11 +3,21 @@
 //!
 //! `core.md` §7 says each query emits one JSONL record "once both answers are
 //! known (or the query is resolved as abstained)", and that sentence is the
-//! whole of this module. The shim answers first and the child answers later,
-//! so a proxied row is incomplete for as long as the two answers are apart —
-//! which is exactly as long as the `PendingQuery` lives, and for the same
-//! reason. Standalone has no second answer coming, so its rows are complete
-//! when the handler returns ([`Traces::finished`]).
+//! whole of this module. A proxied row is incomplete for as long as the two
+//! answers are apart — which is exactly as long as the `PendingQuery` lives,
+//! and for the same reason. Standalone has no second answer coming, so its
+//! rows are complete when the handler returns ([`Traces::finished`]).
+//!
+//! **Which answer arrives first is not this module's business, and it used to
+//! be.** An earlier revision said the shim answers first and the child later,
+//! which was a property of dispatch happening in line on `core`'s thread
+//! rather than a fact about either party: the child is a whole process away,
+//! but a handler that reads candidate files is not fast. Now that a query is
+//! answered on `shim.md` §10's pool, `Actor` holds the child's answer until
+//! the worker comes home ([`crate::Actor::finished`]), so a row still reaches
+//! [`Traces::awaiting_child`] before [`Traces::child_answered`] — the order
+//! here is the same, and it is `core`'s to preserve rather than the wire's to
+//! promise.
 //!
 //! **The record type is `shared`'s and the writer is here.** §9's graph gives
 //! `driver` no edge to `measure_core`, and §7 requires the shim's row and the
