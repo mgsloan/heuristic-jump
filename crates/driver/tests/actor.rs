@@ -31,7 +31,7 @@ use std::time::Duration;
 use crossbeam_channel::Receiver;
 use driver::{
     Actor, Config, DeadlineMs, DeadlineOverride, DebounceMs, Event, FileListCache, Finished,
-    Heuristics, Mode, Outbound, Registry, Tracing,
+    Heuristics, INBOX_BACKED_UP, MaxInFlight, Mode, Outbound, Registry, Tracing,
 };
 use serde_json::value::RawValue;
 use shared::proto::{DefinitionResult, PositionEncoding, WireLocation, WirePosition, WireRange};
@@ -459,6 +459,176 @@ fn an_expiry_nothing_classified_records_no_stratum_at_all() {
              crate (core-025, option B): {row}"
         );
     }
+}
+
+/// `shim.md` §10's first additional limit: "**max in-flight heuristic queries**
+/// (start at 4). Beyond that, new queries abstain immediately rather than
+/// queueing. Queueing cannot help under a wall-clock deadline; it only
+/// guarantees the queued queries blow it."
+///
+/// It could not be built until `core-026` was answered, because a refusal had
+/// nothing to say: `AbstainReason` is the *handler's* vocabulary and a shed
+/// query is not the handler's event. Option D gives it a disposition of its own,
+/// and this is the limit that ruling was raised to unblock.
+///
+/// Four queries are dispatched and none is drained — `in_flight` shrinks in
+/// `Actor::finished`, which only the loop calls — so the fifth meets a full
+/// cap. The handler is a fast one deliberately: a blocking double would make
+/// this a test about the pool's width, and the cap is about how many queries
+/// `core` is holding, which is a different number.
+#[test]
+fn a_query_past_the_in_flight_cap_is_shed_rather_than_queued() {
+    let fixture = Fixture::new("actor_in_flight_cap", Proxying::No);
+    let target = fixture.definition_in("src/lib.rs");
+    let mut actor = fixture.actor(Arc::new(Committing {
+        locations: vec![target],
+    }));
+    fixture.open(&mut actor);
+
+    let cap = MaxInFlight::DEFAULT.get();
+    for id in 0..=cap {
+        actor
+            .handle(fixture.definition(i64::try_from(id).expect("a small request id")))
+            .expect("a definition request");
+    }
+
+    let rows = fixture.rows();
+    let [row] = rows.as_slice() else {
+        panic!(
+            "{} rows for {} queries, where only the one past the cap has finished — the \
+             others are still in the pool and §7's row is written when a query ends",
+            rows.len(),
+            cap + 1
+        );
+    };
+    assert_eq!(
+        field(row, "decision"),
+        "\"shed\"",
+        "a query the cap refused was recorded as something a handler decided. core-026 \
+         rules that it says nothing at all — it was never attempted — and recording it as \
+         an abstention or a failure is the two readings that ruling rejected: {row}"
+    );
+    assert_eq!(
+        field(row, "stages"),
+        "[\"shed:in_flight\"]",
+        "the record does not say which of §10's two limits fired. They are different \
+         findings — this process answering as many at once as it will, against core being \
+         behind on traffic it must forward first — and one shed rate would merge them: \
+         {row}"
+    );
+    assert_eq!(
+        field(row, "stratum_prior"),
+        "null",
+        "a query that was never attempted reported a stratum: {row}"
+    );
+}
+
+/// §10's second additional limit: "**no heuristic work while `core` is
+/// behind.** If the event queue is backed up, forwarding and state transitions
+/// take priority. The prime invariant again."
+///
+/// Driven through `run` rather than `handle`, because the inbox is only visible
+/// from inside the loop — which is also the honest shape: being behind is a
+/// property of what feeds `core`, and a test that drives the state machine
+/// directly has nothing feeding it.
+///
+/// The depth is what is *still waiting* after the request is taken, so the
+/// filler events go behind it. `WatchedFilesChanged` is the cheapest event that
+/// carries no payload to get wrong.
+#[test]
+fn a_query_arriving_while_core_is_behind_is_shed() {
+    let fixture = Fixture::new("actor_core_behind", Proxying::No);
+    let target = fixture.definition_in("src/lib.rs");
+    let actor = fixture.actor(Arc::new(Committing {
+        locations: vec![target],
+    }));
+
+    let (events, incoming) = crossbeam_channel::unbounded();
+    for event in fixture.session(1) {
+        events.send(event).expect("a queued event");
+    }
+    for _ in 0..INBOX_BACKED_UP {
+        events
+            .send(Event::WatchedFilesChanged)
+            .expect("a queued event");
+    }
+    drop(events);
+
+    actor.run(&incoming).expect("the actor loop");
+
+    let rows = fixture.rows();
+    let [row] = rows.as_slice() else {
+        panic!("{} rows for one query, where one arrived", rows.len());
+    };
+    assert_eq!(
+        field(row, "decision"),
+        "\"shed\"",
+        "a query that arrived with a backed-up inbox was answered anyway. §10 calls this \
+         the prime invariant: forwarding and state transitions come first, and heuristic \
+         work is what gives way: {row}"
+    );
+    assert_eq!(
+        field(row, "stages"),
+        "[\"shed:core_behind\"]",
+        "the record does not say which limit fired, so the shed rate cannot be attributed \
+         to the rule that caused it: {row}"
+    );
+}
+
+/// The other side of the rule above, and the one that stops it being a shim
+/// that answers nothing. An ordinary session arrives as a batch — an editor
+/// sends `didOpen` and the definition request together, and a reader thread
+/// takes what is there — so "any waiting event" cannot be what §10 means by
+/// backed up.
+///
+/// This is not a hypothetical: the literal reading was implemented first, and
+/// `the_loop_drains_its_channel_and_ends_when_the_wire_closes` failed on it,
+/// with a depth of one.
+///
+/// **The batch size here is a literal and not `INBOX_BACKED_UP - 1`**, which it
+/// was in the first draft of this test. Sized from the constant it is a test
+/// that moves with the thing it is watching: lowering `INBOX_BACKED_UP` to 1
+/// shrinks the batch to nothing and the test goes on passing. That is the same
+/// shape as a tripwire that plants the value it is looking for, and it was
+/// caught here by planting the literal reading and seeing a *different* test
+/// fail. Two events waiting is an editor that sent a `didChange` and a
+/// `didSave` behind its request, which is ordinary rather than a backlog, and
+/// this test says so whatever the constant becomes.
+#[test]
+fn an_ordinary_batch_of_events_is_not_a_backlog() {
+    const ORDINARY_BATCH: usize = 2;
+
+    let fixture = Fixture::new("actor_batch_not_backlog", Proxying::No);
+    let target = fixture.definition_in("src/lib.rs");
+    let actor = fixture.actor(Arc::new(Committing {
+        locations: vec![target],
+    }));
+
+    let (events, incoming) = crossbeam_channel::unbounded();
+    for event in fixture.session(1) {
+        events.send(event).expect("a queued event");
+    }
+    for _ in 0..ORDINARY_BATCH {
+        events
+            .send(Event::WatchedFilesChanged)
+            .expect("a queued event");
+    }
+    drop(events);
+
+    actor.run(&incoming).expect("the actor loop");
+
+    let rows = fixture.rows();
+    let [row] = rows.as_slice() else {
+        panic!("{} rows for one query, where one arrived", rows.len());
+    };
+    assert_eq!(
+        field(row, "decision"),
+        "\"committed\"",
+        "a query was shed with {ORDINARY_BATCH} events waiting behind it. A batch that \
+         size is what an editor sends, not a backlog, and shedding it spends the coverage \
+         §10's rule is supposed to be protecting the forwarding path with — so \
+         INBOX_BACKED_UP is too low rather than this fixture being unlucky: {row}"
+    );
 }
 
 /// `deps.md` §10: "Some `driver` code will convert an `Error` into an

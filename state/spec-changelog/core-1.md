@@ -85,3 +85,57 @@ The report's beside-the-table lines are not otherwise described in `core.md`
 in the document moved.
 
 **Campaign:** 32a9eaee-72c3-4048-84a9-b89fb1d6967f
+
+## CHANGE-core-034 — core.md#7-observability-and-the-corpus-scan, shim.md#10-parallel-dispatch-and-resource-limits — a shed query is a fourth `decision`, and §10 stops calling it an abstention
+
+**Contradiction:** this one *is* a contradiction, and it was created by a human
+ruling landing on a document that had not been updated for it.
+
+`shim.md` §10:
+
+> **Max in-flight heuristic queries** (start at 4). Beyond that, new queries
+> **abstain immediately** rather than queueing.
+
+`state/decisions/core-026.md`, answered:
+
+> `AbstainReason` is the **handler's** vocabulary [...] A shed query is not the
+> handler's event at all. [...] **accepted: D — a shed query is a disposition,
+> not an abstention reason.**
+
+So §10 instructs the implementation to do the one thing the ruling forbids.
+`core.md` §7 was stale in the matching way: "**`decision` has three values, not
+two**", written before there was a fourth.
+
+**Resolution:**
+
+* `core.md` §7 now says four values and adds the paragraphs for `shed`: why it
+  is not an `AbstainReason` (a sixth variant no handler could return, on a
+  frozen seam), why it is not `failed` (the column would call a working shim
+  broken), what it buys (`high-level.md` requires coverage lost to load to be
+  visible *as such*, which needs a rate of its own), where the two limits are
+  told apart (`stages`, as `shed:in_flight` / `shed:core_behind`), and that a
+  shed query's stratum columns are `null` under CHANGE-core-033's rule because
+  nothing ran.
+* `shim.md` §10's first limit now reads "are **shed** immediately", with a
+  sentence naming `core-026` as why the word changed.
+* `shim.md` §10's second limit gains what it never had: a note that "backed up"
+  is not "non-empty". This is the one place the change is driven by evidence
+  from the code rather than from the ruling, and it is worth being exact about.
+  The literal reading was implemented first, and
+  `the_loop_drains_its_channel_and_ends_when_the_wire_closes` failed on it at a
+  depth of *one* — an editor sends a `didOpen` and its request together, so the
+  literal rule sheds ordinary sessions. §10 names no threshold, so one had to
+  be chosen; it is 4, which is the number §10 itself gives for its other limit
+  and in the same "start at" spirit. §10 now says that, and says what makes it
+  a starting point rather than a guess: the shed rate is a column now, so the
+  cost is measurable.
+
+This is the trade being made rather than avoided, and it is stated so a human
+can rule on it: **a threshold that is not in the design has been chosen by this
+campaign.** It is not a metric target — nothing in `high-level.md` is computed
+from it — but it does decide how much coverage is given up under load, and 4 is
+a guess with an argument rather than a measurement. It was not escalated
+because `core-026`'s own "What is left" names building these two limits as the
+core loop's ordinary work, and a limit cannot be built without a number.
+
+**Campaign:** 32a9eaee-72c3-4048-84a9-b89fb1d6967f

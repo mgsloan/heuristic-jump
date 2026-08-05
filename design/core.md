@@ -1010,8 +1010,8 @@ LSP-latency value weighting. Everything from `stratum_prior` through
 resolution path produced the answer and what it cost; the driver classifies
 `agreement` and `severity`, since only it has both answers.
 
-**`decision` has three values, not two**: `committed`, `abstained`, and
-`failed`. The third is what the handler seam's `Result<Outcome, Error>`
+**`decision` has four values, not two**: `committed`, `abstained`, `failed`
+and `shed`. The third is what the handler seam's `Result<Outcome, Error>`
 ([section 1](#the-trait)) exists to make recordable. On the wire a failure is
 served as an abstention, because that is what is useful to a user; in the
 record it must not be one, or the per-stratum table cannot tell a hard
@@ -1019,6 +1019,37 @@ stratum from a broken handler. `failure` names the `Error` sub-enum that was
 converted — `"Parse"`, `"Project"`, `"Handler"` — and is `null` otherwise.
 The whole error is deliberately not carried: the class is what a metrics table
 can group on, and the detail is already in the log.
+
+**`shed` is the fourth and is the only one that is not the handler's.**
+[`shim.md` §10](shim.md#10-parallel-dispatch-and-resource-limits) gives the
+dispatch pool two limits beyond its size — a cap on queries in flight, and no
+heuristic work while `core` is behind on its inbox — and both are refusals to
+run the query at all. The other three all answer *what did the query say*, and
+a query that was never attempted says nothing.
+
+It is not an `AbstainReason`, and that is `core-026`, accepted on option D.
+`AbstainReason` is the *handler's* vocabulary — what the language said when it
+declined, which is why [section 1](#the-trait) can call four of its variants
+facts about the code and single out `Deadline` as the exception. A shed query
+is not the handler's event, and a sixth variant there would be one no handler
+can ever return, so every `lang_*` match would grow an arm for an unreachable
+case. Nor is it `failed`, which would make this column say a shim working
+exactly as designed was broken — the merge the paragraph above refuses.
+
+What it buys is a number. `high-level.md`'s posture is that blowing the budget
+must cost coverage and never correctness, and that is only auditable if the
+coverage lost *to load* is visible as such: a shed rate of its own, rather than
+a third meaning in a column `resolution.md` §8 built to separate "this class is
+hard" from "this handler is broken". Which limit fired goes in `stages`
+(`shed:in_flight`, `shed:core_behind`), beside the abstention reason and for
+the same reason a second column is not added for it — and the two are kept
+apart there because they are different findings, one saying this process is
+answering as many queries at once as it is willing to and the other that the
+prime invariant is under pressure.
+
+A shed query has no stratum, so its two stratum columns are `null` by the rule
+above. That is not a coincidence of two changes landing together: nothing
+classified it because nothing ran.
 
 **`position` is a byte offset**, like every other position inside the shim
 ([section 8](#8-protocol-types)). It is what `data-collection.md` records

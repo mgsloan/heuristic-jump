@@ -270,6 +270,33 @@ impl Answered {
             stage_us: BTreeMap::new(),
         }
     }
+
+    /// A query `shim.md` §10 refused to run — `core-026`, accepted on option D.
+    ///
+    /// Everything a handler would have reported is absent because there was no
+    /// handler: no stratum, because nothing classified anything; no trace,
+    /// because nothing ran; no locations, no confidence, no timings. The record
+    /// is the disposition and the reason, which is the whole of what is true.
+    ///
+    /// `high-level.md` requires that coverage lost to load be visible *as
+    /// such*, and this is what makes it so: the shed rate becomes its own
+    /// number rather than a third meaning in a column `resolution.md` §8 built
+    /// to separate "this class is hard" from "this handler is broken".
+    pub fn shed(reason: ShedReason) -> Self {
+        Self {
+            decision: Decision::Shed,
+            failure: None,
+            strata: None,
+            locations: Vec::new(),
+            confidence: None,
+            margin: None,
+            considered: None,
+            stages: vec![shed_label(reason)],
+            bytes_scanned: 0,
+            files_parsed: 0,
+            stage_us: BTreeMap::new(),
+        }
+    }
 }
 
 /// The oracle's half, once it is known.
@@ -362,14 +389,34 @@ impl Serialize for Mode {
     }
 }
 
-/// Three values, not two. On the wire a failure is served as an abstention,
+/// Four values, not two. On the wire a failure is served as an abstention,
 /// because that is what is useful to a user; in the record it must not be one,
 /// or the per-stratum table cannot tell a hard stratum from a broken handler.
+///
+/// [`Decision::Shed`] is the fourth and is `core-026`, accepted on option D. It
+/// is the one value here that is not the handler's: a shed query was never
+/// attempted, so it did not commit, decline or fail. The three alternatives the
+/// record weighed all answered "what does the query *say*" when the honest
+/// answer is that it says nothing.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Decision {
     Committed,
     Abstained,
     Failed,
+    /// `shim.md` §10's two limits refusing to run the query at all.
+    ///
+    /// Not an `AbstainReason`, which is `core-026`'s whole ruling.
+    /// `AbstainReason` is the *handler's* vocabulary — what the language said
+    /// when it declined — which is why `core.md` §1 can describe four of its
+    /// variants as facts about the code and single out `Deadline` as the
+    /// exception. A shed query is not the handler's event, and a sixth variant
+    /// there would be one no handler can ever return, so every `lang_*` match
+    /// would grow an arm for an unreachable case.
+    ///
+    /// Not `Failed` either: §7's `decision` column would then say `failed` for
+    /// a shim working exactly as designed, which is the merge this enum exists
+    /// to refuse.
+    Shed,
 }
 
 impl Serialize for Decision {
@@ -378,7 +425,39 @@ impl Serialize for Decision {
             Decision::Committed => "committed",
             Decision::Abstained => "abstained",
             Decision::Failed => "failed",
+            Decision::Shed => "shed",
         })
+    }
+}
+
+/// Which of `shim.md` §10's two limits refused the query.
+///
+/// They are different findings and a single shed rate would merge them: the cap
+/// says this process is answering as many queries at once as it is willing to,
+/// and the inbox check says `core` is behind on the traffic it must forward
+/// first. The second is the prime invariant and the more serious.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub enum ShedReason {
+    /// §10's "max in-flight heuristic queries (start at 4). Beyond that, new
+    /// queries abstain immediately rather than queueing."
+    InFlight,
+    /// §10's "no heuristic work while `core` is behind. If the event queue is
+    /// backed up, forwarding and state transitions take priority."
+    CoreBehind,
+}
+
+/// Which limit shed the query, in `stages`.
+///
+/// In `stages` rather than in a column of its own, for the reason
+/// [`abstain_label`] gives for putting the abstention reason there: a second
+/// reason column would be two vocabularies for one question, and the digest
+/// already groups on `stages`. That `stages` is elsewhere the handler's account
+/// of what it did is not contradicted here — there was no handler, and the one
+/// line in it says exactly that.
+pub fn shed_label(reason: ShedReason) -> Box<str> {
+    match reason {
+        ShedReason::InFlight => "shed:in_flight".into(),
+        ShedReason::CoreBehind => "shed:core_behind".into(),
     }
 }
 

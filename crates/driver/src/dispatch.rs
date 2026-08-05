@@ -13,6 +13,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use shared::proto::{PositionEncoding, WireLocation, WirePosition, WireRange};
+use shared::record::ShedReason;
 use shared::{
     ByteLen, CommitPolicy, Deadline, DocumentSnapshot, DocumentUri, DocumentVersion, EncodingError,
     Error, FileText, HandlerError, LanguageHandler, LanguageId, Map, Offset, Outcome, ProjectError,
@@ -142,6 +143,13 @@ pub enum Dispatched {
     /// abstention, with `AbstainReason::Deadline`.
     DeadlineExpired(Classified),
     Failed(Error),
+    /// `shim.md` §10 refused to run the query at all — `core-026`, option D.
+    ///
+    /// Here rather than beside the other two despite never passing through
+    /// [`dispatch`]: this enum is what a query's ending is from `core`'s side,
+    /// and `core` is where both limits are applied. There is no [`Classified`]
+    /// on it because nothing ran, and no [`Error`] because nothing failed.
+    Shed(ShedReason),
 }
 
 /// What had classified a query at the moment the deadline took its answer
@@ -213,9 +221,13 @@ impl Dispatched {
             }
             Dispatched::Decided(answer) => Dispatched::Decided(answer),
             // A failure is not an abstention and carries no stratum: §7 records
-            // it as `failed`, and `Answered::of` files it under the same
-            // placeholder for the same reason.
+            // it as `failed`, and `Answered::of` reports no strata for it for
+            // the same reason — the pair is on the `Outcome` the error is
+            // instead of.
             Dispatched::Failed(error) => Dispatched::Failed(error),
+            // Unreachable: a shed query never reaches `dispatch`, so nothing
+            // downstream of a handler can be attaching a classification to one.
+            Dispatched::Shed(reason) => Dispatched::Shed(reason),
         }
     }
 }
@@ -489,6 +501,10 @@ pub fn hard_cap(deadline: &Deadline, dispatched: Dispatched) -> Dispatched {
         }
         Dispatched::DeadlineExpired(classified) => Dispatched::DeadlineExpired(classified),
         Dispatched::Failed(error) => Dispatched::Failed(error),
+        // Nothing was dispatched, so there is no answer for the cap to drop and
+        // no lateness to report: the query was refused before its budget was
+        // ever spent on it.
+        Dispatched::Shed(reason) => Dispatched::Shed(reason),
     }
 }
 

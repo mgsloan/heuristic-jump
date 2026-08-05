@@ -84,11 +84,19 @@ pub(crate) struct Unclassified {
     committed: u64,
     abstained: u64,
     failed: u64,
+    /// `shim.md` §10 refusing to run the query — `core-026`, option D.
+    ///
+    /// Here rather than in a row for the strongest form of the reason the rest
+    /// of this struct is: a shed query was never *attempted*, so it has no
+    /// stratum in the way nothing about it is known. `high-level.md` asks that
+    /// coverage lost to load be visible as such, and this is the number that
+    /// makes it so.
+    shed: u64,
 }
 
 impl Unclassified {
     fn total(&self) -> u64 {
-        self.committed + self.abstained + self.failed
+        self.committed + self.abstained + self.failed + self.shed
     }
 }
 
@@ -221,6 +229,7 @@ impl Table {
                 Decision::Committed => self.unclassified.committed += 1,
                 Decision::Abstained => self.unclassified.abstained += 1,
                 Decision::Failed => self.unclassified.failed += 1,
+                Decision::Shed => self.unclassified.shed += 1,
             }
             // `judged` is dropped with it, and can only be `None` here: a
             // verdict is minted for a commit, and a commit carries the `Outcome`
@@ -233,6 +242,12 @@ impl Table {
                 Decision::Committed => row.committed += 1,
                 Decision::Abstained => row.abstained += 1,
                 Decision::Failed => row.failed += 1,
+                // Taken by the branch above and unreachable here: a shed query
+                // was never run, so nothing classified it and it arrives with
+                // no strata. There is no `shed` column because a shed query
+                // belongs to no stratum, ever — giving the rows one would be
+                // making room for a state that cannot occur.
+                Decision::Shed => {}
             }
         }
 
@@ -349,10 +364,11 @@ impl Table {
         );
         let _ = writeln!(
             text,
-            "queries no stratum was assigned to: {} ({} abstained, {} failed)",
+            "queries no stratum was assigned to: {} ({} abstained, {} failed, {} shed)",
             self.unclassified.total(),
             self.unclassified.abstained,
-            self.unclassified.failed
+            self.unclassified.failed,
+            self.unclassified.shed
         );
         let _ = writeln!(text, "template handler: {}", self.template().as_str());
         text

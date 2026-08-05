@@ -46,7 +46,9 @@ use shared::proto::{
     DefinitionParams, DefinitionResult, NotifiedDocument, PositionEncoding, ShowMessageParams,
     WireLocation,
 };
-use shared::record::{Answered, ChildAnswer, QueryContext, QueryRecord, definition_labels, micros};
+use shared::record::{
+    Answered, ChildAnswer, QueryContext, QueryRecord, ShedReason, definition_labels, micros,
+};
 use shared::{
     Clock, CommitPolicy, Deadline, DocumentNotification, DocumentUri, EditorRequestId, Error,
     InputEdit, Map, Micros, Outcome,
@@ -147,6 +149,49 @@ struct Negotiated {
     encoding: PositionEncoding,
 }
 
+/// Whether `core` is keeping up with what feeds it — `shim.md` §10's "no
+/// heuristic work while `core` is behind. If the event queue is backed up,
+/// forwarding and state transitions take priority. The prime invariant again."
+///
+/// An enum and not the depth, because nothing downstream wants the number: the
+/// question at the dispatch site is whether to do heuristic work at all, and a
+/// call site reading `if depth > 0` is one that has to re-derive the rule.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+enum CoreLoad {
+    Keeping,
+    Behind,
+}
+
+/// How many events have to be waiting before §10's "the event queue is backed
+/// up" is true.
+///
+/// **The literal reading — any waiting event at all — was tried and is wrong**,
+/// and the evidence is in the suite rather than in an argument.
+/// `the_loop_drains_its_channel_and_ends_when_the_wire_closes` queues an
+/// ordinary session and runs the loop over it: the negotiation, a `didOpen`, the
+/// definition request, the child's answer. By the time the request is handled
+/// the child's answer is already waiting, so the depth is one and the query is
+/// shed — and that batch is not a backlog, it is what an editor sends. A reader
+/// thread that takes two frames in one read produces it.
+///
+/// So a number is needed and §10 gives none. This is 4, which is the value §10
+/// does give for its other limit and in the same spirit: *start* at it. What
+/// makes that a starting point rather than a guess is `core-026` — §7's record
+/// carries `decision: "shed"` with `shed:core_behind`, so what this rule costs
+/// in coverage is something a corpus run reports. Before that it was
+/// unmeasurable, which is much of why the limit went unbuilt.
+pub const INBOX_BACKED_UP: usize = 4;
+
+impl CoreLoad {
+    fn of(depth: usize) -> Self {
+        if depth >= INBOX_BACKED_UP {
+            Self::Behind
+        } else {
+            Self::Keeping
+        }
+    }
+}
+
 /// A query the pool still holds.
 #[derive(Debug)]
 struct InFlight {
@@ -236,6 +281,17 @@ pub struct Actor {
     in_flight: Map<EditorRequestId, InFlight>,
     negotiated: Option<Negotiated>,
     debounce: DebounceMs,
+    /// What [`Actor::run`] last saw waiting in the inbox, for `shim.md` §10's
+    /// "no heuristic work while `core` is behind".
+    ///
+    /// A field refreshed by the loop rather than a parameter on
+    /// [`Actor::handle`], because it is not a property of the event: it is the
+    /// state of the thing feeding `core`, which is exactly the state this actor
+    /// owns. A test that drives `handle` without the loop therefore sees
+    /// [`CoreLoad::Keeping`], which is the truth for a test with no inbox — and
+    /// a test that *wants* to be behind fills the channel and runs the loop,
+    /// which is the only way to be behind for real.
+    load: CoreLoad,
     /// Always empty, and it is a field rather than a literal so that the day it
     /// stops being empty there is one place to fill.
     ///
@@ -276,6 +332,7 @@ impl Actor {
             policy: Arc::new(CommitPolicy::permissive()),
             workers,
             in_flight: Map::default(),
+            load: CoreLoad::Keeping,
             negotiated: None,
             debounce: DebounceMs::RESCAN,
             edits: Arc::new(Vec::new()),
@@ -363,6 +420,10 @@ impl Actor {
             if depth > 0 {
                 tracing::debug!(depth, "core is behind its inbox");
             }
+            // §10's second limit, read here and applied in `requested`: this is
+            // the only place the inbox is visible, and the depth has to be the
+            // one as of dispatch rather than as of the return.
+            self.load = CoreLoad::of(depth);
             self.handle(event)?;
         }
     }
@@ -611,6 +672,43 @@ impl Actor {
             return Ok(());
         }
 
+        // §10's two additional limits, both refusals to run the query, and both
+        // buildable only since `core-026` gave a refusal something to say.
+        //
+        // Before the handler lookup and before the seed, because the point of
+        // shedding is not to do the work: building a seed is three refcount
+        // bumps, but walking the file list for a `ProjectView` is not, and
+        // neither is holding a snapshot and a deadline for as long as the
+        // slowest query in flight.
+        //
+        // Recorded rather than dropped. A shed query is coverage lost to load,
+        // and `high-level.md` asks that it be visible as such — so it takes
+        // §7's row like any other ending, with `queued_us` measured to here and
+        // an elapsed of zero, which is true: nothing ran.
+        let shed = if self.load == CoreLoad::Behind {
+            Some(ShedReason::CoreBehind)
+        } else if self.in_flight.len() >= self.config.max_in_flight().get() {
+            Some(ShedReason::InFlight)
+        } else {
+            None
+        };
+        if let Some(reason) = shed {
+            let asked = Asked {
+                editor_id,
+                uri,
+                position,
+                language: document.language_id(),
+                arrived,
+            };
+            self.settle(
+                &asked,
+                Dispatched::Shed(reason),
+                micros(self.clock.now().saturating_duration_since(arrived)),
+                Micros(0),
+            );
+            return Ok(());
+        }
+
         let Some(handler) = self
             .registry
             .for_language_id(document.language_id().as_str())
@@ -839,6 +937,19 @@ impl Actor {
             Dispatched::Failed(error) => {
                 tracing::warn!(%error, "a query failed; the shim stays quiet");
                 Answered::of(Err(error))
+            }
+            // `shim.md` §10 refused it. Silence on the wire like an abstention
+            // — there is nothing to say, and in proxy mode the child answers —
+            // but emphatically not an abstention in the record: `core-026`
+            // rules that a shed query says nothing because it was never
+            // attempted, and `high-level.md` wants coverage lost to load
+            // visible as such rather than mixed into a reason column.
+            //
+            // `debug` and not `warn`: shedding is §10 working, not failing. The
+            // rate is §7's to report.
+            Dispatched::Shed(reason) => {
+                tracing::debug!(?reason, "a query was shed; the shim stays quiet");
+                Answered::shed(reason)
             }
         }
     }
