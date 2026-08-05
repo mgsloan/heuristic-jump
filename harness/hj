@@ -7684,7 +7684,65 @@ def _selftest_adapter_cost(events: list[dict]) -> dict:
         os.unlink(path)
 
 
+def worktree_roots() -> list[Path]:
+    """Every checkout a live loop branch is currently in, integration first.
+
+    Read from git rather than from `state/phase.toml`'s `worktree`, which gives
+    the stem a worker number is appended to and would have to be re-derived
+    here; `git worktree list` already knows what exists.
+    """
+    roots = [CONTROL]
+    for line in git("worktree", "list", "--porcelain", check=False).splitlines():
+        if line.startswith("worktree "):
+            root = Path(line.split(" ", 1)[1]).resolve()
+            if root not in roots:
+                roots.append(root)
+    return roots
+
+
 def cmd_selftest(args: argparse.Namespace) -> int:
+    """`harness-011`: `--across-worktrees` is the convention made runnable.
+
+    Gate step 3 runs *this* copy of the selftest against whichever tree
+    `HJ_REPO` names, so a case that reads `HARNESS` asserts about the candidate
+    rather than about itself. That is what the three surviving `HARNESS` reads
+    are for — they catch a campaign introducing a defect. It is also how two
+    cases came to fail every branch at once: they encoded a requirement added
+    in the integration checkout, and `harness/gate` is denied to every loop, so
+    no branch could satisfy it and green-or-revert had no green to revert to.
+
+    The record's option B was "assert only what every live branch already
+    satisfies", and its own stated cost is that conventions are what failed
+    twice. This makes the question decidable instead: run the checks against
+    every checkout and see. It is what to run before committing a selftest
+    case that reads `HARNESS`.
+    """
+    if getattr(args, "across_worktrees", False):
+        failures = 0
+        for root in worktree_roots():
+            environment = {**os.environ, "HJ_REPO": str(root)}
+            result = subprocess.run(
+                [str(PINNED_HARNESS / "hj"), "selftest"],
+                capture_output=True,
+                text=True,
+                check=False,
+                env=environment,
+            )
+            tail = (result.stdout + result.stderr).strip().splitlines()
+            print(f"{root.name}: {tail[-1] if tail else 'no output'}")
+            if result.returncode:
+                failures += 1
+                for line in tail[:-1]:
+                    print(f"    {line}")
+        if failures:
+            print(
+                f"selftest: the reviewed checks fail in {failures} checkout(s). A case that "
+                "reads HARNESS asserts about the tree being judged, so it fails every branch "
+                "that has not merged what it encodes — see state/decisions/harness-011.md.",
+                file=sys.stderr,
+            )
+            return 1
+        return 0
     cases = selftest_cases()
     failed = []
     for name, case in cases:
@@ -7976,6 +8034,11 @@ def main() -> int:
     p.set_defaults(run=cmd_estimates)
 
     p = sub.add_parser("selftest", help="gate step: hj's own parsing and arithmetic still hold")
+    p.add_argument(
+        "--across-worktrees",
+        action="store_true",
+        help="run these checks against every checkout; run before committing a case that reads HARNESS",
+    )
     p.set_defaults(run=cmd_selftest)
 
     p = sub.add_parser("budget", help="spend against each ceiling; exit 1 when one is reached")

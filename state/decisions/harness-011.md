@@ -1,6 +1,6 @@
 ---
 id: harness-011
-status: open
+status: accepted
 opened: 2026-08-04T21:45:00+00:00
 campaign: 2e588730-78d0-4235-ad89-afebe7ddcdea
 kind: class-b
@@ -63,7 +63,51 @@ runs everywhere.
 
 ## Decision
 
-Undecided — waiting on a human.
+**accepted: A for a check that encodes a change, and option B's convention made
+runnable rather than trusted**, answered 2026-08-04 and logged as a
+`decision-answered` intervention, which is what makes it answered —
+`design/loops.md` §16 derives the status from the log rather than from this line.
+
+Two halves, because the record's three options each answer a different half.
+
+**A, for the checks that caused this.** A case asserting how two harness files
+agree with each other is asserting about the *reviewed* pair, and reads
+`PINNED_HARNESS` — the directory the running file is actually in. `harness/gate`
+is denied to every loop, so a branch carrying an older copy is behind rather
+than broken, and failing it for that is failing a campaign for something it is
+forbidden to fix.
+
+**Not A everywhere**, which is where the record's stated cost bites. Three
+selftest cases read `HARNESS` deliberately and should keep doing so:
+`tuple_returning_misuse`, the prompt-shape check, and the tag-fixture region
+check all assert invariants that every live branch already satisfies, so reading
+the candidate tree is exactly where their value is — they catch a campaign
+introducing the defect. Blanket A would silently retire them.
+
+**B's rule is right and B's mechanism is not.** "Assert only what every live
+branch already satisfies" is the correct boundary; relying on an author to
+remember it is what failed twice, and the record says so itself. So it is now a
+command: `hj selftest --across-worktrees` runs the reviewed checks against every
+checkout `git worktree list` knows about and names the ones that fail. "Would
+this fail a branch that predates it" stops being undecidable and becomes
+something to run before committing a case that reads `HARNESS`.
+
+C is rejected: a real regression that happens to differ across the two copies
+would stop failing the gate, and step 3 is the one step that runs everywhere.
+
+### Verified rather than asserted
+
+With the fix in place, all five checkouts pass. With one check reverted to
+`HARNESS` in a scratch copy, `--across-worktrees` fails, names
+`heuristic-jump-core-2`, and prints the assertion — which is the failure this
+record was raised about, reproduced on demand.
+
+### What is left
+
+The harness loop's: `design/loops.md` §13 and `harness/readme.md` both warn that
+a check reaching through `HJ_REPO` tests the candidate tree, and neither says
+what to do about it. They should name `PINNED_HARNESS`, the three deliberate
+exceptions, and the command.
 
 ## Provisional choice in force
 
