@@ -3190,6 +3190,13 @@ fn our_log_lines_are_distinguishable_and_the_subscriber_is_installed_once() {
          panel, and a `measure` run's is not read that way"
     );
 
+    // §9's premise for choosing `tracing` at all — "`rope` and `sum_tree`
+    // depend on it, so it is in the graph regardless" — is deliberately not
+    // asserted here. Both vendored crates `use tracing::instrument`, so
+    // dropping the declaration is a build failure rather than a silent drift,
+    // and an assertion that cannot fail without the build failing first is one
+    // that tells a future re-sync nothing it would not already be told.
+
     for member in INSTALLS_THE_SUBSCRIBER {
         let source = crate_source(member);
         for literal in ["EnvFilter::new(\"", "EnvFilter::try_new(\""] {
@@ -3331,6 +3338,16 @@ fn every_subscriber_we_install_writes_through_the_prefix() {
                 "{member} writes through `{argument}`, whose Writer is `{writer}` rather than a \
                  PrefixedWriter: deps.md §9 requires the prefix of every line we emit, and both \
                  processes forward a language server's stderr into the stream they log to"
+            );
+            // The destination and not just the wrapper, because §9 names it —
+            // "writing to **stderr**" — and getting it wrong is not untidy
+            // output: stdout is the JSON-RPC frame stream, so a subscriber
+            // pointed there corrupts the protocol rather than the log.
+            assert!(
+                writer.contains("Stderr"),
+                "{member} logs to `{writer}` rather than to stderr. deps.md §9 names stderr, and \
+                 clippy.toml's second group says why it is not a preference: stdout IS the \
+                 JSON-RPC wire, and a log line on it is a frame nobody can parse"
             );
         }
     }
