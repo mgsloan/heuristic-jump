@@ -43,6 +43,13 @@ from pathlib import Path
 # `harness/` makes necessary again).
 REPO = Path(os.environ.get("HJ_REPO") or Path(__file__).resolve().parent.parent).resolve()
 HARNESS = REPO / "harness"
+# The harness directory this file is actually in, which under gate step 3 is
+# the *reviewed* copy while `HARNESS` is the worktree being judged. A selftest
+# that asserts how two harness files agree with each other must use this one:
+# `harness/gate` is denied to every loop, so a branch that has not merged main
+# yet carries an older copy, and asserting against it fails a campaign for
+# something it is forbidden to fix. See `state/decisions/harness-011.md`.
+PINNED_HARNESS = Path(__file__).resolve().parent
 # Desired state, which is control rather than history and must have one
 # answer for the whole fleet. A worker reads `state/phase.toml` from its own
 # branch otherwise, so pausing the integration checkout does not stop it and
@@ -7429,7 +7436,7 @@ def selftest_cases() -> list[tuple[str, object]]:
         # the failure would surface as the first cost-phase campaign's gate
         # dying on an unrecognised subcommand. `harness-008` is the record; the
         # step spent a whole phase hard-failing before anyone looked.
-        gate = (HARNESS / "gate").read_text()
+        gate = (PINNED_HARNESS / "gate").read_text()
         assert '"$hj" check-ratchets "$loop"' in gate, (
             "step 5 no longer calls check-ratchets; see state/decisions/harness-008.md"
         )
@@ -7440,7 +7447,7 @@ def selftest_cases() -> list[tuple[str, object]]:
         # It ran from `check-metrics` too while step 5 could not call it. Two
         # routes meant a loop could be failed twice for one regression, and the
         # answer to `harness-008` was explicit that the second goes away.
-        source = (HARNESS / "hj").read_text()
+        source = (PINNED_HARNESS / "hj").read_text()
         first, past = selftest_line_range(source)
         callers = [
             number
