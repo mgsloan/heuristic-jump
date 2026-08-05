@@ -322,6 +322,36 @@ better at refining. An axis is weighted by its own denominator — coverage by
 different rows. And percentiles are nearest-rank, so they only ever return an
 observation; a corpus stratum can hold eleven queries.
 
+### Several servers, one row, one frontier
+
+§10 keeps metrics "per (language, server)" and
+`#several-servers-do-not-mean-several-loops` says what that buys: shared
+handler logic is evaluated where every server for the language agrees and
+*that* is the frontier, still one per language and still 2D; a server's own
+numbers are measured where the servers differ and are reported beside it. So
+each replay argument takes an optional `<server>=` prefix, and each may be
+repeated:
+
+```sh
+harness/hj record lang-python --replay-report        /tmp/agreed.json  \
+                              --replay-report pyright=/tmp/pyright.json \
+                              --replay-report pylsp=/tmp/pylsp.json
+```
+
+Bare is the shared surface and lands where it always did. Prefixed lands under
+`servers.<name>`, and the name is resolved against `servers.toml` — a typo'd
+server is otherwise a new series indistinguishable from a real one.
+
+**Two rules that are easy to get backwards.** With exactly one server the row
+is *unchanged in shape*: the section says every position is then trivially
+unanimous, so that server's surface is promoted to the shared one and Rust and
+Go never see any of this. With two or more and no bare report, the row carries
+**no frontier position at all** — `record`, `hj frontier` and the dashboard
+each say so rather than going quiet. The agreement subset is a join over
+positions and only `measure replay` can compute it; merging two servers'
+aggregate reports here would be the average the section says never to take,
+wearing a frontier point's clothes.
+
 ## Binary size is two numbers, and only one of them is cheap
 
 `design/loops.md` §11 keeps them apart and so does the harness.

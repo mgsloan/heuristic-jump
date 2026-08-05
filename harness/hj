@@ -60,6 +60,11 @@ PINNED_HARNESS = Path(__file__).resolve().parent
 CONTROL = Path(os.environ.get("HJ_CONTROL") or REPO).resolve()
 STATE = REPO / "state"
 DESIGN = REPO / "design"
+# The server matrix, `design/phases.md` §1c. Read and never written: the file
+# "names the oracle every language loop is scored against, and a loop that
+# could edit it could choose its own examiner", so it is where the harness
+# learns which server names are real rather than keeping a second list.
+SERVERS = REPO / "servers.toml"
 
 # Denied to every loop in every phase, and deliberately a constant here
 # rather than a row in `state/phase.toml`: the ownership table is data the
@@ -2685,40 +2690,207 @@ def cmd_check_ratchets(args: argparse.Namespace) -> int:
     return check_size_ratchet(config, phase)
 
 
-def replay_fields(args: argparse.Namespace) -> dict:
-    """The half of §10's row that a corpus run produces, when one has run.
+# --------------------------------------------------------------------------
+# §10's other dimension: "metrics still per (language, server)".
+#
+# A language is still one loop and one metrics file — `#several-servers-do-not-
+# mean-several-loops` argues that out at length, and the earlier revision that
+# gave each server its own loop produced "a loop with almost no legal move".
+# What the section keeps from the split is an *evaluation* rule, and it is the
+# rule that decides this row's shape:
+#
+# * Shared handler logic is evaluated "on the positions where *every* server
+#   for that language agrees … and it is **the frontier** — one per language,
+#   still 2D". That is the unprefixed surface below, and it is the only one
+#   `frontier_axes_of` ever sees.
+# * A `ServerProfile` is evaluated "on the positions where servers differ,
+#   against that server alone", and those numbers are "*reported beside* the
+#   frontier, the same treatment containment and result count get". That is
+#   `servers` below.
+#
+# What the harness deliberately does not do is synthesise the first from the
+# second. The agreement subset is a join over positions, which only
+# `measure_core` can compute — it is the thing that enumerates them once per
+# language precisely so the servers' answers are joinable (`positions.rs`). Two
+# servers' aggregate reports merged here would be the average the section says
+# never to take, and it would be an average wearing a frontier point's clothes.
+# So with two servers and no agreement report the row carries no frontier
+# position at all, and `record` says why.
+#
+# For a language with one usable server — Rust, Go — "every position is
+# trivially unanimous, there is no profile, and none of this machinery does
+# anything", so that server's own surface *is* the shared one and is promoted
+# to it. That is the section's stated intended behaviour rather than a special
+# case, and it is what keeps a single-server row identical in shape to every
+# row recorded before this existed.
 
-    Absent rather than null when it has not, which is the same rule `binary`
+
+def servers_for_language(language: str) -> list[str]:
+    """The `servers.toml` keys that serve one language, in name order.
+
+    Empty for a language the matrix does not name, and empty when the file is
+    absent — which is what a checkout without the corpus repository beside it
+    looks like. Both are reported by the caller rather than treated as "no
+    server named is fine", since a run that produced numbers against something
+    is a run whose something has a name.
+    """
+    if not SERVERS.exists():
+        return []
+    table = tomllib.loads(SERVERS.read_text()).get("server") or {}
+    return sorted(
+        name
+        for name, entry in table.items()
+        if isinstance(entry, dict) and language in (entry.get("languages") or [])
+    )
+
+
+def replay_source(value: str) -> tuple[str | None, str]:
+    """`--replay-report PATH`, or `--replay-report <server>=PATH`.
+
+    A `servers.toml` key never contains `/`, and a path routinely does, so a
+    path with an `=` in it is not mistaken for a prefix.
+    """
+    server, separator, rest = value.partition("=")
+    if separator and server and "/" not in server:
+        return server, rest
+    return None, value
+
+
+def replay_surfaces(args: argparse.Namespace) -> dict[str | None, dict]:
+    """`record`'s replay arguments, grouped by the server each was run against.
+
+    `None` is the shared surface. Three arguments per surface because
+    `measure replay` writes two files — `--format json` on stdout and
+    `--records <path>` beside it — and knows the duration of neither:
+    `measure_core` keeps every clock out of the table it prints, so the wall
+    clock is only ever known to whoever ran it.
+    """
+    grouped: dict[str | None, dict] = {}
+    for attribute, key in (
+        ("replay_report", "report"),
+        ("replay_records", "records"),
+        ("replay_seconds", "seconds"),
+    ):
+        for value in getattr(args, attribute, None) or []:
+            server, rest = replay_source(str(value))
+            grouped.setdefault(server, {})[key] = rest
+    return grouped
+
+
+def replay_argument_problems(
+    surfaces: dict[str | None, dict], language: str | None
+) -> list[str]:
+    """What is wrong with `record`'s replay arguments, before any row is written.
+
+    Server names are checked rather than trusted because the failure is silent
+    otherwise: a typo'd name is a new series that looks like a server nobody
+    has replayed in a while, and the row it lands in is indistinguishable from
+    a real one. `servers.toml` is in no loop's write list — it "names the
+    oracle every language loop is scored against" — which is what makes it the
+    place to learn the names from rather than a second list here.
+
+    The duration is checked in the same pass because `--replay-seconds` stopped
+    being `type=float` when it gained a prefix, and an argument that used to
+    fail in argparse must not start failing in the middle of `record` with the
+    row half built.
+    """
+    problems = []
+    for name, surface in sorted(surfaces.items(), key=lambda pair: pair[0] or ""):
+        seconds = surface.get("seconds")
+        if seconds is not None:
+            try:
+                float(seconds)
+            except ValueError:
+                where = f"{name}=" if name else ""
+                problems.append(f"--replay-seconds {where}{seconds} is not a number")
+    named = sorted(name for name in surfaces if name is not None)
+    if not named:
+        return problems
+    if not language:
+        return problems + [
+            f"{name}: this loop declares no language, so there is no server matrix "
+            "to resolve it against"
+            for name in named
+        ]
+    known = servers_for_language(language)
+    if not known:
+        return problems + [
+            f"{name}: servers.toml names no server for {language}" for name in named
+        ]
+    return problems + [
+        f"{name}: not a servers.toml server for {language} ({', '.join(known)})"
+        for name in named
+        if name not in known
+    ]
+
+
+def digest_surface(surface: dict) -> dict:
+    """One surface's half of §10's row, out of what `measure replay` wrote.
+
+    Absent rather than null when nothing ran, which is the same rule `binary`
     already follows: a row from before this existed and a row from a commit
     nobody replayed are the same shape, and neither is the same shape as a row
     that measured and found nothing.
-
-    Both files come from one `measure replay` — `--format json` on stdout and
-    `--records <path>` beside it — so they are two arguments rather than one.
-    `--replay-seconds` is separate again because `measure_core` deliberately
-    keeps every clock out of the table it prints, so the duration is only ever
-    known to whoever ran it.
     """
     fields: dict = {}
     strata: list[dict[str, dict]] = []
-    if getattr(args, "replay_report", None):
-        report = json.loads(Path(args.replay_report).read_text())
+    if surface.get("report"):
+        report = json.loads(Path(surface["report"]).read_text())
         strata.append(report_strata(report))
         if isinstance(report.get("uncollected"), int):
             fields["uncollected"] = report["uncollected"]
-    if getattr(args, "replay_records", None):
-        digest = replay_digest(read_jsonl(Path(args.replay_records)))
+    if surface.get("records"):
+        digest = replay_digest(read_jsonl(Path(surface["records"])))
         strata.append(digest.pop("strata"))
         fields["replay"] = digest
-    if getattr(args, "replay_seconds", None) is not None:
-        fields.setdefault("replay", {})["wall_clock_seconds"] = args.replay_seconds
+    if surface.get("seconds") is not None:
+        fields.setdefault("replay", {})["wall_clock_seconds"] = float(surface["seconds"])
     if strata:
         fields["strata"] = merge_strata(*strata)
     return fields
 
 
+def replay_row_fields(shared: dict, named: dict[str, dict]) -> dict:
+    """§10's replay half, assembled from surfaces that have already been digested.
+
+    Separate from the digesting so that what the section actually decides —
+    which surface the frontier reads — is one short function rather than
+    something only a corpus run can exercise.
+    """
+    if not shared and len(named) == 1:
+        # Deep-copied rather than aliased, so that a later edit to the row does
+        # not reach into the per-server entry it was promoted from and leave
+        # two fields that are supposed to be independent sharing one dict.
+        shared = json.loads(json.dumps(next(iter(named.values()))))
+    return dict(shared, servers=named) if named else shared
+
+
+def replay_fields(surfaces: dict[str | None, dict]) -> dict:
+    """The half of §10's row that a corpus run produces, when one has run."""
+    return replay_row_fields(
+        digest_surface(surfaces.get(None) or {}),
+        {
+            name: digest_surface(surface)
+            for name, surface in sorted(surfaces.items(), key=lambda pair: pair[0] or "")
+            if name is not None
+        },
+    )
+
+
 def cmd_record(args: argparse.Namespace) -> int:
     phase, config = loop_config(args.loop)
+    surfaces = replay_surfaces(args)
+    problems = replay_argument_problems(surfaces, config.language)
+    if problems:
+        for problem in problems:
+            print(f"metrics: {problem}", file=sys.stderr)
+        print(
+            "metrics: design/loops.md section 10 keeps metrics per (language, server), "
+            "so a `<server>=` prefix has to name a server the matrix has. Nothing was "
+            "appended.",
+            file=sys.stderr,
+        )
+        return 1
     target = last_loop_commit(config.owner) or head_sha()
     if target in {row.get("commit") for row in read_jsonl(metrics_path(config.owner))}:
         print(f"metrics: {target[:12]} is already recorded; nothing appended")
@@ -2742,7 +2914,23 @@ def cmd_record(args: argparse.Namespace) -> int:
         "tests_removed": removed_tests_in(target, crate_paths(config))[:20],
         "provisional_decisions": provisional_decisions(),
     }
-    row.update(replay_fields(args))
+    row.update(replay_fields(surfaces))
+    # The one case where a row that measured plenty still carries no frontier
+    # position. Said out loud because the alternative is a series that silently
+    # stops producing points, which reads exactly like a loop that stopped
+    # making progress.
+    if "servers" in row and "strata" not in row:
+        print(
+            "metrics: "
+            + ", ".join(sorted(row["servers"]))
+            + " were replayed and none of them is the shared surface, so this row "
+            "carries no frontier position. design/loops.md section 10 puts the "
+            "frontier over the positions where every server agrees and says never to "
+            "average two servers, and the agreement subset is a join over positions "
+            "that only `measure replay` can compute. Pass it unprefixed when it "
+            "exists.",
+            file=sys.stderr,
+        )
     # §11's first of two numbers, and the only one a loop can compute in
     # isolation. Absent for a loop with no language rather than null, so that a
     # row from before this existed and a row that could not measure are not the
@@ -6344,10 +6532,21 @@ def cmd_frontier(args: argparse.Namespace) -> int:
         rows = [row for row in read_jsonl(metrics_path(owner)) if row.get("phase") == wanted]
         points = frontier_points(rows)
         if not points:
-            print(
+            line = (
                 f"frontier: {owner}: nothing to compare — {len(rows)} row(s) in phase "
                 f"{wanted}, none carrying both of {' and '.join(FRONTIER_AXES)}"
             )
+            # The one absence that is not "nobody replayed this". Distinguished
+            # because the remedy is different: a row replayed against two
+            # servers and no agreement report is a row whose shared surface was
+            # never produced, not one whose loop stopped measuring.
+            unshared = sum(1 for row in rows if row.get("servers") and "strata" not in row)
+            if unshared:
+                line += (
+                    f"; {unshared} of them carry per-server numbers only, and the "
+                    "frontier is over the positions where every server agrees"
+                )
+            print(line)
             continue
         print(
             f"frontier: {owner}: {len(points)} of {len(rows)} row(s) in phase {wanted} "
@@ -6368,6 +6567,18 @@ def cmd_frontier(args: argparse.Namespace) -> int:
                     f"{name} {value:g}" for name, value in beside.items()
                 )
             print(line)
+            # A server's own numbers get "the same treatment containment and
+            # result count get" — printed under the point and never compared
+            # with it, since they are measured on the positions where the
+            # servers differ and no two servers' sets are the same one.
+            for name, entry in sorted((point.get("servers") or {}).items()):
+                numbers = [
+                    f"{axis} {value:.4f}"
+                    for axis in FRONTIER_AXES
+                    if (value := stratum_mean(entry, axis)) is not None
+                ]
+                if numbers:
+                    print(f"    beside, on its own positions: {name}  " + "  ".join(numbers))
     return 0
 
 
@@ -8144,10 +8355,12 @@ def selftest_cases() -> list[tuple[str, object]]:
             report_path.write_text(json.dumps(report))
             records_path.write_text(json.dumps(records[0]) + "\n")
             fields = replay_fields(
-                argparse.Namespace(
-                    replay_report=str(report_path),
-                    replay_records=str(records_path),
-                    replay_seconds=41.5,
+                replay_surfaces(
+                    argparse.Namespace(
+                        replay_report=[str(report_path)],
+                        replay_records=[str(records_path)],
+                        replay_seconds=["41.5"],
+                    )
                 )
             )
         assert fields["uncollected"] == 3
@@ -8164,9 +8377,87 @@ def selftest_cases() -> list[tuple[str, object]]:
 
     def a_row_from_a_commit_nobody_replayed_carries_no_replay_key():
         empty = argparse.Namespace(replay_report=None, replay_records=None, replay_seconds=None)
-        assert replay_fields(empty) == {}, (
+        assert replay_fields(replay_surfaces(empty)) == {}, (
             "absent rather than null, so a row from before this existed and a "
             "row nobody replayed are the same shape"
+        )
+
+    def a_prefix_names_a_server_and_a_path_with_an_equals_in_it_does_not():
+        assert replay_source("pyright=/tmp/report.json") == ("pyright", "/tmp/report.json")
+        assert replay_source("/tmp/report.json") == (None, "/tmp/report.json")
+        assert replay_source("/tmp/a=b/report.json") == (None, "/tmp/a=b/report.json"), (
+            "a servers.toml key never contains a slash and a path routinely does"
+        )
+        assert replay_source("=/tmp/report.json") == (None, "=/tmp/report.json")
+        arguments = argparse.Namespace(
+            replay_report=["shared.json", "pyright=py.json"],
+            replay_records=["pyright=py.jsonl"],
+            replay_seconds=["12", "pyright=30"],
+        )
+        assert replay_surfaces(arguments) == {
+            None: {"report": "shared.json", "seconds": "12"},
+            "pyright": {"report": "py.json", "records": "py.jsonl", "seconds": "30"},
+        }
+
+    def one_servers_numbers_are_the_shared_surface_and_two_servers_are_not():
+        # §10, "several servers do not mean several loops". For a language with
+        # one usable server "every position is trivially unanimous, there is no
+        # profile, and none of this machinery does anything" — so that server's
+        # surface *is* the frontier's, and the row keeps the shape every row
+        # recorded before this existed has.
+        one = {"strata": {"a": {"n": 10, "judged": 8, "top1": 0.75, "coverage": 0.8}}}
+        assert replay_row_fields({}, {}) == {}, "a commit nobody replayed is unchanged"
+        promoted = replay_row_fields({}, {"gopls": one})
+        assert frontier_axes_of(promoted) == {"top1": 0.75, "coverage": 0.8}, promoted
+        promoted["strata"]["a"]["top1"] = 0.1
+        assert promoted["servers"]["gopls"]["strata"]["a"]["top1"] == 0.75, (
+            "promoted and not aliased: an edit to the row must not reach into "
+            "the per-server entry it was copied from"
+        )
+
+    def two_servers_never_average_into_one_frontier_point():
+        # The section says "never average the two", and the agreement subset it
+        # does want is a join over positions that only `measure replay` can
+        # compute. A row that carried a mean of two servers' strata would be
+        # that average wearing a frontier point's clothes.
+        one = {"strata": {"a": {"n": 10, "judged": 8, "top1": 0.75, "coverage": 0.8}}}
+        other = {"strata": {"a": {"n": 10, "judged": 8, "top1": 0.55, "coverage": 0.9}}}
+        two = replay_row_fields({}, {"pyright": one, "pylsp": other})
+        assert frontier_axes_of(two) is None, (
+            "with no agreement report there is no shared surface, and the row "
+            "carries no frontier position rather than a synthesised one"
+        )
+        assert sorted(two["servers"]) == ["pylsp", "pyright"], two
+        assert frontier_points([dict(two, commit="x")]) == [], (
+            "and the point does not arrive later through the frontier either"
+        )
+        # With one, the agreement subset is what the frontier reads and the
+        # per-server numbers stay beside it.
+        both = replay_row_fields(one, {"pyright": one, "pylsp": other})
+        assert frontier_axes_of(both) == {"top1": 0.75, "coverage": 0.8}, both
+        assert sorted(both["servers"]) == ["pylsp", "pyright"]
+
+    def a_server_name_is_resolved_against_the_matrix_and_not_trusted():
+        # A typo'd name is a new series that looks like a server nobody has
+        # replayed in a while, and nothing downstream can tell the two apart.
+        assert servers_for_language("go") == ["gopls"], servers_for_language("go")
+        assert servers_for_language("klingon") == []
+        python = servers_for_language("python")
+        assert set(python) == {"pyright", "basedpyright", "pylsp"}, python
+        surfaces = {None: {"report": "x"}, "pyrite": {"report": "y"}}
+        problems = replay_argument_problems(surfaces, "python")
+        assert len(problems) == 1 and "pyrite" in problems[0], problems
+        assert "pyright" in problems[0], "the message names what it could have been"
+        assert replay_argument_problems({None: {"report": "x"}}, None) == [], (
+            "a loop with no language records the shared surface as it always has"
+        )
+        assert replay_argument_problems({"gopls": {}}, None), (
+            "but a prefixed name with no language has nothing to resolve against"
+        )
+        assert replay_argument_problems({None: {"seconds": "12.5"}}, None) == []
+        assert replay_argument_problems({None: {"seconds": "quick"}}, None), (
+            "`--replay-seconds` stopped being type=float when it gained a "
+            "prefix; it must not start failing halfway through building a row"
         )
 
     def a_commit_beaten_on_every_axis_is_off_the_frontier():
@@ -9072,12 +9363,27 @@ def main() -> int:
 
     p = sub.add_parser("record", help="append the metrics row for HEAD")
     p.add_argument("loop")
-    p.add_argument("--replay-report", metavar="PATH", help="`measure replay --format json`")
-    p.add_argument("--replay-records", metavar="PATH", help="`measure replay --records <path>`")
+    # Each repeatable, and each taking an optional `<server>=` prefix. Bare is
+    # the shared surface the frontier reads; prefixed is one server's own
+    # numbers, reported beside it (loops.md §10, "several servers do not mean
+    # several loops"). Bare is also the whole of it for a single-server
+    # language, where every position is trivially unanimous.
+    p.add_argument(
+        "--replay-report",
+        action="append",
+        metavar="[SERVER=]PATH",
+        help="`measure replay --format json`",
+    )
+    p.add_argument(
+        "--replay-records",
+        action="append",
+        metavar="[SERVER=]PATH",
+        help="`measure replay --records <path>`",
+    )
     p.add_argument(
         "--replay-seconds",
-        type=float,
-        metavar="N",
+        action="append",
+        metavar="[SERVER=]N",
         help="how long that replay took (loops.md §9 records it, never gates on it)",
     )
     p.set_defaults(run=cmd_record)

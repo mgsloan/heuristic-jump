@@ -1324,12 +1324,20 @@ def frontier_table(rows: list[dict]) -> str:
     """
     points = hj.frontier_points(rows)
     if not points:
+        unshared = sum(1 for row in rows if row.get("servers") and "strata" not in row)
         return empty(
             "No row carries both of "
             + " and ".join(hj.FRONTIER_AXES)
             + ", so there is nothing to plot. `measure replay` produces them and "
             "`hj record --replay-report` puts them in the row; until a tuning loop "
             "runs one, the frontier is computable and empty rather than absent."
+            + (
+                f" {unshared} row(s) carry per-server numbers only: the frontier is "
+                "over the positions where every server for the language agrees, and "
+                "nothing has produced that report for them."
+                if unshared
+                else ""
+            )
         )
     head = "".join(f"<th>{esc(axis)}</th>" for axis in hj.FRONTIER_AXES)
     body = ""
@@ -1345,6 +1353,21 @@ def frontier_table(rows: list[dict]) -> str:
             + "".join(f"<td>{axes[axis]:.4f}</td>" for axis in hj.FRONTIER_AXES)
             + f"<td class='note'>{esc(beside)}</td></tr>"
         )
+        # One row per server, indented under the point and never a point of its
+        # own. §10 evaluates a `ServerProfile` on the positions where the
+        # servers differ, against that server alone, so these numbers are not
+        # comparable with the ones above them or with each other — they are
+        # reported beside, the same treatment containment gets.
+        for name, entry in sorted((point.get("servers") or {}).items()):
+            cells = [
+                f"{value:.4f}" if (value := hj.stratum_mean(entry, axis)) is not None else "—"
+                for axis in hj.FRONTIER_AXES
+            ]
+            body += (
+                f"<tr><td class='note'>↳ {esc(name)}</td>"
+                + "".join(f"<td class='note'>{cell}</td>" for cell in cells)
+                + "<td class='note'>on this server's own positions</td></tr>"
+            )
     return (
         f'<table class="sections"><thead><tr><th>commit</th>{head}'
         '<th>beside, never an axis</th></tr></thead>'
